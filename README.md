@@ -2,7 +2,8 @@
 
 A native macOS terminal with a file sidebar, a built-in editor, ssh file browsing and first-class support for
 [Claude Code](https://claude.com/claude-code). It's written in Swift against AppKit only, with no third-party
-dependencies, and themed after the planets of *Outer Wilds*.
+dependencies, and themed after the planets of *Outer Wilds*: the default, Solanum Default, is near-black with Solanum
+purple, and each planet theme is colored like its planet, with that planet beside the theme name in the status bar.
 
 ## Features
 

@@ -35,22 +35,7 @@ enum SolanumArt {
         let base = CGFloat.pi / 2 + turn   // first tip straight up
         func at(_ angle: CGFloat, _ r: CGFloat) -> CGPoint { CGPoint(x: c.x + cos(angle) * r, y: c.y + sin(angle) * r) }
 
-        // Corolla outline in polar form: broad lobes narrowing to pointed tips, with a ruffled edge.
-        let corolla = CGMutablePath()
-        let samples = 400
-        for i in 0...samples {
-            let a = base + CGFloat(i) / CGFloat(samples) * 2 * .pi
-            var d = (a - base).truncatingRemainder(dividingBy: step)
-            if d < 0 { d += step }
-            let t = abs(d - step / 2) / (step / 2)          // 1 at a tip, 0 in a notch
-            let lobe = pow(sin(t * .pi / 2), 0.9)
-            let tip = pow(t, 14) * 0.10                       // drawn-out, pointed tips
-            let ruffle = sin(a * 46 + 0.7) * 0.018 * (1 - t * 0.7) + sin(a * 23) * 0.012
-            let r = R * (0.42 + 0.48 * lobe + tip + ruffle)
-            let pt = at(a, r)
-            if i == 0 { corolla.move(to: pt) } else { corolla.addLine(to: pt) }
-        }
-        corolla.closeSubpath()
+        let corolla = corollaPath(center: c, radius: R, base: base)
 
         ctx.saveGState()
         ctx.setShadow(offset: CGSize(width: 0, height: -R * 0.03), blur: R * 0.14, color: rgb(0x0A0418, 0.5))
@@ -126,6 +111,58 @@ enum SolanumArt {
         }
         ctx.setStrokeColor(rgb(0x9A6A08, 0.55))
         ctx.setLineWidth(max(0.5, R * 0.018))
+        ctx.strokePath()
+        ctx.restoreGState()
+    }
+
+    /// Corolla outline in polar form: broad lobes narrowing to pointed tips, with a ruffled edge (`ruffled` false
+    /// leaves it smooth, for small sizes).
+    private static func corollaPath(center c: CGPoint, radius R: CGFloat, base: CGFloat, ruffled: Bool = true) -> CGMutablePath {
+        let step = 2 * CGFloat.pi / 5
+        let path = CGMutablePath()
+        let samples = 400
+        for i in 0...samples {
+            let a = base + CGFloat(i) / CGFloat(samples) * 2 * .pi
+            var d = (a - base).truncatingRemainder(dividingBy: step)
+            if d < 0 { d += step }
+            let t = abs(d - step / 2) / (step / 2)          // 1 at a tip, 0 in a notch
+            let lobe = pow(sin(t * .pi / 2), 0.9)
+            let tip = pow(t, 14) * 0.10                       // drawn-out, pointed tips
+            let ruffle = ruffled ? sin(a * 46 + 0.7) * 0.018 * (1 - t * 0.7) + sin(a * 23) * 0.012 : 0
+            let r = R * (0.42 + 0.48 * lobe + tip + ruffle)
+            let pt = CGPoint(x: c.x + cos(a) * r, y: c.y + sin(a) * r)
+            if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+        }
+        path.closeSubpath()
+        return path
+    }
+
+    /// The flower as a line drawing in one color (y-up): the corolla, a midrib into each lobe, and the anther cone.
+    /// Solanum Default's mark in the status bar.
+    static func drawOutline(in ctx: CGContext, rect: CGRect, color: CGColor, lineWidth: CGFloat) {
+        let c = CGPoint(x: rect.midX, y: rect.midY)
+        let R = min(rect.width, rect.height) / 2 - lineWidth / 2
+        let base = CGFloat.pi / 2
+        ctx.saveGState()
+        ctx.setStrokeColor(color)
+        ctx.setLineWidth(lineWidth)
+        ctx.setLineJoin(.round)
+        ctx.setLineCap(.round)
+        ctx.addPath(corollaPath(center: c, radius: R, base: base, ruffled: false))
+        for k in 0..<5 {
+            let a = base + CGFloat(k) * 2 * .pi / 5
+            ctx.move(to: CGPoint(x: c.x + cos(a) * R * 0.34, y: c.y + sin(a) * R * 0.34))
+            ctx.addLine(to: CGPoint(x: c.x + cos(a) * R * 0.66, y: c.y + sin(a) * R * 0.66))
+        }
+        ctx.strokePath()
+        // The cone, leaning the way the full flower's does.
+        ctx.translateBy(x: c.x, y: c.y)
+        ctx.rotate(by: -0.35)
+        let len = R * 0.5, w = R * 0.3
+        ctx.move(to: CGPoint(x: -len * 0.18, y: 0))
+        ctx.addCurve(to: CGPoint(x: len, y: 0), control1: CGPoint(x: -len * 0.18, y: w * 0.75), control2: CGPoint(x: len * 0.55, y: w * 0.55))
+        ctx.addCurve(to: CGPoint(x: -len * 0.18, y: 0), control1: CGPoint(x: len * 0.55, y: -w * 0.55), control2: CGPoint(x: -len * 0.18, y: -w * 0.75))
+        ctx.closePath()
         ctx.strokePath()
         ctx.restoreGState()
     }

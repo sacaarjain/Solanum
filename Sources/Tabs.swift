@@ -569,6 +569,22 @@ final class StatusBarView: NSView {
     private var companionTick = Date()
     /// Whether anything in the window is running (a command, or Claude working): the ship speeds up.
     var companionBusy: (() -> Bool)?
+    /// Solanum Default's mark beside its name: the flower in outline, purple while the theme button is hovered.
+    private static let flowerSide: CGFloat = 16
+
+    private func drawFlowerOutline(x: CGFloat) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let th = Config.shared.theme
+        let color = hoverButton == .theme ? (th.isDark ? SolanumArt.purple : SolanumArt.purpleOnLight) : th.dimText
+        // The art is drawn y-up.
+        ctx.saveGState()
+        ctx.translateBy(x: 0, y: bounds.height)
+        ctx.scaleBy(x: 1, y: -1)
+        let s = Self.flowerSide
+        SolanumArt.drawOutline(in: ctx, rect: CGRect(x: x, y: bounds.height - centerY - s / 2, width: s, height: s),
+                               color: color.cgColor, lineWidth: 1.1)
+        ctx.restoreGState()
+    }
 
     private func drawCompanion() {
         let th = Config.shared.theme
@@ -746,19 +762,22 @@ final class StatusBarView: NSView {
             let attrs: [NSAttributedString.Key: Any] = [.font: font, .kern: 0.8,
                                                         .foregroundColor: hoverButton == .theme ? th.foreground : th.dimText]
             let name = th.name.uppercased()
-            // A planet theme's companion stands in for the palette icon, centered on the label like the icon was.
+            // A planet theme's companion stands in for the palette icon, centered on the label like the icon was;
+            // Solanum Default gets the flower.
             let companion = Config.shared.planetCompanion && PlanetArt.planet(for: th) != nil
-            let iw = companion ? Self.companionSize.width : symbol("paintpalette", th.dimText)?.size.width ?? 0
+            let flower = Config.shared.planetCompanion && !th.isCustom && th.name == ThemeLibrary.solanumDefault.name
+            let iw = companion ? Self.companionSize.width : flower ? Self.flowerSide : symbol("paintpalette", th.dimText)?.size.width ?? 0
             let w = 6 + iw + 4 + min(200, (name as NSString).size(withAttributes: attrs).width) + 7
             let start = bounds.width - (showsRightSidebarToggle ? 36 : 8) - w
             _ = drawButton(.theme, at: start, icon: "paintpalette", color: hoverButton == .theme ? th.accent : th.dimText,
-                           text: name, textAttrs: attrs, maxTextWidth: 200, iconSpace: companion ? iw : nil)
+                           text: name, textAttrs: attrs, maxTextWidth: 200, iconSpace: companion || flower ? iw : nil)
             themeRect = CGRect(x: start, y: 2, width: w, height: bounds.height - 6)
             if companion {
                 let s = Self.companionSize
                 companionRect = CGRect(x: start + 6, y: centerY - s.height / 2, width: s.width, height: s.height)
                 drawCompanion()
             }
+            if flower { drawFlowerOutline(x: start + 6) }
         }
         if !showsThemeName || !(Config.shared.planetCompanion && PlanetArt.planet(for: th) != nil) { companionRect = .null }
         updateCompanionTimer()

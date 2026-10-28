@@ -150,6 +150,12 @@ enum ThemeLibrary {
                      "#62646C", "#F799A6", "#B0E6C6", "#F2E2AE", "#B0C2E6", "#D8BEE6", "#B0E2EA", "#F6F6F8"]),
     ]
 
+    /// Solanum's own look, and the default: near-black with the signature purple (the first Dark Bramble). Its
+    /// status-bar mark is the Solanum flower in outline (see `StatusBarView`).
+    static let solanumDefault = Theme(name: "Solanum Default", bg: "#111312", bg2: "#050606", fg: "#D7D3C7", accent: "#A584E8",
+        ansi: ["#272B28", "#E3573F", "#8BA47B", "#E9B54D", "#6F90A9", "#A98CC1", "#8FB9B1", "#BCB7A9",
+               "#5A5F5A", "#F47A63", "#A4BC95", "#F5C86F", "#8DA8BE", "#C0A6D4", "#A9CEC7", "#ECE8DC"])
+
     /// VS Code's built-in themes, with its default terminal colors. Listed after Solanum's own.
     static let vsCode: [Theme] = {
         let dark = ["#000000", "#CD3131", "#0DBC79", "#E5E510", "#2472C8", "#BC3FBC", "#11A8CD", "#E5E5E5",
@@ -165,17 +171,17 @@ enum ThemeLibrary {
         ]
     }()
 
-    static var builtIn: [Theme] { outerWilds + vsCode }
+    static var builtIn: [Theme] { [solanumDefault] + outerWilds + vsCode }
 
     static func isVSCode(_ t: Theme) -> Bool { !t.isCustom && vsCode.contains { $0.name == t.name } }
 
-    static let defaultName = "Timber Hearth"
+    static let defaultName = "Solanum Default"
 
     /// Themes loaded from ~/.config/solanum/themes/*.json
     static private(set) var custom: [Theme] = []
 
     /// Solanum's themes and the user's own first, VS Code's below.
-    static var all: [Theme] { outerWilds + custom + vsCode }
+    static var all: [Theme] { [solanumDefault] + outerWilds + custom + vsCode }
 
     static func theme(named name: String) -> Theme {
         all.first { $0.name.caseInsensitiveCompare(name) == .orderedSame } ?? builtIn.first { $0.name == defaultName } ?? builtIn[0]
