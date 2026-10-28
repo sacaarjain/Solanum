@@ -151,7 +151,8 @@ enum SelfTest {
             let t = ThemeLibrary.builtIn[1]
             let j = t.json
             let back = Theme(name: j["name"] as! String, bg: j["background"] as! String, bg2: j["background2"] as? String, fg: j["foreground"] as! String,
-                             cursor: j["cursor"] as? String, selection: j["selection"] as? String, accent: j["accent"] as! String, ansi: j["ansi"] as! [String])
+                             cursor: j["cursor"] as? String, selection: j["selection"] as? String, accent: j["accent"] as! String,
+                             chrome: j["chrome"] as? String, ansi: j["ansi"] as! [String])
             check("theme JSON round-trip", back.json as NSDictionary == j as NSDictionary)
         }
         print(failures == 0 ? "All \(count) checks passed." : "\(failures) of \(count) checks FAILED.")

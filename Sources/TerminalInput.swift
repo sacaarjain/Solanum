@@ -156,6 +156,7 @@ extension TerminalView {
         // Files copied in Finder: their paths, as dropping them would (Claude Code attaches images given by path).
         // Without this the clipboard's plain text is just the file name.
         if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+            if pty?.foregroundIsClaudeCode == true { notePastedImage(pb) }
             sendPaste(urls.map { Self.shellEscaped($0.path) }.joined(separator: " ") + " ")
             return
         }
@@ -163,6 +164,7 @@ extension TerminalView {
         guard pb.availableType(from: [.png, .tiff]) != nil else { return NSSound.beep() }
         // Image data only (a screenshot, "Copy Image"). Claude Code reads the clipboard itself on Ctrl+V.
         if pty?.foregroundIsClaudeCode == true {
+            notePastedImage(pb)
             send("\u{16}")
             scrollOffset = 0
             return
@@ -343,6 +345,10 @@ extension TerminalView {
             scrollbarGrab = g.thumb.insetBy(dx: -6, dy: 0).contains(p) ? (p.y - g.thumb.minY) / g.thumb.height : 0.5
             dragScrollbar(to: p.y)
             needsDisplay = true
+            return
+        }
+        if let chip = imageChip(at: p) {
+            openImageChip(chip)
             return
         }
         if let button = blockCopyButton, button.rect.contains(p) {
@@ -715,6 +721,11 @@ extension TerminalView {
             hoverBlock = newHover
             needsDisplay = true
         }
+        let chipHover = imageChip(at: p)?.n
+        if chipHover != imageChipState.hover {
+            imageChipState.hover = chipHover
+            needsDisplay = true
+        }
         let copyHover = codeCopyButtons.first { $0.0.contains(p) }?.1
         let blockHover = blockCopyButton?.rect.contains(p) ?? false
         let pillHover = jumpPillRect.contains(p)
@@ -752,10 +763,14 @@ extension TerminalView {
     func updateCursor() {
         // Normal arrow over the scrollbar and the jump-to-bottom button; a hand over copy buttons and ⌘-links.
         if scrollbarHover || scrollbarGrab != nil || hoverJumpPill { return NSCursor.arrow.set() }
-        (hoverCopyButton != nil || hoverBlockCopy || hoverURL != nil ? NSCursor.pointingHand : NSCursor.iBeam).set()
+        (hoverCopyButton != nil || hoverBlockCopy || hoverURL != nil || imageChipState.hover != nil ? NSCursor.pointingHand : NSCursor.iBeam).set()
     }
 
     override func mouseExited(with e: NSEvent) {
+        if imageChipState.hover != nil {
+            imageChipState.hover = nil
+            needsDisplay = true
+        }
         if hoverBlock != nil || hoverURL != nil || hoverCopyButton != nil || hoverBlockCopy || hoverJumpPill || scrollbarHover {
             hoverBlock = nil
             hoverURL = nil

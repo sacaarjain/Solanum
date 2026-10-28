@@ -558,6 +558,69 @@ final class StatusBarView: NSView {
     /// Each sidebar's file transfer in progress ("Copying a.txt to host:~/dir"), shown at the right.
     private var transfers: [ObjectIdentifier: String] = [:]
     private var transferRect: CGRect = .null
+    /// The little planet with the ship orbiting it (see `PlanetArt.drawCompanion`), left of the theme name.
+    private var companionRect: CGRect = .null
+    private static let companionSize = CGSize(width: 24, height: 18)
+    private var companionPhase: CGFloat = 0.6
+    private var companionTimer: Timer?
+    private var companionTick = Date()
+    /// Whether anything in the window is running (a command, or Claude working): the ship speeds up.
+    var companionBusy: (() -> Bool)?
+
+    private func drawCompanion() {
+        let th = Config.shared.theme
+        guard let planet = PlanetArt.planet(for: th), let ctx = NSGraphicsContext.current?.cgContext else { return }
+        // The art is drawn y-up.
+        ctx.saveGState()
+        ctx.translateBy(x: 0, y: bounds.height)
+        ctx.scaleBy(x: 1, y: -1)
+        let r = CGRect(x: companionRect.minX, y: bounds.height - companionRect.maxY, width: companionRect.width, height: companionRect.height)
+        PlanetArt.drawCompanion(planet, in: ctx, rect: r, phase: companionPhase, ship: th.accent, trail: th.foreground)
+        ctx.restoreGState()
+    }
+
+    /// Runs the orbit while the companion shows: a slow drift when idle (few frames), a quick orbit when busy.
+    private func updateCompanionTimer() {
+        let busy = companionBusy?() ?? false
+        let interval = busy ? 1.0 / 30 : 1.0 / 8
+        let wanted = !companionRect.isNull && window?.occlusionState.contains(.visible) == true
+        if !wanted {
+            companionTimer?.invalidate()
+            companionTimer = nil
+            return
+        }
+        if let t = companionTimer, abs(t.timeInterval - interval) < 0.001 { return }
+        companionTimer?.invalidate()
+        companionTick = Date()
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let now = Date()
+            let dt = CGFloat(now.timeIntervalSince(self.companionTick))
+            self.companionTick = now
+            let busy = self.companionBusy?() ?? false
+            self.companionPhase = (self.companionPhase + dt * (busy ? 2.4 : 0.32)).truncatingRemainder(dividingBy: 2 * .pi)
+            self.setNeedsDisplay(self.companionRect.insetBy(dx: -2, dy: -2))
+        }
+        RunLoop.main.add(t, forMode: .common)
+        companionTimer = t
+    }
+
+    private var occlusionObserver: NSObjectProtocol?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        occlusionObserver.map(NotificationCenter.default.removeObserver)
+        occlusionObserver = nil
+        guard let window else { companionTimer?.invalidate(); companionTimer = nil; return }
+        // Hidden or minimized windows stop the orbit; showing again redraws, which restarts it.
+        occlusionObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window,
+                                                                   queue: .main) { [weak self] _ in
+            guard let self else { return }
+            if !self.companionRect.isNull { self.updateCompanionTimer() }
+            self.needsDisplay = true
+        }
+        needsDisplay = true
+    }
 
     var devTransfer: String? { transfers.values.sorted().first }   // dev aid (DevTools print-rows)
 
@@ -603,10 +666,12 @@ final class StatusBarView: NSView {
     }
 
     /// Draws a hoverable icon (+ optional text) button starting at `x`; returns where the next item goes.
+    /// `iconSpace` leaves that much room for an icon drawn by the caller instead of `icon`.
     private func drawButton(_ kind: Button, at x: CGFloat, icon: String, color: NSColor, text: String? = nil,
-                            textAttrs: [NSAttributedString.Key: Any] = [:], maxTextWidth: CGFloat = 220, textNudge: CGFloat = 0) -> CGFloat {
-        let img = symbol(icon, color)
-        let iw = img?.size.width ?? 0
+                            textAttrs: [NSAttributedString.Key: Any] = [:], maxTextWidth: CGFloat = 220, textNudge: CGFloat = 0,
+                            iconSpace: CGFloat? = nil) -> CGFloat {
+        let img = iconSpace == nil ? symbol(icon, color) : nil
+        let iw = iconSpace ?? img?.size.width ?? 0
         let tw = text.map { min(maxTextWidth, ($0 as NSString).size(withAttributes: textAttrs).width) } ?? 0
         let w = text == nil ? 22 : 6 + iw + 4 + tw + 7
         let r = NSRect(x: x, y: 2, width: w, height: bounds.height - 6)
@@ -634,6 +699,18 @@ final class StatusBarView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let th = Config.shared.theme
+        // An orbit frame: only the companion changed.
+        if !companionRect.isNull, companionRect.insetBy(dx: -2, dy: -2).contains(dirtyRect) {
+            th.tabBarTint.setFill()
+            dirtyRect.fill()
+            if hoverButton == .theme, !themeRect.isNull {
+                th.foreground.withAlphaComponent(0.1).setFill()
+                NSBezierPath(roundedRect: themeRect, xRadius: 4, yRadius: 4).fill()
+            }
+            drawCompanion()
+            updateCompanionTimer()
+            return
+        }
         th.tabBarTint.setFill()
         bounds.fill()
         th.border.setFill()
@@ -651,13 +728,23 @@ final class StatusBarView: NSView {
             let attrs: [NSAttributedString.Key: Any] = [.font: font, .kern: 0.8,
                                                         .foregroundColor: hoverButton == .theme ? th.foreground : th.dimText]
             let name = th.name.uppercased()
-            let iw = symbol("paintpalette", th.dimText)?.size.width ?? 0
+            // A planet theme's companion stands in for the palette icon, centered on the label like the icon was.
+            let companion = Config.shared.planetCompanion && PlanetArt.planet(for: th) != nil
+            let iw = companion ? Self.companionSize.width : symbol("paintpalette", th.dimText)?.size.width ?? 0
             let w = 6 + iw + 4 + min(200, (name as NSString).size(withAttributes: attrs).width) + 7
             let start = bounds.width - (showsRightSidebarToggle ? 36 : 8) - w
             _ = drawButton(.theme, at: start, icon: "paintpalette", color: hoverButton == .theme ? th.accent : th.dimText,
-                           text: name, textAttrs: attrs, maxTextWidth: 200, textNudge: 1)
+                           text: name, textAttrs: attrs, maxTextWidth: 200, textNudge: 1, iconSpace: companion ? iw : nil)
             themeRect = CGRect(x: start, y: 2, width: w, height: bounds.height - 6)
+            if companion {
+                let s = Self.companionSize
+                companionRect = CGRect(x: start + 6, y: themeRect.midY - s.height / 2 - 0.5, width: s.width, height: s.height)
+                drawCompanion()
+            }
         }
+        if !showsThemeName || !(Config.shared.planetCompanion && PlanetArt.planet(for: th) != nil) { companionRect = .null }
+        updateCompanionTimer()
+        let rightItems = themeRect
         // A transfer in progress, right-aligned before the theme name or the right column's folder.
         transferRect = .null
         if let text = transfers.values.sorted().first {
@@ -665,7 +752,7 @@ final class StatusBarView: NSView {
             let para = NSMutableParagraphStyle()
             para.lineBreakMode = .byTruncatingMiddle
             let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: th.foreground.withAlphaComponent(0.85), .paragraphStyle: para]
-            let end = themeRect.isNull ? bounds.width - (showsRightSidebarToggle ? 36 : 10) : themeRect.minX - 14
+            let end = rightItems.isNull ? bounds.width - (showsRightSidebarToggle ? 36 : 10) : rightItems.minX - 14
             let icon = symbol("arrow.left.arrow.right", th.accent, size: 10)
             let iconW = (icon?.size.width ?? 0) + 6
             let textW = min((text as NSString).size(withAttributes: attrs).width + 2, bounds.width * 0.4)
@@ -685,7 +772,7 @@ final class StatusBarView: NSView {
             x = drawButton(.hosts, at: x, icon: "server.rack", color: th.dimText)
         }
         if !buttons.isEmpty { x += 4 }
-        let rightEdge = transferRect.isNull ? themeRect : transferRect
+        let rightEdge = transferRect.isNull ? rightItems : transferRect
         let limit = rightEdge.isNull ? bounds.width - (showsRightSidebarToggle ? 34 : 0) : rightEdge.minX - 16
         if mirrored {
             // From the right edge leftwards: host, git, then the folder ending against them.
@@ -1297,6 +1384,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         bar.onToggleFileSidebar = { [weak self] in self?.toggleFileSidebar(nil) }
         bar.onShowHosts = { [weak self] at in self?.showHostsMenu(at: at) }
         bar.showsThemeName = true
+        bar.companionBusy = { [weak self] in
+            self?.allTabs.contains { $0.isRunningCommand || $0.agent?.status == .working } ?? false
+        }
         bar.onThemeMenu = { [weak bar] at in
             guard let bar else { return }
             let menu = NSMenu()

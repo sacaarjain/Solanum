@@ -103,8 +103,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     func rebuild() {
         lastTheme = Config.shared.theme.name
         root.applyTheme()
-        root.show(SettingsPages.make(page, controller: self))
+        // Picking a theme (or any change) rebuilds the page in place; only a different page or editor starts at the top.
+        let same = builtPage == page && builtEditing == editingTheme
+        builtPage = page
+        builtEditing = editingTheme
+        root.show(SettingsPages.make(page, controller: self), keepScroll: same)
     }
+    private var builtPage: Page?
+    private var builtEditing: URL?
 
     /// Writes the config and broadcasts it, without rebuilding the page (the control already shows the value).
     func commit() {
@@ -161,11 +167,18 @@ final class SettingsRootView: NSView {
         }
     }
 
-    func show(_ page: SettingsPageView) {
+    /// Swaps in a freshly built page; `keepScroll` holds the scroll position (a rebuild of the page already showing).
+    func show(_ page: SettingsPageView, keepScroll: Bool = false) {
+        let offset = scroll.contentView.bounds.origin.y
         pageView = page
         scroll.documentView = page
         needsLayout = true
         layoutSubtreeIfNeeded()
+        if keepScroll {
+            let maxY = max(0, page.frame.height - scroll.contentSize.height)
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: min(offset, maxY)))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
     }
 
     func scrollToTop() {
@@ -912,6 +925,11 @@ enum SettingsPages {
         grid.add(newCard)
         let count = grid.cards.count, vsCount = vsGrid.cards.count
         v.add(grid, height: { ThemeGridView.height(forWidth: $0, count: count) }, gap: 24)
+        v.add(sectionHeader("Planets"), height: 16, gap: 10)
+        card(v, [
+            SettingRow(icon: "airplane", title: "Ship companion", detail: "Outer Wilds themes show their planet in the status bar, with your ship in orbit. It speeds up while things run.",
+                       accessory: toggle(c.planetCompanion) { [weak ctl] on in Config.shared.planetCompanion = on; ctl?.commit() }),
+        ])
         v.add(sectionHeader("VS Code"), height: 16, gap: 10)
         v.add(vsGrid, height: { ThemeGridView.height(forWidth: $0, count: vsCount) }, gap: 30)
 
