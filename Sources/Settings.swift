@@ -950,6 +950,8 @@ enum SettingsPages {
         let notify = ThemedField(String(Int(c.notifyAfterSeconds)), placeholder: "10")
         notify.alignment = .right
         notify.onCommit = { [weak ctl] s in if let n = Double(s) { Config.shared.notifyAfterSeconds = max(0, n); ctl?.commit() } }
+        let newTabFolder = ChoicePopup(["Current Folder", "Home Folder"], selected: c.newTabFolder == "home" ? "Home Folder" : "Current Folder")
+        newTabFolder.onChange = { [weak ctl] s in Config.shared.newTabFolder = s == "Home Folder" ? "home" : "current"; ctl?.commit() }
         card(v, [
             SettingRow(icon: "macwindow.on.rectangle", title: "Reload workspace every time",
                        detail: "Off: Solanum starts fresh, and offers the last session for a minute.",
@@ -958,6 +960,9 @@ enum SettingsPages {
                        accessory: toggle(c.restoreScrollback) { [weak ctl] on in Config.shared.restoreScrollback = on; ctl?.commit() }),
             SettingRow(icon: "bell", title: "Notify after (seconds)", detail: "When a command in a background tab runs at least this long. 0 turns it off.",
                        accessory: notify, width: 70),
+            SettingRow(icon: "plus.rectangle.on.rectangle", title: "New tabs open in",
+                       detail: "Where ⌘T starts. ⌥⌘T always opens the current folder, in the tab's group.",
+                       accessory: newTabFolder, width: 150),
         ])
 
         v.add(sectionHeader("File Transfers"), height: 16, gap: 10)

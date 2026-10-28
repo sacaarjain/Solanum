@@ -371,6 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         _ = add(shell, "Close Window", #selector(NSWindow.performClose(_:)), "w", [.command, .shift])
         shell.addItem(.separator())
         _ = add(shell, "Keep Awake (caffeinate 8h)", #selector(TerminalView.keepAwake(_:)), "a", [.command, .shift])
+        _ = add(shell, "Show Git Graph", #selector(TerminalWindowController.showGitGraph(_:)), "")
 
         // Edit
         let edit = top("Edit")

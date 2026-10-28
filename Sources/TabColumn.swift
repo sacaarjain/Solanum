@@ -32,11 +32,25 @@ final class TabColumn: NSObject, TabOwner {
         insertTab(cwd: cwd, at: tabs.count, group: nil)
     }
 
+    /// The focused terminal's folder, when it's on this Mac (a new shell can't start in an ssh host's folder).
+    var currentLocalFolder: String? {
+        guard let pane = activeTab?.focusedPane, pane.remote == nil else { return nil }
+        return pane.currentDirectory
+    }
+
+    /// ⌘T and the + button: a tab in the current terminal's folder, or at home (Settings › Preferences).
     @discardableResult
-    func insertTab(cwd: String?, at index: Int, group: TabGroup?) -> TabSession {
+    func newTab() -> TabSession {
+        addTab(cwd: Config.shared.newTabFolder == "home" ? nil : currentLocalFolder)
+    }
+
+    /// `openFolders`: the sidebar folders it starts with open (none: everything closed).
+    @discardableResult
+    func insertTab(cwd: String?, at index: Int, group: TabGroup?, openFolders: [String: Set<String>] = [:]) -> TabSession {
         let tab = TabSession(cwd: cwd)
         tab.owner = self
         tab.group = group
+        tab.openFolders = openFolders
         tabs.insert(tab, at: index)
         select(index: index)
         return tab
@@ -211,9 +225,9 @@ final class TabColumn: NSObject, TabOwner {
         refreshTabBar()
     }
 
-    func newTab(in g: TabGroup) {
+    func newTab(in g: TabGroup, cwd: String? = nil, openFolders: [String: Set<String>] = [:]) {
         let end = (tabs.lastIndex { $0.group === g } ?? tabs.count - 1) + 1
-        insertTab(cwd: nil, at: end, group: g)
+        insertTab(cwd: cwd, at: end, group: g, openFolders: openFolders)
     }
 
     /// Collapsing hides a group's tabs; if the active tab is among them, the nearest visible tab takes over.
@@ -347,13 +361,15 @@ final class TabColumn: NSObject, TabOwner {
     // MARK: Actions (the window's menu commands land here for the focused column)
 
     /// ⌥⌘T: a new tab at the end of the current tab's group; with no group, the current tab and a new one right
-    /// after it become a new group, whose name field opens.
+    /// after it become a new group, whose name field opens. The new tab starts where the current one is: the
+    /// terminal's folder (on this Mac) and the same sidebar folders open.
     func newTabInGroup() {
         guard let current = activeTab, let i = tabs.firstIndex(of: current) else { addTab(cwd: nil); return }
-        if let g = current.group { return newTab(in: g) }
+        let cwd = currentLocalFolder
+        if let g = current.group { return newTab(in: g, cwd: cwd, openFolders: current.openFolders) }
         let g = makeGroup()
         current.group = g
-        insertTab(cwd: nil, at: i + 1, group: g)
+        insertTab(cwd: cwd, at: i + 1, group: g, openFolders: current.openFolders)
         // After the new tab's own (async) focus, or that would take the keyboard from the name field.
         DispatchQueue.main.async { [weak self] in self?.tabBar.beginEditing(group: g) }
     }

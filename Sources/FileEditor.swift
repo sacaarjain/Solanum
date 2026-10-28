@@ -5,7 +5,17 @@ import AppKit
 /// Images, PDFs, video and audio show as a read-only preview instead (see `MediaPreviewView`).
 final class FileEditorView: NSView, NSTextViewDelegate {
     let fs: FileSystem
+    /// The file, or for a graph the repository's top folder.
     let path: String
+    let mode: EditorMode
+    /// What the sub-tab says.
+    var displayName: String {
+        switch mode {
+        case .file: return (path as NSString).lastPathComponent
+        case .diff: return (path as NSString).lastPathComponent + " (Working Tree)"
+        case .graph: return "Git Graph"
+        }
+    }
     var onClose: (() -> Void)?
 
     private let header = EditorHeaderView()
@@ -18,14 +28,21 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private var saving = false
     private(set) var isDirty = false { didSet { header.dirty = isDirty } }
     private var wraps = false
+    /// Colored as JSON, YAML or XML (see Syntax.swift); other files stay plain.
+    private let language: SyntaxLanguage?
+    private var pendingHighlight: DispatchWorkItem?
     private var observers: [NSObjectProtocol] = []
     private var media: MediaPreviewView?
+    private var diffView: DiffView?
+    private var graphView: GitGraphView?
     /// A remote file's local copy for the preview; removed with the editor.
     private var mediaCopy: URL?
 
-    init(fs: FileSystem, path: String) {
+    init(fs: FileSystem, path: String, mode: EditorMode = .file) {
         self.fs = fs
         self.path = path
+        self.mode = mode
+        language = SyntaxLanguage(path: path)
         let storage = NSTextStorage()
         let layout = NSLayoutManager()
         storage.addLayoutManager(layout)
@@ -90,6 +107,16 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         observers.append(NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak self] _ in
             self?.ruler.needsDisplay = true
         })
+        if mode != .file {
+            // Keep a diff or graph current: files change and commits land in other apps (or, for a diff, in this
+            // file's own editor tab).
+            for name in [NSApplication.didBecomeActiveNotification, .solanumFileSaved] {
+                observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                    guard let self, note.name != .solanumFileSaved || note.userInfo?["path"] as? String == self.path else { return }
+                    self.load()
+                })
+            }
+        }
         load()
     }
 
@@ -113,10 +140,12 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         let mh: CGFloat = 60
         message.frame = NSRect(x: 20, y: header.frame.maxY + (scroll.frame.height - mh) / 2, width: bounds.width - 40, height: mh)
         media?.frame = scroll.frame
+        diffView?.frame = scroll.frame
+        graphView?.frame = scroll.frame
     }
 
     func focus() {
-        window?.makeFirstResponder(media?.focusView ?? textView)
+        window?.makeFirstResponder(media?.focusView ?? diffView ?? graphView ?? textView)
     }
 
     private func applyTheme() {
@@ -135,12 +164,15 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         if let storage = textView.textStorage, storage.length > 0 {
             storage.addAttributes([.font: font, .foregroundColor: th.foreground, .paragraphStyle: para],
                                   range: NSRange(location: 0, length: storage.length))
+            highlightSyntax()
         }
         message.textColor = th.dimText
         message.font = .systemFont(ofSize: 12)
         ruler.font = NSFont.monospacedDigitSystemFont(ofSize: max(9, font.pointSize - 2), weight: .regular)
         ruler.needsDisplay = true
         media?.applyTheme()
+        diffView?.applyTheme()
+        graphView?.applyTheme()
         header.needsDisplay = true
         needsDisplay = true
     }
@@ -160,6 +192,8 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     }
 
     private func load() {
+        if mode == .diff { return loadDiff() }
+        if mode == .graph { return loadGraph() }
         if let kind = MediaKind(path: path) { return loadMedia(kind) }
         showMessage("Loading…")
         fs.read(path) { [weak self] result in
@@ -219,6 +253,64 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         }
     }
 
+    /// The left side is the index (`git show :file`: what's staged, else the last commit); a file git doesn't
+    /// have yet diffs against nothing, and one deleted from disk against an empty right side.
+    private func loadDiff() {
+        header.editable = false
+        if diffView == nil { showMessage("Loading…") }
+        let name = (path as NSString).lastPathComponent
+        let git = GitRunner(dir: (path as NSString).deletingLastPathComponent, remote: fs as? RemoteSession)
+        git.run("git show \(shellQuote(":./" + name)) 2>/dev/null") { [weak self] _, out, _ in
+            guard let self else { return }
+            let old = String(decoding: out, as: UTF8.self)
+            self.fs.read(self.path) { [weak self] result in
+                guard let self else { return }
+                let new = (try? result.get()).map { String(decoding: $0, as: UTF8.self) } ?? ""
+                let view = self.diffView ?? DiffView()
+                if self.diffView == nil {
+                    self.diffView = view
+                    self.addSubview(view)
+                    self.needsLayout = true
+                    self.layoutSubtreeIfNeeded()
+                }
+                view.show(old: old, new: new, language: self.language)
+                self.header.subtitle = "\(self.location) · Index ↔ Working Tree · \(view.summary)"
+                self.message.isHidden = true
+                self.scroll.isHidden = true
+                if self.window?.firstResponder === self.window { self.focus() }
+            }
+        }
+    }
+
+    /// Dev aid (DevTools hover-graph): the graph's card for `row`.
+    func devHoverGraph(_ row: Int) { graphView?.devHover(row) }
+
+    private func loadGraph() {
+        header.editable = false
+        if graphView == nil { showMessage("Loading…") }
+        let git = GitRunner(dir: path, remote: fs as? RemoteSession)
+        git.run(GraphCommit.script, timeout: 60) { [weak self] status, out, err in
+            guard let self else { return }
+            let (head, commits) = GraphCommit.parse(out)
+            guard !commits.isEmpty else {
+                return self.showMessage(status == 0 ? "No commits yet." : err.isEmpty ? "Couldn't read the history." : err)
+            }
+            let view = self.graphView ?? GitGraphView(runner: git)
+            if self.graphView == nil {
+                self.graphView = view
+                self.addSubview(view)
+                self.needsLayout = true
+                self.layoutSubtreeIfNeeded()
+            }
+            view.show(head: head, commits: commits)
+            let count = commits.count >= GraphCommit.limit ? "latest \(commits.count) commits" : "\(commits.count) commit\(commits.count == 1 ? "" : "s")"
+            self.header.subtitle = "\(self.location) · all branches · \(count)"
+            self.message.isHidden = true
+            self.scroll.isHidden = true
+            if self.window?.firstResponder === self.window { self.focus() }
+        }
+    }
+
     private func showMedia(_ kind: MediaKind, _ url: URL) {
         let view = MediaPreviewView(kind: kind, url: url)
         guard let info = view.info else { return showMessage("This file couldn't be opened.") }
@@ -238,6 +330,20 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     func textDidChange(_ notification: Notification) {
         if loaded { isDirty = true }
         ruler.invalidateLines()
+        guard language != nil else { return }
+        // Re-color once typing pauses rather than on every keystroke.
+        pendingHighlight?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.highlightSyntax() }
+        pendingHighlight = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    private func highlightSyntax() {
+        guard let language, let storage = textView.textStorage, storage.length > 0 else { return }
+        storage.beginEditing()
+        storage.addAttribute(.foregroundColor, value: Config.shared.theme.foreground, range: NSRange(location: 0, length: storage.length))
+        SyntaxHighlighter.highlight(storage, as: language)
+        storage.endEditing()
     }
 
     @objc func saveDocument(_ sender: Any?) {
@@ -261,6 +367,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             }
             // Only clean if nothing was typed while the save was in flight.
             if self.textView.string == undoMark { self.isDirty = false }
+            NotificationCenter.default.post(name: .solanumFileSaved, object: self.fs, userInfo: ["path": self.path])
             self.header.status = "Saved"
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 if self?.header.status == "Saved" { self?.header.status = nil }
@@ -330,7 +437,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     @objc func findPrevious(_ sender: Any?) { finderAction(.previousMatch) }
 
     @objc func toggleWrap(_ sender: Any?) {
-        guard media == nil else { return }
+        guard media == nil, mode == .file else { return }
         wraps.toggle()
         applyWrap()
     }
@@ -350,6 +457,10 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         ruler.invalidateLines()
     }
 }
+
+/// What an editor shows: a file to edit, a file's uncommitted changes (Diff.swift), or a repository's history
+/// (GitGraph.swift).
+enum EditorMode { case file, diff, graph }
 
 /// ⌥Z toggles wrapping, as in VS Code.
 final class EditorTextView: NSTextView {

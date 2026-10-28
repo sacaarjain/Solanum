@@ -475,4 +475,6 @@ extension Notification.Name {
     /// Posted with a `FileSystem` as the object after items were added to or removed from it outside the
     /// sidebar doing the work; sidebars showing that file system refresh.
     static let solanumFilesChanged = Notification.Name("SolanumFilesChanged")
+    /// An editor saved a file: `object` is its file system, `userInfo["path"]` its path.
+    static let solanumFileSaved = Notification.Name("SolanumFileSaved")
 }

@@ -181,6 +181,8 @@ final class TabSession: NSObject {
     var fileOrigin: (fs: FileSystem, dir: String)?
     /// The folder the sidebar stays on while this tab is active, if one is pinned.
     var pinnedFolder: (fs: FileSystem, path: String)?
+    /// Folders opened in the sidebar while this tab was active, by machine (see `FileSidebarView.openFolders`).
+    var openFolders: [String: Set<String>] = [:]
 
     /// Where this tab's files are for the sidebar and status bar: a file tab whose terminal hasn't started yet
     /// browses its file's folder (on the ssh host it came from); otherwise the focused pane's folder.
@@ -234,7 +236,7 @@ final class TabSession: NSObject {
 
     var title: String {
         if let customTitle { return customTitle }
-        if !showsTerminal, let ed = editor { return (ed.path as NSString).lastPathComponent }
+        if !showsTerminal, let ed = editor { return ed.displayName }
         return focusedPane.displayTitle
     }
     var isRunningCommand: Bool { panes.contains { $0.isRunningCommand } }
@@ -376,11 +378,12 @@ final class TabSession: NSObject {
 
     // MARK: Editor
 
-    /// Opens a file above the terminal (or switches to it if it's open already).
-    func openFile(_ fs: FileSystem, _ path: String, focus: Bool = true) {
-        if let i = editors.firstIndex(where: { $0.fs === fs && $0.path == path }) { return activateEditor(i, focus: focus) }
-        adoptEditor(FileEditorView(fs: fs, path: path), focus: focus)
-        lastOpened = (path, Date())
+    /// Opens a file above the terminal (or switches to it if it's open already); `mode` opens its uncommitted
+    /// changes, or (given a repository's top folder) its history, instead.
+    func openFile(_ fs: FileSystem, _ path: String, mode: EditorMode = .file, focus: Bool = true) {
+        if let i = editors.firstIndex(where: { $0.fs === fs && $0.path == path && $0.mode == mode }) { return activateEditor(i, focus: focus) }
+        adoptEditor(FileEditorView(fs: fs, path: path, mode: mode), focus: focus)
+        if mode == .file { lastOpened = (path, Date()) }
     }
 
     /// Takes in an editor (a newly opened file, or one moving here from another tab) and shows it.
@@ -421,7 +424,7 @@ final class TabSession: NSObject {
     /// undo the click's opening so the file isn't in both places.
     func closeEditorJustOpened(_ path: String) {
         guard let last = lastOpened, last.path == path, Date().timeIntervalSince(last.at) < 1,
-              let ed = editors.first(where: { $0.path == path }), !ed.isDirty else { return }
+              let ed = editors.first(where: { $0.path == path && $0.mode == .file }), !ed.isDirty else { return }
         closeEditor(ed)
     }
 
@@ -583,6 +586,22 @@ final class StatusBarView: NSView {
         return NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(config)
     }
 
+    // Everything in the bar is centered on one line the way symbols and text share a line of text: a symbol by its
+    // alignment rect (the cap-height box SF Symbols are drawn around, so a pencil poking out of a square or an
+    // arrow hanging under a cloud doesn't shift the shape), a label by its capitals. No per-item nudging.
+    private var centerY: CGFloat { bounds.height / 2 - 1.5 }
+
+    /// Where to draw `img` at `x` so its alignment rect is centered on the bar's line.
+    private func iconFrame(_ img: NSImage, x: CGFloat) -> NSRect {
+        let a = img.alignmentRect   // in the image's own coordinates, origin at the bottom
+        return NSRect(x: x, y: centerY - (img.size.height - a.maxY) - a.height / 2, width: img.size.width, height: img.size.height)
+    }
+
+    /// The box to draw one line of `font` text in at `x`, with its capitals centered on the bar's line.
+    private func textFrame(_ font: NSFont, x: CGFloat, width: CGFloat) -> NSRect {
+        NSRect(x: x, y: centerY + font.capHeight / 2 - font.ascender, width: width, height: ceil(font.ascender - font.descender) + 1)
+    }
+
     /// (label, full path) for each folder from the top of `path` down.
     private func segments(_ path: String) -> [(String, String)] {
         var out: [(String, String)] = []
@@ -604,7 +623,7 @@ final class StatusBarView: NSView {
 
     /// Draws a hoverable icon (+ optional text) button starting at `x`; returns where the next item goes.
     private func drawButton(_ kind: Button, at x: CGFloat, icon: String, color: NSColor, text: String? = nil,
-                            textAttrs: [NSAttributedString.Key: Any] = [:], maxTextWidth: CGFloat = 220, textNudge: CGFloat = 0) -> CGFloat {
+                            textAttrs: [NSAttributedString.Key: Any] = [:], maxTextWidth: CGFloat = 220) -> CGFloat {
         let img = symbol(icon, color)
         let iw = img?.size.width ?? 0
         let tw = text.map { min(maxTextWidth, ($0 as NSString).size(withAttributes: textAttrs).width) } ?? 0
@@ -618,16 +637,15 @@ final class StatusBarView: NSView {
         }
         if let img {
             let ix = text == nil ? r.midX - iw / 2 : r.minX + 6
-            img.draw(in: NSRect(x: ix, y: r.midY - img.size.height / 2 - 0.5, width: iw, height: img.size.height))
+            img.draw(in: iconFrame(img, x: ix))
         }
         if let text {
             let para = NSMutableParagraphStyle()
             para.lineBreakMode = .byTruncatingMiddle
             var attrs = textAttrs
             attrs[.paragraphStyle] = para
-            // Centered on its own height, so smaller labels (the theme name) line up with their icon.
-            let textH = ceil((text as NSString).size(withAttributes: attrs).height)
-            (text as NSString).draw(in: NSRect(x: r.minX + 6 + iw + 4, y: r.midY - textH / 2 - 0.5 + textNudge, width: tw + 1, height: textH), withAttributes: attrs)
+            let font = textAttrs[.font] as? NSFont ?? barFont
+            (text as NSString).draw(in: textFrame(font, x: r.minX + 6 + iw + 4, width: tw + 1), withAttributes: attrs)
         }
         return r.maxX + 2
     }
@@ -655,7 +673,7 @@ final class StatusBarView: NSView {
             let w = 6 + iw + 4 + min(200, (name as NSString).size(withAttributes: attrs).width) + 7
             let start = bounds.width - (showsRightSidebarToggle ? 36 : 8) - w
             _ = drawButton(.theme, at: start, icon: "paintpalette", color: hoverButton == .theme ? th.accent : th.dimText,
-                           text: name, textAttrs: attrs, maxTextWidth: 200, textNudge: 1)
+                           text: name, textAttrs: attrs, maxTextWidth: 200)
             themeRect = CGRect(x: start, y: 2, width: w, height: bounds.height - 6)
         }
         // A transfer in progress, right-aligned before the theme name or the right column's folder.
@@ -672,9 +690,9 @@ final class StatusBarView: NSView {
             let start = end - textW - iconW
             transferRect = CGRect(x: start, y: 2, width: end - start, height: bounds.height - 6)
             if let icon {
-                icon.draw(in: NSRect(x: start, y: (bounds.height - icon.size.height) / 2 - 0.5, width: icon.size.width, height: icon.size.height))
+                icon.draw(in: iconFrame(icon, x: start))
             }
-            (text as NSString).draw(in: NSRect(x: start + iconW, y: bounds.midY - 8.5, width: textW, height: 15), withAttributes: attrs)
+            (text as NSString).draw(in: textFrame(font, x: start + iconW, width: textW), withAttributes: attrs)
         }
         // Clear of the window's rounded bottom-left corner.
         var x: CGFloat = 12
@@ -734,12 +752,12 @@ final class StatusBarView: NSView {
             guard let host else { return }
             if let img = symbol("network", th.accent, size: 10) {
                 if !measuring {
-                    img.draw(in: NSRect(x: x, y: (bounds.height - img.size.height) / 2 - 0.5, width: img.size.width, height: img.size.height))
+                    img.draw(in: iconFrame(img, x: x))
                 }
                 x += img.size.width + 5
             }
             let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: th.accent]
-            if !measuring { (host as NSString).draw(at: NSPoint(x: x, y: bounds.midY - 8.5), withAttributes: attrs) }
+            if !measuring { (host as NSString).draw(in: textFrame(font, x: x, width: (host as NSString).size(withAttributes: attrs).width + 1), withAttributes: attrs) }
             x += (host as NSString).size(withAttributes: attrs).width + 8
         }
         if mirrored, git != nil, path != nil { divider() }
@@ -779,7 +797,7 @@ final class StatusBarView: NSView {
         var avail = full
         if host == nil, let icon = symbol("folder", th.dimText) {
             if !measuring {
-                icon.draw(in: NSRect(x: x, y: (bounds.height - icon.size.height) / 2 - 1.5, width: icon.size.width, height: icon.size.height))
+                icon.draw(in: iconFrame(icon, x: x))
             }
             x += icon.size.width + 4
             avail -= icon.size.width + 4
@@ -794,9 +812,9 @@ final class StatusBarView: NSView {
         }
         while first < segs.count - 1 && total(first) > avail { first += 1 }
         if first > 0 {
-            if !measuring { ("…" as NSString).draw(at: NSPoint(x: x + 4, y: bounds.midY - 8.5), withAttributes: dim) }
+            if !measuring { ("…" as NSString).draw(in: textFrame(font, x: x + 4, width: 16), withAttributes: dim) }
             x += 20
-            if !measuring { sep.draw(at: NSPoint(x: x, y: bounds.midY - 8.5), withAttributes: dim) }
+            if !measuring { sep.draw(in: textFrame(font, x: x, width: sepW + 1), withAttributes: dim) }
             x += sepW
         }
         segs = Array(segs[first...])
@@ -817,11 +835,11 @@ final class StatusBarView: NSView {
                 para.lineBreakMode = .byTruncatingTail
                 let attrs: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: para,
                     .foregroundColor: last || hover == idx ? th.foreground.withAlphaComponent(0.85) : th.dimText]
-                (seg.0 as NSString).draw(in: NSRect(x: x + 4, y: bounds.midY - 8.5, width: w - 8, height: 15), withAttributes: attrs)
+                (seg.0 as NSString).draw(in: textFrame(font, x: x + 4, width: w - 8), withAttributes: attrs)
             }
             x += w
             if !last {
-                if !measuring { sep.draw(at: NSPoint(x: x, y: bounds.midY - 8.5), withAttributes: dim) }
+                if !measuring { sep.draw(in: textFrame(font, x: x, width: sepW + 1), withAttributes: dim) }
                 x += sepW
             }
         }
@@ -1127,11 +1145,13 @@ final class WindowRootView: NSView {
         sidebar.isHidden = sw == 0
         sidebarHandle.isHidden = sw == 0 || !settled
         sidebar.frame = NSRect(x: sw - fullW, y: barH, width: fullW, height: h)
-        sidebarHandle.frame = NSRect(x: sw - 3, y: barH, width: 6, height: h)
+        // Resize strips: 12pt wide, mostly over the sidebar's own edge, so a press near the line resizes
+        // rather than picking up a file row.
+        sidebarHandle.frame = NSRect(x: sw - 7, y: barH, width: 12, height: h)
         rightSidebar.isHidden = rsw == 0
         rightSidebarHandle.isHidden = rsw == 0 || !settled
         rightSidebar.frame = NSRect(x: bounds.width - rsw, y: barH, width: fullRW, height: h)
-        rightSidebarHandle.frame = NSRect(x: bounds.width - rsw - 3, y: barH, width: 6, height: h)
+        rightSidebarHandle.frame = NSRect(x: bounds.width - rsw - 5, y: barH, width: 12, height: h)
         columnArea = NSRect(x: contentSW, y: barH, width: bounds.width - contentSW - contentRSW, height: h)
         divider.isHidden = !split
         var barSplitX = bounds.width
@@ -1166,6 +1186,13 @@ final class WindowRootView: NSView {
         }
         // Keep the overlay above columns added later.
         if subviews.last !== dropOverlay { addSubview(dropOverlay) }
+        // Columns are added after the resize strips; keep the strips above them so their whole width works.
+        for handle in [sidebarHandle, rightSidebarHandle] {
+            let at = subviews.firstIndex(of: handle) ?? 0
+            if columns.contains(where: { (subviews.firstIndex(of: $0.content) ?? 0) > at }) {
+                addSubview(handle, positioned: .below, relativeTo: dropOverlay)
+            }
+        }
         window?.invalidateCursorRects(for: sidebarHandle)
         window?.invalidateCursorRects(for: rightSidebarHandle)
         window?.invalidateCursorRects(for: divider)
@@ -1328,6 +1355,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
                 return self.columns[i]
             }
             sidebar.onOpenFile = { fs, path in column()?.activeTab?.openFile(fs, path) }
+            sidebar.onOpenDiff = { fs, path in column()?.activeTab?.openFile(fs, path, mode: .diff) }
             sidebar.onOpenFileInTab = { fs, path in
                 guard let c = column() else { return }
                 c.activeTab?.closeEditorJustOpened(path)
@@ -1340,6 +1368,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             }
             sidebar.onChangeDirectory = { dir in column()?.activeTab?.focusedPane.changeDirectory(to: dir) }
             sidebar.onPinChanged = { pinned in column()?.activeTab?.pinnedFolder = pinned }
+            sidebar.onOpenFoldersChanged = { folders in column()?.activeTab?.openFolders = folders }
             sidebar.onActivity = { [weak self, weak sidebar] text in
                 guard let self, let sidebar else { return }
                 (i == 0 ? self.rootView.statusBar : self.rootView.rightStatusBar).setTransfer(text, from: sidebar)
@@ -1364,6 +1393,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         }
         let git = GitController(bar: bar, pane: { column()?.activeTab?.focusedPane },
                                 openFile: { fs, path in column()?.activeTab?.openFile(fs, path) },
+                                openGraph: { fs, root in column()?.activeTab?.openFile(fs, root, mode: .graph) },
                                 newTab: { cwd in column()?.addTab(cwd: cwd).focusedPane })
         bar.onBranch = { [weak git] in git?.showBranches() }
         bar.onSync = { [weak git, weak bar] at in if let bar { git?.showSyncMenu(at: at, in: bar) } }
@@ -1400,6 +1430,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         let connecting = tab.browseRemote.map { !$0.isReady } ?? false
         sidebar.setTab(name: tab.customTitle, folder: connecting ? nil : tab.browseDirectory, home: fs.home, agent: tab.agent)
         sidebar.setEditorFile(tab.editor?.path, fs: tab.editor?.fs)
+        if switched { sidebar.applyTabOpenFolders(tab.openFolders) }
         sidebar.applyTabPin(tab.pinnedFolder)
         if connecting {
             sidebar.show(fs: fs, directory: nil, status: "Connecting to the ssh session…\nFiles appear here once you're logged in.")
@@ -1503,11 +1534,16 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     // MARK: Actions
 
     @objc func newTab(_ sender: Any?) {
-        focused.addTab(cwd: nil)
+        focused.newTab()
     }
 
     /// ⌥⌘T: a new tab in the current tab's group (or a new group with the current tab).
     @objc func newTabInGroup(_ sender: Any?) { focused.newTabInGroup() }
+
+    /// The focused column's repository history, as a graph above its terminal.
+    @objc func showGitGraph(_ sender: Any?) {
+        guard let controller = focusedIndex == 0 ? git : rightGit, controller.showGraph() else { return NSSound.beep() }
+    }
 
     // MARK: Reopening closed tabs
 
@@ -2937,7 +2973,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         } else {
             // Empty space on the strip.
             menu = NSMenu()
-            menu.addItem(ActionMenuItem("New Tab") { [weak c] in c?.addTab(cwd: nil) })
+            menu.addItem(ActionMenuItem("New Tab") { [weak c] in c?.newTab() })
             if let w = c.owner, w.columns.count > 1 {
                 menu.addItem(.separator())
                 menu.addItem(ActionMenuItem("Close Split (Tabs Move to the Left)") { [weak w] in w?.closeSplit(nil) })
@@ -3019,7 +3055,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         guard let c = controller else { return }
         if e.modifierFlags.contains(.control) { return showContextMenu(e) }
         let p = convert(e.locationInWindow, from: nil)
-        if plusRect.contains(p) { c.addTab(cwd: nil); return }
+        if plusRect.contains(p) { c.newTab(); return }
         if closeSplitRect.contains(p) { c.owner?.closeSplit(nil); return }
         if flowerRect.contains(p) { SettingsWindowController.shared.present(); return }
         if leftArrowRect.contains(p) { scrollTabs(by: -viewport.width * 0.75); return }

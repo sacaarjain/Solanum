@@ -32,6 +32,11 @@ final class AliasStore {
         writeShellFile()
     }
 
+    /// The name of an alias that runs `program` (e.g. `c` for `claude --model opus`), if any.
+    func alias(running program: String) -> String? {
+        aliases.first { Self.isValidName($0.name) && $0.command.split(separator: " ").first.map(String.init) == program }?.name
+    }
+
     func set(_ list: [Alias]) {
         aliases = list
         save()

@@ -7,6 +7,8 @@ import AppKit
 struct PaneState: Codable {
     var cwd: String?
     var text: String?
+    /// Claude Code was running here (on this Mac); restoring continues its conversation (`claude -c`).
+    var claude: Bool?
 }
 
 indirect enum PaneNode: Codable {
@@ -130,11 +132,13 @@ extension TabSession {
     /// Everything needed to bring this tab back (panes, folders, scrollback, name, open files), with `group` as
     /// an index into the saved groups.
     func savedState(group: Int?) -> TabState {
-        TabState(title: customTitle, group: group,
+        // Diffs and graphs aren't files to reopen; ssh files can't come back without their connection.
+        let kept = editors.filter { !$0.fs.isRemote && $0.mode == .file }
+        return TabState(title: customTitle, group: group,
                  focused: panes.firstIndex(of: focusedPane) ?? 0,
                  layout: root.subviews.first.flatMap(TabSession.node) ?? .pane(PaneState()),
-                 files: editors.isEmpty ? nil : editors.filter { !$0.fs.isRemote }.map(\.path),
-                 activeFile: editors.isEmpty ? nil : activeEditorIndex,
+                 files: kept.isEmpty ? nil : kept.map(\.path),
+                 activeFile: kept.isEmpty ? nil : editor.flatMap { kept.firstIndex(of: $0) } ?? 0,
                  terminalHidden: showsTerminal ? nil : true,
                  pinnedFolder: pinnedFolder.flatMap { $0.fs.isRemote ? nil : $0.path })
     }
@@ -142,7 +146,8 @@ extension TabSession {
     fileprivate static func node(_ v: NSView) -> PaneNode? {
         if let t = v as? TerminalView {
             let text = Config.shared.restoreScrollback ? t.terminal.restorableText(maxLines: SessionStore.maxLines) : nil
-            return .pane(PaneState(cwd: t.currentDirectory, text: text?.isEmpty == false ? text : nil))
+            return .pane(PaneState(cwd: t.currentDirectory, text: text?.isEmpty == false ? text : nil,
+                                   claude: t.pty?.foregroundIsClaudeCode == true ? true : nil))
         }
         if let s = v as? PaneSplitView {
             let children = s.arrangedSubviews.compactMap(node)
@@ -160,6 +165,7 @@ extension TabSession {
             case .pane(let p):
                 let v = TerminalView(cwd: p.cwd.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil })
                 if let text = p.text { v.restoredText = text + TabSession.restoredBanner }
+                if p.claude == true { v.pendingCommand = TabSession.claudeContinueCommand }
                 panes.append(v)
                 return v
             case .split(let vertical, let fractions, let children):
@@ -174,6 +180,13 @@ extension TabSession {
         let content = build(saved.layout)
         let focus = panes.indices.contains(saved.focused) ? panes[saved.focused] : panes[0]
         self.init(content: content, focus: focus)
+    }
+
+    /// The user's alias for Claude Code when they have one (aliases need shell integration), else `claude`.
+    private static var claudeContinueCommand: String {
+        let alias = Config.shared.shellIntegration ? AliasStore.shared.alias(running: "claude") : nil
+        // ⌃U first clears anything already sitting on the new shell's prompt line.
+        return "\u{15}" + (alias ?? "claude") + " -c"
     }
 
     private static let restoredBanner: String = {

@@ -16,6 +16,8 @@ final class CornerNoticeView: NSView {
     private let lineLabels: [NSTextField]
     private var actionButton: NSButton?
     private let closeButton = NSButton()
+    /// The pointer is on ✕: it's highlighted, so it's clear the click closes the card.
+    private var hoverClose = false { didSet { if hoverClose != oldValue { updateCloseImage(); needsDisplay = true } } }
 
     /// `lines` show under the title; the first is brighter (e.g. the tab), the rest dimmer, one line each.
     init(title: String, symbol: (name: String, color: NSColor)? = nil, lines: [String] = [],
@@ -50,8 +52,7 @@ final class CornerNoticeView: NSView {
             actionButton = b
             addSubview(b)
         }
-        let cfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold).applying(.init(paletteColors: [th.dimText]))
-        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Dismiss")?.withSymbolConfiguration(cfg)
+        updateCloseImage()
         closeButton.isBordered = false
         closeButton.target = self
         closeButton.action = #selector(close(_:))
@@ -82,6 +83,12 @@ final class CornerNoticeView: NSView {
         }
     }
 
+    private func updateCloseImage() {
+        let th = Config.shared.theme
+        let cfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold).applying(.init(paletteColors: [hoverClose ? th.foreground : th.dimText]))
+        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Dismiss")?.withSymbolConfiguration(cfg)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         let th = Config.shared.theme
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 9, yRadius: 9)
@@ -89,6 +96,10 @@ final class CornerNoticeView: NSView {
         path.fill()
         th.border.setStroke()
         path.stroke()
+        if hoverClose {
+            th.foreground.withAlphaComponent(0.14).setFill()
+            NSBezierPath(roundedRect: closeButton.frame, xRadius: 5, yRadius: 5).fill()
+        }
         if let symbol {
             // The mark in white on a disc of the color (one color for both left a plain disc).
             let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold).applying(.init(paletteColors: [.white, symbol.color]))
@@ -98,8 +109,25 @@ final class CornerNoticeView: NSView {
         }
     }
 
-    override func resetCursorRects() {
-        if onClick != nil { addCursorRect(bounds, cursor: .pointingHand) }
+    // A hand over the buttons, and over the whole card when clicking it does something; the terminal underneath
+    // doesn't get a say.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.cursorUpdate, .mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self))
+    }
+
+    override func cursorUpdate(with event: NSEvent) { track(event) }
+    override func mouseMoved(with event: NSEvent) { track(event) }
+    override func mouseEntered(with event: NSEvent) { track(event) }
+    override func mouseExited(with event: NSEvent) { hoverClose = false }
+
+    private func track(_ e: NSEvent) {
+        let p = convert(e.locationInWindow, from: nil)
+        hoverClose = closeButton.frame.contains(p)
+        let onButton = hoverClose || actionButton?.frame.contains(p) == true
+        (onButton || onClick != nil ? NSCursor.pointingHand : NSCursor.arrow).set()
     }
 
     override func mouseDown(with e: NSEvent) {

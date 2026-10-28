@@ -750,6 +750,11 @@ extension TerminalView {
 
     /// Pointing hand over things you click (Copy buttons, ⌘-hovered links), I-beam over text.
     func updateCursor() {
+        // Over something drawn on top of the terminal (the find bar, a corner notice), that view picks the cursor.
+        if let w = window, let content = w.contentView,
+           let hit = content.hitTest(content.superview?.convert(w.mouseLocationOutsideOfEventStream, from: nil) ?? .zero), hit !== self {
+            return
+        }
         // Normal arrow over the scrollbar and the jump-to-bottom button; a hand over copy buttons and ⌘-links.
         if scrollbarHover || scrollbarGrab != nil || hoverJumpPill { return NSCursor.arrow.set() }
         (hoverCopyButton != nil || hoverBlockCopy || hoverURL != nil ? NSCursor.pointingHand : NSCursor.iBeam).set()

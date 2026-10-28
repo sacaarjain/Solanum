@@ -198,6 +198,8 @@ final class GitController {
     /// The focused pane: whose folder is shown, and where "Run in Solanum" types.
     private let pane: () -> TerminalView?
     private let openFile: (FileSystem, String) -> Void
+    /// Opens the history graph of the repository whose top folder is given.
+    private let openGraph: (FileSystem, String) -> Void
     /// Opens a tab (in a local folder, if given) and returns its pane, for commands the focused pane can't take.
     private let newTab: (String?) -> TerminalView?
     private var runner: GitRunner?
@@ -208,10 +210,11 @@ final class GitController {
     private var timer: Timer?
 
     init(bar: StatusBarView, pane: @escaping () -> TerminalView?, openFile: @escaping (FileSystem, String) -> Void,
-         newTab: @escaping (String?) -> TerminalView?) {
+         openGraph: @escaping (FileSystem, String) -> Void, newTab: @escaping (String?) -> TerminalView?) {
         self.bar = bar
         self.pane = pane
         self.openFile = openFile
+        self.openGraph = openGraph
         self.newTab = newTab
         // Picks up commits, edits and checkouts made outside Solanum.
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -296,6 +299,7 @@ final class GitController {
 
             typealias Item = CommandPalette.Item
             var items: [Item] = [
+                Item(title: "Show Git Graph", path: "every branch's history", shortcut: "") { [weak self] in _ = self?.showGraph() },
                 Item(title: "Create New Branch…", path: "from \(info.branch)", shortcut: "") { [weak self] in
                     self?.promptNewBranch()
                 },
@@ -315,6 +319,14 @@ final class GitController {
             CommandPalette.show(in: window, items: items, placeholder: "Switch branch (on \(info.branch))…",
                                 keepsOrder: true, icon: "arrow.triangle.branch")
         }
+    }
+
+    /// Opens the repository's history graph; false outside a repository.
+    @discardableResult
+    func showGraph() -> Bool {
+        guard let runner, let info = bar?.git else { return false }
+        openGraph(runner.fileSystem, info.root)
+        return true
     }
 
     private func switchTo(_ branch: String, tracking: Bool = false) {

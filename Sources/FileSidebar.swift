@@ -26,6 +26,8 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
     var onOpenFile: ((FileSystem, String) -> Void)?
     /// Double-click on a file: open it in a tab of its own (no terminal).
     var onOpenFileInTab: ((FileSystem, String) -> Void)?
+    /// "Open Working Tree": the file's uncommitted changes side by side.
+    var onOpenDiff: ((FileSystem, String) -> Void)?
     var onChangeDirectory: ((String) -> Void)?
 
     /// The tree stays on the pinned folder instead of following the terminal.
@@ -49,6 +51,12 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
     /// The terminal folder last followed; the tree re-roots only when that changes.
     private var followed: String?
     private var loadToken = 0
+    /// Folders left open in the active tab, per machine (keyed by host label, "" for this Mac), so moving to
+    /// another folder and back re-opens them. Each tab keeps its own (see `applyTabOpenFolders`).
+    private var openFolders: [String: Set<String>] = [:]
+    private var openFoldersKey: String { fs.hostLabel ?? "" }
+    /// Folders were opened or closed here, so the active tab can keep them.
+    var onOpenFoldersChanged: (([String: Set<String>]) -> Void)?
     /// Shared by every sidebar, so files copied in one can be pasted in another (on another host, say).
     private static var clipboard: (fs: FileSystem, paths: [String], cut: Bool)?
     /// What this sidebar is dragging, and from where (its file system may change before the drop).
@@ -122,7 +130,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         }
 
         let column = NSTableColumn(identifier: .init("name"))
-        column.resizingMask = .autoresizingMask
+        column.resizingMask = []
         outline.addTableColumn(column)
         outline.outlineTableColumn = column
         outline.headerView = nil
@@ -131,7 +139,9 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         outline.rowHeight = 22
         outline.indentationPerLevel = 12
         outline.allowsMultipleSelection = true
-        outline.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        // Sized by `fitColumn` instead, so every row ends at the same place.
+        outline.columnAutoresizingStyle = .noColumnAutoresizing
+        outline.autoresizesOutlineColumn = false
         outline.focusRingType = .none
         outline.dataSource = self
         outline.delegate = self
@@ -149,6 +159,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         scroll.documentView = outline
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
         addSubview(scroll)
@@ -183,6 +194,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         }
         subtitleLabel.frame = NSRect(x: 12, y: 57, width: bounds.width - 24, height: 14)
         scroll.frame = NSRect(x: 0, y: Self.headerHeight, width: bounds.width - 1, height: bounds.height - Self.headerHeight)
+        fitColumn()
         placeholder.frame = NSRect(x: 14, y: Self.headerHeight + 20, width: bounds.width - 28, height: 80)
     }
 
@@ -289,7 +301,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         rootPath = path
         gitStatus = nil
         updateHeader()
-        reload(expanding: [], revealTargets: true)
+        reload(expanding: openFolders[openFoldersKey] ?? [], revealTargets: true)
         refreshGit()
         watchRoot()
     }
@@ -432,6 +444,13 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         updatePinButton()
     }
 
+
+    /// Switching tabs: the new tab's open folders (none for a brand-new tab), re-opened in the tree shown now.
+    /// If the tab is somewhere else, the `show` that follows re-roots with them.
+    func applyTabOpenFolders(_ folders: [String: Set<String>]) {
+        openFolders = folders
+        if rootPath != nil { reload(expanding: folders[openFoldersKey] ?? []) }
+    }
 
     @objc private func togglePinFromButton(_ sender: Any?) { togglePin() }
 
@@ -753,21 +772,26 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         step(shownRoot, 0)
     }
 
+    /// Called after anything that changes the rows, so it also re-fits the column.
     private func refreshMarks() {
         outline.enumerateAvailableRowViews { rowView, row in
             if let rv = rowView as? SidebarRowView, let n = node(at: row) { applyMarks(rv, n) }
         }
+        fitColumn()
     }
 
-    private func applyMarks(_ rv: SidebarRowView, _ n: FileNode) {
+    private func marks(_ n: FileNode) -> (terminal: SidebarRowView.Mark, file: SidebarRowView.Mark) {
         let collapsed = n.item.isDirectory && !outline.isItemExpanded(n)
         func mark(_ target: String?) -> SidebarRowView.Mark {
             guard let target else { return .none }
             if target == n.item.path { return .here }
             return collapsed && target.hasPrefix(n.item.path + "/") ? .inside : .none
         }
-        rv.terminalMark = mark(terminalTarget)
-        rv.fileMark = mark(fileTarget)
+        return (mark(terminalTarget), mark(fileTarget))
+    }
+
+    private func applyMarks(_ rv: SidebarRowView, _ n: FileNode) {
+        (rv.terminalMark, rv.fileMark) = marks(n)
         let code = n.item.isDeleted ? "D" : gitStatus?.code(for: n.item.path, isDirectory: n.item.isDirectory)
         rv.git = code.map { c in
             let b = GitTreeStatus.badge(c)
@@ -775,8 +799,42 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         }
     }
 
-    func outlineViewItemDidExpand(_ notification: Notification) { refreshMarks() }
-    func outlineViewItemDidCollapse(_ notification: Notification) { refreshMarks() }
+    /// Names are never cut short: the column is as wide as the longest row (scroll sideways to see it all), or the
+    /// sidebar when everything fits. Rows all end at the column's edge, so the git letters line up there.
+    private func fitColumn() {
+        guard let column = outline.tableColumns.first else { return }
+        let font = NSFont.systemFont(ofSize: 12.5)
+        var widest: CGFloat = 0
+        for row in 0..<outline.numberOfRows {
+            guard let n = node(at: row) else { continue }
+            let name = ceil((n.item.name as NSString).size(withAttributes: [.font: font]).width)
+            // Room on the right for the git letter, plus the terminal glyph and open-file dot when shown.
+            let m = marks(n)
+            let trailing: CGFloat = 26 + (m.terminal == .none ? 0 : 18) + (m.file == .inside ? 11 : 0)
+            // The cell's indent, then the icon (2 + 16 + 5) before the name.
+            widest = max(widest, outline.frameOfCell(atColumn: 0, row: row).minX + 23 + name + trailing)
+        }
+        let width = max(scroll.contentView.bounds.width - outline.intercellSpacing.width, widest)
+        if abs(column.width - width) > 0.5 { column.width = width }
+    }
+
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        if let n = notification.userInfo?["NSObject"] as? FileNode, openFolders[openFoldersKey]?.contains(n.item.path) != true {
+            openFolders[openFoldersKey, default: []].insert(n.item.path)
+            onOpenFoldersChanged?(openFolders)
+        }
+        refreshMarks()
+    }
+
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        if let n = notification.userInfo?["NSObject"] as? FileNode {
+            // Folders inside close with it.
+            let path = n.item.path
+            openFolders[openFoldersKey] = openFolders[openFoldersKey]?.filter { $0 != path && !$0.hasPrefix(path + "/") }
+            onOpenFoldersChanged?(openFolders)
+        }
+        refreshMarks()
+    }
 
     // MARK: Data source
 
@@ -831,7 +889,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         let img = NSImageView()
         let text = NSTextField(labelWithString: "")
         text.font = .systemFont(ofSize: 12.5)
-        text.lineBreakMode = .byTruncatingMiddle
+        text.lineBreakMode = .byClipping
         for v in [img, text] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(v)
@@ -935,7 +993,12 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
             menu.addItem(item)
         }
         menuContext = true
-        if let n = single, !n.item.isDirectory { add("Open", #selector(openFromMenu(_:))) }
+        if let n = single, !n.item.isDirectory {
+            add("Open", #selector(openFromMenu(_:)))
+            if n.item.isDeleted || gitStatus?.code(for: n.item.path, isDirectory: false) != nil {
+                add("Open Working Tree", #selector(openDiffFromMenu(_:)))
+            }
+        }
         if let n = single, n.item.isDirectory {
             add("Open in Solanum", #selector(cdFromMenu(_:)))
             add("Pin as Sidebar Root", #selector(pinFromMenu(_:)))
@@ -976,6 +1039,10 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
 
     @objc private func openFromMenu(_ sender: Any?) {
         if let n = targets.first { onOpenFile?(fs, n.item.path) }
+    }
+
+    @objc private func openDiffFromMenu(_ sender: Any?) {
+        if let n = targets.first { onOpenDiff?(fs, n.item.path) }
     }
 
     @objc private func cdFromMenu(_ sender: Any?) {
@@ -1409,6 +1476,8 @@ final class SidebarRowView: NSTableRowView {
         let tinted: Bool
     }
     var git: GitBadge? { didSet { if git != oldValue { needsDisplay = true } } }
+    /// Made once rather than on every row redraw.
+    private static let letterFont = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .semibold)
 
     private func updateTip() {
         var parts: [String] = []
@@ -1434,12 +1503,9 @@ final class SidebarRowView: NSTableRowView {
         }
         // Right edge: a terminal glyph where the shell is (faded on a collapsed folder it's inside), and a dot
         // on a collapsed folder holding the open file.
-        // Rows can be wider than the visible column (deep indentation), so pin these to what's on screen.
-        let visibleMaxX = superview.map { convert($0.visibleRect, from: $0).maxX } ?? bounds.maxX
-        var x = min(pill.maxX, visibleMaxX - 7) - 6
+        var x = pill.maxX - 7
         if let git {
-            let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 10.5, weight: .semibold),
-                                                        .foregroundColor: git.color.withAlphaComponent(0.9)]
+            let attrs: [NSAttributedString.Key: Any] = [.font: Self.letterFont, .foregroundColor: git.color.withAlphaComponent(0.9)]
             let size = (git.letter as NSString).size(withAttributes: attrs)
             (git.letter as NSString).draw(at: NSPoint(x: x - size.width, y: bounds.midY - size.height / 2), withAttributes: attrs)
             x -= size.width + 6

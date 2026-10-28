@@ -569,6 +569,23 @@ final class SearchBar: NSView, NSTextFieldDelegate {
         field.currentEditor()?.selectedRange = NSRange(location: field.stringValue.utf16.count, length: 0)
     }
 
+    // Its own cursor, not the terminal's I-beam underneath: a hand over the buttons (and the scope menu), an
+    // I-beam in the field, an arrow elsewhere.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.cursorUpdate, .mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+
+    override func cursorUpdate(with event: NSEvent) { updateCursor(event) }
+    override func mouseMoved(with event: NSEvent) { updateCursor(event) }
+
+    private func updateCursor(_ e: NSEvent) {
+        let p = convert(e.locationInWindow, from: nil)
+        let over = subviews.first { !$0.isHidden && $0.frame.contains(p) }
+        (over is NSButton ? NSCursor.pointingHand : over === field ? NSCursor.iBeam : NSCursor.arrow).set()
+    }
+
     @objc func prev() { terminal?.findPrevious(nil) }
     @objc func next() { terminal?.findNext(nil) }
     @objc func close() { terminal?.closeFind() }

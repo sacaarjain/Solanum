@@ -21,13 +21,20 @@ dependencies, and themed after the planets of *Outer Wilds*.
 - The tab and sidebar show whether Claude is working, waiting for you, done or failed, and a corner notice appears
   when it finishes or needs input in a background tab.
 - Code blocks and tables in Claude's replies get a Copy button.
+- Session restore relaunches Claude Code where it was running, continuing the conversation (your alias for
+  `claude`, if you have one, with `-c`).
 - Selecting text in Claude's input box stays on that text while Claude prints above it; ⌫ / ⌘⌫ delete the selection.
 
 **Files**
 - A file sidebar (⌘B, plus a second one per column when split) that follows the terminal's folder, on this Mac or,
-  inside an ssh session, on the remote host. Pin a folder per tab to keep it in place.
+  inside an ssh session, on the remote host. Pin a folder per tab to keep it in place. Folders you open stay open
+  when you switch tabs or folders and come back.
 - Git status in the sidebar: U / A / M / D / R / C letters on changed files and folders, with muted row tints.
-- A plain-text editor above the terminal, and previews for images, PDFs, video and audio.
+  Right-click a changed file › Open Working Tree for its changes side by side, as in VS Code.
+- A Git Graph of every branch's history (the status bar's branch picker, or Show Git Graph in the command palette):
+  colored lanes, branch and tag labels, and a card with each commit's author, date, message and size on hover.
+- A plain-text editor above the terminal, with syntax colors for JSON, YAML and XML, and previews for images, PDFs,
+  video and audio.
 - Drag and drop or copy/paste between this Mac and ssh hosts (or between two hosts). Transfers stream over the existing
   ssh connection, so there's no second login, and they never overwrite: a taken name gets " copy".
 - The status bar shows each column's folder as clickable breadcrumbs and its git branch, sync state and changes.
@@ -119,6 +126,7 @@ Create one in Settings › Appearance, or drop a JSON file into `~/.config/solan
 | `Tabs.swift`, `TabColumn.swift` | Windows, tab bar and groups, split panes and columns, status bar |
 | `FileSidebar.swift`, `Files.swift`, `GitStatus.swift` | File sidebar, local and ssh file access, transfers, git |
 | `FileEditor.swift`, `EditorArea.swift`, `MediaPreview.swift` | Editor and media previews above the terminal |
+| `Syntax.swift`, `Diff.swift`, `GitGraph.swift` | JSON / YAML / XML syntax colors, the working tree diff, the git graph |
 | `Settings.swift`, `ThemeEditor.swift`, `Theme.swift`, `Config.swift` | Settings window, themes, preferences |
 | `Session.swift`, `Notices.swift` | Session save and restore, corner notices |
 | `CommandPalette.swift`, `QuickTerminal.swift`, `History.swift`, `Aliases.swift`, `SSHHosts.swift` | The UI around the terminal |

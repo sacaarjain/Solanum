@@ -421,7 +421,7 @@ final class TerminalView: NSView, TerminalDelegate {
     var isRunningCommand: Bool { terminal.currentBlock?.state == .running }
 
     var displayTitle: String {
-        if let t = terminal.title, !t.isEmpty { return t }
+        if let t = terminal.title, !t.isEmpty { return Self.withoutStatusGlyph(t) }
         if let pty, pty.hasForegroundJob {
             // Prefer the command line typed at the prompt; fall back to the process name.
             if let b = terminal.currentBlock, b.state == .running, !b.command.isEmpty {
@@ -436,6 +436,22 @@ final class TerminalView: NSView, TerminalDelegate {
             return (dir as NSString).lastPathComponent
         }
         return pty?.shellName ?? "Solanum"
+    }
+
+    /// Claude Code puts a status glyph before its title ("✳ Claude Code" when idle, a spinner such as "◐" while
+    /// working); the tab already shows the agent's own mark and state, so the title goes without it. (Agent
+    /// detection still reads the raw title.)
+    static func withoutStatusGlyph(_ title: String) -> String {
+        let scalars = title.unicodeScalars
+        guard let first = scalars.first, scalars.dropFirst().first == " " else { return title }
+        let v = first.value
+        let isGlyph = (0x2800...0x28FF).contains(v)       // braille spinners
+            || (0x25A0...0x25FF).contains(v)              // geometric shapes: ◐ ◓ ◑ ◒ ● ○
+            || (0x2700...0x27BF).contains(v)              // dingbats: ✳ ✶ ✻ ✽ ✢
+            || "·*+".unicodeScalars.contains(first)
+        guard isGlyph else { return title }
+        let rest = String(scalars.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+        return rest.isEmpty ? title : rest
     }
 
     func refreshTitle() {

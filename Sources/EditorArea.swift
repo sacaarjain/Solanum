@@ -67,8 +67,8 @@ final class FileTabStrip: NSView {
         terminalRect = CGRect(x: bounds.width - 30, y: (bounds.height - 22) / 2, width: 22, height: 22)
         var x: CGFloat = 6
         for ed in tab.editors {
-            let name = (ed.path as NSString).lastPathComponent as NSString
-            let w = min(220, max(90, name.size(withAttributes: [.font: Self.font]).width + 56))
+            let name = ed.displayName as NSString
+            let w = min(260, max(90, name.size(withAttributes: [.font: Self.font]).width + 56))
             let r = CGRect(x: x, y: 3, width: w, height: bounds.height - 4)
             rects.append(r)
             closeRects.append(CGRect(x: r.maxX - 20, y: r.midY - 8, width: 16, height: 16))
@@ -95,8 +95,8 @@ final class FileTabStrip: NSView {
                 th.accent.setFill()
                 NSBezierPath(roundedRect: NSRect(x: r.minX + 8, y: r.maxY - 2, width: r.width - 16, height: 2), xRadius: 1, yRadius: 1).fill()
             }
-            let name = (ed.path as NSString).lastPathComponent
-            let symbol = FileSidebarView.symbol(for: name)
+            let name = ed.displayName
+            let symbol = ed.mode == .diff ? "plusminus" : ed.mode == .graph ? "arrow.triangle.branch" : FileSidebarView.symbol(for: name)
             let config = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular).applying(.init(paletteColors: [th.dimText]))
             if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(config) {
                 img.draw(in: NSRect(x: r.minX + 9, y: r.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
