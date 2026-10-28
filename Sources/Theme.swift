@@ -53,6 +53,8 @@ struct Theme {
     var cursor: NSColor
     var selection: NSColor
     var accent: NSColor
+    /// Optional hue for the chrome wash (tab bar, status bar, sidebars); Solanum purple when nil.
+    var chrome: NSColor?
     var ansi: [NSColor]
     /// The JSON file a custom theme was loaded from; nil for built-in themes.
     var file: URL?
@@ -65,6 +67,7 @@ struct Theme {
                                 "cursor": cursor.hexString, "selection": selection.hexString, "accent": accent.hexString,
                                 "ansi": ansi.map(\.hexString)]
         if let b2 = background2 { j["background2"] = b2.hexString }
+        if let c = chrome { j["chrome"] = c.hexString }
         return j
     }
 
@@ -77,18 +80,20 @@ struct Theme {
     var surface: NSColor { background.mix(isDark ? .white : .black, isDark ? 0.08 : 0.05) }
     var border: NSColor { foreground.withAlphaComponent(isDark ? 0.10 : 0.14) }
     var dimText: NSColor { foreground.withAlphaComponent(0.55) }
-    /// Chrome (tab bar, status bar, sidebars) gets a faint wash of Solanum purple.
+    /// Chrome (tab bar, status bar, sidebars) gets a faint wash of the theme's chrome color, or Solanum purple.
     var tabBarTint: NSColor {
-        isDark ? NSColor(srgbRed: 0.09, green: 0.03, blue: 0.17, alpha: 0.32) : SolanumArt.purpleOnLight.withAlphaComponent(0.07)
+        if let c = chrome { return c.withAlphaComponent(isDark ? 0.42 : 0.09) }
+        return isDark ? NSColor(srgbRed: 0.09, green: 0.03, blue: 0.17, alpha: 0.32) : SolanumArt.purpleOnLight.withAlphaComponent(0.07)
     }
 
     init(name: String, bg: String, bg2: String? = nil, fg: String, cursor: String? = nil, selection: String? = nil,
-         accent: String, ansi: [String]) {
+         accent: String, chrome: String? = nil, ansi: [String]) {
         self.name = name
         background = NSColor(hex: bg)
         background2 = bg2.map { NSColor(hex: $0) }
         foreground = NSColor(hex: fg)
         self.accent = NSColor(hex: accent)
+        self.chrome = chrome.map { NSColor(hex: $0) }
         self.cursor = NSColor(hex: cursor ?? accent)
         self.selection = selection.map { NSColor(hex: $0) } ?? NSColor(hex: accent).withAlphaComponent(0.30)
         self.ansi = ansi.map { NSColor(hex: $0) }
@@ -109,40 +114,40 @@ struct Theme {
 }
 
 enum ThemeLibrary {
-    /// The planets of Outer Wilds. Every theme shares Solanum's purple for the cursor and highlights.
+    /// The planets of Outer Wilds, each colored like the planet itself (and its status-bar icon, see PlanetArt).
     static let outerWilds: [Theme] = [
-        // Ash and Ember Twin: sun-baked sand, red rock, cactus green.
-        Theme(name: "Hourglass", bg: "#231811", bg2: "#120B07", fg: "#F2DFC6", accent: "#B488F5",
-              ansi: ["#3A2A1F", "#E8603F", "#A9B868", "#F2B45A", "#7FA3C9", "#D486A6", "#73C3B5", "#E3D0B6",
-                     "#7A6250", "#FF8461", "#C3D182", "#FFCB7A", "#9EBCDD", "#E8A3BF", "#93D8CB", "#FFF3E0"]),
-        // Home: pine forest, wooden cabins, the campfire, a blue sky.
-        Theme(name: "Timber Hearth", bg: "#1A1E17", bg2: "#0E110C", fg: "#E7E0CA", accent: "#B086F5",
-              ansi: ["#2B3125", "#E2684C", "#8EC25B", "#E9B850", "#6FA9DE", "#BE8DDB", "#6DC5AF", "#D8D1BA",
-                     "#626A57", "#F48A6E", "#A8D879", "#F6CE72", "#93C1EA", "#D3A9EA", "#8DD9C4", "#F7F2E1"]),
-        // The moon: pale grey dust and craters. The light theme.
-        Theme(name: "Attlerock", bg: "#ECEAE6", bg2: "#DCD9D2", fg: "#2F2E2C", cursor: "#7B4FD9", accent: "#7B4FD9",
-              ansi: ["#3B3A37", "#BF4536", "#4A8645", "#9E7114", "#3C6CA6", "#8A4FC0", "#2B8787", "#8F8C86",
-                     "#66635E", "#D45A4A", "#5C9C56", "#B5861F", "#4F82BD", "#9F66D3", "#379C9C", "#B7B4AE"]),
-        // Cracking crust over a black hole, ice crystals, Hollow's Lantern glowing orange.
-        Theme(name: "Brittle Hollow", bg: "#141428", bg2: "#070710", fg: "#DCE2F5", accent: "#B28AF7",
-              ansi: ["#24263E", "#FF7A48", "#7FD6B1", "#F4C46E", "#6F8EFF", "#B58EFF", "#7FDCF4", "#C8D0E7",
-                     "#585D82", "#FF9A70", "#9DE5C6", "#FFD691", "#93AAFF", "#CBADFF", "#A3E8F8", "#F1F4FF"]),
-        // Ocean world: deep teal water, green islands, storms and lightning.
-        Theme(name: "Giant's Deep", bg: "#0C1F23", bg2: "#051110", fg: "#D5EEE8", accent: "#A98BF2",
-              ansi: ["#173438", "#EF706C", "#41D29C", "#E3D46C", "#409CD7", "#A98BE0", "#49D5D1", "#BFDDD6",
-                     "#4D6E70", "#FF918C", "#67E3B4", "#F0E38D", "#66B4E6", "#C0A6EC", "#71E4E0", "#EAFAF6"]),
-        // Fog, thorned vines, and the anglerfish lights in the dark.
-        Theme(name: "Dark Bramble", bg: "#111312", bg2: "#050606", fg: "#D7D3C7", accent: "#A584E8",
-              ansi: ["#272B28", "#E3573F", "#8BA47B", "#E9B54D", "#6F90A9", "#A98CC1", "#8FB9B1", "#BCB7A9",
-                     "#5A5F5A", "#F47A63", "#A4BC95", "#F5C86F", "#8DA8BE", "#C0A6D4", "#A9CEC7", "#ECE8DC"]),
-        // The comet: ice blue and white, with ghost-matter green.
-        Theme(name: "Interloper", bg: "#0E1721", bg2: "#060B11", fg: "#E5F2FA", accent: "#B191F7",
-              ansi: ["#1E2C38", "#F07C8C", "#5FF2A2", "#E9E28C", "#7CC4FF", "#B89DFF", "#8EF0F5", "#D1E5EF",
-                     "#4F6577", "#FF9DAA", "#86F7BA", "#F3EDA8", "#A1D5FF", "#CFBBFF", "#B0F5F8", "#F4FBFF"]),
-        // Solanum's home: shifting violet fog, pale light, and the brightest purple of all.
-        Theme(name: "Quantum Moon", bg: "#16122A", bg2: "#08060F", fg: "#E6E1F5", accent: "#C3A6FF",
-              ansi: ["#2A2442", "#F0718A", "#8FE3B0", "#F2D98A", "#8FA8FF", "#C9A0FF", "#8FE0EC", "#D4CEE8",
-                     "#5E5680", "#FF94A8", "#ADF0C8", "#F8E6A8", "#ADC0FF", "#DCBDFF", "#ADEDF5", "#F6F3FF"]),
+        // Ash and Ember Twin: burnt-orange sand under a close, hot sun; red rock, cactus, the Nomai warp towers.
+        Theme(name: "Hourglass", bg: "#3A1D0F", bg2: "#160904", fg: "#F6E1C3", accent: "#FFA940", chrome: "#5A2208",
+              ansi: ["#4A2A18", "#F05A2E", "#C4BC56", "#FFB83D", "#7FAAD0", "#E58A9C", "#79C7A6", "#E8CEAD",
+                     "#8C6448", "#FF7C50", "#D8D27A", "#FFCD6E", "#A2C4E4", "#F2A8B6", "#9ADBBF", "#FFF2DE"]),
+        // Home: deep pine forest, red canyon rock, wooden cabins, the campfire and a blue sky.
+        Theme(name: "Timber Hearth", bg: "#15291B", bg2: "#08130B", fg: "#EAE4CC", accent: "#9BD465", chrome: "#163A1C",
+              ansi: ["#22382A", "#F0683E", "#8FD05E", "#F4C35A", "#6DB6F2", "#C892DC", "#5FCDB4", "#D9D2B8",
+                     "#5E7360", "#FF8A62", "#ADE27E", "#FFD57E", "#94CBF6", "#DBAEEA", "#84DEC8", "#F8F3E2"]),
+        // Timber Hearth's moon: cold grey dust and deep craters. The light theme.
+        Theme(name: "Attlerock", bg: "#ECEDEF", bg2: "#C7C9CE", fg: "#24262B", accent: "#56606E", chrome: "#4A4F58",
+              ansi: ["#2A2C31", "#B83A2C", "#3E7D4A", "#946A12", "#33609E", "#7E4CB2", "#22797E", "#8A8D94",
+                     "#5C6068", "#D0503E", "#4F955C", "#AD801E", "#4677B8", "#9663C9", "#2F9298", "#B4B7BD"]),
+        // A dark slate crust, frosted and cracked, over a black hole; lit orange by the lava of Hollow's Lantern.
+        Theme(name: "Brittle Hollow", bg: "#1B1D2B", bg2: "#040408", fg: "#D8DCEA", accent: "#FF7442", chrome: "#22243A",
+              ansi: ["#282B3C", "#FF5F45", "#74D3AA", "#FFBF55", "#6F8CFF", "#A98BFF", "#84D6F6", "#C2CBE6",
+                     "#525C86", "#FF8668", "#98E2C2", "#FFD381", "#93A8FF", "#C3AAFF", "#A8E4FA", "#EEF2FF"]),
+        // Ocean world: deep green water under pale streaming clouds and cyclones.
+        Theme(name: "Giant's Deep", bg: "#0B3328", bg2: "#021410", fg: "#D4F0E2", accent: "#4FD8A0", chrome: "#07402F",
+              ansi: ["#10402F", "#F4766A", "#43DC92", "#EEDC66", "#3FA4E0", "#B48FEA", "#3EDCD6", "#B9DFD6",
+                     "#4A7C76", "#FF968C", "#6AE8AE", "#F6E98E", "#69BBEC", "#C9AAF2", "#6EE8E3", "#E8FCF7"]),
+        // A pale icy shell split by black thorned vines; fog, and the anglerfish lures glowing in it. Muted on purpose.
+        Theme(name: "Dark Bramble", bg: "#1D1F1D", bg2: "#060606", fg: "#D2D6CE", accent: "#F1D27C", chrome: "#262725",
+              ansi: ["#2C322C", "#CF5C46", "#8DA67A", "#E6C266", "#7896AC", "#A891BA", "#8EBAB0", "#B4B9AB",
+                     "#5E655D", "#E07A64", "#A7BE95", "#F2D58E", "#95AFC2", "#C0AAD0", "#AACFC6", "#E7EADE"]),
+        // The comet: blue-white ice around a core of ghost matter, which only shows up green-blue on camera.
+        Theme(name: "Interloper", bg: "#0F2336", bg2: "#02060B", fg: "#E6F4FC", accent: "#8ED8FF", chrome: "#0A2C4C",
+              ansi: ["#1B3046", "#F27C8E", "#56F0B4", "#ECE296", "#6FBCFF", "#B3A0FF", "#86EEF6", "#CDE2EE",
+                     "#4E6880", "#FF9DAC", "#82F6C8", "#F5EDB2", "#99D0FF", "#CBBDFF", "#ADF4FA", "#F5FBFF"]),
+        // Solanum's home: grey rock wrapped in a shifting grey-white fog.
+        Theme(name: "Quantum Moon", bg: "#202125", bg2: "#09090B", fg: "#E6E6EA", accent: "#C9CCD6", chrome: "#2C2D33",
+              ansi: ["#2E2F35", "#EC7A8A", "#93D8AE", "#E8D492", "#93A9D8", "#C5A3D8", "#93D2DC", "#CFD0D6",
+                     "#62646C", "#F799A6", "#B0E6C6", "#F2E2AE", "#B0C2E6", "#D8BEE6", "#B0E2EA", "#F6F6F8"]),
     ]
 
     /// VS Code's built-in themes, with its default terminal colors. Listed after Solanum's own.
@@ -187,7 +192,7 @@ enum ThemeLibrary {
             let name = (j["name"] as? String) ?? f.deletingPathExtension().lastPathComponent
             var t = Theme(name: name, bg: bg, bg2: j["background2"] as? String, fg: fg,
                           cursor: j["cursor"] as? String, selection: j["selection"] as? String,
-                          accent: (j["accent"] as? String) ?? (ansi.count > 4 ? ansi[4] : fg), ansi: ansi)
+                          accent: (j["accent"] as? String) ?? (ansi.count > 4 ? ansi[4] : fg), chrome: j["chrome"] as? String, ansi: ansi)
             t.file = f
             custom.append(t)
         }

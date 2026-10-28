@@ -28,6 +28,8 @@ final class Config {
     var notifyAfterSeconds: Double = 10
     var copyOnSelect = false
     var confirmQuit = true
+    /// The theme's planet in the status bar, with the ship orbiting it.
+    var planetCompanion = true
     var restoreSession = true
     var restoreScrollback = true
     /// Where ⌘T opens a tab: "current" (the focused terminal's folder, as Terminal does) or "home".
@@ -88,6 +90,7 @@ final class Config {
         case "notify-after-seconds": if let n = Double(value) { notifyAfterSeconds = n }
         case "copy-on-select": copyOnSelect = bool()
         case "confirm-quit": confirmQuit = bool()
+        case "planet-companion": planetCompanion = bool()
         case "restore-session": restoreSession = bool()
         case "restore-scrollback": restoreScrollback = bool()
         case "new-tab-folder": newTabFolder = value.lowercased() == "home" ? "home" : "current"
@@ -113,6 +116,9 @@ final class Config {
         background-opacity = \(fmt(opacity))
         background-blur = \(blur)
         padding = \(fmt(padding))
+
+        # Outer Wilds themes: the planet in the status bar, with your ship in orbit.
+        planet-companion = \(planetCompanion)
 
         # bar | block | underline
         cursor-style = \(cursorStyle)

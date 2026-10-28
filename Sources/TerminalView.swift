@@ -190,6 +190,8 @@ final class TerminalView: NSView, TerminalDelegate {
     private var agentStopCheck: DispatchWorkItem?
     /// Code blocks and tables from Claude Code's replies, boxed with a Copy button (see CodeBoxes.swift).
     var codeBoxes: [CodeBox] = []
+    /// Thumbnails over Claude Code's "[Image #N]" (see ImageChips.swift).
+    let imageChipState = ImageChipState()
     /// Copy buttons drawn this frame, by index into `codeBoxes`.
     var codeCopyButtons: [(CGRect, Int)] = []
     var hoverCopyButton: Int?
@@ -909,12 +911,14 @@ final class TerminalView: NSView, TerminalDelegate {
         drawTurnBackground(ctx)
         drawCodeBoxes(ctx)
         drawCells(ctx)
+        drawImageChips(ctx)
         drawCursor(ctx)
         drawBlockChrome(ctx, spans)
         drawCopyButtons(ctx)
         drawTurnChrome(ctx)
         ctx.restoreGState()
         drawOverlays(ctx)
+        drawImagePreview(ctx)
     }
 
     // MARK: - Smooth scrolling
@@ -1422,7 +1426,7 @@ final class TerminalView: NSView, TerminalDelegate {
     }
 
     /// Draws UI text (not terminal text) in the flipped context.
-    private func drawLabel(_ attr: NSAttributedString, at p: CGPoint, _ ctx: CGContext) {
+    func drawLabel(_ attr: NSAttributedString, at p: CGPoint, _ ctx: CGContext) {
         NSGraphicsContext.saveGraphicsState()
         attr.draw(at: p)
         NSGraphicsContext.restoreGraphicsState()
