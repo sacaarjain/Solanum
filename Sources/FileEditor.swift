@@ -693,6 +693,15 @@ final class EditorTextView: NSTextView {
         }
         super.keyDown(with: e)
     }
+
+    /// Pasted or dropped text gets LF line endings, as the loaded text has (saving restores CRLF files' own).
+    /// Text copied from web pages and Windows apps often ends lines with CRLF; the CR is invisible here but
+    /// would be saved, e.g. trailing every value of a pasted `export AWS_…=…` list.
+    override func shouldChangeText(in range: NSRange, replacementString s: String?) -> Bool {
+        guard let s, s.unicodeScalars.contains("\r") else { return super.shouldChangeText(in: range, replacementString: s) }
+        insertText(s.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n"), replacementRange: range)
+        return false
+    }
 }
 
 /// File name, folder, unsaved dot, and the wrap / save / close buttons.
