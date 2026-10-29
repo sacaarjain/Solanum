@@ -16,6 +16,8 @@ purple, and each planet theme is colored like its planet, with that planet besid
 - Session restore: windows, tabs, splits, groups, open files and recent output come back on launch, or are offered
   in the corner for a minute if you'd rather start fresh.
 - A corner notice when a long command finishes in a tab you're not looking at.
+- Updates itself: once a day it checks main in the repository it was built from and offers Update & Restart, which
+  builds main in a separate worktree (your checkout is never touched), installs it and restarts with your session.
 
 **Claude Code**
 - Each prompt and its response is a turn: step through them (⌘↑ / ⌘↓), jump to one (⌘J), copy or collapse it.
@@ -35,7 +37,9 @@ purple, and each planet theme is colored like its planet, with that planet besid
 - A Git Graph of every branch's history (⌃⌘G, the status bar's branch picker, or Show Git Graph in the command palette):
   colored lanes, branch and tag labels, and a card with each commit's author, date, message and size on hover.
 - A plain-text editor above the terminal, with syntax colors for JSON, YAML and XML, Format Document (⇧⌥F) to
-  re-indent them, and previews for images, PDFs, video and audio.
+  re-indent them, and previews for images, PDFs, video and audio. Files up to 50 MB open for editing; bigger ones
+  (logs, on ssh hosts too) open read-only, in full up to 512 MB and past that their last 10 MB. The eye in the editor's header follows a file as it changes,
+  re-reading it every 5 seconds while it's showing, like tail -f for a growing log.
 - Right-click a Markdown file › Open Preview to see it rendered as on GitHub.
 - Drag and drop or copy/paste between this Mac and ssh hosts (or between two hosts). Transfers stream over the existing
   ssh connection, so there's no second login, and they never overwrite: a taken name gets " copy".

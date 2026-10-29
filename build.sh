@@ -37,6 +37,14 @@ if [[ ! -f "$BUILD_DIR/AppIcon.icns" || Tools/MakeIcon.swift -nt "$BUILD_DIR/App
 fi
 cp "$BUILD_DIR/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
+# Where this build came from, for Solanum's update check (Sources/Updater.swift): the repository (the main
+# checkout, also when building in a worktree) and the commit.
+REPO=""; COMMIT=""
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  REPO="$(cd "$(git rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"
+  COMMIT="$(git rev-parse HEAD)"
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -55,6 +63,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>SolanumRepo</key><string>$REPO</string>
+  <key>SolanumCommit</key><string>$COMMIT</string>
   <!-- Listed under Finder's Open With for text files (Alternate rank: never made the default app). -->
   <key>CFBundleDocumentTypes</key>
   <array>

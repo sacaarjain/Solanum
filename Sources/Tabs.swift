@@ -183,6 +183,8 @@ final class TabSession: NSObject {
     var pinnedFolder: (fs: FileSystem, path: String)?
     /// Folders opened in the sidebar while this tab was active, by machine (see `FileSidebarView.openFolders`).
     var openFolders: [String: Set<String>] = [:]
+    /// Where the sidebar was while this tab was active (see `FileSidebarView.applyTabPlace`).
+    var sidebarPlace: (fs: FileSystem, root: String, followed: String?)?
 
     /// Where this tab's files are for the sidebar and status bar: a file tab whose terminal hasn't started yet
     /// browses its file's folder (on the ssh host it came from); otherwise the focused pane's folder.
@@ -1508,6 +1510,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             sidebar.onChangeDirectory = { dir in column()?.activeTab?.focusedPane.changeDirectory(to: dir) }
             sidebar.onPinChanged = { pinned in column()?.activeTab?.pinnedFolder = pinned }
             sidebar.onOpenFoldersChanged = { folders in column()?.activeTab?.openFolders = folders }
+            sidebar.onPlaceChanged = { fs, root, followed in column()?.activeTab?.sidebarPlace = (fs, root, followed) }
             sidebar.onActivity = { [weak self, weak sidebar] text in
                 guard let self, let sidebar else { return }
                 (i == 0 ? self.rootView.statusBar : self.rootView.rightStatusBar).setTransfer(text, from: sidebar)
@@ -1569,7 +1572,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         let connecting = tab.browseRemote.map { !$0.isReady } ?? false
         sidebar.setTab(name: tab.customTitle, folder: connecting ? nil : tab.browseDirectory, home: fs.home, agent: tab.agent)
         sidebar.setEditorFile(tab.editor?.path, fs: tab.editor?.fs)
-        if switched { sidebar.applyTabOpenFolders(tab.openFolders) }
+        if switched {
+            sidebar.applyTabOpenFolders(tab.openFolders)
+            if tab.pinnedFolder == nil, !connecting {
+                sidebar.applyTabPlace(tab.sidebarPlace, fs: fs, directory: tab.browseDirectory)
+            }
+        }
         sidebar.applyTabPin(tab.pinnedFolder)
         if connecting {
             sidebar.show(fs: fs, directory: nil, status: "Connecting to the ssh session…\nFiles appear here once you're logged in.")
@@ -2090,6 +2098,16 @@ final class ActionMenuItem: NSMenuItem {
 final class TabBarView: NSView, NSTextFieldDelegate {
     /// The column whose tabs this strip shows.
     weak var controller: TabColumn?
+    /// Redraws the flower's update badge when the updater's state changes.
+    private var updateObserver: NSObjectProtocol?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard updateObserver == nil, window != nil else { return }
+        updateObserver = NotificationCenter.default.addObserver(forName: .solanumUpdateChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.needsDisplay = true
+        }
+    }
     /// Only the rightmost strip carries the Settings flower.
     var showsFlower = true { didSet { needsLayout = true; needsDisplay = true } }
     /// On the right column's strip: closes the split (its tabs move to the left column).
@@ -2534,6 +2552,15 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             NSBezierPath(roundedRect: flowerRect, xRadius: 6, yRadius: 6).fill()
         }
         if showsFlower { Self.flower.draw(in: flowerRect.insetBy(dx: 2, dy: 2)) }
+        // An update waiting (its card dismissed): a "1" on the flower; clicking it opens it in Settings.
+        if showsFlower, Updater.shared.needsAttention {
+            let badge = CGRect(x: flowerRect.maxX - 9, y: flowerRect.minY - 2, width: 13, height: 13)
+            th.accent.setFill()
+            NSBezierPath(ovalIn: badge).fill()
+            let one = NSAttributedString(string: "1", attributes: [.font: NSFont.systemFont(ofSize: 9, weight: .bold), .foregroundColor: NSColor.white])
+            let s = one.size()
+            one.draw(at: NSPoint(x: badge.midX - s.width / 2, y: badge.midY - s.height / 2))
+        }
 
         if let g = liftedGroup { drawLiftedGroup(g, in: c, keyWindow: keyWindow) }
 
@@ -3200,7 +3227,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         let p = convert(e.locationInWindow, from: nil)
         if plusRect.contains(p) { c.newTab(); return }
         if closeSplitRect.contains(p) { c.owner?.closeSplit(nil); return }
-        if flowerRect.contains(p) { SettingsWindowController.shared.present(); return }
+        if flowerRect.contains(p) { SettingsWindowController.shared.present(Updater.shared.needsAttention ? .preferences : nil); return }
         if leftArrowRect.contains(p) { scrollTabs(by: -viewport.width * 0.75); return }
         if rightArrowRect.contains(p) { scrollTabs(by: viewport.width * 0.75); return }
         if let g = chipIndex(at: p).map({ chips[$0].group }) {

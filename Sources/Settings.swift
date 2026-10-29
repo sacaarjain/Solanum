@@ -68,8 +68,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             let theme = Config.shared.theme.name
             if theme != self.lastTheme || !self.committing { self.rebuild() } else { self.root.needsDisplay = true }
         }
+        updateObserver = NotificationCenter.default.addObserver(forName: .solanumUpdateChanged, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.root.sidebar.needsDisplay = true
+            if self.page == .preferences, self.window?.isVisible == true { self.rebuild() }
+        }
         w.center()
     }
+
+    private var updateObserver: NSObjectProtocol?
 
     required init?(coder: NSCoder) { fatalError() }
 
@@ -242,6 +249,15 @@ final class SettingsSidebar: NSView {
             (p.title as NSString).draw(at: NSPoint(x: box.maxX + 10, y: r.midY - 8),
                                        withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: selected ? .semibold : .medium),
                                                         .foregroundColor: selected ? th.foreground : th.foreground.withAlphaComponent(0.8)])
+            // An update waiting: "1" on the page that offers it, as on the flower in the tab bar.
+            if p == .preferences, Updater.shared.needsAttention {
+                let badge = NSRect(x: r.maxX - 28, y: r.midY - 8, width: 16, height: 16)
+                th.accent.setFill()
+                NSBezierPath(ovalIn: badge).fill()
+                let one = NSAttributedString(string: "1", attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .bold), .foregroundColor: NSColor.white])
+                let s = one.size()
+                one.draw(at: NSPoint(x: badge.midX - s.width / 2, y: badge.midY - s.height / 2))
+            }
             y += 38
         }
 
@@ -890,6 +906,73 @@ enum SettingsPages {
         return v
     }
 
+    // Updates: where Solanum stands against main in its repository, and what to do about it (see Updater).
+    private static func updates(_ v: SettingsPageView, _ ctl: SettingsWindowController) {
+        let u = Updater.shared
+        v.add(sectionHeader("Updates"), height: 16, gap: 10)
+        let status: SettingRow
+        switch u.state {
+        case .available(let commits):
+            let n = commits.count
+            let latest = commits.prefix(4).map(Updater.subject).joined(separator: " · ")
+            status = SettingRow(icon: "arrow.down.circle", title: n == 0 ? "An update is available" : "\(n) new commit\(n == 1 ? "" : "s") on main",
+                                detail: latest.isEmpty ? "main has moved on since this build." : latest + (n > 4 ? " · and \(n - 4) more" : ""))
+        case .building:
+            status = SettingRow(icon: "hammer", title: "Building the update…", detail: "Usually a minute or two. You can keep working.")
+        case .ready:
+            status = SettingRow(icon: "checkmark.circle", title: "Update ready",
+                                detail: "Installed in ~/Applications. Restart Solanum to start using it.")
+        case .failed:
+            status = SettingRow(icon: "xmark.octagon", title: "The last update failed", detail: "Nothing was installed. The build log has the details.")
+        case .idle:
+            status = u.canUpdate
+                ? SettingRow(icon: "checkmark.seal", title: "Solanum is up to date", detail: "This build is \(u.built.map { String($0.prefix(7)) } ?? "")."
+                             + " It checks main in the repository it was built from.")
+                : SettingRow(icon: "questionmark.circle", title: "Updates need a build made with build.sh",
+                             detail: "This copy doesn't know which repository it came from.")
+        }
+        card(v, [
+            status,
+            SettingRow(icon: "clock.arrow.circlepath", title: "Check for updates daily",
+                       detail: "Looks for new commits on main once a day and offers them; nothing installs or restarts without you.",
+                       accessory: toggle(Config.shared.checkForUpdates) { [weak ctl] on in Config.shared.checkForUpdates = on; ctl?.commit() }),
+        ], gap: 12)
+        switch u.state {
+        case .available, .ready:
+            let note = NSTextField(wrappingLabelWithString: "Your work is safe. Updates are built in a separate copy of the repository "
+                + "(\(FilePaths.abbreviate(Updater.worktree, home: NSHomeDirectory()))), so if you're working on Solanum itself, "
+                + "your checkout, its branch and any uncommitted changes aren't touched. Restarting brings back your windows and tabs, "
+                + "and Claude chats continue where they left off; other programs running in tabs are stopped.")
+            note.font = .systemFont(ofSize: 12)
+            note.textColor = Config.shared.theme.dimText
+            v.add(note, height: { w in note.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: w, height: 1000)).height ?? 48 }, gap: 10)
+        default: break
+        }
+        var actions: [NSButton] = []
+        switch u.state {
+        case .available:
+            actions = [linkButton("Download Only") { u.update(restart: false) },
+                       linkButton("Download and Install (will restart)") { u.update(restart: true) }]
+        case .ready:
+            actions = [linkButton("Restart Now") { u.restartNow() }]
+        case .failed:
+            actions = [linkButton("Try Again") { u.update(restart: false) }, linkButton("Show Log") { NSWorkspace.shared.open(Updater.log) }]
+        case .idle:
+            if u.canUpdate { actions = [linkButton("Check Now") { u.check(manual: true, force: true) }] }
+        case .building:
+            break
+        }
+        if !actions.isEmpty {
+            let row = NSStackView(views: actions)
+            row.spacing = 18
+            row.alignment = .centerY
+            row.distribution = .gravityAreas
+            v.add(row, height: 20, gap: 26)
+        } else {
+            v.add(NSView(), height: 1, gap: 26)
+        }
+    }
+
     private static func card(_ v: SettingsPageView, _ rows: [SettingRow], gap: CGFloat = 26) {
         let c = SettingsCard()
         rows.forEach(c.add)
@@ -964,6 +1047,7 @@ enum SettingsPages {
     // Preferences: startup, notifications and file transfers.
     private static func preferences(_ v: SettingsPageView, _ ctl: SettingsWindowController) {
         let c = Config.shared
+        updates(v, ctl)
         v.add(sectionHeader("Workspace"), height: 16, gap: 10)
         let notify = ThemedField(String(Int(c.notifyAfterSeconds)), placeholder: "10")
         notify.alignment = .right

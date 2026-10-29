@@ -34,6 +34,8 @@ final class Config {
     var restoreScrollback = true
     /// Where ⌘T opens a tab: "current" (the focused terminal's folder, as Terminal does) or "home".
     var newTabFolder = "current"
+    /// Look for new commits on main in the repository Solanum was built from, once a day (see Updater).
+    var checkForUpdates = true
     /// Where files passing between two ssh hosts are staged on this Mac; empty for the default (see `transferStagingDir`).
     var transferFolder = ""
     var windowColumns = 110
@@ -94,6 +96,7 @@ final class Config {
         case "restore-session": restoreSession = bool()
         case "restore-scrollback": restoreScrollback = bool()
         case "new-tab-folder": newTabFolder = value.lowercased() == "home" ? "home" : "current"
+        case "check-for-updates": checkForUpdates = bool()
         case "transfer-folder": transferFolder = value
         case "window-columns": if let n = Int(value) { windowColumns = min(max(n, 40), 400) }
         case "window-rows": if let n = Int(value) { windowRows = min(max(n, 10), 200) }
@@ -148,6 +151,9 @@ final class Config {
 
         # Where ⌘T opens a new tab: current (the focused terminal's folder) | home
         new-tab-folder = \(newTabFolder)
+
+        # Once a day, look for new commits on main in the repository Solanum was built from, and offer to update.
+        check-for-updates = \(checkForUpdates)
 
         # Files copied between two ssh hosts land here on this Mac first and are deleted once delivered.
         # Leave empty for ~/Library/Caches/Solanum/Transfers.

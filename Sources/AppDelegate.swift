@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private var pendingOpens: [URL]? = []
     /// Set while ⇧⌘R is quitting so the app comes back up afterwards.
     private var restarting = false
+    /// The app to open when restarting, if not this one: a freshly installed update (kept until a restart happens,
+    /// so a restart postponed at the prompt still opens the new build).
+    var relaunchPath: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Writes to a pipe whose reader died (e.g. an ssh helper for the file sidebar) must fail, not kill the app.
@@ -38,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             newWindow(nil)
             if let last, !last.windows.isEmpty { offerRestore(last) }
         }
+        Updater.shared.start()
         // Saved periodically too, so a crash or force-quit loses at most a few seconds of layout.
         autosaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             SessionStore.save(self?.windows ?? [])
@@ -108,10 +112,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             // A detached shell waits for this process to exit, then opens the app again (picking up a new build).
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/sh")
-            p.arguments = ["-c", "while kill -0 \(getpid()) 2>/dev/null; do sleep 0.1; done; open \(shellQuote(Bundle.main.bundlePath))"]
+            p.arguments = ["-c", "while kill -0 \(getpid()) 2>/dev/null; do sleep 0.1; done; open \(shellQuote(relaunchPath ?? Bundle.main.bundlePath))"]
             try? p.run()
         }
     }
+
+    /// Quits and reopens `path` instead of this app (see Updater).
+    func restart(into path: String) {
+        relaunchPath = path
+        restartApp(nil)
+    }
+
+    /// Solanum › Check for Updates…
+    @objc func checkForUpdates(_ sender: Any?) { Updater.shared.check(manual: true) }
 
     /// ⇧⌘R: quit and reopen, restoring windows and tabs (and loading the installed build).
     @objc func restartApp(_ sender: Any?) {
@@ -331,6 +344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         // App
         let app = top("Solanum")
         _ = add(app, "About Solanum", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), "")
+        _ = add(app, "Check for Updates…", #selector(checkForUpdates(_:)), "")
         app.addItem(.separator())
         _ = add(app, "Settings…", #selector(showSettings(_:)), ",")
         _ = add(app, "Open Config File", #selector(openConfigFile(_:)), "")

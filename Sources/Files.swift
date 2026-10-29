@@ -34,6 +34,10 @@ protocol FileSystem: AnyObject {
     func list(_ dir: String, _ done: @escaping (Result<[FileItem], Error>) -> Void)
     /// Fails with "too large" past `limit` bytes.
     func read(_ path: String, limit: Int, _ done: @escaping (Result<Data, Error>) -> Void)
+    /// Part of a file, and its size: from `offset` to the end (at most `tail` bytes), or with no offset, all of it
+    /// when it's at most `whole` bytes and otherwise its last `tail` bytes. For big files, and for following one as
+    /// it grows without reading it all again.
+    func readPart(_ path: String, from offset: Int?, whole: Int, tail: Int, _ done: @escaping (Result<FilePart, Error>) -> Void)
     func write(_ data: Data, to path: String, _ done: @escaping (Error?) -> Void)
     func perform(_ op: FileOp, _ done: @escaping (Error?) -> Void)
 }
@@ -44,8 +48,18 @@ extension FileSystem {
     }
 }
 
-/// Files larger than this open as "too large" rather than in the editor.
-let maxEditableFileSize = 5 * 1024 * 1024
+/// Files larger than this open read-only (see `FileEditorView`).
+let maxEditableFileSize = 50 * 1024 * 1024
+/// Up to this size a read-only file still opens in full (a day's log, say); past it only its end shows.
+let maxReadableFileSize = 512 * 1024 * 1024
+/// How much of the end of a file past `maxReadableFileSize` shows.
+let fileTailSize = 10 * 1024 * 1024
+
+/// Bytes read from a file (see `FileSystem.readPart`), and the file's whole size then.
+struct FilePart {
+    let size: Int
+    let data: Data
+}
 
 enum FilePaths {
     static func join(_ dir: String, _ name: String) -> String {
@@ -127,6 +141,17 @@ final class LocalFileSystem: FileSystem {
             let size = (try FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)?.intValue ?? 0
             guard size <= limit else { throw FileError(message: "This file is too large to open (\(size / 1_048_576) MB).") }
             return try Data(contentsOf: URL(fileURLWithPath: path))
+        }, done)
+    }
+
+    func readPart(_ path: String, from offset: Int?, whole: Int, tail: Int, _ done: @escaping (Result<FilePart, Error>) -> Void) {
+        async({
+            let h = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+            defer { try? h.close() }
+            let size = Int(try h.seekToEnd())
+            let start = offset.map { min($0, size) } ?? (size <= whole ? 0 : size - tail)
+            try h.seek(toOffset: UInt64(start))
+            return FilePart(size: size, data: try h.read(upToCount: offset == nil && size <= whole ? size : tail) ?? Data())
         }, done)
     }
 
@@ -340,6 +365,26 @@ final class RemoteSession: FileSystem {
         run(script) { [weak self] status, out, err in
             if let e = self?.check(status, err, "Couldn't read \(path).") { return done(.failure(e)) }
             done(.success(out))
+        }
+    }
+
+    /// The size on the first line, then the bytes; only the part asked for crosses the connection.
+    func readPart(_ path: String, from offset: Int?, whole: Int, tail: Int, _ done: @escaping (Result<FilePart, Error>) -> Void) {
+        let part = offset.map { "tail -c +\($0 + 1) -- \"$f\" | head -c \(tail)" }
+            ?? "if [ \"$s\" -le \(whole) ]; then cat -- \"$f\"; else tail -c \(tail) -- \"$f\"; fi"
+        let script = """
+        f=\(shellQuote(path))
+        [ -f "$f" ] || { echo "Not a regular file." >&2; exit 1; }
+        s=$(wc -c < "$f" | tr -d ' ')
+        printf '%s\\n' "$s"
+        \(part)
+        """
+        run(script, timeout: 600) { [weak self] status, out, err in
+            if let e = self?.check(status, err, "Couldn't read \(path).") { return done(.failure(e)) }
+            guard let nl = out.firstIndex(of: 0x0A), let size = Int(String(decoding: out[..<nl], as: UTF8.self)) else {
+                return done(.failure(FileError(message: "Couldn't read \(path).")))
+            }
+            done(.success(FilePart(size: size, data: Data(out[out.index(after: nl)...]))))
         }
     }
 

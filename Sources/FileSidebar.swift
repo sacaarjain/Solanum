@@ -59,6 +59,9 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
     private var openFoldersKey: String { fs.hostLabel ?? "" }
     /// Folders were opened or closed here, so the active tab can keep them.
     var onOpenFoldersChanged: (([String: Set<String>]) -> Void)?
+    /// The tree moved to another folder (browsed to, or following the terminal), so the active tab can keep its place:
+    /// the machine, the folder shown, and the terminal folder at the time.
+    var onPlaceChanged: ((FileSystem, String, String?) -> Void)?
     /// Shared by every sidebar, so files copied in one can be pasted in another (on another host, say).
     private static var clipboard: (fs: FileSystem, paths: [String], cut: Bool)?
     /// What this sidebar is dragging, and from where (its file system may change before the drop).
@@ -301,6 +304,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
 
     private func setRoot(_ path: String) {
         rootPath = path
+        onPlaceChanged?(fs, path, followed)
         gitStatus = nil
         updateHeader()
         reload(expanding: openFolders[openFoldersKey] ?? [], revealTargets: true)
@@ -446,6 +450,16 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         updatePinButton()
     }
 
+
+    /// Switching tabs: back to the folder this tab's tree was on (one browsed to, on this Mac or an ssh host), unless
+    /// its terminal has moved since; then the `show` that follows goes with the terminal as usual.
+    func applyTabPlace(_ place: (fs: FileSystem, root: String, followed: String?)?, fs tabFS: FileSystem, directory: String?) {
+        guard let place, place.fs === tabFS, place.followed == directory else { return }
+        let moved = place.fs !== fs || place.root != rootPath
+        fs = place.fs
+        followed = place.followed
+        if moved { setRoot(place.root) }
+    }
 
     /// Switching tabs: the new tab's open folders (none for a brand-new tab), re-opened in the tree shown now.
     /// If the tab is somewhere else, the `show` that follows re-roots with them.

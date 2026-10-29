@@ -28,6 +28,18 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private var loaded = false
     private var saving = false
     private(set) var isDirty = false { didSet { header.dirty = isDirty } }
+    /// Too big to edit (past `maxEditableFileSize`): shown read-only, in full or (past `maxReadableFileSize`) its end.
+    private var partial = false
+    /// What's known of the file on disk, to follow it as it grows: its size, and its last few bytes (a change
+    /// there means it was rewritten, not appended to).
+    private var diskSize = 0
+    private var diskTail = Data()
+    /// Bytes at the end of the last read that stop partway through a character, kept for the next.
+    private var carry = Data()
+    /// The eye in the header: re-read the file every 5 seconds while it's on screen (and on coming back to it).
+    private var watching = false { didSet { header.watching = watching; updateWatchTimer() } }
+    private var watchTimer: Timer?
+    private var refreshing = false
     private var wraps = false
     /// Colored as JSON, YAML or XML (see Syntax.swift); other files stay plain.
     private let language: SyntaxLanguage?
@@ -61,6 +73,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         header.onSave = { [weak self] in self?.saveDocument(nil) }
         header.onToggleWrap = { [weak self] in self?.toggleWrap(nil) }
         header.onCopyPath = { [weak self] in self?.copyPath() }
+        header.onToggleWatch = { [weak self] in self?.watching.toggle() }
         addSubview(header)
 
         textView.isRichText = false
@@ -124,7 +137,15 @@ final class FileEditorView: NSView, NSTextViewDelegate {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateWatchTimer()
+        // Coming back to a watched file: catch up straight away.
+        if watching, window != nil { refreshFromDisk() }
+    }
+
     deinit {
+        watchTimer?.invalidate()
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         if let dir = mediaCopy?.deletingLastPathComponent() { try? FileManager.default.removeItem(at: dir) }
     }
@@ -201,33 +222,156 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         if mode == .preview { return loadPreview() }
         if let kind = MediaKind(path: path) { return loadMedia(kind) }
         showMessage("Loading…")
-        fs.read(path) { [weak self] result in
+        loadText(keepPlace: false)
+    }
+
+    /// The file's text: editable up to `maxEditableFileSize`; read-only past it, in full up to `maxReadableFileSize`
+    /// (a big log, over ssh too) and past that its last `fileTailSize`. `keepPlace` (a reload) keeps the caret and
+    /// scroll position.
+    private func loadText(keepPlace: Bool) {
+        fs.readPart(path, from: nil, whole: maxReadableFileSize, tail: fileTailSize) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let e):
-                self.showMessage(e.localizedDescription)
-            case .success(let data):
+                if !keepPlace { self.showMessage(e.localizedDescription) }
+            case .success(let part):
+                var data = part.data
+                let cut = part.size > data.count
+                let partial = part.size > maxEditableFileSize
+                // A cut-off end starts at the first whole line.
+                if cut, let nl = data.firstIndex(of: 0x0A) { data = Data(data[data.index(after: nl)...]) }
                 if data.prefix(8000).contains(0) {
                     self.showMessage("This looks like a binary file, so it isn't shown.")
                     return
                 }
-                var text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-                if text.contains("\r\n") {
-                    self.usesCRLF = true
-                    text = text.replacingOccurrences(of: "\r\n", with: "\n")
-                }
+                let (whole, rest) = Self.splitUTF8(data)
+                let (bytes, crlf) = Self.droppingCR(whole)
+                if crlf { self.usesCRLF = true }
+                let text = String(decoding: bytes, as: UTF8.self)
+                let caret = self.textView.selectedRange()
+                let origin = self.scroll.contentView.bounds.origin
+                // Long texts lay out only what's on screen.
+                self.textView.layoutManager?.allowsNonContiguousLayout = text.utf16.count > 2_000_000
                 self.textView.string = text
                 self.applyTheme()
-                self.textView.isEditable = true
+                self.partial = partial
+                self.textView.isEditable = !partial
+                self.header.editable = !partial
+                self.header.subtitle = cut ? "\(self.location) · last \(fileTailSize >> 20) MB of \(part.size >> 20) MB · read-only"
+                    : partial ? "\(self.location) · \(part.size >> 20) MB · read-only" : self.location
                 self.textView.undoManager?.removeAllActions()
-                self.textView.setSelectedRange(NSRange(location: 0, length: 0))
+                self.diskSize = part.size
+                self.diskTail = Data(part.data.suffix(256))
+                self.carry = rest
+                if keepPlace {
+                    let n = (text as NSString).length
+                    self.textView.setSelectedRange(NSRange(location: min(caret.location, n), length: 0))
+                    self.scroll.contentView.scroll(to: origin)
+                    self.scroll.reflectScrolledClipView(self.scroll.contentView)
+                } else {
+                    self.textView.setSelectedRange(NSRange(location: partial ? (text as NSString).length : 0, length: 0))
+                    if partial { self.textView.scrollRangeToVisible(self.textView.selectedRange()) }
+                }
                 self.loaded = true
                 self.isDirty = false
                 self.message.isHidden = true
                 self.scroll.isHidden = false
                 self.ruler.invalidateLines()
-                self.focus()
+                if !keepPlace { self.focus() }
             }
+        }
+    }
+
+    /// `data` with each CRLF line ending made LF (saving puts them back), and whether it had any. Done on the bytes:
+    /// searching a string of hundreds of MB for "\r\n" takes seconds.
+    private static func droppingCR(_ data: Data) -> (Data, Bool) {
+        let hasCR = data.withUnsafeBytes { raw in raw.count > 0 && memchr(raw.baseAddress, 0x0D, raw.count) != nil }
+        guard hasCR else { return (data, false) }
+        var out = Data(count: data.count)
+        var n = 0
+        out.withUnsafeMutableBytes { (dst: UnsafeMutableRawBufferPointer) in
+            data.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
+                let s = src.bindMemory(to: UInt8.self), d = dst.bindMemory(to: UInt8.self)
+                var i = 0
+                while i < s.count {
+                    let c = s[i]
+                    i += 1
+                    if c == 0x0D, i < s.count, s[i] == 0x0A { continue }
+                    d[n] = c
+                    n += 1
+                }
+            }
+        }
+        out.count = n
+        return n < data.count ? (out, true) : (data, false)
+    }
+
+    /// `data` split where its last whole character ends (a read can stop partway through one).
+    private static func splitUTF8(_ data: Data) -> (Data, Data) {
+        var cut = data.endIndex
+        var k = 0
+        // Back over up to 3 continuation bytes to the lead byte; keep the character back if it's incomplete.
+        while k < 4, cut > data.startIndex {
+            let b = data[cut - 1]
+            if b & 0xC0 == 0x80 { cut -= 1; k += 1; continue }
+            if b >= 0xC0 {
+                let need = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : 2
+                if k + 1 < need { cut -= 1 } else { cut = data.endIndex }
+            } else {
+                cut = data.endIndex
+            }
+            break
+        }
+        return (Data(data[data.startIndex..<cut]), Data(data[cut...]))
+    }
+
+    // MARK: Watching
+
+    @objc func toggleWatch(_ sender: Any?) { watching.toggle() }
+
+    /// Every 5 seconds while watched and on screen (a tab not in front, or a file sub-tab not showing, has no window).
+    private func updateWatchTimer() {
+        let wanted = watching && window != nil && mode == .file
+        if wanted, watchTimer == nil {
+            watchTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refreshFromDisk() }
+        } else if !wanted {
+            watchTimer?.invalidate()
+            watchTimer = nil
+        }
+    }
+
+    /// Catches up with the file on disk: new bytes at the end are added (scrolling along if the end was in view,
+    /// as with tail -f); anything else (rewritten, truncated, rotated) reloads it, keeping the place. Unsaved
+    /// edits are never overwritten.
+    func refreshFromDisk() {
+        guard mode == .file, loaded, media == nil, !isDirty, !refreshing, !saving else { return }
+        refreshing = true
+        let from = max(0, diskSize - diskTail.count)
+        fs.readPart(path, from: from, whole: 0, tail: fileTailSize) { [weak self] result in
+            guard let self else { return }
+            self.refreshing = false
+            guard case .success(let part) = result, !self.isDirty else { return }
+            let known = self.diskSize - from
+            guard part.size >= self.diskSize, part.data.count >= known, part.data.prefix(known) == self.diskTail else {
+                return self.loadText(keepPlace: true)
+            }
+            let added = Data(part.data.dropFirst(known))
+            // More arrived than one read brings: start again from the end.
+            if part.size - self.diskSize > added.count { return self.loadText(keepPlace: true) }
+            guard !added.isEmpty else { return }
+            self.diskSize = part.size
+            self.diskTail = Data((self.diskTail + added).suffix(256))
+            let (whole, rest) = Self.splitUTF8(self.carry + added)
+            self.carry = rest
+            let text = String(decoding: Self.droppingCR(whole).0, as: UTF8.self)
+            guard !text.isEmpty, let storage = self.textView.textStorage else { return }
+            let visible = self.scroll.contentView.bounds
+            let atEnd = visible.maxY >= self.textView.frame.maxY - (self.textView.font?.pointSize ?? 13) * 3
+            let end = storage.length
+            storage.append(NSAttributedString(string: text, attributes: self.textView.typingAttributes))
+            if self.language != nil, storage.length <= SyntaxHighlighter.maxLength { self.highlightSyntax() }
+            self.ruler.linesAppended(from: end)
+            if atEnd { self.textView.scrollToEndOfDocument(nil) }
         }
     }
 
@@ -235,6 +379,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     /// name so the extension still tells AppKit what they are.
     private func loadMedia(_ kind: MediaKind) {
         header.editable = false
+        header.textTools = false
         guard fs.isRemote else { return showMedia(kind, URL(fileURLWithPath: path)) }
         showMessage("Loading…")
         fs.read(path, limit: maxPreviewFileSize) { [weak self] result in
@@ -262,6 +407,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     /// have yet diffs against nothing, and one deleted from disk against an empty right side.
     private func loadDiff() {
         header.editable = false
+        header.textTools = false
         if diffView == nil { showMessage("Loading…") }
         let name = (path as NSString).lastPathComponent
         let git = GitRunner(dir: (path as NSString).deletingLastPathComponent, remote: fs as? RemoteSession)
@@ -290,6 +436,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     /// The Markdown file rendered as a page (see Markdown.swift), refreshed when it's saved.
     private func loadPreview() {
         header.editable = false
+        header.textTools = false
         if previewView == nil { showMessage("Loading…") }
         fs.read(path) { [weak self] result in
             guard let self else { return }
@@ -356,6 +503,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
 
     private func loadGraph() {
         header.editable = false
+        header.textTools = false
         if graphView == nil { showMessage("Loading…") }
         let git = GitRunner(dir: path, remote: fs as? RemoteSession)
         git.run(GraphCommit.script, timeout: 60) { [weak self] status, out, err in
@@ -436,6 +584,11 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             }
             // Only clean if nothing was typed while the save was in flight.
             if self.textView.string == undoMark { self.isDirty = false }
+            // Our own write isn't a change to catch up with.
+            let saved = Data(text.utf8)
+            self.diskSize = saved.count
+            self.diskTail = Data(saved.suffix(256))
+            self.carry = Data()
             NotificationCenter.default.post(name: .solanumFileSaved, object: self.fs, userInfo: ["path": self.path])
             self.header.status = "Saved"
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
@@ -550,8 +703,13 @@ final class EditorHeaderView: NSView {
     var dirty = false { didSet { needsDisplay = true } }
     var wraps = false { didSet { needsDisplay = true } }
     var status: String? { didSet { needsDisplay = true } }
-    /// Off for media previews: only the close button shows.
+    /// Off for read-only text (the end of a big file): no save button.
     var editable = true { didSet { needsDisplay = true } }
+    /// Off for previews, diffs and graphs: only the close button shows.
+    var textTools = true { didSet { needsDisplay = true } }
+    /// The eye is on: the file is re-read every few seconds.
+    var watching = false { didSet { needsDisplay = true } }
+    var onToggleWatch: (() -> Void)?
     var onClose: (() -> Void)?
     var onSave: (() -> Void)?
     var onToggleWrap: (() -> Void)?
@@ -568,9 +726,16 @@ final class EditorHeaderView: NSView {
         return NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(cfg)
     }
 
-    private var buttons: [(symbol: String, tip: String, action: (() -> Void)?)] {
-        [("xmark", "Close (⌘W)", onClose), ("square.and.arrow.down", "Save (⌘S)", onSave),
-         ("text.word.spacing", wraps ? "Don't Wrap Lines (⌥Z)" : "Wrap Lines (⌥Z)", onToggleWrap)].prefix(editable ? 3 : 1).map { $0 }
+    /// Right to left: close, save, wrap, watch.
+    private var buttons: [(symbol: String, tip: String, active: Bool, action: (() -> Void)?)] {
+        var b: [(symbol: String, tip: String, active: Bool, action: (() -> Void)?)] = [("xmark", "Close (⌘W)", false, onClose)]
+        guard textTools else { return b }
+        if editable { b.append(("square.and.arrow.down", "Save (⌘S)", dirty, onSave)) }
+        b.append(("text.word.spacing", wraps ? "Don't Wrap Lines (⌥Z)" : "Wrap Lines (⌥Z)", wraps, onToggleWrap))
+        b.append((watching ? "eye.fill" : "eye",
+                  watching ? "Stop Watching for Changes" : "Watch for Changes (re-reads the file every 5 seconds while it's showing)",
+                  watching, onToggleWatch))
+        return b
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -586,7 +751,7 @@ final class EditorHeaderView: NSView {
             let r = NSRect(x: right - 22, y: (bounds.height - 22) / 2, width: 22, height: 22)
             buttonRects.append(r)
             right = r.minX - 2
-            let active = (i == 2 && wraps) || (i == 1 && dirty)
+            let active = b.active
             if hover == i {
                 th.foreground.withAlphaComponent(0.1).setFill()
                 NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5).fill()
@@ -678,12 +843,22 @@ final class LineNumberRuler: NSRulerView {
         needsDisplay = true
     }
 
-    private func starts() -> [Int] {
-        if let l = lineStarts { return l }
-        var out = [0]
+    /// Text was added at the end (a watched file grew): only the new part is scanned for lines, not all of a
+    /// file that may be hundreds of MB.
+    func linesAppended(from start: Int) {
+        guard var out = lineStarts else { return invalidateLines() }
         let s = (textView?.string ?? "") as NSString
+        guard start <= s.length else { return invalidateLines() }
+        Self.scan(s, from: start, into: &out)
+        lineStarts = out
+        fitWidth(lines: out.count)
+        needsDisplay = true
+    }
+
+    /// Adds where each line after a newline in `s` (from `start`) begins.
+    private static func scan(_ s: NSString, from start: Int, into out: inout [Int]) {
         let n = s.length
-        var i = 0
+        var i = start
         let buf = UnsafeMutablePointer<unichar>.allocate(capacity: 4096)
         defer { buf.deallocate() }
         while i < n {
@@ -692,8 +867,20 @@ final class LineNumberRuler: NSRulerView {
             for k in 0..<len where buf[k] == 10 { out.append(i + k + 1) }
             i += len
         }
+    }
+
+    private func starts() -> [Int] {
+        if let l = lineStarts { return l }
+        var out = [0]
+        Self.scan((textView?.string ?? "") as NSString, from: 0, into: &out)
         lineStarts = out
-        let digits = max(3, String(out.count).count)
+        fitWidth(lines: out.count)
+        return out
+    }
+
+    /// Wide enough for the largest line number.
+    private func fitWidth(lines: Int) {
+        let digits = max(3, String(lines).count)
         let w = (CGFloat(digits) * ("8" as NSString).size(withAttributes: [.font: font]).width + 22).rounded()
         if abs(ruleThickness - w) > 0.5 {
             reservedThicknessForMarkers = 0
@@ -702,7 +889,6 @@ final class LineNumberRuler: NSRulerView {
             // Make room for the new width; without a re-tile the numbers draw over the text until a resize.
             DispatchQueue.main.async { [weak self] in self?.scrollView?.tile() }
         }
-        return out
     }
 
     override func drawHashMarksAndLabels(in rect: NSRect) {
