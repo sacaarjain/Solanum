@@ -108,4 +108,6 @@ echo "› Installing to ${INSTALL_DIR}…"
 mkdir -p "$INSTALL_DIR"
 rm -rf "$INSTALL_DIR/$APP_NAME.app"
 cp -R "$APP" "$INSTALL_DIR/"
+# Only the installed copy is Solanum to macOS: a registered build/ copy can be launched beside it (a second Solanum).
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP" 2>/dev/null || true
 echo "✓ Installed $INSTALL_DIR/$APP_NAME.app"
