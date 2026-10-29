@@ -5,6 +5,8 @@ import AppKit
 /// themselves after `lifetime`, or on ✕.
 final class CornerNoticeView: NSView {
     static let width: CGFloat = 300
+    /// Cards grow past `width` to show their text whole, up to this.
+    private static let maxWidth: CGFloat = 480
     private static let lineHeight: CGFloat = 17
 
     /// Clicking the card itself (not its button or ✕), e.g. to go to the tab it's about.
@@ -36,7 +38,7 @@ final class CornerNoticeView: NSView {
             return l
         }
         super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: 0))
-        frame.size.height = preferredHeight
+        frame.size = NSSize(width: preferredWidth, height: preferredHeight)
         wantsLayer = true
         layer?.shadowColor = NSColor.black.cgColor
         layer?.shadowOpacity = 0.3
@@ -65,6 +67,15 @@ final class CornerNoticeView: NSView {
     override var isFlipped: Bool { true }
 
     var preferredHeight: CGFloat { lineLabels.isEmpty ? 40 : 38 + CGFloat(lineLabels.count) * Self.lineHeight }
+
+    /// Wide enough for the title and every line (the same insets as `layout`), between `width` and `maxWidth`.
+    var preferredWidth: CGFloat {
+        let x: CGFloat = symbol == nil ? 14 : 34
+        let button = actionButton.map { $0.fittingSize.width + 8 } ?? 0
+        let title = x + ceil(titleLabel.fittingSize.width) + 4 + button + 34
+        let lines = lineLabels.map { x + ceil($0.fittingSize.width) + 14 }.max() ?? 0
+        return min(Self.maxWidth, max(Self.width, title, lines))
+    }
 
     override func layout() {
         super.layout()
