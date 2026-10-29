@@ -987,7 +987,7 @@ final class StatusBarView: NSView {
                 none.isEnabled = false
                 menu.addItem(none)
             }
-            menu.popUp(positioning: nil, at: NSPoint(x: crumb.rect.minX, y: crumb.rect.minY - 2), in: self)
+            menu.popUpAbove(NSPoint(x: crumb.rect.minX, y: crumb.rect.minY - 2), in: self)
         }
     }
 
@@ -1091,14 +1091,14 @@ final class WindowRootView: NSView {
 
     // MARK: Sliding the sidebars
 
-    /// How much of each sidebar is showing (0…1). They slide in and out over the terminals; the terminals
-    /// themselves resize just once (at the start of opening, the end of closing), not on every frame, since each
-    /// resize makes the shell and programs like Claude Code redraw.
+    /// How much of each sidebar is showing (0…1). The terminals glide aside with the left one, frame by frame in
+    /// step with the display, but resize just once (at the start of opening, the end of closing), since each
+    /// resize makes the shell and programs like Claude Code redraw. Only their position changes in between.
     private var leftShown: CGFloat = 0
     private var rightShown: CGFloat = 0
     private var slideFrom: (left: CGFloat, right: CGFloat) = (0, 0)
     private var slideStart: CFTimeInterval = 0
-    private var slideTimer: Timer?
+    private var slideLink: CADisplayLink?
     private var leftTarget: CGFloat { sidebarVisible ? 1 : 0 }
     private var rightTarget: CGFloat { columns.count > 1 && rightSidebarVisible ? 1 : 0 }
 
@@ -1112,21 +1112,27 @@ final class WindowRootView: NSView {
         guard leftShown != leftTarget || rightShown != rightTarget else { return }
         slideFrom = (leftShown, rightShown)
         slideStart = CACurrentMediaTime()
-        guard slideTimer == nil else { return }
-        let t = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
-            guard let self else { return timer.invalidate() }
-            let p = min(1, (CACurrentMediaTime() - self.slideStart) / 0.2)
-            let e = CGFloat(1 - pow(1 - p, 3))
-            self.leftShown = self.slideFrom.left + (self.leftTarget - self.slideFrom.left) * e
-            self.rightShown = self.slideFrom.right + (self.rightTarget - self.slideFrom.right) * e
-            if p >= 1 {
-                timer.invalidate()
-                self.slideTimer = nil
-            }
-            self.needsLayout = true
+        guard slideLink == nil else { return }
+        let link = displayLink(target: self, selector: #selector(slideStep(_:)))
+        link.add(to: .main, forMode: .common)
+        slideLink = link
+    }
+
+    /// One frame of the slide, timed for when it reaches the screen. A critically damped spring: it sets off
+    /// gently, carries on, and settles without overshooting, so the sidebar and terminals move as one.
+    @objc private func slideStep(_ link: CADisplayLink) {
+        let t = max(0, link.targetTimestamp - slideStart)
+        let w = 20.0
+        let done = t >= 0.4
+        let e = done ? 1 : CGFloat(1 - (1 + w * t) * exp(-w * t))
+        leftShown = slideFrom.left + (leftTarget - slideFrom.left) * e
+        rightShown = slideFrom.right + (rightTarget - slideFrom.right) * e
+        if done {
+            link.invalidate()
+            slideLink = nil
         }
-        RunLoop.main.add(t, forMode: .common)
-        slideTimer = t
+        needsLayout = true
+        layoutSubtreeIfNeeded()
     }
     var rightSidebarWidth: CGFloat = 240 {
         didSet { rightSidebarWidth = min(max(rightSidebarWidth, 160), 640) }
@@ -1213,7 +1219,7 @@ final class WindowRootView: NSView {
         let rsw = (fullRW * rightShown).rounded()
         let contentSW = leftShown > 0 || leftTarget > 0 ? fullW : 0
         let contentRSW = rightShown > 0 || rightTarget > 0 ? fullRW : 0
-        let settled = slideTimer == nil
+        let settled = slideLink == nil
         sidebar.isHidden = sw == 0
         sidebarHandle.isHidden = sw == 0 || !settled
         sidebar.frame = NSRect(x: sw - fullW, y: barH, width: fullW, height: h)
@@ -1224,7 +1230,8 @@ final class WindowRootView: NSView {
         rightSidebarHandle.isHidden = rsw == 0 || !settled
         rightSidebar.frame = NSRect(x: bounds.width - rsw, y: barH, width: fullRW, height: h)
         rightSidebarHandle.frame = NSRect(x: bounds.width - rsw - 5, y: barH, width: 12, height: h)
-        columnArea = NSRect(x: contentSW, y: barH, width: bounds.width - contentSW - contentRSW, height: h)
+        // The terminals keep their settled width while the left sidebar slides, and ride along with its edge.
+        columnArea = NSRect(x: sw, y: barH, width: bounds.width - contentSW - contentRSW, height: h)
         divider.isHidden = !split
         var barSplitX = bounds.width
         if split {
@@ -1313,14 +1320,31 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
 
     var activeTab: TabSession? { focused.activeTab }
 
+    static let styleMask: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+
+    /// The content size a window needs for `columns` × `rows` of text at the current font and padding.
+    static func contentSize(columns: Int, rows: Int) -> NSSize {
+        let cfg = Config.shared, f = FontSet.current
+        return NSSize(width: CGFloat(columns) * f.cellW + cfg.padding * 2, height: CGFloat(rows) * f.cellH + 16 + 40 + StatusBarView.height)
+    }
+
+    /// The whole window's size for `columns` × `rows` of text (Settings › Preferences › Window Size).
+    static func frameSize(columns: Int, rows: Int) -> NSSize {
+        NSWindow.frameRect(forContentRect: NSRect(origin: .zero, size: contentSize(columns: columns, rows: rows)), styleMask: styleMask).size
+    }
+
+    /// The columns × rows of text a window of this size holds: the inverse of `frameSize`.
+    static func grid(fitting frame: NSSize) -> (columns: Int, rows: Int) {
+        let cfg = Config.shared, f = FontSet.current
+        let content = NSWindow.contentRect(forFrameRect: NSRect(origin: .zero, size: frame), styleMask: styleMask).size
+        return (Int(((content.width - cfg.padding * 2) / f.cellW).rounded()),
+                Int(((content.height - 16 - 40 - StatusBarView.height) / f.cellH).rounded()))
+    }
+
     init(cwd: String?, restoring saved: WindowState? = nil) {
         let cfg = Config.shared
-        let f = FontSet.current
-        let w = CGFloat(cfg.windowColumns) * f.cellW + cfg.padding * 2
-        let h = CGFloat(cfg.windowRows) * f.cellH + 16 + 40 + StatusBarView.height
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-                              backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: Self.contentSize(columns: cfg.windowColumns, rows: cfg.windowRows)),
+                              styleMask: Self.styleMask, backing: .buffered, defer: false)
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isOpaque = false
@@ -1369,8 +1393,13 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         }
         if let f = saved.splitFraction { rootView.splitFraction = CGFloat(f) }
         if let rs = saved.rightSidebar { rootView.rightSidebarVisible = rs }
-        if let r = saved.frame.map(NSRectFromString), NSScreen.screens.contains(where: { $0.visibleFrame.intersects(r) }) {
-            window?.setFrame(r, display: false)
+        // Back where it was, at the size set in Settings › Preferences › Window Size, kept on its screen.
+        if let r = saved.frame.map(NSRectFromString), let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(r) }) {
+            let vis = screen.visibleFrame
+            let size = Self.frameSize(columns: Config.shared.windowColumns, rows: Config.shared.windowRows)
+            let w = min(size.width, vis.width), h = min(size.height, vis.height)
+            let x = min(max(r.midX - w / 2, vis.minX), vis.maxX - w), y = min(max(r.midY - h / 2, vis.minY), vis.maxY - h)
+            window?.setFrame(NSRect(x: x, y: y, width: w, height: h), display: false)
         }
         if let pinned = saved.pinnedFolder, let tab = columns[0].activeTab, tab.pinnedFolder == nil {
             tab.pinnedFolder = (LocalFileSystem.shared, pinned)
@@ -1419,7 +1448,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             }
             menu.addItem(.separator())
             menu.addItem(ActionMenuItem("Theme Settings…") { SettingsWindowController.shared.present(.appearance) })
-            menu.popUp(positioning: nil, at: at, in: bar)
+            menu.popUpAbove(at, in: bar)
         }
         rootView.rightStatusBar.onToggleRightSidebar = { [weak self] in self?.toggleRightSidebar(nil) }
         // Each half of the bar (the whole bar, unless split) follows its column: breadcrumbs and git.
@@ -1581,7 +1610,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             SSHHosts.ensureConfigExists()
             self?.activeTab?.openFile(LocalFileSystem.shared, SSHHosts.configPath)
         })
-        menu.popUp(positioning: nil, at: point, in: bar)
+        menu.popUpAbove(point, in: bar)
     }
 
     private func connect(_ host: SSHHost, inNewTab: Bool = true) {
@@ -2014,6 +2043,14 @@ final class CenteredTextFieldCell: NSTextFieldCell {
 }
 
 /// Menu item that runs a closure (for context menus built on the fly).
+extension NSMenu {
+    /// Pops up with its bottom-left corner at `point` (menus from the status bar, at the window's bottom edge),
+    /// where `popUp(positioning:at:in:)` would hang it down from there and squeeze it against the screen's edge.
+    func popUpAbove(_ point: NSPoint, in view: NSView) {
+        popUp(positioning: nil, at: NSPoint(x: point.x, y: point.y + (view.isFlipped ? -size.height : size.height)), in: view)
+    }
+}
+
 final class ActionMenuItem: NSMenuItem {
     private let handler: () -> Void
 
@@ -3221,7 +3258,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         let p = convert(e.locationInWindow, from: nil)
         if plusRect.contains(p) { c.newTab(); return }
         if closeSplitRect.contains(p) { c.owner?.closeSplit(nil); return }
-        if flowerRect.contains(p) { SettingsWindowController.shared.present(Updater.shared.needsAttention ? .preferences : nil); return }
+        if flowerRect.contains(p) { SettingsWindowController.shared.present(Updater.shared.needsAttention ? .system : nil); return }
         if leftArrowRect.contains(p) { scrollTabs(by: -viewport.width * 0.75); return }
         if rightArrowRect.contains(p) { scrollTabs(by: viewport.width * 0.75); return }
         if let g = chipIndex(at: p).map({ chips[$0].group }) {

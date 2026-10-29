@@ -6,7 +6,7 @@ import AppKit
 // button. Updating builds origin/main in a git worktree of that repository kept in Application Support, so the
 // checkout you work in (its branch, its uncommitted changes) is never touched, and installs it with build.sh. Solanum
 // only restarts into it when asked: Restart Now on the "ready" card or in Settings, or a restart of your own (⇧⌘R).
-// While an update waits (the cards dismissed), the flower in the tab bar shows a badge and Settings › Preferences
+// While an update waits (the cards dismissed), the flower in the tab bar shows a badge and Settings › System
 // offers it. The build's output goes to ~/Library/Logs/Solanum/update.log.
 
 extension Notification.Name {
@@ -39,7 +39,7 @@ final class Updater {
         }
     }
 
-    private let repo = (Bundle.main.object(forInfoDictionaryKey: "SolanumRepo") as? String).flatMap { $0.isEmpty ? nil : $0 }
+    let repo = (Bundle.main.object(forInfoDictionaryKey: "SolanumRepo") as? String).flatMap { $0.isEmpty ? nil : $0 }
     let built = (Bundle.main.object(forInfoDictionaryKey: "SolanumCommit") as? String).flatMap { $0.isEmpty ? nil : $0 }
     /// Where updates are built: a worktree of the repository, on origin/main.
     static var worktree: String {

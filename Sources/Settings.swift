@@ -1,12 +1,12 @@
 import AppKit
 
 /// Settings (⌘,, the flower in the tab bar, or `settings` at a prompt): Appearance, Text & Size, Shortcuts,
-/// Aliases and Preferences. Drawn in the current theme; every change is written to the config file and applied live.
+/// Aliases, Preferences and System. Drawn in the current theme; every change is written to the config file and applied live.
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     static let shared = SettingsWindowController()
 
     enum Page: Int, CaseIterable {
-        case appearance, text, shortcuts, aliases, preferences
+        case appearance, text, shortcuts, aliases, preferences, system
 
         var title: String {
             switch self {
@@ -15,18 +15,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             case .shortcuts: return "Shortcuts"
             case .aliases: return "Aliases"
             case .preferences: return "Preferences"
+            case .system: return "System"
             }
         }
 
-        var subtitle: String {
-            switch self {
-            case .appearance: return "Pick a planet. Every open window updates instantly."
-            case .text: return "Font, size and cursor for every terminal."
-            case .shortcuts: return "Everything you can do from the keyboard."
-            case .aliases: return "Short names for commands you type often. Open tabs pick up changes at their next prompt."
-            case .preferences: return "How Solanum starts up, and where files moving between servers are kept on the way."
-            }
-        }
 
         var symbol: String {
             switch self {
@@ -35,6 +27,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             case .shortcuts: return "keyboard"
             case .aliases: return "chevron.left.forwardslash.chevron.right"
             case .preferences: return "gearshape"
+            case .system: return "info.circle"
             }
         }
     }
@@ -71,7 +64,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         updateObserver = NotificationCenter.default.addObserver(forName: .solanumUpdateChanged, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
             self.root.sidebar.needsDisplay = true
-            if self.page == .preferences, self.window?.isVisible == true { self.rebuild() }
+            if self.page == .system, self.window?.isVisible == true { self.rebuild() }
         }
         w.center()
     }
@@ -250,7 +243,7 @@ final class SettingsSidebar: NSView {
                                        withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: selected ? .semibold : .medium),
                                                         .foregroundColor: selected ? th.foreground : th.foreground.withAlphaComponent(0.8)])
             // An update waiting: "1" on the page that offers it, as on the flower in the tab bar.
-            if p == .preferences, Updater.shared.needsAttention {
+            if p == .system, Updater.shared.needsAttention {
                 let badge = NSRect(x: r.maxX - 28, y: r.midY - 8, width: 16, height: 16)
                 th.accent.setFill()
                 NSBezierPath(ovalIn: badge).fill()
@@ -260,10 +253,6 @@ final class SettingsSidebar: NSView {
             }
             y += 38
         }
-
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
-        ("Solanum \(version) · built locally" as NSString).draw(at: NSPoint(x: 18, y: bounds.height - 28),
-                                                                 withAttributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: th.dimText])
     }
 
     override func updateTrackingAreas() {
@@ -884,17 +873,290 @@ final class ThemeGridView: NSView {
     }
 }
 
+// MARK: - System
+
+/// The top of Settings › System: the flower, the name and the version, centered, as on a Mac's About page.
+final class SystemHeroView: NSView {
+    private let version: String
+    private let commit: String?
+    private static let flower = SolanumArt.flowerImage(size: 144)
+
+    init(version: String, commit: String?) {
+        self.version = version
+        self.commit = commit
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let th = Config.shared.theme
+        Self.flower.draw(in: NSRect(x: bounds.midX - 36, y: 0, width: 72, height: 72))
+        let name = NSAttributedString(string: "Solanum", attributes: [.font: NSFont.systemFont(ofSize: 22, weight: .bold), .foregroundColor: th.foreground])
+        let line = NSAttributedString(string: "Version \(version)" + (commit.map { " (\($0))" } ?? ""), attributes: [
+            .font: NSFont.systemFont(ofSize: 12.5), .foregroundColor: th.dimText])
+        var y: CGFloat = 84
+        for s in [name, line] {
+            let size = s.size()
+            s.draw(at: NSPoint(x: bounds.midX - size.width / 2, y: y))
+            y += size.height + 2
+        }
+    }
+}
+
+// MARK: - Window size
+
+/// The size new windows open at, set by dragging the edges or corners of a miniature Solanum window on a
+/// miniature of this screen. It snaps to whole columns × rows of text, which is what the config stores.
+final class WindowSizePicker: NSView {
+    private(set) var columns: Int
+    private(set) var rows: Int
+    /// Called when a drag ends.
+    var onChange: ((Int, Int) -> Void)?
+    /// The miniature window's edges, in flipped coordinates (minY is the top).
+    private struct Edges: OptionSet {
+        let rawValue: Int
+        static let minX = Edges(rawValue: 1), maxX = Edges(rawValue: 2), minY = Edges(rawValue: 4), maxY = Edges(rawValue: 8)
+    }
+    private var hoverEdges: Edges = []
+    private var drag: (edges: Edges, start: NSPoint, size: NSSize)?
+
+    init(columns: Int, rows: Int) {
+        self.columns = columns
+        self.rows = rows
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isFlipped: Bool { true }
+
+    private static var screen: NSScreen? { NSScreen.main ?? NSScreen.screens.first }
+
+    static func height(forWidth w: CGFloat) -> CGFloat {
+        guard let s = screen else { return 300 }
+        return (w - 8) * s.frame.height / s.frame.width + 8
+    }
+
+    /// The miniature screen, and how many of its points one of the real screen's points is.
+    private var screenRect: (rect: NSRect, scale: CGFloat) {
+        let full = Self.screen?.frame ?? NSRect(x: 0, y: 0, width: 1512, height: 982)
+        // Inset just enough for the corner brackets when the window fills the screen.
+        let w = bounds.width - 8
+        return (NSRect(x: 4, y: 4, width: w, height: w * full.height / full.width), w / full.width)
+    }
+
+    /// The part of the miniature not covered by the menu bar and Dock: where windows go.
+    private var usableRect: NSRect {
+        let (r, scale) = screenRect
+        guard let s = Self.screen else { return r }
+        let full = s.frame, vis = s.visibleFrame
+        return NSRect(x: r.minX + (vis.minX - full.minX) * scale, y: r.minY + (full.maxY - vis.maxY) * scale,
+                      width: vis.width * scale, height: vis.height * scale)
+    }
+
+    /// The miniature window, centered where new windows open.
+    private var windowRect: NSRect {
+        let size = TerminalWindowController.frameSize(columns: columns, rows: rows)
+        let vis = usableRect, scale = screenRect.scale
+        let w = min(size.width * scale, vis.width), h = min(size.height * scale, vis.height)
+        return NSRect(x: vis.midX - w / 2, y: vis.midY - h / 2, width: w, height: h)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let th = Config.shared.theme
+        // The screen.
+        let (scr, scale) = screenRect
+        let screenShape = NSBezierPath(roundedRect: scr, xRadius: 12, yRadius: 12)
+        NSColor.black.withAlphaComponent(0.22).setFill()
+        screenShape.fill()
+        th.border.setStroke()
+        screenShape.stroke()
+
+        // The window, with a few lines of text at the real font's size, so the miniature reads true to scale.
+        let win = windowRect
+        // Rounded like Solanum's own windows, but never so much the miniature turns into a pill.
+        let radius = min(16, win.width / 6, win.height / 6)
+        let shape = NSBezierPath(roundedRect: win, xRadius: radius, yRadius: radius)
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.45)
+        shadow.shadowBlurRadius = 8
+        shadow.shadowOffset = NSSize(width: 0, height: -3)
+        shadow.set()
+        th.background.setFill()
+        shape.fill()
+        NSGraphicsContext.restoreGraphicsState()
+        NSGraphicsContext.saveGraphicsState()
+        shape.addClip()
+        if let b2 = th.background2 { NSGradient(starting: th.background, ending: b2)?.draw(in: win, angle: -90) }
+        let bar = max(8, 40 * scale)
+        th.surface.withAlphaComponent(0.6).setFill()
+        NSRect(x: win.minX, y: win.minY, width: win.width, height: bar).fill()
+        NSRect(x: win.minX, y: win.maxY - max(4, StatusBarView.height * scale), width: win.width, height: max(4, StatusBarView.height * scale)).fill()
+        let dot = max(3, 12 * scale)
+        for (i, c) in [th.ansi[1], th.ansi[3], th.ansi[2]].enumerated() {
+            c.setFill()
+            NSBezierPath(ovalIn: NSRect(x: win.minX + max(dot * 1.2, radius) + CGFloat(i) * dot * 1.6, y: win.minY + (bar - dot) / 2, width: dot, height: dot)).fill()
+        }
+        let f = FontSet.current
+        let cw = f.cellW * scale, ch = f.cellH * scale
+        let dim = th.foreground.withAlphaComponent(0.45)
+        let lines: [[(Int, NSColor)]] = [
+            [(1, th.accent), (10, th.foreground)],
+            [(3, dim), (4, th.ansi[5]), (8, th.ansi[2])],
+            [(2, th.ansi[3]), (14, th.foreground), (7, th.ansi[4])],
+            [],
+            [(1, th.accent), (6, th.foreground), (1, th.foreground.withAlphaComponent(0.8))],
+        ]
+        var y = win.minY + bar + Config.shared.padding * scale
+        for line in lines where y + ch < win.maxY - StatusBarView.height * scale {
+            var x = win.minX + Config.shared.padding * scale
+            for (n, color) in line {
+                color.setFill()
+                NSBezierPath(roundedRect: NSRect(x: x, y: y + ch * 0.25, width: CGFloat(n) * cw, height: ch * 0.5), xRadius: 1, yRadius: 1).fill()
+                x += CGFloat(n + 1) * cw
+            }
+            y += ch
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        th.foreground.withAlphaComponent(0.25).setStroke()
+        shape.stroke()
+
+        // The size, in the middle of the window.
+        let size = TerminalWindowController.frameSize(columns: columns, rows: rows)
+        let title = NSAttributedString(string: "\(columns) × \(rows)", attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 15, weight: .semibold), .foregroundColor: th.foreground])
+        let sub = NSAttributedString(string: "columns × rows · \(Int(size.width)) × \(Int(size.height)) pt", attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular), .foregroundColor: th.dimText])
+        let ts = title.size(), ss = sub.size()
+        let top = win.midY - (ts.height + ss.height) / 2
+        title.draw(at: NSPoint(x: win.midX - ts.width / 2, y: top))
+        sub.draw(at: NSPoint(x: win.midX - ss.width / 2, y: top + ts.height))
+
+        // Brackets hugging the rounded corners, as on a crop frame, to show it can be pulled.
+        let o: CGFloat = 3
+        let outer = win.insetBy(dx: -o, dy: -o)
+        let arm = radius + o + 1
+        let corners: [(NSPoint, CGFloat, CGFloat)] = [
+            (NSPoint(x: outer.minX, y: outer.minY), 1, 1), (NSPoint(x: outer.maxX, y: outer.minY), -1, 1),
+            (NSPoint(x: outer.minX, y: outer.maxY), 1, -1), (NSPoint(x: outer.maxX, y: outer.maxY), -1, -1),
+        ]
+        let brackets = NSBezierPath()
+        for (c, sx, sy) in corners {
+            let along = NSPoint(x: c.x + sx * arm, y: c.y), down = NSPoint(x: c.x, y: c.y + sy * arm)
+            brackets.move(to: down)
+            brackets.appendArc(from: c, to: along, radius: radius + o)
+            brackets.line(to: along)
+        }
+        // Only the brackets light up while an edge is grabbed or about to be.
+        th.accent.setStroke()
+        brackets.lineWidth = drag != nil || !hoverEdges.isEmpty ? 3 : 2.5
+        brackets.lineCapStyle = .round
+        brackets.stroke()
+    }
+
+    /// Which edges of the miniature window a point grabs: those within a few points of it.
+    private func edges(at p: NSPoint) -> Edges {
+        let r = windowRect, band: CGFloat = 8
+        guard r.insetBy(dx: -band, dy: -band).contains(p) else { return [] }
+        var e: Edges = []
+        if abs(p.x - r.minX) < band { e.insert(.minX) } else if abs(p.x - r.maxX) < band { e.insert(.maxX) }
+        if abs(p.y - r.minY) < band { e.insert(.minY) } else if abs(p.y - r.maxY) < band { e.insert(.maxY) }
+        return e
+    }
+
+    private func cursor(for e: Edges) -> NSCursor {
+        let horizontal = e.contains(.minX) || e.contains(.maxX), vertical = e.contains(.minY) || e.contains(.maxY)
+        if #available(macOS 15, *) {
+            // Flipped: minY is the top.
+            let position: NSCursor.FrameResizePosition
+            switch (e.contains(.minX), e.contains(.maxX), e.contains(.minY), e.contains(.maxY)) {
+            case (true, _, true, _): position = .topLeft
+            case (_, true, true, _): position = .topRight
+            case (true, _, _, true): position = .bottomLeft
+            case (_, true, _, true): position = .bottomRight
+            case (true, _, _, _): position = .left
+            case (_, true, _, _): position = .right
+            case (_, _, true, _): position = .top
+            default: position = .bottom
+            }
+            return .frameResize(position: position, directions: .all)
+        }
+        return horizontal && vertical ? .crosshair : horizontal ? .resizeLeftRight : .resizeUpDown
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func mouseMoved(with e: NSEvent) {
+        guard drag == nil else { return }
+        let edges = edges(at: convert(e.locationInWindow, from: nil))
+        if edges != hoverEdges {
+            hoverEdges = edges
+            needsDisplay = true
+        }
+        (edges.isEmpty ? NSCursor.arrow : cursor(for: edges)).set()
+    }
+
+    override func mouseExited(with e: NSEvent) {
+        guard drag == nil else { return }
+        hoverEdges = []
+        needsDisplay = true
+        NSCursor.arrow.set()
+    }
+
+    override func mouseDown(with e: NSEvent) {
+        window?.makeFirstResponder(nil)
+        let p = convert(e.locationInWindow, from: nil)
+        let edges = edges(at: p)
+        guard !edges.isEmpty else { return }
+        drag = (edges, p, TerminalWindowController.frameSize(columns: columns, rows: rows))
+    }
+
+    /// The window stays centered, so pulling one edge moves the opposite one too.
+    override func mouseDragged(with e: NSEvent) {
+        guard let d = drag else { return }
+        let p = convert(e.locationInWindow, from: nil)
+        let scale = screenRect.scale
+        let dx = (p.x - d.start.x) * 2 / scale, dy = (p.y - d.start.y) * 2 / scale
+        var size = d.size
+        if d.edges.contains(.maxX) { size.width += dx } else if d.edges.contains(.minX) { size.width -= dx }
+        if d.edges.contains(.maxY) { size.height += dy } else if d.edges.contains(.minY) { size.height -= dy }
+        let vis = Self.screen?.visibleFrame.size ?? size
+        let most = TerminalWindowController.grid(fitting: vis)
+        let g = TerminalWindowController.grid(fitting: size)
+        let c = min(max(g.columns, 40), min(most.columns, 400)), r = min(max(g.rows, 10), min(most.rows, 200))
+        if c != columns || r != rows {
+            columns = c
+            rows = r
+            needsDisplay = true
+        }
+        cursor(for: d.edges).set()
+    }
+
+    override func mouseUp(with e: NSEvent) {
+        guard drag != nil else { return }
+        drag = nil
+        hoverEdges = edges(at: convert(e.locationInWindow, from: nil))
+        (hoverEdges.isEmpty ? NSCursor.arrow : cursor(for: hoverEdges)).set()
+        needsDisplay = true
+        onChange?(columns, rows)
+    }
+}
+
 // MARK: - Pages
 
 enum SettingsPages {
     static func make(_ page: SettingsWindowController.Page, controller: SettingsWindowController) -> SettingsPageView {
         let v = SettingsPageView()
         let editing = page == .appearance ? controller.editingTheme.flatMap { url in ThemeLibrary.custom.first { $0.file == url } } : nil
-        v.add(settingsLabel(editing == nil ? page.title : "Edit Theme", size: 26, weight: .bold), height: 32, gap: 4)
-        let sub = settingsLabel(editing == nil ? page.subtitle : "Changes save as you go and show in every window using this theme.", size: 13, dim: true)
-        sub.lineBreakMode = .byWordWrapping
-        sub.maximumNumberOfLines = 2
-        v.add(sub, height: 20, gap: 24)
+        v.add(settingsLabel(editing == nil ? page.title : "Edit Theme", size: 26, weight: .bold), height: 32, gap: 24)
         switch page {
         case .appearance:
             if let editing { ThemeEditor.build(v, controller, editing) } else { appearance(v, controller) }
@@ -902,6 +1164,7 @@ enum SettingsPages {
         case .shortcuts: shortcuts(v, controller)
         case .aliases: aliases(v, controller)
         case .preferences: preferences(v, controller)
+        case .system: system(v, controller)
         }
         return v
     }
@@ -909,7 +1172,7 @@ enum SettingsPages {
     // Updates: where Solanum stands against main in its repository, and what to do about it (see Updater).
     private static func updates(_ v: SettingsPageView, _ ctl: SettingsWindowController) {
         let u = Updater.shared
-        v.add(sectionHeader("Updates"), height: 16, gap: 10)
+        v.add(sectionHeader("Software Update"), height: 16, gap: 10)
         let status: SettingRow
         switch u.state {
         case .available(let commits):
@@ -1008,11 +1271,6 @@ enum SettingsPages {
         grid.add(newCard)
         let count = grid.cards.count, vsCount = vsGrid.cards.count
         v.add(grid, height: { ThemeGridView.height(forWidth: $0, count: count) }, gap: 24)
-        v.add(sectionHeader("Status Bar"), height: 16, gap: 10)
-        card(v, [
-            SettingRow(icon: "globe.americas", title: "Theme icon", detail: "An icon beside the theme name in the status bar; Outer Wilds themes show their planet. Off shows just the name.",
-                       accessory: toggle(c.themeIcon) { [weak ctl] on in Config.shared.themeIcon = on; ctl?.commit() }),
-        ])
         v.add(sectionHeader("VS Code"), height: 16, gap: 10)
         v.add(vsGrid, height: { ThemeGridView.height(forWidth: $0, count: vsCount) }, gap: 30)
 
@@ -1026,6 +1284,11 @@ enum SettingsPages {
             SettingRow(icon: "drop", title: "Blur behind the window", detail: "Frosted glass when the background is see-through.",
                        accessory: toggle(c.blur) { [weak ctl] on in Config.shared.blur = on; ctl?.commit() }),
             SettingRow(icon: "rectangle.inset.filled", title: "Padding", detail: "Space between the text and the window edge.", accessory: padding),
+        ])
+        v.add(sectionHeader("Status Bar"), height: 16, gap: 10)
+        card(v, [
+            SettingRow(icon: "globe.americas", title: "Theme icon", detail: "An icon beside the theme name in the status bar; Outer Wilds themes show their planet. Off shows just the name.",
+                       accessory: toggle(c.themeIcon) { [weak ctl] on in Config.shared.themeIcon = on; ctl?.commit() }),
         ])
 
         let buttons = NSStackView(views: [
@@ -1044,27 +1307,55 @@ enum SettingsPages {
         v.add(buttons, height: 20, gap: 0)
     }
 
-    // Preferences: startup, notifications and file transfers.
+    // Preferences: startup, window size, tabs and file transfers.
     private static func preferences(_ v: SettingsPageView, _ ctl: SettingsWindowController) {
         let c = Config.shared
-        updates(v, ctl)
-        v.add(sectionHeader("Workspace"), height: 16, gap: 10)
-        let notify = ThemedField(String(Int(c.notifyAfterSeconds)), placeholder: "10")
-        notify.alignment = .right
-        notify.onCommit = { [weak ctl] s in if let n = Double(s) { Config.shared.notifyAfterSeconds = max(0, n); ctl?.commit() } }
-        let newTabFolder = ChoicePopup(["Current Folder", "Home Folder"], selected: c.newTabFolder == "home" ? "Home Folder" : "Current Folder")
-        newTabFolder.onChange = { [weak ctl] s in Config.shared.newTabFolder = s == "Home Folder" ? "home" : "current"; ctl?.commit() }
+        v.add(sectionHeader("Startup"), height: 16, gap: 10)
         card(v, [
             SettingRow(icon: "macwindow.on.rectangle", title: "Reload workspace every time",
                        detail: "Off: Solanum starts fresh, and offers the last session for a minute.",
                        accessory: toggle(c.restoreSession) { [weak ctl] on in Config.shared.restoreSession = on; ctl?.commit() }),
             SettingRow(icon: "text.alignleft", title: "Include recent output", detail: "Bring back each tab's last few thousand lines.",
                        accessory: toggle(c.restoreScrollback) { [weak ctl] on in Config.shared.restoreScrollback = on; ctl?.commit() }),
-            SettingRow(icon: "bell", title: "Notify after (seconds)", detail: "When a command in a background tab runs at least this long. 0 turns it off.",
-                       accessory: notify, width: 70),
+        ])
+
+        v.add(sectionHeader("Window Size"), height: 16, gap: 10)
+        let picker = WindowSizePicker(columns: c.windowColumns, rows: c.windowRows)
+        picker.onChange = { [weak ctl] cols, rows in
+            Config.shared.windowColumns = cols
+            Config.shared.windowRows = rows
+            ctl?.commit()
+        }
+        v.add(picker, height: { WindowSizePicker.height(forWidth: $0) }, gap: 12)
+        let sizeButtons = NSStackView(views: [
+            linkButton("Reset to Default") {
+                Config.shared.windowColumns = 110
+                Config.shared.windowRows = 32
+                Config.shared.commit()
+            },
+        ])
+        sizeButtons.orientation = .horizontal
+        sizeButtons.spacing = 18
+        sizeButtons.alignment = .centerY
+        sizeButtons.distribution = .gravityAreas
+        v.add(sizeButtons, height: 20, gap: 30)
+
+        v.add(sectionHeader("Tabs"), height: 16, gap: 10)
+        let notify = ThemedField(String(Int(c.notifyAfterSeconds)), placeholder: "10")
+        notify.alignment = .right
+        notify.onCommit = { [weak ctl] s in if let n = Double(s) { Config.shared.notifyAfterSeconds = max(0, n); ctl?.commit() } }
+        let newTabFolder = ChoicePopup(["Current Folder", "Home Folder"], selected: c.newTabFolder == "home" ? "Home Folder" : "Current Folder")
+        newTabFolder.onChange = { [weak ctl] s in Config.shared.newTabFolder = s == "Home Folder" ? "home" : "current"; ctl?.commit() }
+        let lines = ThemedField(String(c.scrollback), placeholder: "10000")
+        lines.alignment = .right
+        lines.onCommit = { [weak ctl] s in if let n = Int(s) { Config.shared.scrollback = min(max(n, 100), 200_000); ctl?.commit() } }
+        card(v, [
             SettingRow(icon: "plus.rectangle.on.rectangle", title: "New tabs open in",
                        detail: "Where ⌘T starts. ⌥⌘T always opens the current folder, in the tab's group.",
                        accessory: newTabFolder, width: 150),
+            SettingRow(icon: "bell", title: "Notify after (seconds)", detail: "When a command in a background tab runs at least this long. 0 turns it off.",
+                       accessory: notify, width: 70),
+            SettingRow(icon: "scroll", title: "Lines kept per tab", detail: "Older output is dropped past this.", accessory: lines, width: 90),
         ])
 
         v.add(sectionHeader("File Transfers"), height: 16, gap: 10)
@@ -1109,7 +1400,46 @@ enum SettingsPages {
         v.add(buttons, height: 20, gap: 0)
     }
 
-    // Text & Size: font, size, spacing, cursor, scrollback.
+    // System: what this copy of Solanum is and where it came from, then software updates.
+    private static func system(_ v: SettingsPageView, _ ctl: SettingsWindowController) {
+        let u = Updater.shared
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "1.0"
+        let commit = u.built.map { String($0.prefix(7)) }
+        let builtAt = (Bundle.main.executableURL.flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.modificationDate] } as? Date)
+            .map { DateFormatter.localizedString(from: $0, dateStyle: .medium, timeStyle: .short) }
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+
+        v.add(SystemHeroView(version: version, commit: commit), height: 130, gap: 22)
+        v.add(sectionHeader("About"), height: 16, gap: 10)
+        func value(_ s: String, mono: Bool = false) -> NSTextField {
+            let l = settingsLabel(s, size: 12.5, dim: true, mono: mono)
+            l.alignment = .right
+            l.lineBreakMode = .byTruncatingMiddle
+            return l
+        }
+        let home = NSHomeDirectory()
+        card(v, [
+            SettingRow(title: "Version", accessory: value(version)),
+            SettingRow(title: "Build", accessory: value(commit ?? "Unknown", mono: true)),
+            SettingRow(title: "Built", accessory: value(builtAt ?? "Unknown")),
+            SettingRow(title: "Built from", accessory: value(u.repo.map { FilePaths.abbreviate($0, home: home) } ?? "Unknown", mono: true)),
+            SettingRow(title: "Installed at", accessory: value(FilePaths.abbreviate(Bundle.main.bundlePath, home: home), mono: true)),
+            SettingRow(title: "macOS", accessory: value("\(os.majorVersion).\(os.minorVersion)" + (os.patchVersion > 0 ? ".\(os.patchVersion)" : ""))),
+        ], gap: 12)
+        let links = NSStackView(views: [
+            linkButton("Open Config File") { (NSApp.delegate as? AppDelegate)?.openConfigFile(nil) },
+            linkButton("Show Solanum in Finder") { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) },
+        ])
+        links.orientation = .horizontal
+        links.spacing = 18
+        links.alignment = .centerY
+        links.distribution = .gravityAreas
+        v.add(links, height: 20, gap: 30)
+        updates(v, ctl)
+    }
+
+    // Text & Size: font, size, spacing and cursor.
     private static func text(_ v: SettingsPageView, _ ctl: SettingsWindowController) {
         let c = Config.shared
         var families = Set<String>()
@@ -1141,13 +1471,7 @@ enum SettingsPages {
             SettingRow(icon: "character.cursor.ibeam", title: "Style", accessory: style, width: 130),
             SettingRow(icon: "light.max", title: "Blink",
                        accessory: toggle(c.cursorBlink) { [weak ctl] on in Config.shared.cursorBlink = on; ctl?.commit() }),
-        ])
-
-        v.add(sectionHeader("Scrollback"), height: 16, gap: 10)
-        let lines = ThemedField(String(c.scrollback), placeholder: "10000")
-        lines.alignment = .right
-        lines.onCommit = { [weak ctl] s in if let n = Int(s) { Config.shared.scrollback = min(max(n, 100), 200_000); ctl?.commit() } }
-        card(v, [SettingRow(icon: "scroll", title: "Lines kept per tab", detail: "Older output is dropped past this.", accessory: lines, width: 90)], gap: 0)
+        ], gap: 0)
     }
 
     // Shortcuts: keyboard options, then every menu shortcut and the ones that live outside menus.
@@ -1167,9 +1491,12 @@ enum SettingsPages {
                        accessory: toggle(c.optionAsMeta) { [weak ctl] on in Config.shared.optionAsMeta = on; ctl?.commit() }),
             SettingRow(icon: "doc.on.clipboard", title: "Copy on select",
                        accessory: toggle(c.copyOnSelect) { [weak ctl] on in Config.shared.copyOnSelect = on; ctl?.commit() }),
-            SettingRow(icon: "rectangle.topthird.inset.filled", title: "Quick terminal hotkey", detail: "From any app, e.g. ctrl+`  or  alt+space.",
+        ])
+        v.add(sectionHeader("Quick Terminal"), height: 16, gap: 10)
+        card(v, [
+            SettingRow(icon: "rectangle.topthird.inset.filled", title: "Hotkey", detail: "From any app, e.g. ctrl+`  or  alt+space.",
                        accessory: hotkey, width: 120),
-            SettingRow(icon: "eye.slash", title: "Hide the quick terminal when it loses focus",
+            SettingRow(icon: "eye.slash", title: "Hide when it loses focus",
                        accessory: toggle(c.quickTerminalAutoHide) { [weak ctl] on in Config.shared.quickTerminalAutoHide = on; ctl?.commit() }),
         ])
 
@@ -1222,30 +1549,34 @@ enum SettingsPages {
         return out + (key == "space" ? "Space" : key.uppercased())
     }
 
-    // Aliases: name → command rows, editable in place.
+    // Aliases: name → command rows, editable in place, and a button for another.
     private static func aliases(_ v: SettingsPageView, _ ctl: SettingsWindowController) {
         var list = AliasStore.shared.aliases
-        let c = SettingsCard()
-        let th = Config.shared.theme
 
         func save() { AliasStore.shared.set(list) }
 
-        for i in list.indices {
-            let row = AliasRowView(name: list[i].name, command: list[i].command)
-            row.onChange = { name, command in
-                guard list.indices.contains(i) else { return }
-                list[i] = AliasStore.Alias(name: name, command: command)
-                save()
+        if !list.isEmpty {
+            v.add(AliasColumnsHeader(), height: 16, gap: 8)
+            let c = SettingsCard()
+            for i in list.indices {
+                let row = AliasRowView(name: list[i].name, command: list[i].command)
+                row.onChange = { name, command in
+                    guard list.indices.contains(i) else { return }
+                    list[i] = AliasStore.Alias(name: name, command: command)
+                    save()
+                }
+                row.onRemove = { [weak ctl] in
+                    guard list.indices.contains(i) else { return }
+                    list.remove(at: i)
+                    save()
+                    ctl?.rebuild()
+                }
+                c.add(row)
             }
-            row.onRemove = { [weak ctl] in
-                guard list.indices.contains(i) else { return }
-                list.remove(at: i)
-                save()
-                ctl?.rebuild()
-            }
-            c.add(row)
+            v.add(c, height: c.totalHeight, gap: 14)
         }
-        let add = SettingRow(title: list.isEmpty ? "No aliases yet" : "", accessory: linkButton("＋ Add Alias") { [weak ctl] in
+        let add = NewAliasButton()
+        add.onCreate = { [weak ctl] in
             list.append(AliasStore.Alias(name: "", command: ""))
             AliasStore.shared.set(list)
             ctl?.rebuild()
@@ -1254,16 +1585,8 @@ enum SettingsPages {
                 let fields = ctl?.window?.contentView.map { allFields(in: $0) } ?? []
                 if let f = fields.dropLast().last { ctl?.window?.makeFirstResponder(f) }
             }
-        })
-        c.add(add)
-        v.add(c, height: c.totalHeight, gap: 14)
-
-        let hint = settingsLabel("Type the alias at a prompt, e.g. c to start Claude. Aliases apply in Solanum's local shells, not over ssh.",
-                         size: 11.5, dim: true)
-        hint.lineBreakMode = .byWordWrapping
-        hint.maximumNumberOfLines = 2
-        hint.textColor = th.dimText
-        v.add(hint, height: 32, gap: 0)
+        }
+        v.add(add, height: 46, gap: 0)
     }
 
     private static func allFields(in view: NSView) -> [NSTextField] {
@@ -1332,28 +1655,35 @@ final class ClosureButton: NSButton {
 }
 
 /// One alias: name field, arrow, command field and a remove button. Invalid names turn red.
+/// One alias: its name, an arrow, and the command. The remove button shows on hover.
 final class AliasRowView: SettingRow {
     var onChange: ((String, String) -> Void)?
     var onRemove: (() -> Void)?
     private let nameField: ThemedField
     private let commandField: ThemedField
-    private let arrow = NSTextField(labelWithString: "→")
+    private let arrow = NSImageView()
     private let remove: NSButton
+    private var hovering = false { didSet { remove.isHidden = !hovering } }
+
+    /// Where the name and command fields start, shared with the column labels above the card.
+    static let nameX: CGFloat = 18, nameWidth: CGFloat = 120
+    static var commandX: CGFloat { nameX + nameWidth + 32 }
 
     init(name: String, command: String) {
         nameField = ThemedField(name, placeholder: "c")
         commandField = ThemedField(command, placeholder: "claude")
-        remove = NSButton(image: NSImage(systemSymbolName: "minus.circle.fill", accessibilityDescription: "Remove") ?? NSImage(),
-                          target: nil, action: nil)
+        remove = NSButton(image: NSImage(systemSymbolName: "trash", accessibilityDescription: "Remove") ?? NSImage(), target: nil, action: nil)
         super.init(title: "")
         let th = Config.shared.theme
-        arrow.textColor = th.dimText
-        arrow.font = .systemFont(ofSize: 13, weight: .medium)
+        let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold).applying(.init(paletteColors: [th.accent]))
+        arrow.image = NSImage(systemSymbolName: "arrow.right", accessibilityDescription: nil)?.withSymbolConfiguration(cfg)
         remove.isBordered = false
         remove.contentTintColor = th.dimText
         remove.toolTip = "Remove this alias"
         remove.target = self
         remove.action = #selector(removeTapped)
+        remove.isHidden = true
+        nameField.font = .monospacedSystemFont(ofSize: 12.5, weight: .semibold)
         for f in [nameField, commandField] {
             f.onEdit = { [weak self] _ in self?.edited() }
         }
@@ -1366,16 +1696,26 @@ final class AliasRowView: SettingRow {
     override func layout() {
         super.layout()
         let y = (bounds.height - 26) / 2
-        nameField.frame = NSRect(x: 18, y: y, width: 110, height: 26)
-        arrow.frame = NSRect(x: 136, y: (bounds.height - 18) / 2, width: 20, height: 18)
+        nameField.frame = NSRect(x: Self.nameX, y: y, width: Self.nameWidth, height: 26)
+        arrow.frame = NSRect(x: Self.nameX + Self.nameWidth + 8, y: (bounds.height - 16) / 2, width: 16, height: 16)
         remove.frame = NSRect(x: bounds.width - 38, y: (bounds.height - 22) / 2, width: 22, height: 22)
-        commandField.frame = NSRect(x: 160, y: y, width: bounds.width - 160 - 48, height: 26)
+        commandField.frame = NSRect(x: Self.commandX, y: y, width: bounds.width - Self.commandX - 48, height: 26)
     }
+
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with e: NSEvent) { hovering = true }
+    override func mouseExited(with e: NSEvent) { hovering = false }
 
     private func validate() {
         let name = nameField.stringValue
         let ok = name.isEmpty || AliasStore.isValidName(name)
-        nameField.textColor = ok ? Config.shared.theme.foreground : Config.shared.theme.red
+        nameField.textColor = ok ? Config.shared.theme.accent : Config.shared.theme.red
         nameField.toolTip = ok ? nil : "Use letters, numbers, _ . or - (no spaces)."
     }
 
@@ -1385,4 +1725,53 @@ final class AliasRowView: SettingRow {
     }
 
     @objc private func removeTapped() { onRemove?() }
+}
+
+/// "Alias" and "Command" over their columns in the card below.
+final class AliasColumnsHeader: NSView {
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
+                                                    .foregroundColor: Config.shared.theme.dimText, .kern: 0.8]
+        ("ALIAS" as NSString).draw(at: NSPoint(x: AliasRowView.nameX + 2, y: 0), withAttributes: attrs)
+        ("COMMAND" as NSString).draw(at: NSPoint(x: AliasRowView.commandX + 2, y: 0), withAttributes: attrs)
+    }
+}
+
+/// A dashed row that adds an alias, like the New Theme card.
+final class NewAliasButton: NSView {
+    var onCreate: (() -> Void)?
+    private var hovering = false { didSet { needsDisplay = true } }
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let th = Config.shared.theme
+        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 11, yRadius: 11)
+        (hovering ? th.accent.withAlphaComponent(0.10) : th.surface.withAlphaComponent(0.25)).setFill()
+        shape.fill()
+        shape.setLineDash([5, 4], count: 2, phase: 0)
+        shape.lineWidth = 1.5
+        (hovering ? th.accent : th.foreground.withAlphaComponent(0.25)).setStroke()
+        shape.stroke()
+        let color = hovering ? th.accent : th.dimText
+        let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold).applying(.init(paletteColors: [color]))
+        let img = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)?.withSymbolConfiguration(cfg)
+        let title = NSAttributedString(string: "New Alias", attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: color])
+        let iw = img?.size.width ?? 0, ts = title.size()
+        let x = bounds.midX - (iw + 7 + ts.width) / 2
+        img?.draw(in: NSRect(x: x, y: bounds.midY - (img?.size.height ?? 0) / 2, width: iw, height: img?.size.height ?? 0))
+        title.draw(at: NSPoint(x: x + iw + 7, y: bounds.midY - ts.height / 2))
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with e: NSEvent) { hovering = true }
+    override func mouseExited(with e: NSEvent) { hovering = false }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+    override func mouseDown(with e: NSEvent) { onCreate?() }
 }
