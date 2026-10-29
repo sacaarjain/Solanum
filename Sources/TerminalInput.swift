@@ -19,6 +19,11 @@ extension TerminalView {
         // too (as in a text field), rather than the line or word they delete otherwise.
         if (event.keyCode == 51 || event.keyCode == 117) && plainMods.subtracting([.command, .option]).isEmpty
             && selection != nil && deleteSelectedInput() { return }
+        // ⌃V is Claude Code's own image paste (it reads the clipboard itself): keep a copy for the thumbnail, as ⌘V does.
+        if event.keyCode == 9 && plainMods == .control && pty?.foregroundIsClaudeCode == true
+            && NSPasteboard.general.availableType(from: [.png, .tiff, .fileURL]) != nil {
+            notePastedImage(.general)
+        }
         // ⌃H opens searchable command history at a shell prompt (full-screen programs still get ⌃H).
         if event.keyCode == 4 && plainMods == .control && canShowHistory {
             showHistory(nil)

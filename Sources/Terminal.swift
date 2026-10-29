@@ -80,10 +80,13 @@ protocol TerminalDelegate: AnyObject {
     func terminalPixelSize(_ t: Terminal) -> (width: Int, height: Int)
     /// The shell integration's `settings` command.
     func terminalOpenSettings(_ t: Terminal)
+    /// The ssh session ended with `status` (announced by the ssh wrapper before it clears `sshControlPath`).
+    func terminalSSHExited(_ t: Terminal, status: Int)
 }
 
 extension TerminalDelegate {
     func terminalOpenSettings(_ t: Terminal) {}
+    func terminalSSHExited(_ t: Terminal, status: Int) {}
 }
 
 final class Terminal {
@@ -998,6 +1001,8 @@ final class Terminal {
             } else if rest.hasPrefix("SolanumSSHArgs=") {
                 let b64 = String(rest.dropFirst("SolanumSSHArgs=".count))
                 sshArgs = Data(base64Encoded: b64).map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
+            } else if rest.hasPrefix("SolanumSSHExit=") {
+                if let status = Int(rest.dropFirst("SolanumSSHExit=".count)) { delegate?.terminalSSHExited(self, status: status) }
             } else if rest.hasPrefix("SolanumSSH=") {
                 let path = String(rest.dropFirst("SolanumSSH=".count))
                 sshControlPath = path.isEmpty ? nil : path

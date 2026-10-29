@@ -70,6 +70,9 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
     private var gitStatus: GitTreeStatus?
     private var gitRunning = false
     private var gitAgain = false
+    /// Folders being listed again (by file system and path), and whether another listing was asked for meanwhile:
+    /// it runs once this one is back, so a slow or stalled connection doesn't pile up requests.
+    private var listing: [String: Bool] = [:]
     /// Every 10 s while on screen: ssh folders are listed again (this Mac's report changes as they happen)
     /// and git status is re-read.
     private var pollTimer: Timer?
@@ -681,8 +684,15 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
             return
         }
         let fs = self.fs
+        let key = "\(ObjectIdentifier(fs).hashValue)\n\(dir)"
+        guard listing[key] == nil else { listing[key] = true; return }
+        listing[key] = false
         fs.list(dir) { [weak self] result in
-            guard let self, fs === self.fs, let items = try? result.get() else { return }
+            guard let self else { return }
+            if self.listing.removeValue(forKey: key) == true, fs === self.fs {
+                DispatchQueue.main.async { self.refreshFolder(dir) }
+            }
+            guard fs === self.fs, let items = try? result.get() else { return }
             guard parent != nil || dir == self.rootPath else { return }
             let old = parent?.children ?? self.rootNodes
             let oldShown = parent?.shown ?? self.shownRoot
