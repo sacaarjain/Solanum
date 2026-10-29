@@ -192,9 +192,10 @@ extension TerminalView {
 
     func drawTurnBackground(_ ctx: CGContext) {
         guard let t = selectedTurn, let (first, last) = visibleRows(t) else { return }
-        let rect = CGRect(x: 0, y: rowY(first) - 2, width: bounds.width, height: CGFloat(last - first + 1) * fonts.cellH + 4)
+        // Inside the outline drawn by drawTurnChrome, not past it.
         ctx.setFillColor(palette.theme.accent.withAlphaComponent(0.09).cgColor)
-        ctx.fill(rect)
+        ctx.addPath(selectionOutline(top: rowY(first) - 2, height: CGFloat(last - first + 1) * fonts.cellH + 4))
+        ctx.fillPath()
     }
 
     /// Separators above each prompt, the selection outline, and "lines hidden" chips.
@@ -213,8 +214,7 @@ extension TerminalView {
             let height = CGFloat(last - first + 1) * fonts.cellH + 4
             ctx.setStrokeColor(th.accent.withAlphaComponent(0.85).cgColor)
             ctx.setLineWidth(1.5)
-            let r = CGRect(x: 3, y: top + 1, width: bounds.width - 6, height: height - 2)
-            ctx.addPath(CGPath(roundedRect: r, cornerWidth: 6, cornerHeight: 6, transform: nil))
+            ctx.addPath(selectionOutline(top: top, height: height))
             ctx.strokePath()
             if rowMap[first] == t.promptLine, let b = terminal.blockContaining(t.promptLine) {
                 let total = terminal.agentTurns(in: b).count

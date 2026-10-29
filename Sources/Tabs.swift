@@ -569,14 +569,8 @@ final class StatusBarView: NSView {
     /// Each sidebar's file transfer in progress ("Copying a.txt to host:~/dir"), shown at the right.
     private var transfers: [ObjectIdentifier: String] = [:]
     private var transferRect: CGRect = .null
-    /// The little planet with the ship orbiting it (see `PlanetArt.drawCompanion`), left of the theme name.
-    private var companionRect: CGRect = .null
-    private static let companionSize = CGSize(width: 24, height: 18)
-    private var companionPhase: CGFloat = 0.6
-    private var companionTimer: Timer?
-    private var companionTick = Date()
-    /// Whether anything in the window is running (a command, or Claude working): the ship speeds up.
-    var companionBusy: (() -> Bool)?
+    /// A planet theme's planet, left of the theme name.
+    private static let planetSide: CGFloat = 18
     /// Solanum Default's mark beside its name: the flower in outline, purple while the theme button is hovered.
     private static let flowerSide: CGFloat = 16
 
@@ -594,59 +588,15 @@ final class StatusBarView: NSView {
         ctx.restoreGState()
     }
 
-    private func drawCompanion() {
-        let th = Config.shared.theme
-        guard let planet = PlanetArt.planet(for: th), let ctx = NSGraphicsContext.current?.cgContext else { return }
+    private func drawPlanet(_ planet: PlanetArt.Planet, x: CGFloat) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         // The art is drawn y-up.
         ctx.saveGState()
         ctx.translateBy(x: 0, y: bounds.height)
         ctx.scaleBy(x: 1, y: -1)
-        let r = CGRect(x: companionRect.minX, y: bounds.height - companionRect.maxY, width: companionRect.width, height: companionRect.height)
-        PlanetArt.drawCompanion(planet, in: ctx, rect: r, phase: companionPhase, ship: th.accent, trail: th.foreground)
+        let s = Self.planetSide
+        PlanetArt.draw(planet, in: ctx, rect: CGRect(x: x, y: bounds.height - centerY - s / 2, width: s, height: s), icon: true)
         ctx.restoreGState()
-    }
-
-    /// Runs the orbit while the companion shows: a slow drift when idle (few frames), a quick orbit when busy.
-    private func updateCompanionTimer() {
-        let busy = companionBusy?() ?? false
-        let interval = busy ? 1.0 / 30 : 1.0 / 8
-        let wanted = !companionRect.isNull && window?.occlusionState.contains(.visible) == true
-        if !wanted {
-            companionTimer?.invalidate()
-            companionTimer = nil
-            return
-        }
-        if let t = companionTimer, abs(t.timeInterval - interval) < 0.001 { return }
-        companionTimer?.invalidate()
-        companionTick = Date()
-        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            let now = Date()
-            let dt = CGFloat(now.timeIntervalSince(self.companionTick))
-            self.companionTick = now
-            let busy = self.companionBusy?() ?? false
-            self.companionPhase = (self.companionPhase + dt * (busy ? 2.4 : 0.32)).truncatingRemainder(dividingBy: 2 * .pi)
-            self.setNeedsDisplay(self.companionRect.insetBy(dx: -2, dy: -2))
-        }
-        RunLoop.main.add(t, forMode: .common)
-        companionTimer = t
-    }
-
-    private var occlusionObserver: NSObjectProtocol?
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        occlusionObserver.map(NotificationCenter.default.removeObserver)
-        occlusionObserver = nil
-        guard let window else { companionTimer?.invalidate(); companionTimer = nil; return }
-        // Hidden or minimized windows stop the orbit; showing again redraws, which restarts it.
-        occlusionObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window,
-                                                                   queue: .main) { [weak self] _ in
-            guard let self else { return }
-            if !self.companionRect.isNull { self.updateCompanionTimer() }
-            self.needsDisplay = true
-        }
-        needsDisplay = true
     }
 
     var devTransfer: String? { transfers.values.sorted().first }   // dev aid (DevTools print-rows)
@@ -709,14 +659,15 @@ final class StatusBarView: NSView {
     }
 
     /// Draws a hoverable icon (+ optional text) button starting at `x`; returns where the next item goes.
-    /// `iconSpace` leaves that much room for an icon drawn by the caller instead of `icon`.
+    /// `iconSpace` leaves that much room for an icon drawn by the caller instead of `icon` (0: no icon).
     private func drawButton(_ kind: Button, at x: CGFloat, icon: String, color: NSColor, text: String? = nil,
                             textAttrs: [NSAttributedString.Key: Any] = [:], maxTextWidth: CGFloat = 220,
                             iconSpace: CGFloat? = nil) -> CGFloat {
         let img = iconSpace == nil ? symbol(icon, color) : nil
         let iw = iconSpace ?? img?.size.width ?? 0
         let tw = text.map { min(maxTextWidth, ($0 as NSString).size(withAttributes: textAttrs).width) } ?? 0
-        let w = text == nil ? 22 : 6 + iw + 4 + tw + 7
+        let gap: CGFloat = iw > 0 ? 4 : 0
+        let w = text == nil ? 22 : 6 + iw + gap + tw + 7
         let r = NSRect(x: x, y: 2, width: w, height: bounds.height - 6)
         if measuring { return r.maxX + 2 }
         buttons.append((r, kind))
@@ -734,25 +685,13 @@ final class StatusBarView: NSView {
             var attrs = textAttrs
             attrs[.paragraphStyle] = para
             let font = textAttrs[.font] as? NSFont ?? barFont
-            (text as NSString).draw(in: textFrame(font, x: r.minX + 6 + iw + 4, width: tw + 1), withAttributes: attrs)
+            (text as NSString).draw(in: textFrame(font, x: r.minX + 6 + iw + gap, width: tw + 1), withAttributes: attrs)
         }
         return r.maxX + 2
     }
 
     override func draw(_ dirtyRect: NSRect) {
         let th = Config.shared.theme
-        // An orbit frame: only the companion changed.
-        if !companionRect.isNull, companionRect.insetBy(dx: -2, dy: -2).contains(dirtyRect) {
-            th.tabBarTint.setFill()
-            dirtyRect.fill()
-            if hoverButton == .theme, !themeRect.isNull {
-                th.foreground.withAlphaComponent(0.1).setFill()
-                NSBezierPath(roundedRect: themeRect, xRadius: 4, yRadius: 4).fill()
-            }
-            drawCompanion()
-            updateCompanionTimer()
-            return
-        }
         th.tabBarTint.setFill()
         bounds.fill()
         th.border.setFill()
@@ -770,25 +709,21 @@ final class StatusBarView: NSView {
             let attrs: [NSAttributedString.Key: Any] = [.font: font, .kern: 0.8,
                                                         .foregroundColor: hoverButton == .theme ? th.foreground : th.dimText]
             let name = th.name.uppercased()
-            // A planet theme's companion stands in for the palette icon, centered on the label like the icon was;
-            // Solanum Default gets the flower.
-            let companion = Config.shared.planetCompanion && PlanetArt.planet(for: th) != nil
-            let flower = Config.shared.planetCompanion && !th.isCustom && th.name == ThemeLibrary.solanumDefault.name
-            let iw = companion ? Self.companionSize.width : flower ? Self.flowerSide : symbol("paintpalette", th.dimText)?.size.width ?? 0
-            let w = 6 + iw + 4 + min(200, (name as NSString).size(withAttributes: attrs).width) + 7
+            // A planet theme's planet stands in for the palette icon, centered on the label like the icon was;
+            // Solanum Default gets the flower. With the theme icon off, just the name.
+            let showIcon = Config.shared.themeIcon
+            let planet = showIcon ? PlanetArt.planet(for: th) : nil
+            let flower = showIcon && !th.isCustom && th.name == ThemeLibrary.solanumDefault.name
+            let iw = !showIcon ? 0 : planet != nil ? Self.planetSide : flower ? Self.flowerSide
+                : symbol("paintpalette", th.dimText)?.size.width ?? 0
+            let w = 6 + iw + (iw > 0 ? 4 : 0) + min(200, (name as NSString).size(withAttributes: attrs).width) + 7
             let start = bounds.width - (showsRightSidebarToggle ? 36 : 8) - w
             _ = drawButton(.theme, at: start, icon: "paintpalette", color: hoverButton == .theme ? th.accent : th.dimText,
-                           text: name, textAttrs: attrs, maxTextWidth: 200, iconSpace: companion || flower ? iw : nil)
+                           text: name, textAttrs: attrs, maxTextWidth: 200, iconSpace: !showIcon || planet != nil || flower ? iw : nil)
             themeRect = CGRect(x: start, y: 2, width: w, height: bounds.height - 6)
-            if companion {
-                let s = Self.companionSize
-                companionRect = CGRect(x: start + 6, y: centerY - s.height / 2, width: s.width, height: s.height)
-                drawCompanion()
-            }
+            if let planet { drawPlanet(planet, x: start + 6) }
             if flower { drawFlowerOutline(x: start + 6) }
         }
-        if !showsThemeName || !(Config.shared.planetCompanion && PlanetArt.planet(for: th) != nil) { companionRect = .null }
-        updateCompanionTimer()
         let rightItems = themeRect
         // A transfer in progress, right-aligned before the theme name or the right column's folder.
         transferRect = .null
@@ -988,7 +923,7 @@ final class StatusBarView: NSView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
@@ -1312,7 +1247,11 @@ final class WindowRootView: NSView {
             content.frame = columnArea
             content.subviews.first?.frame = content.bounds
         }
-        for c in columns { c.content.subviews.first?.frame = c.content.bounds }
+        for c in columns {
+            c.content.subviews.first?.frame = c.content.bounds
+            // Its tabs line up with the content (see TabBarView.computeRects), which moves with the sidebars.
+            c.tabBar.needsDisplay = true
+        }
         statusBar.frame = NSRect(x: 0, y: bounds.height - statusH, width: barSplitX, height: statusH)
         rightStatusBar.frame = NSRect(x: barSplitX, y: bounds.height - statusH, width: bounds.width - barSplitX, height: statusH)
         dropOverlay.frame = bounds
@@ -1461,9 +1400,6 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         bar.onToggleFileSidebar = { [weak self] in self?.toggleFileSidebar(nil) }
         bar.onShowHosts = { [weak self] at in self?.showHostsMenu(at: at) }
         bar.showsThemeName = true
-        bar.companionBusy = { [weak self] in
-            self?.allTabs.contains { $0.isRunningCommand || $0.agent?.status == .working } ?? false
-        }
         bar.onThemeMenu = { [weak bar] at in
             guard let bar else { return }
             let menu = NSMenu()
@@ -1570,7 +1506,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         defer { if switched { sidebar.refreshVisible() } }
         let fs = tab.browseFS
         let connecting = tab.browseRemote.map { !$0.isReady } ?? false
-        sidebar.setTab(name: tab.customTitle, folder: connecting ? nil : tab.browseDirectory, home: fs.home, agent: tab.agent)
+        sidebar.setTab(name: tab.customTitle, folder: connecting ? nil : tab.browseDirectory, home: fs.home)
         sidebar.setEditorFile(tab.editor?.path, fs: tab.editor?.fs)
         if switched {
             sidebar.applyTabOpenFolders(tab.openFolders)
@@ -2262,7 +2198,12 @@ final class TabBarView: NSView, NSTextFieldDelegate {
 
     private func computeRects() {
         guard let c = controller else { return }
-        let left = c.trafficLightInset
+        // Tabs stay over the column's own content, not the sidebars beside it, so the active tab opens onto
+        // its terminal. Beside the file sidebar they start right on its border line, which carries on up as the
+        // first tab's edge.
+        let content = c.content.frame.offsetBy(dx: -frame.minX, dy: 0)
+        sidebarEdge = content.isEmpty || content.minX < 1 ? nil : content.minX - 1
+        let left = max(c.trafficLightInset, sidebarEdge ?? 0)
         let plusW: CGFloat = 30
         // Each group gets a chip where it starts; tabs in collapsed groups take no space.
         var chipSpace: CGFloat = 0, visible = 0
@@ -2274,6 +2215,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         }
         flowerRect = showsFlower ? CGRect(x: bounds.width - 38, y: (bounds.height - 26) / 2, width: 26, height: 26) : .null
         var rightLimit = showsFlower ? flowerRect.minX - 6 : bounds.width - 6
+        if !content.isEmpty { rightLimit = min(rightLimit, content.maxX - 6) }
         if c.isLeading {
             closeSplitRect = .null
         } else {
@@ -2456,7 +2398,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         th.border.setFill()
         let gap = docked.map { d -> (CGFloat, CGFloat) in
             let (l, r) = dockEdges(d)
-            return (l - Self.dockFlare, r + Self.dockFlare)
+            return (dockFlush(d) ? l - 0.5 : l - Self.dockFlare, r + Self.dockFlare)
         } ?? (bounds.width, bounds.width)
         NSRect(x: 0, y: bounds.height - 1, width: gap.0, height: 1).fill()
         NSRect(x: gap.1, y: bounds.height - 1, width: max(0, bounds.width - gap.1), height: 1).fill()
@@ -2640,13 +2582,37 @@ final class TabBarView: NSView, NSTextFieldDelegate {
 
         let showClose = (hovered || active) && !dragging && !dragGroupMoved && r.width >= 60
         let titleColor = active ? th.foreground : th.foreground.withAlphaComponent(0.55)
+        // The title is laid out the same whether the tab is active, hovered or neither (one weight, and no room
+        // kept for the close button), so it never moves; the close button fades out whatever runs under it.
+        let font = NSFont.systemFont(ofSize: 12, weight: .medium)
         let para = NSMutableParagraphStyle()
         para.lineBreakMode = .byTruncatingMiddle
         para.alignment = .center
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: active ? .semibold : .medium),
-                                                    .foregroundColor: titleColor, .paragraphStyle: para]
-        let titleRect = NSRect(x: textX, y: r.midY - 8, width: r.maxX - textX - (showClose ? 28 : 12), height: 16)
-        if !isEditing(tab) { (tab.title as NSString).draw(in: titleRect, withAttributes: attrs) }
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: titleColor, .paragraphStyle: para]
+        let titleRect = NSRect(x: textX, y: r.midY - 8, width: r.maxX - textX - 12, height: 16)
+        if !isEditing(tab) {
+            let tw = min(titleRect.width, ceil((tab.title as NSString).size(withAttributes: attrs).width))
+            let fadeEnd = r.maxX - 26, fadeStart = fadeEnd - 14
+            if showClose, titleRect.midX + tw / 2 > fadeStart, let ctx = NSGraphicsContext.current?.cgContext {
+                ctx.saveGState()
+                ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+                (tab.title as NSString).draw(in: titleRect, withAttributes: attrs)
+                ctx.setBlendMode(.destinationOut)
+                let clear = CGColor(gray: 0, alpha: 0), solid = CGColor(gray: 0, alpha: 1)
+                if let fade = CGGradient(colorsSpace: nil, colors: [clear, solid] as CFArray, locations: [0, 1]) {
+                    ctx.saveGState()
+                    ctx.clip(to: CGRect(x: fadeStart, y: r.minY, width: fadeEnd - fadeStart, height: r.height))
+                    ctx.drawLinearGradient(fade, start: CGPoint(x: fadeStart, y: 0), end: CGPoint(x: fadeEnd, y: 0), options: [])
+                    ctx.restoreGState()
+                }
+                ctx.setFillColor(solid)
+                ctx.fill(CGRect(x: fadeEnd, y: r.minY, width: r.maxX - fadeEnd, height: r.height))
+                ctx.endTransparencyLayer()
+                ctx.restoreGState()
+            } else {
+                (tab.title as NSString).draw(in: titleRect, withAttributes: attrs)
+            }
+        }
 
         if showClose {
             // From `r`, not closeRects, so it stays on the tab wherever the tab is drawn.
@@ -2696,8 +2662,8 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             i == c.activeIndex || (!dragging && hoverIndex == i) || selectedTabs.contains(c.tabs[i]) || dropTab == i
         }
         Config.shared.theme.foreground.withAlphaComponent(0.18).setFill()
-        // One before the first tab, too.
-        if let first = shown.first, !quiet(first.i) {
+        // One before the first tab, too, unless it starts on the sidebar's border line.
+        if let first = shown.first, !quiet(first.i), sidebarEdge.map({ abs(first.r.minX - $0) >= 0.5 }) ?? true {
             // On the tab's own left edge: just outside it would be clipped off the start of the strip.
             NSRect(x: first.r.minX.rounded(), y: first.r.midY - 8, width: 1, height: 16).fill()
         }
@@ -2716,6 +2682,15 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     /// How far the active tab's foot curves out on each side.
     private static let dockFlare: CGFloat = 5
 
+    /// Where the file sidebar's border line meets the strip, when the tabs start on it (see computeRects).
+    private var sidebarEdge: CGFloat?
+
+    /// Whether the active tab's left side is the sidebar's border carried on up: it runs straight down,
+    /// without curving out.
+    private func dockFlush(_ r: CGRect) -> Bool {
+        sidebarEdge.map { abs(r.minX - $0) < 0.5 } ?? false
+    }
+
     /// The active tab's left and right edges, on half points so its 1pt outline covers whole pixels instead of
     /// smearing across two.
     private func dockEdges(_ r: CGRect) -> (CGFloat, CGFloat) {
@@ -2728,14 +2703,19 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     private func dockPath(_ r: CGRect, closed: Bool) -> NSBezierPath {
         let (left, right) = dockEdges(r)
         let line = bounds.height - 0.5, top = r.minY.rounded() + 0.5, radius: CGFloat = 8, f = Self.dockFlare
+        let flush = dockFlush(r)
         let p = NSBezierPath()
         func quad(to end: NSPoint, via c: NSPoint) {
             let start = p.currentPoint
             p.curve(to: end, controlPoint1: NSPoint(x: start.x + (c.x - start.x) * 2 / 3, y: start.y + (c.y - start.y) * 2 / 3),
                     controlPoint2: NSPoint(x: end.x + (c.x - end.x) * 2 / 3, y: end.y + (c.y - end.y) * 2 / 3))
         }
-        p.move(to: NSPoint(x: left - f, y: line))
-        quad(to: NSPoint(x: left, y: line - f), via: NSPoint(x: left, y: line))
+        if flush {
+            p.move(to: NSPoint(x: left, y: bounds.height))
+        } else {
+            p.move(to: NSPoint(x: left - f, y: line))
+            quad(to: NSPoint(x: left, y: line - f), via: NSPoint(x: left, y: line))
+        }
         p.line(to: NSPoint(x: left, y: top + radius))
         quad(to: NSPoint(x: left + radius, y: top), via: NSPoint(x: left, y: top))
         p.line(to: NSPoint(x: right - radius, y: top))
@@ -2744,7 +2724,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         quad(to: NSPoint(x: right + f, y: line), via: NSPoint(x: right, y: line))
         if closed {
             p.line(to: NSPoint(x: right + f, y: bounds.height))
-            p.line(to: NSPoint(x: left - f, y: bounds.height))
+            p.line(to: NSPoint(x: flush ? left : left - f, y: bounds.height))
             p.close()
         }
         return p
@@ -2938,9 +2918,11 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             f.layer?.borderColor = color.blended(withFraction: 0.25, of: .black)?.cgColor ?? color.cgColor
             f.textColor = ink
             f.font = Self.chipFont
+            // Typed from the left, over a faint suggested name that typing replaces.
+            f.alignment = .left
+            (f.cell as? CenteredTextFieldCell)?.horizontalInset = 8
             f.placeholderAttributedString = NSAttributedString(string: placeholder, attributes: [
-                .foregroundColor: ink.withAlphaComponent(0.6), .font: Self.chipFont,
-                .paragraphStyle: { let p = NSMutableParagraphStyle(); p.alignment = .center; return p }()])
+                .foregroundColor: ink.withAlphaComponent(0.4), .font: Self.chipFont])
         }
         f.delegate = self
         editing = target
@@ -3157,9 +3139,19 @@ final class TabBarView: NSView, NSTextFieldDelegate {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect, .cursorUpdate],
+                                       owner: self))
     }
+
+    /// A pointing hand over the flower (it opens Settings), the arrow elsewhere: without this the strip keeps
+    /// whatever cursor the view below set, such as the terminal's I-beam.
+    private func updateCursor(at p: NSPoint) {
+        if let ed = editor, ed.frame.contains(p) { return }  // renaming a tab: the field's I-beam
+        (flowerRect.contains(p) ? NSCursor.pointingHand : NSCursor.arrow).set()
+    }
+
+    override func cursorUpdate(with e: NSEvent) { updateCursor(at: convert(e.locationInWindow, from: nil)) }
 
     /// The strip lives under the titlebar/toolbar, which the window server treats as a drag region, so a
     /// press there would move the window before we ever see mouseDragged. Make the window immovable while
@@ -3176,6 +3168,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     override func mouseMoved(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
         updateWindowMovable(at: p)
+        updateCursor(at: p)
         let idx = tabIndex(at: p)
         let hc = idx.map { closeRects[$0].contains(p) } ?? false
         let hp = plusRect.contains(p)

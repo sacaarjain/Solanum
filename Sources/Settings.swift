@@ -268,7 +268,7 @@ final class SettingsSidebar: NSView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
@@ -460,7 +460,7 @@ final class ThemedToggle: NSControl {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
@@ -786,7 +786,7 @@ final class ThemeCardView: NSView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
@@ -845,7 +845,7 @@ final class NewThemeCardView: NSView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
@@ -1008,10 +1008,10 @@ enum SettingsPages {
         grid.add(newCard)
         let count = grid.cards.count, vsCount = vsGrid.cards.count
         v.add(grid, height: { ThemeGridView.height(forWidth: $0, count: count) }, gap: 24)
-        v.add(sectionHeader("Planets"), height: 16, gap: 10)
+        v.add(sectionHeader("Status Bar"), height: 16, gap: 10)
         card(v, [
-            SettingRow(icon: "airplane", title: "Ship companion", detail: "Outer Wilds themes show their planet in the status bar, with your ship in orbit. It speeds up while things run.",
-                       accessory: toggle(c.planetCompanion) { [weak ctl] on in Config.shared.planetCompanion = on; ctl?.commit() }),
+            SettingRow(icon: "globe.americas", title: "Theme icon", detail: "An icon beside the theme name in the status bar; Outer Wilds themes show their planet. Off shows just the name.",
+                       accessory: toggle(c.themeIcon) { [weak ctl] on in Config.shared.themeIcon = on; ctl?.commit() }),
         ])
         v.add(sectionHeader("VS Code"), height: 16, gap: 10)
         v.add(vsGrid, height: { ThemeGridView.height(forWidth: $0, count: vsCount) }, gap: 30)
@@ -1315,7 +1315,7 @@ final class ClosureButton: NSButton {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 

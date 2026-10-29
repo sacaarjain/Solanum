@@ -28,8 +28,9 @@ final class Config {
     var notifyAfterSeconds: Double = 10
     var copyOnSelect = false
     var confirmQuit = true
-    /// The theme's planet in the status bar, with the ship orbiting it.
-    var planetCompanion = true
+    /// The theme's icon in the status bar, beside its name (a planet theme's planet, Solanum's flower, else a
+    /// palette). Off: just the name.
+    var themeIcon = true
     var restoreSession = true
     var restoreScrollback = true
     /// Where ⌘T opens a tab: "current" (the focused terminal's folder, as Terminal does) or "home".
@@ -92,7 +93,7 @@ final class Config {
         case "notify-after-seconds": if let n = Double(value) { notifyAfterSeconds = n }
         case "copy-on-select": copyOnSelect = bool()
         case "confirm-quit": confirmQuit = bool()
-        case "planet-companion": planetCompanion = bool()
+        case "theme-icon", "planet-companion": themeIcon = bool()
         case "restore-session": restoreSession = bool()
         case "restore-scrollback": restoreScrollback = bool()
         case "new-tab-folder": newTabFolder = value.lowercased() == "home" ? "home" : "current"
@@ -120,8 +121,8 @@ final class Config {
         background-blur = \(blur)
         padding = \(fmt(padding))
 
-        # Outer Wilds themes: the planet in the status bar, with your ship in orbit.
-        planet-companion = \(planetCompanion)
+        # The theme's icon beside its name in the status bar (Outer Wilds themes: their planet).
+        theme-icon = \(themeIcon)
 
         # bar | block | underline
         cursor-style = \(cursorStyle)

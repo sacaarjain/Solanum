@@ -405,7 +405,7 @@ final class PaletteList: NSView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self))
     }
 

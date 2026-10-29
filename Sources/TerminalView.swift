@@ -1111,19 +1111,23 @@ final class TerminalView: NSView, TerminalDelegate {
         }
     }
 
+    /// The rounded outline around a selected block or prompt, whose tint fills exactly this shape.
+    func selectionOutline(top: CGFloat, height: CGFloat) -> CGPath {
+        CGPath(roundedRect: CGRect(x: 3, y: top + 1, width: bounds.width - 6, height: height - 2), cornerWidth: 6, cornerHeight: 6, transform: nil)
+    }
+
     private func drawBlockBackgrounds(_ ctx: CGContext, _ spans: [(block: Block, first: Int, last: Int)]) {
         let th = palette.theme
         for s in spans {
-            let rect = CGRect(x: 0, y: rowY(s.first) - 2, width: bounds.width, height: CGFloat(s.last - s.first + 1) * fonts.cellH + 4)
-            var color: NSColor?
+            let top = rowY(s.first) - 2, height = CGFloat(s.last - s.first + 1) * fonts.cellH + 4
             if s.block === selectedBlock {
-                color = th.accent.withAlphaComponent(0.11)
+                // Inside its outline (drawn with the block's chrome), not past it.
+                ctx.setFillColor(th.accent.withAlphaComponent(0.11).cgColor)
+                ctx.addPath(selectionOutline(top: top, height: height))
+                ctx.fillPath()
             } else if s.block.failed {
-                color = th.red.withAlphaComponent(0.07)
-            }
-            if let color {
-                ctx.setFillColor(color.cgColor)
-                ctx.fill(rect)
+                ctx.setFillColor(th.red.withAlphaComponent(0.07).cgColor)
+                ctx.fill(CGRect(x: 0, y: top, width: bounds.width, height: height))
             }
         }
     }
@@ -1347,8 +1351,7 @@ final class TerminalView: NSView, TerminalDelegate {
             if b === selectedBlock {
                 ctx.setStrokeColor(th.accent.withAlphaComponent(0.85).cgColor)
                 ctx.setLineWidth(1.5)
-                let r = CGRect(x: 3, y: top + 1, width: bounds.width - 6, height: height - 2)
-                ctx.addPath(CGPath(roundedRect: r, cornerWidth: 6, cornerHeight: 6, transform: nil))
+                ctx.addPath(selectionOutline(top: top, height: height))
                 ctx.strokePath()
             } else if b.failed {
                 ctx.setFillColor(th.red.cgColor)

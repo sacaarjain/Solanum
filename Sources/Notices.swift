@@ -113,7 +113,7 @@ final class CornerNoticeView: NSView {
     // doesn't get a say.
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.cursorUpdate, .mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
                                        owner: self))
     }
