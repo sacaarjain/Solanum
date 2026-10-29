@@ -2,8 +2,8 @@ import AppKit
 import simd
 
 /// The Outer Wilds planets, rendered pixel by pixel: lit spheres textured with procedural noise (terrain, craters,
-/// cloud bands, cracked crust, fog), atmospheres and glows, plus drawn vines, sand and comet tails. The theme's
-/// planet sits in the status bar with the Hearthian ship orbiting it.
+/// cloud bands, cracked crust, fog), atmospheres and glows, plus vines, shell slabs, sand and comet tails. The theme's
+/// planet sits in the status bar beside its name, as a still icon.
 enum PlanetArt {
     enum Planet: String, CaseIterable {
         case hourglass = "Hourglass", timberHearth = "Timber Hearth", attlerock = "Attlerock", brittleHollow = "Brittle Hollow"
@@ -19,27 +19,30 @@ enum PlanetArt {
 
     // MARK: Drawing
 
-    /// Draws `planet` centered in `rect` (in a y-up context), rendered once per size and cached.
-    static func draw(_ planet: Planet, in ctx: CGContext, rect: CGRect) {
+    /// Draws `planet` centered in `rect` (in a y-up context), rendered once per size and cached. An `icon` is just
+    /// the planet (both twins for Hourglass) filling the square, without moons or the Lantern.
+    static func draw(_ planet: Planet, in ctx: CGContext, rect: CGRect, icon: Bool = false) {
         let t = ctx.userSpaceToDeviceSpaceTransform
         let scale = max(1, CGFloat(hypot(Double(t.a), Double(t.b))))
         let side = min(rect.width, rect.height)
         let px = Int((side * scale).rounded())
-        // Small ones render larger and scale down, so fine detail blends instead of sparkling.
-        let renderPx = min(1200, px < 160 ? px * 3 : px)
-        guard renderPx >= 8, let img = image(planet, pixels: renderPx) else { return }
+        guard px >= 8, px <= 1200, let img = image(planet, pixels: px, icon: icon) else { return }
+        // Rendered at the exact device size, so it lands on whole pixels unscaled and stays sharp.
+        var frame = ctx.convertToDeviceSpace(CGRect(x: rect.midX - side / 2, y: rect.midY - side / 2, width: side, height: side))
+        frame.origin = CGPoint(x: frame.minX.rounded(), y: frame.minY.rounded())
+        frame.size = CGSize(width: px, height: px)
         ctx.saveGState()
         ctx.interpolationQuality = .high
-        ctx.draw(img, in: CGRect(x: rect.midX - side / 2, y: rect.midY - side / 2, width: side, height: side))
+        ctx.draw(img, in: ctx.convertToUserSpace(frame))
         ctx.restoreGState()
     }
 
     private static var cache: [String: CGImage] = [:]
 
-    private static func image(_ planet: Planet, pixels: Int) -> CGImage? {
-        let key = "\(planet.rawValue)|\(pixels)"
+    private static func image(_ planet: Planet, pixels: Int, icon: Bool) -> CGImage? {
+        let key = "\(planet.rawValue)|\(pixels)|\(icon)"
         if let c = cache[key] { return c }
-        let img = render(planet, pixels: pixels)
+        let img = render(planet, pixels: pixels, icon: icon)
         if cache.count > 24 { cache.removeAll() }
         cache[key] = img
         return img
@@ -214,34 +217,31 @@ enum PlanetArt {
 
     private typealias Shader = (_ u: Float, _ v: Float, _ px: Float) -> C4
 
-    /// The planet in a square of `S` pixels: drawn layers behind, the per-pixel scene, drawn layers in front.
-    private static func render(_ planet: Planet, pixels S: Int) -> CGImage? {
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let ctx = CGContext(data: nil, width: S, height: S, bitsPerComponent: 8, bytesPerRow: S * 4, space: space,
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        let size = CGFloat(S)
-        // Unit space (-1…1, y up) to pixels.
-        ctx.translateBy(x: size / 2, y: size / 2)
-        ctx.scaleBy(x: size / 2, y: size / 2)
-        let scene = self.scene(planet)
-        scene.behind?(ctx)
-        if let img = shade(scene.pixel, S, space) {
-            ctx.draw(img, in: CGRect(x: -1, y: -1, width: 2, height: 2))
-        }
-        scene.front?(ctx)
-        return ctx.makeImage()
+    /// The planet in a square of `S` pixels.
+    private static func render(_ planet: Planet, pixels S: Int, icon: Bool) -> CGImage? {
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        // Small ones take several samples per pixel, so fine detail blends instead of sparkling.
+        return shade(scene(planet, icon: icon).pixel, S, samples: S < 64 ? 5 : S < 200 ? 3 : 1, space)
     }
 
-    private static func shade(_ f: @escaping Shader, _ S: Int, _ space: CGColorSpace) -> CGImage? {
+    /// Shades each pixel as the average of `samples`² points spread across it.
+    private static func shade(_ f: @escaping Shader, _ S: Int, samples n: Int, _ space: CGColorSpace) -> CGImage? {
         var data = [UInt8](repeating: 0, count: S * S * 4)
         let px: Float = 2 / Float(S)
+        let sub = px / Float(n)
         data.withUnsafeMutableBufferPointer { buf in
             guard let base = buf.baseAddress else { return }
             DispatchQueue.concurrentPerform(iterations: S) { j in
-                let v = 1 - (Float(j) + 0.5) * px
                 for i in 0..<S {
-                    let u = (Float(i) + 0.5) * px - 1
-                    let c = simd_clamp(f(u, v, px), C4.zero, C4(repeating: 1))
+                    var sum = C4.zero
+                    for sj in 0..<n {
+                        let v = 1 - (Float(j) * px + (Float(sj) + 0.5) * sub)
+                        for si in 0..<n {
+                            let u = Float(i) * px + (Float(si) + 0.5) * sub - 1
+                            sum += simd_clamp(f(u, v, sub), C4.zero, C4(repeating: 1))
+                        }
+                    }
+                    let c = sum / Float(n * n)
                     let o = (j * S + i) * 4
                     base[o] = UInt8(min(c.x, c.w) * 255 + 0.5)
                     base[o + 1] = UInt8(min(c.y, c.w) * 255 + 0.5)
@@ -258,20 +258,18 @@ enum PlanetArt {
 
     private struct Scene {
         let pixel: Shader
-        var behind: ((CGContext) -> Void)?
-        var front: ((CGContext) -> Void)?
     }
 
-    private static func scene(_ planet: Planet) -> Scene {
+    private static func scene(_ planet: Planet, icon: Bool) -> Scene {
         switch planet {
-        case .hourglass: return hourglass()
-        case .timberHearth: return timberHearth()
-        case .attlerock: return attlerock()
-        case .brittleHollow: return brittleHollow()
-        case .giantsDeep: return giantsDeep()
-        case .darkBramble: return darkBramble()
-        case .interloper: return interloper()
-        case .quantumMoon: return quantumMoon()
+        case .hourglass: return hourglass(icon)
+        case .timberHearth: return timberHearth(icon)
+        case .attlerock: return attlerock(icon)
+        case .brittleHollow: return brittleHollow(icon)
+        case .giantsDeep: return giantsDeep(icon)
+        case .darkBramble: return darkBramble(icon)
+        case .interloper: return interloper(icon)
+        case .quantumMoon: return quantumMoon(icon)
         }
     }
 
@@ -287,9 +285,9 @@ enum PlanetArt {
     }
 
     // Home: pine forest and tan rock, red canyon walls, a few lakes, geyser steam and a thin blue sky. Attlerock in orbit.
-    private static func timberHearth() -> Scene {
+    private static func timberHearth(_ icon: Bool) -> Scene {
         let l = simd_normalize(V3(-0.62, 0.42, 0.66))
-        let th = Ball(c: V2(-0.1, -0.08), r: 0.7, spin: rotation(0.5, 0.9, 0.15))
+        let th = Ball(c: icon ? .zero : V2(-0.1, -0.08), r: icon ? 0.92 : 0.7, spin: rotation(0.5, 0.9, 0.15))
         let moon = Ball(c: V2(0.64, 0.62), r: 0.15, spin: rotation(1.1, 0.3, 0.4))
         let sky = rgb(0x9CCBFF)
         return Scene(pixel: { u, v, px in
@@ -320,7 +318,7 @@ enum PlanetArt {
                 c += sky * rim(h.n, l) * 0.6
                 out = over(paint(c, h.cover), out)
             }
-            if let h = hit(moon, u, v, px) {
+            if !icon, let h = hit(moon, u, v, px) {
                 out = over(paint(moonRock(h, moon, l, 21), h.cover), out)
             }
             return out
@@ -328,9 +326,9 @@ enum PlanetArt {
     }
 
     // Timber Hearth's moon: grey, deeply cratered.
-    private static func attlerock() -> Scene {
+    private static func attlerock(_ icon: Bool) -> Scene {
         let l = simd_normalize(V3(-0.6, 0.5, 0.62))
-        let moon = Ball(c: .zero, r: 0.86, spin: rotation(0.3, 1.2, 0))
+        let moon = Ball(c: .zero, r: icon ? 0.96 : 0.86, spin: rotation(0.3, 1.2, 0))
         return Scene(pixel: { u, v, px in
             guard let h = hit(moon, u, v, px) else { return .zero }
             return paint(moonRock(h, moon, l, 31), h.cover)
@@ -338,10 +336,10 @@ enum PlanetArt {
     }
 
     // Twin desert planets: Ash Twin's pale sand pours across onto Ember Twin's red rock.
-    private static func hourglass() -> Scene {
+    private static func hourglass(_ icon: Bool) -> Scene {
         let l = simd_normalize(V3(-0.85, 0.15, 0.5))
-        let ash = Ball(c: V2(-0.48, 0.44), r: 0.36, spin: rotation(0.2, 0.6, 0.3))
-        let ember = Ball(c: V2(0.28, -0.26), r: 0.54, spin: rotation(0.9, 2.1, 0.1))
+        let ash = Ball(c: icon ? V2(-0.55, 0.53) : V2(-0.48, 0.44), r: icon ? 0.42 : 0.36, spin: rotation(0.2, 0.6, 0.3))
+        let ember = Ball(c: icon ? V2(0.32, -0.32) : V2(0.28, -0.26), r: icon ? 0.62 : 0.54, spin: rotation(0.9, 2.1, 0.1))
         // The sand column: from Ash Twin's near side to where it lands on Ember Twin.
         let a = ash.c + simd_normalize(ember.c - ash.c) * ash.r * 0.92
         let b = ember.c + simd_normalize(V2(-0.62, 0.78)) * ember.r * 0.94
@@ -383,7 +381,7 @@ enum PlanetArt {
                     side = simd_dot(V2(u, v) - q, nrm)
                 }
             }
-            let w = 0.075 * (1 - 0.4 * sin(.pi * bestT))
+            let w = (icon ? 0.05 : 0.075) * (1 - 0.4 * sin(.pi * bestT))
             if best < w + px {
                 let cover = clamp01((w - best) / px + 0.5) * (0.82 + 0.18 * smooth(-0.3, 0.3, fbm(V3(bestT * 18, side / w * 2, 0), 3, 46)))
                 let s = max(-1, min(1, side / w))
@@ -402,54 +400,76 @@ enum PlanetArt {
         })
     }
 
-    // Dark, cracked crust over a black hole, falling apart in places; Hollow's Lantern glows beside it, lighting
-    // that side orange.
-    private static func brittleHollow() -> Scene {
-        let sun = simd_normalize(V3(-0.55, 0.3, 0.78))
-        let lantern = Ball(c: V2(0.66, 0.64), r: 0.17, spin: rotation(0.4, 0.2, 0))
-        let bh = Ball(c: V2(-0.08, -0.1), r: 0.74, spin: rotation(0.2, 0.4, 0.1))
-        let lanternDir = simd_normalize(V3(lantern.c.x - bh.c.x, lantern.c.y - bh.c.y, 0.25))
-        let hole = simd_normalize(V3(0.18, 0.5, 0.85))
+    // Slate crust broken into angular plates, a snowfield on the sunlit side, and a great hole fallen in at the
+    // middle: blue rubble lit red, red rock walls, and at its heart the black hole with its glowing ring.
+    private static func brittleHollow(_ icon: Bool) -> Scene {
+        let l = simd_normalize(V3(0.45, 0.4, 0.8))
+        let bh = Ball(c: .zero, r: icon ? 0.92 : 0.86, spin: rotation(0.2, 0.4, 0.1))
+        let snowDir = simd_normalize(V3(0.66, 0.66, 0.36))
+        // The hole: a jagged outline (radii at evenly spaced angles) around `hc`, in units of the ball's radius.
+        let hc = V2(-0.02, -0.06), hr = V2(0.48, 0.6)
+        let edges: [Float] = (0..<13).map { 0.8 + 0.28 * hash(Int32($0), 3, 7, 160) }
+        func outline(_ angle: Float) -> Float {
+            let x = (angle / (2 * .pi) + 1).truncatingRemainder(dividingBy: 1) * Float(edges.count)
+            let i = Int(x) % edges.count, f = x - floor(x)
+            return edges[i] + (edges[(i + 1) % edges.count] - edges[i]) * f
+        }
+        let core = V2(-0.1, 0.07)
         return Scene(pixel: { u, v, px in
-            var out = halo(bh, u, v, sun, rgb(0x8A8CC8), width: 0.08, strength: 0.3)
-            out = over(halo(lantern, u, v, V3(0, 0, 1), rgb(0xFF8A30), width: 1.4, strength: 0.6), out)
-            if let h = hit(bh, u, v, px) {
-                let p = h.p
-                let plates = worley(p * 3.2 + V3(fbm(p * 3, 3, 66), fbm(p * 3 + 4, 3, 67), 0) * 0.5, 61)
-                let edge = plates.f2 - plates.f1
-                var a = mix(rgb(0x22232E), rgb(0x4E5064), 0.5 + 0.5 * fbm(p * 4, 5, 62)) * (0.9 + 0.2 * plates.id)
-                // Frost on the crust.
-                a = mix(a, rgb(0x8E9BBE), smooth(0.25, 0.55, fbm(p * 2.4 + 7, 4, 63)) * 0.55)
-                var c = a * (0.03 + diffuse(h.n, sun)) + rgb(0xFF7A2A) * (smooth(0.2, 1, simd_dot(h.n, lanternDir)) * 0.25) * a * 2
-                // Fault lines between plates.
-                c *= 0.35 + 0.65 * smooth(0.006, 0.03, edge + 0.02 * fbm(p * 20, 2, 68))
-                // Where the crust has fallen in: the black hole, its edge lit violet.
-                let rimAngle = 0.93 + 0.025 * fbm(p * 7, 3, 64)
-                let into = simd_dot(h.n, hole)
-                if into > rimAngle {
-                    let t = (into - rimAngle) / (1 - rimAngle)
-                    let glow = rgb(0x8A6CFF) * exp(-t * 7) * 1.2 + rgb(0xD8C8FF) * exp(-t * 30) * 0.6
-                    c = mix(c, glow, smooth(0, 0.08, t))
-                }
-                c += rgb(0x8C96FF) * rim(h.n, sun) * 0.35
-                out = over(paint(c, h.cover), out)
+            let out = halo(bh, u, v, V3(0, 0, 1), rgb(0x4A38C8), width: 0.08, strength: 0.75)
+            guard let h = hit(bh, u, v, px) else { return out }
+            let q = (V2(u, v) - bh.c) / bh.r
+            let e = (q - hc) / hr
+            let reach = outline(atan2(e.y, e.x))
+            let depth = (reach - simd_length(e)) / reach   // > 0 inside the hole, 1 at its center
+            // The crust: plates split along straight faults, with finer cracks inside them.
+            let p = h.p
+            let plates = worley(p * 3.6 + V3(fbm(p * 2, 2, 161), fbm(p * 2 + 3, 2, 162), 0) * 0.25, 163)
+            func spinTo(_ t: V3) -> V3 { simd_normalize(bh.spin.transpose * t) }
+            let chips = worley(p * 8.5, 164)
+            var rock = mix(rgb(0x343A50), rgb(0x5E6884), 0.5 + 0.5 * fbm(p * 5, 4, 165)) * (0.72 + 0.5 * plates.id)
+            // Each plate's broken edge catches a little light before the fault.
+            let lip = smooth(0.1, 0.04, plates.f2 - plates.f1) * smooth(0.0, 0.5, simd_dot(spinTo(plates.to), V3(-l.x, -l.y, 0)))
+            rock *= (1 + 0.35 * lip) * (0.25 + 0.75 * smooth(0.015, 0.05, plates.f2 - plates.f1))
+            rock *= 0.6 + 0.4 * smooth(0.01, 0.035, chips.f2 - chips.f1)
+            // Snow on the sunlit side, with dark blocks of rock poking through.
+            let snowy = smooth(0.64, 0.7, simd_dot(h.n, snowDir) + 0.08 * fbm(p * 4, 3, 166))
+            let blocks = worley(p * 9, 167)
+            let bare = blocks.id < 0.3 && blocks.f1 < 0.3 ? smooth(0.3, 0.24, blocks.f1) : 0
+            var snow = mix(rgb(0xBDBCD6), rgb(0xE2E0EE), 0.5 + 0.5 * fbm(p * 6, 3, 168))
+            snow *= 0.75 + 0.25 * smooth(0.005, 0.03, plates.f2 - plates.f1)
+            var c = mix(rock, mix(snow, rock * 0.8, bare), snowy) * (0.3 + 0.8 * diffuse(h.n, l))
+            // The crust's broken edge throws a shadow just outside the hole.
+            c *= 0.45 + 0.55 * smooth(-0.1, 0, depth)
+            c += rgb(0x5A48E0) * rim(h.n, V3(0, 0, 1)) * 0.6
+            if depth > -0.02 {
+                let d = simd_length(q - core)
+                // Rubble inside: blue-violet fragments, their edges lit red by the ring.
+                let frag = worley(V3(q.x * 7, q.y * 7, 0.5), 169)
+                var inside = mix(rgb(0x1A1850), rgb(0x4644B4), frag.id) * (0.7 + 0.4 * fbm(V3(q.x, q.y, 1) * 12, 2, 170))
+                let seam = 1 - smooth(0.02, 0.09, frag.f2 - frag.f1)
+                inside = mix(inside, rgb(0xE04A22), seam * exp(-max(0, d - 0.18) * 7))
+                // Cliffs around the rim: red rock in strata on the lower right, in shadow on the upper left.
+                let toward = simd_normalize(e)
+                let warm = smooth(-0.4, 0.5, simd_dot(toward, simd_normalize(V2(0.7, -0.6))))
+                let wall = 1 - smooth(0.1 + 0.12 * warm, 0.16 + 0.14 * warm, depth)
+                let strata = 0.8 + 0.2 * sin(depth * 70 + fbm(V3(q.x, q.y, 2) * 6, 2, 171) * 3)
+                inside = mix(inside, mix(rgb(0x1C1E2A), rgb(0x9A3E26) * strata, warm), wall)
+                // The black hole and its ring.
+                let ring = exp(-pow((d - 0.13) / 0.035, 2)) + 0.45 * exp(-pow((d - 0.18) / 0.05, 2))
+                let swirl = 0.75 + 0.25 * fbm(V3(atan2(q.y - core.y, q.x - core.x) * 2, d * 25, 3), 3, 172)
+                inside = mix(inside, mix(rgb(0xC0181C), rgb(0xFF7A5A), smooth(0.6, 1, ring)), clamp01(ring * swirl))
+                inside *= smooth(0.095, 0.115, d)
+                c = mix(c, inside, clamp01(depth * reach * min(hr.x, hr.y) * bh.r / px + 0.5))
             }
-            if let h = hit(lantern, u, v, px) {
-                let w = worley(h.p * 4.5, 65)
-                let lava = 1 - smooth(0.02, 0.16, w.f2 - w.f1)
-                let crust = rgb(0x4A1A0A) * (0.4 + 0.8 * diffuse(h.n, sun)) + rgb(0xFF6A1A) * 0.35
-                let hot = mix(rgb(0xFF7A1A), rgb(0xFFE6A0), lava)
-                let c = mix(crust, hot, max(lava, 0.25 * (1 - h.n.z))) + rgb(0xFFB050) * pow(1 - h.n.z, 3) * 0.5
-                out = over(paint(c, h.cover), out)
-            }
-            return out
+            return over(paint(c, h.cover), out)
         })
     }
 
     // A green ocean world under streaming cloud bands, spun into cyclones.
-    private static func giantsDeep() -> Scene {
+    private static func giantsDeep(_ icon: Bool) -> Scene {
         let l = simd_normalize(V3(-0.58, 0.4, 0.7))
-        let gd = Ball(c: .zero, r: 0.84, spin: rotation(0.25, 0.3, -0.15))
+        let gd = Ball(c: .zero, r: icon ? 0.92 : 0.84, spin: rotation(0.25, 0.3, -0.15))
         let eyes = [simd_normalize(V3(0.4, 0.35, 0.85)), simd_normalize(V3(-0.5, -0.4, 0.75)), simd_normalize(V3(0.1, -0.7, 0.7))]
         return Scene(pixel: { u, v, px in
             var out = halo(gd, u, v, l, rgb(0x7CF0C4), width: 0.1, strength: 0.5)
@@ -472,149 +492,110 @@ enum PlanetArt {
         })
     }
 
-    // A pale, cracked shell of ice with enormous black thorned vines breaking out of it.
-    private static func darkBramble() -> Scene {
-        let l = simd_normalize(V3(-0.55, 0.5, 0.67))
-        let shell = Ball(c: .zero, r: 0.56, spin: rotation(0.3, 0.7, 0))
-        // Where vines come out: view-space directions, and how they bend.
-        let vines: [(dir: V3, bend: Float, len: Float, width: Float)] = [
-            (simd_normalize(V3(-0.6, 0.5, 0.62)), 0.7, 1.15, 0.13),
-            (simd_normalize(V3(0.62, 0.5, 0.6)), -0.6, 1.0, 0.115),
-            (simd_normalize(V3(0.2, -0.7, 0.68)), 0.55, 1.15, 0.14),
-            (simd_normalize(V3(0.9, -0.25, 0.36)), 0.8, 0.85, 0.09),
-            (simd_normalize(V3(0.05, 0.95, -0.3)), 0.6, 0.85, 0.1),
-            (simd_normalize(V3(-0.9, -0.15, -0.4)), -0.5, 0.85, 0.1),
+    // A dense tangle of twisted brown vines around a white light, held in a ring of broken slabs of its icy shell.
+    private static func darkBramble(_ icon: Bool) -> Scene {
+        let l = simd_normalize(V2(0.35, 0.94))
+        // The shell's slabs: center angle, half-width (radians), and inner and outer radius.
+        let slabs: [(a: Float, w: Float, r0: Float, r1: Float)] = [
+            (1.6, 0.48, 0.58, 0.98), (2.62, 0.3, 0.6, 0.86), (3.42, 0.28, 0.56, 0.92), (4.2, 0.3, 0.62, 0.88),
+            (4.95, 0.44, 0.57, 0.97), (5.85, 0.28, 0.62, 0.86), (0.42, 0.36, 0.58, 0.92),
         ]
-        func drawVines(_ ctx: CGContext, front: Bool) {
-            for (k, vine) in vines.enumerated() where (vine.dir.z >= 0) == front {
-                let base = CGPoint(x: CGFloat(shell.c.x + vine.dir.x * shell.r * (front ? 0.9 : 1)),
-                                   y: CGFloat(shell.c.y + vine.dir.y * shell.r * (front ? 0.9 : 1)))
-                let out2 = simd_normalize(V2(vine.dir.x, vine.dir.y))
-                let side = V2(-out2.y, out2.x)
-                // Out from the shell, curling to one side.
-                var pts: [V2] = []
-                let n = 24
-                for i in 0...n {
-                    let t = Float(i) / Float(n)
-                    let reach = (front ? 0.04 : 0.05) + t * vine.len * (front ? 0.6 : 0.5)
-                    let curl = vine.bend * t * t * 0.45
-                    pts.append(V2(Float(base.x), Float(base.y)) + out2 * reach + side * curl + side * 0.02 * sin(t * 9 + Float(k)))
-                }
-                func width(_ t: Float) -> Float { vine.width * (1 - t * 0.8) * (0.5 + 0.5 * min(1, t * 6 + 0.4)) }
-                var left: [CGPoint] = [], right: [CGPoint] = []
-                for i in 0...n {
-                    let t = Float(i) / Float(n)
-                    let d = simd_normalize(pts[min(n, i + 1)] - pts[max(0, i - 1)])
-                    let nn = V2(-d.y, d.x) * width(t)
-                    left.append(CGPoint(x: CGFloat(pts[i].x + nn.x), y: CGFloat(pts[i].y + nn.y)))
-                    right.append(CGPoint(x: CGFloat(pts[i].x - nn.x), y: CGFloat(pts[i].y - nn.y)))
-                }
-                let body = CGMutablePath()
-                body.addLines(between: left + right.reversed())
-                body.closeSubpath()
-                // Thorns along both sides, pointing back toward the root.
-                let thorns = CGMutablePath()
-                for i in stride(from: 3, to: n - 2, by: 3) {
-                    let t = Float(i) / Float(n)
-                    let d = simd_normalize(pts[i + 1] - pts[i - 1])
-                    let nrm = V2(-d.y, d.x)
-                    for sgn: Float in [1, -1] where (i / 3 + (sgn > 0 ? 0 : 1)) % 2 == 0 {
-                        let w = width(t)
-                        let root = pts[i] + nrm * w * sgn * 0.8
-                        let tip = pts[i] + nrm * (w + 0.06 * (1 - t * 0.6)) * sgn - d * 0.035
-                        let back = pts[i] - d * 0.03 + nrm * w * sgn * 0.8
-                        thorns.addLines(between: [CGPoint(x: CGFloat(root.x + d.x * 0.02), y: CGFloat(root.y + d.y * 0.02)),
-                                                  CGPoint(x: CGFloat(tip.x), y: CGFloat(tip.y)), CGPoint(x: CGFloat(back.x), y: CGFloat(back.y))])
-                        thorns.closeSubpath()
-                    }
-                }
-                ctx.saveGState()
-                let dark = front ? CGColor(srgbRed: 0.085, green: 0.08, blue: 0.075, alpha: 1) : CGColor(srgbRed: 0.06, green: 0.06, blue: 0.06, alpha: 1)
-                ctx.setFillColor(dark)
-                ctx.addPath(body)
-                ctx.addPath(thorns)
-                ctx.fillPath()
-                // Bark lit on the side facing the light.
-                ctx.addPath(body)
-                ctx.clip()
-                let lightSide = V2(l.x, l.y)
-                let shift = simd_dot(side, lightSide) > 0 ? 1 : -1
-                let hl = CGMutablePath()
-                hl.addLines(between: pts.enumerated().map { i, p in
-                    let q = p + side * Float(shift) * width(Float(i) / Float(n)) * 0.55
-                    return CGPoint(x: CGFloat(q.x), y: CGFloat(q.y))
-                })
-                ctx.setStrokeColor(CGColor(srgbRed: 0.33, green: 0.31, blue: 0.29, alpha: front ? 0.4 : 0.2))
-                ctx.setLineWidth(CGFloat(vine.width * 0.45))
-                ctx.setLineCap(.round)
-                ctx.addPath(hl)
-                ctx.strokePath()
-                ctx.restoreGState()
-            }
-        }
+        let strands: [V2] = [0.3, 1.35, 2.4].map { V2(cos($0), sin($0)) }
         return Scene(pixel: { u, v, px in
-            var out = halo(shell, u, v, l, rgb(0xE6EEE8), width: 0.3, strength: 0.35)
-            if let h = hit(shell, u, v, px) {
-                let p = h.p
-                let ice = mix(rgb(0xAEB8B4), rgb(0xF2F5F2), 0.5 + 0.5 * fbm(p * 4, 5, 81))
-                let cracks = worley(p * 6, 82)
-                var c = ice * (0.06 + diffuse(h.n, l))
-                c *= 0.55 + 0.45 * smooth(0.005, 0.03, cracks.f2 - cracks.f1)
-                // Dark holes where the vines break through, with a little seed light in the fog inside.
-                for vine in vines where vine.dir.z > 0 {
-                    let t = simd_dot(h.n, vine.dir)
-                    let rr: Float = 0.985 - vine.width * 0.42
-                    if t > rr {
-                        let k = (t - rr) / (1 - rr)
-                        c = mix(c, rgb(0x161A16) + rgb(0xE8E0B0) * exp(-pow((1 - k) * 3, 2)) * 0.22, smooth(0, 0.25, k))
+            let q = V2(u, v)
+            let d = simd_length(q)
+            let angle = atan2(v, u)
+            // The light inside, haze around it.
+            var out = paint(rgb(0xB4B4AC), clamp01(0.5 * exp(-d / 0.28)))
+            // Vines: three layers of wavy strands, each shaded round and twisted.
+            // A rough ball, with arms reaching out to hold each slab.
+            let arm = slabs.map { s -> Float in
+                var da = angle - s.a
+                da -= 2 * .pi * (da / (2 * .pi)).rounded()
+                return smooth(s.w * 1.1, s.w * 0.3, abs(da)) * (s.r0 + 0.14)
+            }.max() ?? 0
+            let edge = max(0.6, arm) + 0.05 * fbm(V3(cos(angle), sin(angle), 0) * 2.5, 3, 180)
+            if d < edge + px {
+                var vine: Float = 0, shade: Float = 0
+                for (k, dir) in strands.enumerated() {
+                    let warp = fbm(V3(q.x, q.y, Float(k)) * 3, 3, 181 &+ Int32(k)) * 1.6
+                    let phase = simd_dot(q, dir) * 6.5 + warp
+                    let ridge = 1 - abs((phase - floor(phase)) * 2 - 1)
+                    let rope = smooth(0.45, 0.68, ridge)
+                    if rope > vine {
+                        let twist = 0.7 + 0.3 * sin(simd_dot(q, V2(-dir.y, dir.x)) * 70 + phase * 9)
+                        vine = rope
+                        shade = ridge.squareRoot() * twist
                     }
                 }
-                c += rgb(0xE6F0EA) * rim(h.n, l) * 0.4
-                out = over(paint(c, h.cover), out)
+                var c = mix(rgb(0x1E120A), rgb(0x6E4628), shade)
+                // Darker against the light at the middle.
+                c *= 0.55 + 0.45 * smooth(0.12, 0.45, d)
+                let gaps = mix(rgb(0x0C0806), rgb(0x8A8A82) * exp(-d / 0.2), smooth(0.4, 0.1, d))
+                let body = clamp01((edge - d) / px + 0.5) * smooth(0.07, 0.18, d)
+                out = over(paint(mix(gaps, c, vine), body * (0.75 + 0.25 * vine)), out)
             }
-            // Fog seeping out around it.
-            let d = simd_length(V2(u, v) - shell.c) / shell.r
-            if d > 0.95, d < 1.6 {
-                let wisp = smooth(-0.05, 0.5, fbm(V3(u * 5, v * 5, 2), 4, 83)) * pow(1 - (d - 0.95) / 0.65, 2) * 0.25
-                out = over(paint(rgb(0xDDE6E0), wisp), out)
+            // The white core.
+            out = over(paint(rgb(0xF6F6F0), clamp01((0.075 - d) / px + 0.5) + clamp01(exp(-d / 0.06) * 0.6)), out)
+            // The slabs, each a broken piece of the shell: dark underneath, icy blue-grey on top, pale at the rim.
+            for (i, s) in slabs.enumerated() {
+                var da = angle - s.a
+                da -= 2 * .pi * (da / (2 * .pi)).rounded()
+                let jag = 0.05 * fbm(V3(angle * 5, Float(i), 0), 2, 183)
+                let r0 = s.r0 + jag, r1 = s.r1 + jag * 0.6
+                // Fanning out from the vines: narrow where they hold it, broad at the rim.
+                let w = s.w * (0.4 + 0.6 * smooth(0, 0.7, (d - r0) / (r1 - r0))) + 0.04 * sin(d * 18 + Float(i))
+                let cover = clamp01(min(d - r0, r1 - d, (w - abs(da)) * d) / px + 0.5)
+                guard cover > 0 else { continue }
+                let t = clamp01((d - r0) / (r1 - r0))
+                let facing = 0.55 + 0.45 * smooth(-0.6, 0.9, simd_dot(q / max(d, 0.0001), l))
+                let grain = 0.8 + 0.3 * fbm(V3(angle * 7, d * 12, Float(i)), 3, 184)
+                var c = mix(rgb(0x121A1C), rgb(0x46646A) * grain, smooth(0, 0.45, t)) * facing
+                c = mix(c, rgb(0xA6D2CC) * facing, smooth(0.8, 0.98, t) * 0.75)
+                out = over(paint(c, cover), out)
             }
             return out
-        }, behind: { ctx in drawVines(ctx, front: false) }, front: { ctx in drawVines(ctx, front: true) })
+        })
     }
 
     // The comet: a lumpy, icy nucleus with dark rock showing through, a glowing coma, and two tails streaming away
     // from the sun (a straight blue ion tail and a broader, curving white dust tail).
-    private static func interloper() -> Scene {
+    private static func interloper(_ icon: Bool) -> Scene {
         let l = simd_normalize(V3(-0.6, -0.5, 0.62))
-        let c0 = V2(-0.36, -0.38)
-        let tailDir = simd_normalize(V2(0.62, 0.78))
+        // The icon's nucleus sits near the middle, level with the label beside it, under a flatter tail.
+        let c0 = icon ? V2(-0.26, -0.1) : V2(-0.36, -0.38)
+        let tailDir = simd_normalize(icon ? V2(0.8, 0.6) : V2(0.62, 0.78))
         let angle: Float = 0.55
-        let rx: Float = 0.27, ry: Float = 0.19
+        let rx: Float = icon ? 0.4 : 0.27, ry: Float = icon ? 0.32 : 0.19
+        // The icon is mostly tail: wider and brighter, from a cleaner, icier nucleus.
+        let tailW: Float = icon ? 1.9 : 1, tailA: Float = icon ? 1.35 : 1, rockA: Float = icon ? 0.45 : 0.85
         let spin = rotation(0.7, 0.4, 0.2)
         return Scene(pixel: { u, v, px in
             let rel = V2(u, v) - c0
             var out = C4.zero
+            // The icon's glow fades out before the frame's edge instead of being cut off.
+            let edge = icon ? smooth(1, 0.75, max(abs(u), abs(v))) : 1
             // Tails.
             let s = simd_dot(rel, tailDir)
             if s > -0.05 {
                 let perp = rel.x * tailDir.y - rel.y * tailDir.x
                 let sp = max(0, s)
-                let ionW = 0.025 + 0.07 * sp
+                let ionW = (0.025 + 0.07 * sp) * tailW
                 let streak = 0.7 + 0.3 * fbm(V3(perp / ionW * 2.5, sp * 1.5, 0), 3, 91)
                 let ion = exp(-pow(perp / ionW, 2)) * pow(max(0, 1 - sp / 1.75), 1.3) * streak * 0.75
                 let curved = perp + 0.22 * sp * sp
-                let dustW = 0.05 + 0.17 * sp
+                let dustW = (0.05 + 0.17 * sp) * (icon ? 1.3 : 1)
                 let dust = exp(-pow(curved / dustW, 2)) * pow(max(0, 1 - sp / 1.5), 1.6) * 0.6 * (0.8 + 0.2 * fbm(V3(curved / dustW * 1.5, sp * 2, 3), 3, 92))
                 let fadeIn = smooth(-0.05, 0.15, s)
-                let a = clamp01((ion + dust) * fadeIn)
+                let a = clamp01((ion + dust) * fadeIn * tailA)
                 if a > 0.001 {
-                    let col = (rgb(0x86CCFF) * ion + rgb(0xF4F7FF) * dust) / max(0.0001, ion + dust)
-                    out = over(paint(col, a), out)
+                    let col = (rgb(icon ? 0x5AAEFF : 0x86CCFF) * ion + rgb(0xF4F7FF) * dust) / max(0.0001, ion + dust)
+                    out = over(paint(col, a * edge), out)
                 }
             }
             // Coma.
             let r = simd_length(rel)
-            out = over(paint(rgb(0xD8F0FF), clamp01(exp(-r / 0.18) * 0.55)), out)
+            out = over(paint(rgb(0xD8F0FF), clamp01(exp(-r / (icon ? 0.2 : 0.18)) * 0.55 * edge)), out)
             // Nucleus: a rotated, lumpy ellipsoid.
             let x = rel.x * cos(angle) + rel.y * sin(angle), y = -rel.x * sin(angle) + rel.y * cos(angle)
             let theta = atan2(y / ry, x / rx)
@@ -629,11 +610,11 @@ enum PlanetArt {
                 let bump = V3(fbm(p * 6, 3, 94), fbm(p * 6 + 3, 3, 95), 0) * 0.25
                 let nb = simd_normalize(n + bump)
                 let rock = smooth(0.1, 0.35, fbm(p * 3.5, 5, 96))
-                var a = mix(rgb(0xE4F2FA), rgb(0x3E4A58), rock * 0.85)
+                var a = mix(rgb(0xE4F2FA), rgb(0x3E4A58), rock * rockA)
                 a = mix(a, rgb(0xB8DCF0), smooth(0.3, 0.6, fbm(p * 9, 3, 97)) * 0.3)
                 var c = a * (0.05 + diffuse(nb, l))
                 // Ghost matter glimmering in the dark side's cracks.
-                c += rgb(0x4CF0C0) * smooth(0.35, 0.6, fbm(p * 8, 3, 98)) * (1 - smooth(-0.2, 0.3, simd_dot(nb, l))) * 0.18
+                if !icon { c += rgb(0x4CF0C0) * smooth(0.35, 0.6, fbm(p * 8, 3, 98)) * (1 - smooth(-0.2, 0.3, simd_dot(nb, l))) * 0.18 }
                 c += rgb(0xCDEBFF) * rim(n, l) * 0.5
                 out = over(paint(c, cover), out)
             }
@@ -642,9 +623,9 @@ enum PlanetArt {
     }
 
     // Grey rock wrapped in a shifting shroud of grey-white fog.
-    private static func quantumMoon() -> Scene {
+    private static func quantumMoon(_ icon: Bool) -> Scene {
         let l = simd_normalize(V3(-0.55, 0.45, 0.7))
-        let qm = Ball(c: .zero, r: 0.66, spin: rotation(0.6, 0.2, 0.3))
+        let qm = Ball(c: .zero, r: icon ? 0.8 : 0.66, spin: rotation(0.6, 0.2, 0.3))
         return Scene(pixel: { u, v, px in
             var out = halo(qm, u, v, l, rgb(0xD6D7DC), width: 0.22, strength: 0.4)
             // Fog trailing beyond the limb.
@@ -666,34 +647,5 @@ enum PlanetArt {
             }
             return out
         })
-    }
-
-    // MARK: Status bar companion
-
-    /// The little planet with the ship on an orbit around it. `phase` is the ship's angle; it passes behind the
-    /// planet on the far half of the orbit.
-    static func drawCompanion(_ planet: Planet, in ctx: CGContext, rect: CGRect, phase: CGFloat, ship: NSColor, trail: NSColor) {
-        let c = CGPoint(x: rect.midX, y: rect.midY)
-        let rx = rect.width / 2 - 1.5, ry = rect.height * 0.2
-        let tilt: CGFloat = -0.22
-        func orbit(_ a: CGFloat) -> CGPoint {
-            let x = cos(a) * rx, y = sin(a) * ry
-            return CGPoint(x: c.x + x * cos(tilt) - y * sin(tilt), y: c.y + x * sin(tilt) + y * cos(tilt))
-        }
-        let behind = sin(phase) > 0   // the upper half of the ellipse is the far side
-        func drawShip() {
-            for k in 1...5 {
-                let p = orbit(phase - CGFloat(k) * 0.16)
-                ctx.setFillColor(trail.withAlphaComponent(0.5 * (1 - CGFloat(k) / 6) * (behind ? 0.5 : 1)).cgColor)
-                ctx.fillEllipse(in: CGRect(x: p.x - 0.8, y: p.y - 0.8, width: 1.6, height: 1.6))
-            }
-            let p = orbit(phase)
-            ctx.setFillColor(ship.withAlphaComponent(behind ? 0.45 : 1).cgColor)
-            ctx.fillEllipse(in: CGRect(x: p.x - 1.6, y: p.y - 1.6, width: 3.2, height: 3.2))
-        }
-        if behind { drawShip() }
-        let size = min(rect.height, rect.width) * 0.86
-        draw(planet, in: ctx, rect: CGRect(x: c.x - size / 2, y: c.y - size / 2, width: size, height: size))
-        if !behind { drawShip() }
     }
 }

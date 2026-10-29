@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         ShellIntegration.install()
         Config.shared.load()
         Config.shared.startWatching()
+        Tooltips.shared.start()
         SnippetStore.shared.load()
         AliasStore.shared.load()
         buildMenu()

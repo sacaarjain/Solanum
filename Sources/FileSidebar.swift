@@ -86,7 +86,6 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
     private var showHidden = UserDefaults.standard.object(forKey: "solanum.sidebar.showHidden") as? Bool ?? true
 
     private let titleLabel = PassThroughLabel(labelWithString: "")
-    private let badge = AgentBadgeView()
     private let titleEditor = NSTextField()
     /// Renames the active tab (empty: back to the default name).
     var onRenameTab: ((String) -> Void)?
@@ -109,11 +108,11 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         titleEditor.font = .systemFont(ofSize: 13, weight: .semibold)
         titleEditor.isBordered = false
         titleEditor.focusRingType = .none
-        titleEditor.drawsBackground = true
+        // Drawn over the label's exact frame, so the text stays put; the box around it is drawn by `draw`.
+        titleEditor.drawsBackground = false
         titleEditor.isHidden = true
         titleEditor.delegate = self
         titleEditor.cell?.isScrollable = true
-        addSubview(badge)
         addSubview(titleEditor)
         subtitleLabel.font = .systemFont(ofSize: 10.5)
         subtitleLabel.lineBreakMode = .byTruncatingHead
@@ -182,15 +181,9 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
 
     override func layout() {
         super.layout()
-        // Title (with the tab's agent in front), then the buttons, then the folder shown.
-        var tx: CGFloat = 12
-        badge.isHidden = badge.agent == nil
-        if !badge.isHidden {
-            badge.frame = NSRect(x: tx, y: 8, width: badge.fittingWidth, height: 18)
-            tx = badge.frame.maxX + 6
-        }
-        titleLabel.frame = NSRect(x: tx, y: 8, width: max(20, bounds.width - tx - 12), height: 18)
-        titleEditor.frame = titleLabel.frame.insetBy(dx: -3, dy: -1)
+        // Title, then the buttons, then the folder shown.
+        titleLabel.frame = NSRect(x: 12, y: 8, width: max(20, bounds.width - 24), height: 18)
+        titleEditor.frame = titleLabel.frame
         window?.invalidateCursorRects(for: self)
         var x: CGFloat = 7
         for b in buttons {
@@ -209,7 +202,6 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         titleEditor.textColor = th.foreground
         titleEditor.backgroundColor = th.background
         subtitleLabel.textColor = th.dimText
-        badge.needsDisplay = true
         placeholder.textColor = th.dimText
         buttons.forEach { $0.tint = th.foreground }
         updatePinButton()
@@ -224,12 +216,15 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         bounds.fill()
         th.border.setFill()
         NSRect(x: bounds.width - 1, y: 0, width: 1, height: bounds.height).fill()
-        // Hovering the tab's name outlines it like a text field: clicking edits it.
-        if hoverTitle && titleEditor.isHidden {
-            let box = NSBezierPath(roundedRect: titleBox, xRadius: 5, yRadius: 5)
+        // Hovering the tab's name outlines it like a text field: clicking edits it, in the same box stretched to
+        // the full width and outlined in the accent.
+        let renaming = !titleEditor.isHidden
+        if hoverTitle || renaming {
+            let r = renaming ? NSRect(x: titleBox.minX, y: titleBox.minY, width: titleLabel.frame.maxX + 6 - titleBox.minX, height: titleBox.height) : titleBox
+            let box = NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5)
             th.background.withAlphaComponent(0.5).setFill()
             box.fill()
-            th.border.setStroke()
+            (renaming ? th.accent.withAlphaComponent(0.8) : th.border).setStroke()
             box.lineWidth = 1
             box.stroke()
         }
@@ -249,7 +244,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: NSRect(x: 0, y: 0, width: bounds.width, height: Self.headerHeight),
                                        options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways], owner: self))
     }
@@ -330,14 +325,10 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         refreshMarks()
     }
 
-    /// The active tab: its own name (nil if it has none), its shell's folder, and its agent.
-    func setTab(name: String?, folder: String?, home: String?, agent: AgentInfo?) {
+    /// The active tab: its own name (nil if it has none) and its shell's folder.
+    func setTab(name: String?, folder: String?, home: String?) {
         tabName = name
         shellFolder = folder.map { ($0, home) }
-        if badge.agent != agent {
-            badge.agent = agent
-            needsLayout = true
-        }
         updateHeader()
     }
 
@@ -380,6 +371,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         titleEditor.placeholderString = titleLabel.stringValue
         titleEditor.isHidden = false
         titleLabel.isHidden = true
+        needsDisplay = true
         window?.makeFirstResponder(titleEditor)
         titleEditor.currentEditor()?.selectAll(nil)
     }
@@ -388,6 +380,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         guard !titleEditor.isHidden else { return }
         titleEditor.isHidden = true
         titleLabel.isHidden = false
+        needsDisplay = true
         if commit { onRenameTab?(titleEditor.stringValue) }
     }
 
@@ -1081,9 +1074,6 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         let hidden = ActionMenuItem("Show Hidden Files", checked: showHidden) { [weak self] in self?.toggleHidden() }
         menu.addItem(hidden)
         menu.addItem(ActionMenuItem("Collapse All") { [weak self] in self?.outline.collapseItem(nil, collapseChildren: true) })
-        if let root = rootPath {
-            menu.addItem(ActionMenuItem("Open This Folder in Solanum") { [weak self] in self?.onChangeDirectory?(root) })
-        }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
     }
 
@@ -1570,7 +1560,7 @@ final class SidebarHeaderButton: NSButton {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
@@ -1597,12 +1587,3 @@ final class PassThroughLabel: NSTextField {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// An agent's mark and status dot in the sidebar header; hover for the status.
-final class AgentBadgeView: NSView {
-    var agent: AgentInfo? { didSet { if agent != oldValue { toolTip = agent?.summary; needsDisplay = true } } }
-    var fittingWidth: CGFloat { 14 + 3 + 6 }
-
-    override func draw(_ dirtyRect: NSRect) {
-        agent?.draw(at: 0, midY: bounds.midY, height: 14)
-    }
-}

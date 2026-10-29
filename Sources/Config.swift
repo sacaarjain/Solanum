@@ -28,7 +28,7 @@ final class Config {
     var notifyAfterSeconds: Double = 10
     var copyOnSelect = false
     var confirmQuit = true
-    /// The theme's planet in the status bar, with the ship orbiting it.
+    /// The theme's planet in the status bar, beside its name.
     var planetCompanion = true
     var restoreSession = true
     var restoreScrollback = true
