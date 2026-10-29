@@ -7,7 +7,8 @@ cd "$(dirname "$0")"
 
 APP_NAME="Solanum"
 BUNDLE_ID="local.solanum.terminal"
-VERSION="0.1.0"
+# 0.1.<commits on this branch>: every commit pushed to main moves the version up, with nothing to bump by hand.
+VERSION="0.1.$(git rev-list --count HEAD 2>/dev/null || echo 0)"
 BUILD_DIR="build"
 APP="$BUILD_DIR/$APP_NAME.app"
 INSTALL_DIR="$HOME/Applications"

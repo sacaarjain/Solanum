@@ -387,7 +387,7 @@ final class GitController {
         }
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem("Fetch") { [weak self] in self?.fetch() })
-        menu.popUp(positioning: nil, at: point, in: view)
+        menu.popUpAbove(point, in: view)
     }
 
     private func pull() { perform("Pulling…", "git pull", typed: "git pull") }
@@ -426,7 +426,7 @@ final class GitController {
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem("Show git status in Solanum") { [weak self] in self?.type("git status") })
         menu.autoenablesItems = false
-        menu.popUp(positioning: nil, at: point, in: view)
+        menu.popUpAbove(point, in: view)
     }
 
     static func color(for code: Character, _ th: Theme) -> NSColor {

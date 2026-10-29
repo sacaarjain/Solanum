@@ -278,7 +278,7 @@ enum ShellIntegration {
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
         env["TERM_PROGRAM"] = "Solanum"
-        env["TERM_PROGRAM_VERSION"] = "0.1.0"
+        env["TERM_PROGRAM_VERSION"] = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
         env["LANG"] = env["LANG"] ?? "en_US.UTF-8"
         env["SOLANUM_INTEGRATION_DIR"] = dir.path
         // Silence macOS bash's "default shell is now zsh" notice on every new tab.
