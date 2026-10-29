@@ -1257,7 +1257,8 @@ final class WindowRootView: NSView {
         dropOverlay.frame = bounds
         var noticeY = barH + 10
         for n in notices {
-            n.frame = NSRect(x: bounds.width - CornerNoticeView.width - 14, y: noticeY, width: CornerNoticeView.width, height: n.preferredHeight)
+            let w = min(n.preferredWidth, bounds.width - 28)
+            n.frame = NSRect(x: bounds.width - w - 14, y: noticeY, width: w, height: n.preferredHeight)
             noticeY += n.preferredHeight + 8
         }
         // Keep the overlay above columns added later.
