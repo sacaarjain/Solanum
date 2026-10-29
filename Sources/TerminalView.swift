@@ -1329,15 +1329,12 @@ final class TerminalView: NSView, TerminalDelegate {
                 ctx.addPath(CGPath(roundedRect: CGRect(x: 3, y: top + 3, width: 3, height: height - 6), cornerWidth: 1.5, cornerHeight: 1.5, transform: nil))
                 ctx.fillPath()
             } else if b.state == .running {
-                // In an agent session the bar stops above the live input box.
-                var barHeight = height
-                if let end = terminal.agentContentEnd(b) {
-                    let lastRow = (s.first...s.last).last { rowMap[$0] >= 0 && rowMap[$0] <= end }
-                    barHeight = lastRow.map { CGFloat($0 - s.first + 1) * fonts.cellH + 4 } ?? 0
-                }
-                if barHeight > 6 {
+                // A running command gets a bar down its left; an agent chat (Claude Code, also when started through an
+                // alias) goes without one.
+                let agentChat = b.isAgentSession || terminal.agentInputBoxTop(b) != nil || (b === terminal.currentBlock && agent != nil)
+                if !agentChat, height > 6 {
                     ctx.setFillColor(th.accent.withAlphaComponent(0.8).cgColor)
-                    ctx.addPath(CGPath(roundedRect: CGRect(x: 3, y: top + 3, width: 2, height: barHeight - 6), cornerWidth: 1, cornerHeight: 1, transform: nil))
+                    ctx.addPath(CGPath(roundedRect: CGRect(x: 3, y: top + 3, width: 2, height: height - 6), cornerWidth: 1, cornerHeight: 1, transform: nil))
                     ctx.fillPath()
                 }
             }

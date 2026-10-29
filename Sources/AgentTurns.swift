@@ -99,15 +99,6 @@ extension Terminal {
         return nil
     }
 
-    /// Last non-blank line above the live input box (where block chrome stops), if there is a box.
-    func agentContentEnd(_ b: Block) -> Int? {
-        guard let top = agentInputBoxTop(b) else { return nil }
-        let lo = b.outputLine ?? b.promptLine
-        var a = top - 1
-        while a > lo, line(abs: a)?.isBlank ?? true { a -= 1 }
-        return a
-    }
-
     /// Rows of the live input box between its two rules.
     func agentInputRows(_ b: Block) -> ClosedRange<Int>? {
         guard let top = agentInputBoxTop(b), top + 1 <= lastAbs else { return nil }
