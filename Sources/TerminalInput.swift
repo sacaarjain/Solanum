@@ -46,7 +46,7 @@ extension TerminalView {
         selectedTurnLine = nil
         NSCursor.setHiddenUntilMouseMoves(true)
         resetBlink()
-        needsDisplay = true
+        redrawChanges()
     }
 
     func encodeKey(_ e: NSEvent) -> [UInt8]? {
@@ -283,17 +283,18 @@ extension TerminalView {
 
     func wordRange(at pos: GridPos) -> (GridPos, GridPos) {
         guard let l = terminal.line(abs: pos.line) else { return (pos, pos) }
-        var c = pos.col
-        if c < l.cells.count && l.cells[c].width == 0 && c > 0 { c -= 1 }
-        let target = c < l.cells.count ? isWordChar(l.cells[c].ch) : false
+        let cols = max(l.cells.count, terminal.cols)
+        var c = min(pos.col, cols - 1)
+        if l.cell(c).width == 0 && c > 0 { c -= 1 }
+        let target = isWordChar(l.cell(c).ch)
         var lo = c, hi = c
         func same(_ x: Int) -> Bool {
-            let cell = l.cells[x]
+            let cell = l.cell(x)
             if cell.width == 0 { return true }
-            return target ? isWordChar(cell.ch) : (!isWordChar(cell.ch) && cell.ch == l.cells[c].ch)
+            return target ? isWordChar(cell.ch) : (!isWordChar(cell.ch) && cell.ch == l.cell(c).ch)
         }
         while lo > 0 && same(lo - 1) { lo -= 1 }
-        while hi < l.cells.count - 1 && same(hi + 1) { hi += 1 }
+        while hi < cols - 1 && same(hi + 1) { hi += 1 }
         return (GridPos(line: pos.line, col: lo), GridPos(line: pos.line, col: hi))
     }
 

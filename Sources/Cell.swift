@@ -26,7 +26,7 @@ enum TermColor {
     }
 }
 
-struct Cell {
+struct Cell: Equatable {
     /// Unicode scalar value; 0 means empty.
     var ch: UInt32 = 0
     var fg: UInt32 = 0
@@ -48,6 +48,41 @@ final class Line {
 
     init(cols: Int, fill: Cell = Cell()) {
         cells = Array(repeating: fill, count: cols)
+    }
+
+    private init(cells: [Cell]) {
+        self.cells = cells
+    }
+
+    /// A separate line with the same contents (the cells are shared until either is written).
+    func copy() -> Line {
+        let l = Line(cells: cells)
+        l.wrapped = wrapped
+        l.extras = extras
+        return l
+    }
+
+    /// The cell at a column, blank past the end of a trimmed line (see `trimForScrollback`).
+    @inline(__always) func cell(_ x: Int) -> Cell {
+        x < cells.count ? cells[x] : Cell()
+    }
+
+    /// Drops the trailing blank cells of a line going into scrollback, where it's never written again: most lines
+    /// are far shorter than the window, and a full row of cells for each adds up over thousands of lines. So a
+    /// scrollback line can have fewer cells than there are columns; past its end it's blank (`cell(_:)`).
+    /// Soft-wrapped lines keep every cell, since reflow joins them to the next line column for column.
+    func trimForScrollback() {
+        guard !wrapped else { return }
+        var n = cells.count
+        while n > 0 {
+            let c = cells[n - 1]
+            guard c.width != 0, c.ch == 0 || c.ch == 32, c.bg == 0,
+                  c.flags.isDisjoint(with: [.inverse, .strike, .underline, .doubleUnderline, .curlyUnderline]) else { break }
+            n -= 1
+        }
+        if let e = extras, let last = e.keys.max() { n = max(n, last + 1) }
+        // A new array, not removeLast: that keeps the full capacity allocated.
+        if n < cells.count { cells = n == 0 ? [] : Array(cells[..<n]) }
     }
 
     func clear(_ fill: Cell) {

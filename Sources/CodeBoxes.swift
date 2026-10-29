@@ -131,7 +131,37 @@ enum ClaudeTranscript {
 
 // MARK: - Finding boxes on screen
 
+/// The transcript's lines as they were at one moment, for finding boxes off the main thread. Scrollback lines are
+/// never written again once there, so they're shared; screen lines are copied.
+struct LineSnapshot {
+    let firstAbs: Int
+    let lines: [Line]
+    var lastAbs: Int { firstAbs + lines.count - 1 }
+
+    func line(abs a: Int) -> Line? {
+        let i = a - firstAbs
+        return i >= 0 && i < lines.count ? lines[i] : nil
+    }
+
+    /// Where code boxes are searched for, one scan at a time.
+    static let scanQueue = DispatchQueue(label: "solanum.codeboxes", qos: .utility)
+}
+
 extension Terminal {
+    func snapshot() -> LineSnapshot {
+        let top = screenTopAbs
+        let lines = firstAbs <= lastAbs ? (firstAbs...lastAbs).compactMap { a in line(abs: a).map { a >= top ? $0.copy() : $0 } } : []
+        return LineSnapshot(firstAbs: firstAbs, lines: lines)
+    }
+
+    /// Whether the screen still shows `box` where it was found.
+    func stillShows(_ box: CodeBox) -> Bool {
+        guard let l = line(abs: box.probe.pos.line), box.probe.pos.col < l.cells.count else { return false }
+        return l.cells[box.probe.pos.col].ch == box.probe.ch
+    }
+}
+
+extension LineSnapshot {
     private static func isBlank(_ c: Cell) -> Bool {
         c.ch == 0 || c.ch == 0x20 || c.ch == 0xA0 || c.ch == 0x09
     }
@@ -140,10 +170,10 @@ extension Terminal {
     private func textStart(_ l: Line) -> Int? {
         let n = l.trimmedLength
         var x = 0
-        while x < n, l.cells[x].width == 0 || Terminal.isBlank(l.cells[x]) { x += 1 }
+        while x < n, l.cells[x].width == 0 || Self.isBlank(l.cells[x]) { x += 1 }
         if x < n, l.cells[x].ch == 0x23FA {
             x += 1
-            while x < n, l.cells[x].width == 0 || Terminal.isBlank(l.cells[x]) { x += 1 }
+            while x < n, l.cells[x].width == 0 || Self.isBlank(l.cells[x]) { x += 1 }
         }
         return x < n ? x : nil
     }
@@ -189,7 +219,7 @@ extension Terminal {
             var lineStart = true
             while x < n {
                 let c = l.cells[x]
-                if c.width == 0 || Terminal.isBlank(c) { x += 1; continue }
+                if c.width == 0 || Self.isBlank(c) { x += 1; continue }
                 if k == target.count { return nil }  // more text after the code on its last line
                 guard c.ch == scalars[target[k]].value else { return nil }
                 if lineStart { indent = min(indent, x); lineStart = false }
@@ -248,9 +278,4 @@ extension Terminal {
         return out
     }
 
-    /// Whether the screen still shows `box` where it was found.
-    func stillShows(_ box: CodeBox) -> Bool {
-        guard let l = line(abs: box.probe.pos.line), box.probe.pos.col < l.cells.count else { return false }
-        return l.cells[box.probe.pos.col].ch == box.probe.ch
-    }
 }

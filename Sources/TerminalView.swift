@@ -203,11 +203,18 @@ final class TerminalView: NSView, TerminalDelegate {
     var copiedBlock: Block?
     /// Transcript sizes + screen extent at the last scan; a scan only runs when this changes.
     private var boxScanKey = ""
+    private var boxScanGeneration = 0
     /// ⌘⇧Z: the shell prompt's line (text, cursor offset) as it was before each ⌘Z, newest last. Memory only,
     /// and dropped as soon as anything else is sent to the shell (see `send`).
     var redoStack: [(text: String, cursor: Int)] = []
     /// Set while undo/redo is typing, so its own keystrokes don't clear `redoStack`.
     var typingUndoRedo = false
+    /// What each row and the cursor showed when last drawn, and a key of everything else drawn (see Redraw.swift).
+    var drawnRows: [DrawnRow] = []
+    var drawnCursor = DrawnCursor()
+    var drawnFrame: Int?
+    /// The whole view is to be redrawn anyway, so there's no need to work out which rows changed.
+    var fullRedrawPending = true
     /// Typed (with ↩) once the shell shows its first prompt, e.g. `ssh host` for a tab opened from the hosts menu.
     var pendingCommand: String?
     /// False: `pendingCommand` is only typed, waiting for Return.
@@ -237,6 +244,13 @@ final class TerminalView: NSView, TerminalDelegate {
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+    override var needsDisplay: Bool {
+        get { super.needsDisplay }
+        set {
+            super.needsDisplay = newValue
+            if newValue { fullRedrawPending = true }
+        }
+    }
     override var isOpaque: Bool { false }
 
     func applyConfig() {
@@ -299,8 +313,9 @@ final class TerminalView: NSView, TerminalDelegate {
             scrollOffset += pushed
         }
         if !terminal.syncOutput {
-            needsDisplay = true
             followInputBox()
+            // Lines scrolled off the top move every row; otherwise only the rows that changed are repainted.
+            if pushed > 0 { needsDisplay = true } else { redrawChanges() }
         }
         if terminal.cursorVisible { awaitingCursorEcho = false }
         if pendingClick != nil { runPendingClick() }
@@ -542,8 +557,19 @@ final class TerminalView: NSView, TerminalDelegate {
             let key = "\(signature)|\(self.terminal.firstAbs)|\(self.terminal.lastAbs)|\(self.terminal.cols)|\(self.terminal.cursorAbs)"
             guard key != self.boxScanKey else { return }
             self.boxScanKey = key
-            self.codeBoxes = self.terminal.findBoxes(code: blocks)
-            self.needsDisplay = true
+            // The scan reads the whole scrollback, so it runs on a copy, off the main thread. A newer scan
+            // supersedes it; boxes the screen no longer shows by the time it's done are dropped.
+            self.boxScanGeneration += 1
+            let generation = self.boxScanGeneration
+            let lines = self.terminal.snapshot()
+            LineSnapshot.scanQueue.async {
+                let boxes = lines.findBoxes(code: blocks)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, generation == self.boxScanGeneration else { return }
+                    self.codeBoxes = boxes.filter { self.terminal.stillShows($0) }
+                    self.needsDisplay = true
+                }
+            }
         }
     }
 
@@ -621,7 +647,7 @@ final class TerminalView: NSView, TerminalDelegate {
         blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.55, repeats: true) { [weak self] _ in
             guard let self, self.isActiveForInput else { return }
             self.blinkOn.toggle()
-            self.needsDisplay = true
+            self.redrawChanges()
         }
     }
 
@@ -736,7 +762,7 @@ final class TerminalView: NSView, TerminalDelegate {
         needsDisplay = true
     }
 
-    func terminalSyncEnded(_ t: Terminal) { needsDisplay = true }
+    func terminalSyncEnded(_ t: Terminal) { redrawChanges() }
 
     func terminalColor(_ t: Terminal, code: Int) -> (UInt8, UInt8, UInt8) {
         let th = palette.theme
@@ -899,7 +925,16 @@ final class TerminalView: NSView, TerminalDelegate {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        fullRedrawPending = false
         computeRowMap()
+        var list: UnsafePointer<NSRect>?
+        var count = 0
+        getRectsBeingDrawn(&list, count: &count)
+        let rects = count > 0 ? list.map { Array(UnsafeBufferPointer(start: $0, count: count)) } ?? [dirtyRect] : [dirtyRect]
+        let full = rects.contains { $0.contains(bounds) }
+        drawingRects = rects
+        // Only some rows are being repainted: start them from clear, as a whole redraw does.
+        if !full { rects.forEach { ctx.clear($0) } }
         ctx.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
         ctx.setShouldSmoothFonts(false)
 
@@ -920,6 +955,7 @@ final class TerminalView: NSView, TerminalDelegate {
         ctx.restoreGState()
         drawOverlays(ctx)
         drawImagePreview(ctx)
+        recordDrawn(rects, full: full)
     }
 
     // MARK: - Smooth scrolling
@@ -1116,6 +1152,8 @@ final class TerminalView: NSView, TerminalDelegate {
     }
 
     // Reused per-row buffers
+    /// The parts of the view being repainted this frame.
+    private var drawingRects: [CGRect] = []
     private var rowFG: [CGColor] = []
     private var rowBG: [CGColor?] = []
 
@@ -1130,17 +1168,21 @@ final class TerminalView: NSView, TerminalDelegate {
 
         for r in 0..<rowMap.count {
             let a = rowMap[r]
-            guard a >= 0, let line = terminal.line(abs: a) else { continue }
+            // Rows being repainted, and their neighbours for any glyph reaching into them.
+            let band = rowBand(r).insetBy(dx: 0, dy: -3)
+            guard a >= 0, drawingRects.contains(where: { $0.intersects(band) }), let line = terminal.line(abs: a) else { continue }
             let y = rowY(r)
             let n = min(line.cells.count, cols)
             let sel = selectionCols(forLine: a)
             let lineMatches = matchesByLine[a]
             // "[Image #N]" with its picture drawn there instead (see ImageChips.swift).
             let hiddenText = imageChipState.hidden[a]
+            // A scrollback line stops at its last character; a selection still highlights to the end of the row.
+            let nb = sel != nil ? cols : n
 
             // Resolve colors
-            for x in 0..<n {
-                let c = line.cells[x]
+            for x in 0..<nb {
+                let c = line.cell(x)
                 let bold = c.flags.contains(.bold)
                 var fg = c.fg == 0 ? palette.fg : palette.color(c.fg, bold: bold)
                 var bg: CGColor? = c.bg == 0 ? nil : palette.color(c.bg)
@@ -1166,10 +1208,10 @@ final class TerminalView: NSView, TerminalDelegate {
 
             // Backgrounds (merged runs)
             var x = 0
-            while x < n {
+            while x < nb {
                 guard let bg = rowBG[x] else { x += 1; continue }
                 var e = x + 1
-                while e < n, let b2 = rowBG[e], b2 === bg || b2 == bg { e += 1 }
+                while e < nb, let b2 = rowBG[e], b2 === bg || b2 == bg { e += 1 }
                 ctx.setFillColor(bg)
                 ctx.fill(CGRect(x: padX + CGFloat(x) * cw, y: y, width: CGFloat(e - x) * cw, height: ch))
                 x = e
@@ -1316,7 +1358,7 @@ final class TerminalView: NSView, TerminalDelegate {
             let b = s.block
             let top = rowY(s.first) - 2
             let height = CGFloat(s.last - s.first + 1) * fonts.cellH + 4
-            let startsHere = rowMap[s.first] == b.promptLine && headerIntact(b)
+            let startsHere = spanStartsHere(s)
 
             if startsHere && s.first > 0 {
                 ctx.setFillColor(th.border.cgColor)
@@ -1331,38 +1373,16 @@ final class TerminalView: NSView, TerminalDelegate {
                 ctx.setFillColor(th.red.cgColor)
                 ctx.addPath(CGPath(roundedRect: CGRect(x: 3, y: top + 3, width: 3, height: height - 6), cornerWidth: 1.5, cornerHeight: 1.5, transform: nil))
                 ctx.fillPath()
-            } else if b.state == .running {
-                // A running command gets a bar down its left; an agent chat (Claude Code, also when started through an
-                // alias) goes without one.
-                let agentChat = b.isAgentSession || terminal.agentInputBoxTop(b) != nil || (b === terminal.currentBlock && agent != nil)
-                if !agentChat, height > 6 {
-                    ctx.setFillColor(th.accent.withAlphaComponent(0.8).cgColor)
-                    ctx.addPath(CGPath(roundedRect: CGRect(x: 3, y: top + 3, width: 2, height: height - 6), cornerWidth: 1, cornerHeight: 1, transform: nil))
-                    ctx.fillPath()
-                }
+            } else if showsRunningBar(b), height > 6 {
+                ctx.setFillColor(th.accent.withAlphaComponent(0.8).cgColor)
+                ctx.addPath(CGPath(roundedRect: CGRect(x: 3, y: top + 3, width: 2, height: height - 6), cornerWidth: 1, cornerHeight: 1, transform: nil))
+                ctx.fillPath()
             }
 
             // Status badge on the block's first line.
             var badgeRect: CGRect?
-            if startsHere, let d = b.duration, b === selectedBlock || b === hoverBlock || b.failed || b.state == .running {
-                let text: String
-                let color: NSColor
-                switch b.state {
-                case .running:
-                    text = "● running  \(TerminalView.formatDuration(d))"
-                    color = th.accent
-                default:
-                    if b.failed {
-                        text = "✕ exit \(b.exitCode ?? -1)  ·  \(TerminalView.formatDuration(d))"
-                        color = th.red
-                    } else {
-                        text = "✓ \(TerminalView.formatDuration(d))"
-                        color = th.green
-                    }
-                }
-                if b.state != .running || (d > 1 && !b.isAgentSession) {
-                    badgeRect = drawBadge(text, color: color, rightX: bounds.width - padX, centerY: rowY(s.first) + fonts.cellH / 2, ctx)
-                }
+            if startsHere, let badge = blockBadge(b) {
+                badgeRect = drawBadge(badge.text, color: badge.color, rightX: bounds.width - padX, centerY: rowY(s.first) + fonts.cellH / 2, ctx)
             }
 
             // "Copy output" beside the badge while the pointer is over a finished command that printed something.
@@ -1387,6 +1407,31 @@ final class TerminalView: NSView, TerminalDelegate {
                     }))
                 }
             }
+        }
+    }
+
+    /// Whether a block's first row on screen is its real start (its separator and badge go there).
+    func spanStartsHere(_ s: (block: Block, first: Int, last: Int)) -> Bool {
+        rowMap[s.first] == s.block.promptLine && headerIntact(s.block)
+    }
+
+    /// A running command gets a bar down its left; an agent chat (Claude Code, also when started through an
+    /// alias) goes without one.
+    func showsRunningBar(_ b: Block) -> Bool {
+        b.state == .running && !(b.isAgentSession || terminal.agentInputBoxTop(b) != nil || (b === terminal.currentBlock && agent != nil))
+    }
+
+    /// The status badge on a block's first line, if it shows one.
+    func blockBadge(_ b: Block) -> (text: String, color: NSColor)? {
+        guard let d = b.duration, b === selectedBlock || b === hoverBlock || b.failed || b.state == .running else { return nil }
+        let th = palette.theme
+        switch b.state {
+        case .running:
+            guard d > 1 && !b.isAgentSession else { return nil }
+            return ("● running  \(TerminalView.formatDuration(d))", th.accent)
+        default:
+            if b.failed { return ("✕ exit \(b.exitCode ?? -1)  ·  \(TerminalView.formatDuration(d))", th.red) }
+            return ("✓ \(TerminalView.formatDuration(d))", th.green)
         }
     }
 
@@ -1437,14 +1482,18 @@ final class TerminalView: NSView, TerminalDelegate {
         ctx.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
     }
 
+    /// The scrollbar shows while scrolled up, for a moment after scrolling, and under the pointer.
+    var scrollbarShown: Bool {
+        totalDisplayLines > terminal.rows
+            && (scrollOffset > 0 || Date().timeIntervalSince(lastScrollTime) < 1.2 || scrollbarHover || scrollbarGrab != nil)
+    }
+
     private func drawOverlays(_ ctx: CGContext) {
         let th = palette.theme
         // Scroll indicator
-        let total = totalDisplayLines
-        let rows = terminal.rows
         let recentlyScrolled = Date().timeIntervalSince(lastScrollTime) < 1.2
         let active = scrollbarHover || scrollbarGrab != nil
-        if total > rows && (scrollOffset > 0 || recentlyScrolled || active), let g = scrollbarGeometry() {
+        if scrollbarShown, let g = scrollbarGeometry() {
             if active {
                 ctx.setFillColor(th.foreground.withAlphaComponent(0.07).cgColor)
                 ctx.addPath(CGPath(roundedRect: g.track, cornerWidth: g.track.width / 2, cornerHeight: g.track.width / 2, transform: nil))

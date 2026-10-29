@@ -485,6 +485,7 @@ final class Terminal {
         for _ in 0..<count {
             let removed = screen.remove(at: scrollTop)
             if scrollTop == 0 && !usingAlt {
+                removed.trimForScrollback()
                 if scrollback.append(removed) { dropped += 1 }
                 scrollbackPushes += 1
             }
@@ -1283,6 +1284,7 @@ final class Terminal {
         if newCursorIdx < screenStart { screenStart = newCursorIdx }
         var scr = Array(newLines[screenStart..<min(total, screenStart + newRows)])
         while scr.count < newRows { scr.append(Line(cols: newCols)) }
+        for l in newLines[0..<screenStart] { l.trimForScrollback() }
         let excess = scrollback.reset(with: Array(newLines[0..<screenStart]))
 
         let base = dropped
