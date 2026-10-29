@@ -65,6 +65,10 @@ enum ClaudeImages {
 /// Per terminal: the thumbnails drawn this frame, the one hovered, and the one open in a popup.
 final class ImageChipState {
     var chips: [(rect: CGRect, n: Int, found: ClaudeImages.Found)] = []
+    /// This frame's groups of images and the space each may use (`bottom`: kept to the bottom of it).
+    var strips: [(images: [(n: Int, found: ClaudeImages.Found)], area: CGRect, bottom: Bool)] = []
+    /// "[Image #N]" text under a thumbnail, by line: left undrawn.
+    var hidden: [Int: [Range<Int>]] = [:]
     var hover: Int?
     /// The image shown in a popup (clicked), and where that popup was drawn.
     var popup: Int?
@@ -109,16 +113,19 @@ extension TerminalView {
         return out
     }
 
+    /// Blank in Claude Code's output, which lays out with no-break spaces.
+    private static func isSpace(_ ch: UInt32) -> Bool { ch == 0 || ch == 0x20 || ch == 0xA0 }
+
     /// "⎿  [Image #8] [Image #9]": a sent prompt's attachments, as Claude Code lists them under it. Nil for any
     /// other line (inline mentions stay text).
     private func attachmentTokens(_ line: Line) -> [(Int, Int, Int)]? {
         let c = line.cells
-        guard let mark = c.firstIndex(where: { $0.ch != 0x20 && $0.ch != 0 }), c[mark].ch == 0x23BF else { return nil }
+        guard let mark = c.firstIndex(where: { !Self.isSpace($0.ch) }), c[mark].ch == 0x23BF else { return nil }
         let tokens = imageTokens(line)
         guard !tokens.isEmpty else { return nil }
         var covered = Set<Int>()
         for (start, len, _) in tokens { covered.formUnion(start..<(start + len)) }
-        for x in (mark + 1)..<max(mark + 1, line.trimmedLength) where !covered.contains(x) && c[x].ch != 0x20 && c[x].ch != 0 {
+        for x in (mark + 1)..<max(mark + 1, line.trimmedLength) where !covered.contains(x) && !Self.isSpace(c[x].ch) {
             return nil
         }
         return tokens
@@ -129,19 +136,22 @@ extension TerminalView {
         var k = 0
         while k < limit {
             let i = down ? r + 1 + k : r - 1 - k
-            guard rowMap.indices.contains(i), rowMap[i] >= 0, terminal.line(abs: rowMap[i])?.isBlank ?? true else { break }
+            guard rowMap.indices.contains(i), rowMap[i] >= 0 else { break }
+            if let l = terminal.line(abs: rowMap[i]), l.cells.contains(where: { !Self.isSpace($0.ch) || $0.bg != 0 }) { break }
             k += 1
         }
         return k
     }
 
-    /// The images on screen: in place of each attachment line's "[Image #N]", and above the live input box for the
-    /// ones in the prompt being written.
-    func drawImageChips(_ ctx: CGContext) {
+    /// Before the text is drawn: which images show where, and which "[Image #N]" text they replace (left undrawn,
+    /// see `drawCells`). An attachment line's images, and those of the lines right after it (Claude Code lists each
+    /// image on its own "⎿" line), share the run's rows and the blank rows below; the prompt being written shows its
+    /// images in the blank rows above its input box.
+    func layoutImageChips() {
         let st = imageChipState
-        st.chips = []
+        st.strips = []
+        st.hidden = [:]
         guard remote == nil, let pid = pty?.foregroundPID, let cwd = PTYProcess.directory(of: pid) else { return }
-        let th = palette.theme
         var onScreen: Set<Int> = []
         func image(_ n: Int) -> ClaudeImages.Found? {
             if let f = ClaudeImages.lookup(n, cwd: cwd) { return f }
@@ -151,49 +161,112 @@ extension TerminalView {
             st.pending = nil
             return ClaudeImages.lookup(n, cwd: cwd)
         }
-        // Thumbnails `height` tall, keeping each image's shape (within limits), left to right from `x`.
-        func strip(_ ns: [Int], x: CGFloat, top: CGFloat, height: CGFloat) {
-            var x = x
-            for n in ns {
-                guard let f = image(n) else { continue }
-                let s = f.image.size
-                let aspect = s.width > 0 && s.height > 0 ? min(max(s.width / s.height, 0.75), 2.5) : 1.5
-                let rect = CGRect(x: x, y: top, width: (height * aspect).rounded(), height: height)
-                drawThumb(rect, n: n, image: f.image, hovered: st.hover == n, open: st.popup == n, th: th, ctx)
-                st.chips.append((rect, n, f))
-                x = rect.maxX + 6
-            }
-        }
-
         let block = terminal.currentBlock
         let boxRows = block.flatMap { terminal.agentInputRows($0) }
         let boxTop = block.flatMap { terminal.agentInputBoxTop($0) }
         var inBox: [Int] = []
-        for (r, abs) in rowMap.enumerated() where abs >= 0 {
-            guard let line = terminal.line(abs: abs) else { continue }
+        var run: (row: Int, x: CGFloat, images: [(n: Int, found: ClaudeImages.Found)], rows: Int)?
+        func endRun() {
+            guard let g = run else { return }
+            run = nil
+            let rows = g.rows + blankRows(from: g.row + g.rows - 1, down: true, limit: 3)
+            st.strips.append((g.images, CGRect(x: g.x, y: rowY(g.row) + 2, width: bounds.width - g.x - padX,
+                                               height: CGFloat(rows) * fonts.cellH - 6), false))
+        }
+        for (r, abs) in rowMap.enumerated() {
+            guard abs >= 0, let line = terminal.line(abs: abs) else { endRun(); continue }
             let tokens = imageTokens(line)
             tokens.forEach { onScreen.insert($0.2) }
             if let rows = boxRows, rows.contains(abs) {
+                endRun()
                 for t in tokens where !inBox.contains(t.2) { inBox.append(t.2) }
                 continue
             }
-            guard let attached = attachmentTokens(line), let first = attached.first, let last = attached.last else { continue }
-            // Cover the "[Image #N]" text, then draw over it and the blank rows below.
-            let y = rowY(r)
-            let x = padX + CGFloat(first.0) * fonts.cellW
-            ctx.setFillColor(th.background.cgColor)
-            ctx.fill(CGRect(x: x, y: y, width: CGFloat(last.0 + last.1 - first.0) * fonts.cellW, height: fonts.cellH))
-            let rows = 1 + blankRows(from: r, down: true, limit: 3)
-            strip(attached.map(\.2), x: x, top: y + 2, height: CGFloat(rows) * fonts.cellH - 6)
+            guard let attached = attachmentTokens(line) else { endRun(); continue }
+            let found = attached.compactMap { t in image(t.2).map { (t, $0) } }
+            guard let first = found.first else { endRun(); continue }
+            for (t, _) in found { st.hidden[abs, default: []].append(t.0..<(t.0 + t.1)) }
+            let x = padX + CGFloat(first.0.0) * fonts.cellW
+            if var g = run, g.row + g.rows == r {
+                g.images += found.map { ($0.0.2, $0.1) }.filter { new in !g.images.contains { $0.n == new.0 } }
+                g.rows += 1
+                run = g
+            } else {
+                endRun()
+                run = (r, x, found.map { ($0.0.2, $0.1) }, 1)
+            }
         }
-        // The prompt being written: its images in the blank rows above the box's top rule.
-        if let top = boxTop, !inBox.isEmpty, let r = rowMap.firstIndex(of: top) {
-            let rows = max(1, blankRows(from: r, down: false, limit: 3))
-            let height = CGFloat(rows) * fonts.cellH - 6
-            strip(inBox, x: padX + fonts.cellW * 2, top: rowY(r) - height - 3, height: height)
+        endRun()
+        if let top = boxTop, let r = rowMap.firstIndex(of: top) {
+            let images = inBox.compactMap { n in image(n).map { (n, $0) } }
+            if !images.isEmpty {
+                let rows = max(1, blankRows(from: r, down: false, limit: 3))
+                let height = CGFloat(rows) * fonts.cellH - 6
+                let x = padX + fonts.cellW * 2
+                st.strips.append((images, CGRect(x: x, y: rowY(r) - height - 3, width: bounds.width - x - padX, height: height), true))
+            }
         }
         st.seen.formUnion(onScreen)
+    }
+
+    /// The thumbnails laid out by `layoutImageChips`, drawn over the text.
+    func drawImageChips(_ ctx: CGContext) {
+        let st = imageChipState
+        st.chips = []
+        let th = palette.theme
+        for strip in st.strips {
+            for (rect, n, f) in Self.wrap(strip.images, in: strip.area, bottom: strip.bottom, minHeight: fonts.cellH - 6) {
+                drawThumb(rect, n: n, image: f.image, hovered: st.hover == n, open: st.popup == n, th: th, ctx)
+                st.chips.append((rect, n, f))
+            }
+        }
         if let n = st.popup, !st.chips.contains(where: { $0.n == n }) { st.popup = nil }
+    }
+
+    /// Thumbnails in rows across `area`: as tall as fits (wrapping onto more rows when there are many), never
+    /// larger than the image itself, each keeping its shape within limits. At the top of the area, or the bottom.
+    private static func wrap(_ images: [(n: Int, found: ClaudeImages.Found)], in area: CGRect, bottom: Bool,
+                             minHeight: CGFloat) -> [(CGRect, Int, ClaudeImages.Found)] {
+        guard !images.isEmpty, area.width > 20 else { return [] }
+        let gap: CGFloat = 6
+        let shapes = images.map { item -> (aspect: CGFloat, natural: CGFloat) in
+            let s = item.found.image.size
+            guard s.width > 0, s.height > 0 else { return (1.5, area.height) }
+            return (min(max(s.width / s.height, 0.75), 2.5), s.height)
+        }
+        /// Rows of (index, size) at height `h`.
+        func lines(_ h: CGFloat) -> [[(Int, CGSize)]] {
+            var out: [[(Int, CGSize)]] = [[]]
+            var x: CGFloat = 0
+            for (i, shape) in shapes.enumerated() {
+                let ih = min(h, max(shape.natural, minHeight))
+                let size = CGSize(width: (ih * shape.aspect).rounded(), height: ih)
+                if x > 0, x + size.width > area.width { out.append([]); x = 0 }
+                out[out.count - 1].append((i, size))
+                x += size.width + gap
+            }
+            return out
+        }
+        var h = area.height
+        var rows = lines(h)
+        while h > minHeight, CGFloat(rows.count) * h + CGFloat(rows.count - 1) * gap > area.height {
+            h = max(minHeight, h - 2)
+            rows = lines(h)
+        }
+        let total = rows.reduce(CGFloat(0)) { $0 + ($1.map(\.1.height).max() ?? 0) } + CGFloat(rows.count - 1) * gap
+        var y = bottom ? area.maxY - total : area.minY
+        var out: [(CGRect, Int, ClaudeImages.Found)] = []
+        for row in rows {
+            var x = area.minX
+            let rowH = row.map(\.1.height).max() ?? 0
+            for (i, size) in row {
+                let rect = CGRect(x: x, y: bottom ? y + rowH - size.height : y, width: size.width, height: size.height)
+                out.append((rect, images[i].n, images[i].found))
+                x = rect.maxX + gap
+            }
+            y += rowH + gap
+        }
+        return out
     }
 
     /// A thumbnail with rounded corners, a hairline border (the accent while hovered or open) and its number.
@@ -245,7 +318,11 @@ extension TerminalView {
         let scale = min(maxW / s.width, maxH / s.height, 2)
         let iw = (s.width * scale).rounded(), ih = (s.height * scale).rounded()
         let pad: CGFloat = 6, caption: CGFloat = 18
-        let w = iw + pad * 2, h = ih + pad * 2 + caption
+        // The caption sets a minimum width, so a tall, narrow image doesn't leave it hanging off the card.
+        let px = chip.found.image.representations.first.map { "\($0.pixelsWide) × \($0.pixelsHigh)" } ?? ""
+        let label = NSAttributedString(string: "Image #\(n)" + (px.isEmpty ? "" : "  ·  \(px)") + "  ·  click to open",
+                                       attributes: [.font: NSFont.systemFont(ofSize: 10.5, weight: .medium), .foregroundColor: th.dimText])
+        let w = max(iw, ceil(label.size().width) + 2) + pad * 2, h = ih + pad * 2 + caption
         var y = chip.rect.minY - h - 6
         if y < 4 { y = chip.rect.maxY + 6 }
         let x = max(8, min(chip.rect.minX, bounds.width - w - 8))
@@ -261,7 +338,7 @@ extension TerminalView {
         ctx.setStrokeColor(th.border.cgColor)
         ctx.addPath(path)
         ctx.strokePath()
-        let imageRect = CGRect(x: card.minX + pad, y: card.minY + pad, width: iw, height: ih)
+        let imageRect = CGRect(x: card.midX - iw / 2, y: card.minY + pad, width: iw, height: ih)
         ctx.saveGState()
         ctx.addPath(CGPath(roundedRect: imageRect, cornerWidth: 5, cornerHeight: 5, transform: nil))
         ctx.clip()
@@ -271,10 +348,6 @@ extension TerminalView {
                               hints: [.interpolation: NSImageInterpolation.high.rawValue])
         NSGraphicsContext.restoreGraphicsState()
         ctx.restoreGState()
-        let px = chip.found.image.representations.first.map { "\($0.pixelsWide) × \($0.pixelsHigh)" } ?? ""
-        let font = NSFont.systemFont(ofSize: 10.5, weight: .medium)
-        let text = "Image #\(n)" + (px.isEmpty ? "" : "  ·  \(px)") + "  ·  click to open"
-        let label = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: th.dimText])
         drawLabel(label, at: CGPoint(x: card.minX + pad + 1, y: imageRect.maxY + 3), ctx)
     }
 

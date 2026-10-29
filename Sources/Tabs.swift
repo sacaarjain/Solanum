@@ -907,12 +907,31 @@ final class StatusBarView: NSView {
         let dim: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: th.dimText]
         var x = start
         var avail = full
-        if host == nil, let icon = symbol("folder", th.dimText) {
-            if !measuring {
-                icon.draw(in: iconFrame(icon, x: x))
-            }
+        // The folder icon is part of the first button after it (the first folder, or "…" for the hidden ones).
+        var icon = host == nil ? symbol("folder", th.dimText) : nil
+        if let icon {
             x += icon.size.width + 4
             avail -= icon.size.width + 4
+        }
+        /// One breadcrumb button: hover highlight, then the icon (if it's still to draw) and `label`.
+        func button(_ label: String, path crumbPath: String, x: CGFloat, width w: CGFloat, bright: Bool) {
+            let iconW = icon.map { $0.size.width + 4 } ?? 0
+            let r = NSRect(x: x - iconW, y: 2, width: w + iconW, height: bounds.height - 6)
+            let idx = crumbs.count
+            crumbs.append((r, crumbPath, label))
+            if hover == idx {
+                th.foreground.withAlphaComponent(0.1).setFill()
+                NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4).fill()
+            }
+            let color = bright || hover == idx ? th.foreground.withAlphaComponent(0.85) : th.dimText
+            if icon != nil, let lit = symbol("folder", hover == idx ? color : th.dimText) {
+                lit.draw(in: iconFrame(lit, x: r.minX + 4))
+                icon = nil
+            }
+            let para = NSMutableParagraphStyle()
+            para.lineBreakMode = .byTruncatingTail
+            (label as NSString).draw(in: textFrame(font, x: x + 4, width: w - 8),
+                                     withAttributes: [.font: font, .paragraphStyle: para, .foregroundColor: color])
         }
         var segs = segments(path)
         let sep = " › " as NSString
@@ -924,7 +943,8 @@ final class StatusBarView: NSView {
         }
         while first < segs.count - 1 && total(first) > avail { first += 1 }
         if first > 0 {
-            if !measuring { ("…" as NSString).draw(in: textFrame(font, x: x + 4, width: 16), withAttributes: dim) }
+            // "…" stands for the folders left out; as a button, it opens the nearest of them.
+            if !measuring { button("…", path: segs[first - 1].1, x: x, width: 20, bright: false) }
             x += 20
             if !measuring { sep.draw(in: textFrame(font, x: x, width: sepW + 1), withAttributes: dim) }
             x += sepW
@@ -935,26 +955,15 @@ final class StatusBarView: NSView {
             let w = min(widths[first + i], end - x)
             guard w > 10 else { break }
             let last = i == segs.count - 1
-            if !measuring {
-                let r = NSRect(x: x, y: 2, width: w, height: bounds.height - 6)
-                let idx = crumbs.count
-                crumbs.append((r, seg.1, seg.0))
-                if hover == idx {
-                    th.foreground.withAlphaComponent(0.1).setFill()
-                    NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4).fill()
-                }
-                let para = NSMutableParagraphStyle()
-                para.lineBreakMode = .byTruncatingTail
-                let attrs: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: para,
-                    .foregroundColor: last || hover == idx ? th.foreground.withAlphaComponent(0.85) : th.dimText]
-                (seg.0 as NSString).draw(in: textFrame(font, x: x + 4, width: w - 8), withAttributes: attrs)
-            }
+            if !measuring { button(seg.0, path: seg.1, x: x, width: w, bright: last) }
             x += w
             if !last {
                 if !measuring { sep.draw(in: textFrame(font, x: x, width: sepW + 1), withAttributes: dim) }
                 x += sepW
             }
         }
+        // No room for any folder: the icon on its own.
+        if !measuring, let icon { icon.draw(in: iconFrame(icon, x: start)) }
         return x
     }
 
@@ -1018,6 +1027,8 @@ final class StatusBarView: NSView {
         }
         guard let i = crumbs.firstIndex(where: { $0.rect.contains(p) }) else { return }
         let crumb = crumbs[i]
+        // ⌃-click: the context menu (Copy Path), as a right-click shows it.
+        if e.modifierFlags.contains(.control) { return super.mouseDown(with: e) }
         let current = path
         listFolders?(crumb.path) { [weak self] names in
             guard let self, self.window != nil else { return }
@@ -1041,6 +1052,18 @@ final class StatusBarView: NSView {
             }
             menu.popUp(positioning: nil, at: NSPoint(x: crumb.rect.minX, y: crumb.rect.minY - 2), in: self)
         }
+    }
+
+    /// Right-click (or ⌃-click) on a folder in the path: copy where it is.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let p = convert(event.locationInWindow, from: nil)
+        guard let crumb = crumbs.first(where: { $0.rect.contains(p) }) else { return nil }
+        let menu = NSMenu()
+        menu.addItem(ActionMenuItem("Copy Path") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(crumb.path, forType: .string)
+        })
+        return menu
     }
 }
 

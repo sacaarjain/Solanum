@@ -910,6 +910,7 @@ final class TerminalView: NSView, TerminalDelegate {
         drawBlockBackgrounds(ctx, spans)
         drawTurnBackground(ctx)
         drawCodeBoxes(ctx)
+        layoutImageChips()
         drawCells(ctx)
         drawImageChips(ctx)
         drawCursor(ctx)
@@ -1130,6 +1131,8 @@ final class TerminalView: NSView, TerminalDelegate {
             let n = min(line.cells.count, cols)
             let sel = selectionCols(forLine: a)
             let lineMatches = matchesByLine[a]
+            // "[Image #N]" with its picture drawn there instead (see ImageChips.swift).
+            let hiddenText = imageChipState.hidden[a]
 
             // Resolve colors
             for x in 0..<n {
@@ -1152,6 +1155,7 @@ final class TerminalView: NSView, TerminalDelegate {
                     }
                 }
                 if let sel, sel.contains(x) { bg = palette.selection }
+                if let hiddenText, hiddenText.contains(where: { $0.contains(x) }) { fg = .clear }
                 rowFG[x] = fg
                 rowBG[x] = bg
             }
