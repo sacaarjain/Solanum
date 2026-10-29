@@ -304,7 +304,9 @@ enum ShellIntegration {
 
     /// Shared by bash and zsh. ssh runs as a multiplexing master on a private socket, announced to the
     /// terminal over OSC 1337, so the file sidebar can reuse the already-authenticated connection.
-    /// Skipped when the user has their own ssh alias or function.
+    /// Skipped when the user has their own ssh alias or function. Unless the user's config sets keepalives, ssh
+    /// probes the server every 15 s, so a dead connection ends within 45 s instead of hanging the pane (and the
+    /// sidebar's commands) until TCP gives up. The exit status is reported too (255: the connection was lost).
     static let sshWrapper = #"""
     if ! alias ssh >/dev/null 2>&1 && ! typeset -f ssh >/dev/null 2>&1; then
     function ssh {
@@ -312,10 +314,15 @@ enum ShellIntegration {
         local __solanum_d="$HOME/.config/solanum/ssh"
         mkdir -p "$__solanum_d" 2>/dev/null && chmod 700 "$__solanum_d" 2>/dev/null
         local __solanum_s="$__solanum_d/$$-$RANDOM$RANDOM"
+        local __solanum_alive=()
+        if command ssh -G "$@" 2>/dev/null | grep -qi '^serveraliveinterval 0$'; then
+            __solanum_alive=(-o ServerAliveInterval=15 -o ServerAliveCountMax=3)
+        fi
         printf '\033]1337;SolanumSSHArgs=%s\007' "$(printf '%q ' "$@" | base64 | tr -d '\n')" > /dev/tty
         printf '\033]1337;SolanumSSH=%s\007' "$__solanum_s" > /dev/tty
-        command ssh -o ControlMaster=auto -o "ControlPath=$__solanum_s" -o ControlPersist=no "$@"
+        command ssh -o ControlMaster=auto -o "ControlPath=$__solanum_s" -o ControlPersist=no "${__solanum_alive[@]}" "$@"
         local __solanum_ret=$?
+        printf '\033]1337;SolanumSSHExit=%s\007' "$__solanum_ret" > /dev/tty
         printf '\033]1337;SolanumSSH=\007' > /dev/tty
         rm -f "$__solanum_s" 2>/dev/null
         return $__solanum_ret

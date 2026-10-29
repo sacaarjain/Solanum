@@ -14,6 +14,9 @@ enum SelfTest {
         func terminalSyncEnded(_ t: Terminal) {}
         func terminalColor(_ t: Terminal, code: Int) -> (UInt8, UInt8, UInt8) { (0, 0, 0) }
         func terminalPixelSize(_ t: Terminal) -> (width: Int, height: Int) { (800, 600) }
+        /// What the terminal still knew when the ssh session ended: (status, control socket, remote folder).
+        var sshExit: (Int, String?, String?)?
+        func terminalSSHExited(_ t: Terminal, status: Int) { sshExit = (status, t.sshControlPath, t.remoteCwd) }
     }
 
     private static func feed(_ t: Terminal, _ s: String) {
@@ -98,6 +101,15 @@ enum SelfTest {
             let (t, s) = make()
             feed(t, "\u{1b}[6n\u{1b}[c")
             check("DSR/DA responses", String(decoding: s.sent, as: UTF8.self) == "\u{1b}[1;1R\u{1b}[?62;22c")
+        }
+        do {
+            // The exit status comes while the session is still known, so a lost connection can be reopened where it was.
+            let (t, s) = make()
+            feed(t, "\u{1b}]1337;SolanumSSH=/tmp/sock\u{07}\u{1b}]7;file://host/srv/app\u{07}"
+                 + "\u{1b}]1337;SolanumSSHExit=255\u{07}\u{1b}]1337;SolanumSSH=\u{07}")
+            let e = s.sshExit
+            check("ssh exit reported before the session clears", e?.0 == 255 && e?.1 == "/tmp/sock" && e?.2 == "/srv/app"
+                  && t.sshControlPath == nil, "\(String(describing: e))")
         }
         do {
             let (t, _) = make(30, 6)

@@ -731,11 +731,12 @@ final class TerminalView: NSView, TerminalDelegate {
         if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
     }
 
-    /// A card in the top-right corner of the window being looked at (else the tab's own) for 30 seconds.
-    /// Clicking it goes to the tab.
-    private func showCornerNotice(title: String, symbol: (name: String, color: NSColor), lines: [String], in tab: TabSession) {
+    /// A card in the top-right corner of the window being looked at (else the tab's own), for 30 seconds unless
+    /// said otherwise. Clicking it goes to the tab.
+    private func showCornerNotice(title: String, symbol: (name: String, color: NSColor), lines: [String], in tab: TabSession,
+                                  button: (title: String, action: () -> Void)? = nil, lifetime: TimeInterval = 30) {
         guard let wc = (NSApp.keyWindow?.windowController as? TerminalWindowController) ?? tab.windowController else { return }
-        let notice = CornerNoticeView(title: title, symbol: symbol, lines: lines, lifetime: 30)
+        let notice = CornerNoticeView(title: title, symbol: symbol, lines: lines, button: button, lifetime: lifetime)
         notice.onClick = { [weak tab] in
             guard let tab, let column = tab.owner as? TabColumn, let i = column.tabs.firstIndex(of: tab), let owner = column.owner else { return }
             owner.focus(column)
@@ -744,6 +745,31 @@ final class TerminalView: NSView, TerminalDelegate {
             NSApp.activate(ignoringOtherApps: true)
         }
         wc.rootView.showNotice(notice)
+    }
+
+    /// ssh exits with 255 when the connection drops (a network change, the Mac sleeping, the server going down).
+    /// If the session had logged in, offers to log back in, in this pane, in the folder it was in.
+    func terminalSSHExited(_ t: Terminal, status: Int) {
+        guard status == 255, let remote, remote.isReady, let tab,
+              let command = remote.reconnectCommand(in: terminal.remoteCwd ?? remote.cwd) else { return }
+        let host = remote.hostLabel ?? "the ssh host"
+        let th = Config.shared.theme
+        showCornerNotice(title: "Lost connection to \(host)", symbol: ("wifi.exclamationmark", th.red),
+                         lines: [Self.place(of: tab), terminal.remoteCwd ?? remote.cwd ?? ""].filter { !$0.isEmpty }, in: tab,
+                         button: ("Reconnect", { [weak self] in self?.reconnect(command) }), lifetime: 600)
+        if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
+    }
+
+    /// Runs `command` at this pane's prompt (once the shell is back at one); not while something else has the pane.
+    private func reconnect(_ command: String) {
+        guard !exited, terminal.sshControlPath == nil, !terminal.usingAlt, !hasRunningJob else { return NSSound.beep() }
+        if terminal.currentBlock?.state == .prompt {
+            send("\u{15}" + command + "\r")
+        } else {
+            pendingCommand = command
+            pendingCommandRuns = true
+        }
+        window?.makeFirstResponder(self)
     }
 
     func terminalOpenSettings(_ t: Terminal) {

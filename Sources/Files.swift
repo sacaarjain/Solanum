@@ -388,9 +388,20 @@ final class RemoteSession: FileSystem {
         }
     }
 
-    /// `cat >` rewrites the existing file in place, so its permissions and owner are kept.
+    /// The bytes land in a temporary file first and only replace the file's contents once they've all arrived, so a
+    /// connection lost mid-save leaves the file as it was. `cat >` then rewrites it in place, keeping its
+    /// permissions and owner.
     func write(_ data: Data, to path: String, _ done: @escaping (Error?) -> Void) {
-        run("cat > \(shellQuote(path))", input: data) { [weak self] status, _, err in
+        let script = """
+        f=\(shellQuote(path))
+        t=$(mktemp "${f%/*}/.solanum-save-XXXXXX" 2>/dev/null || mktemp "${TMPDIR:-/tmp}/solanum-save-XXXXXX") || exit 1
+        cat > "$t" || { rm -f "$t"; exit 1; }
+        [ "$(wc -c < "$t" | tr -d ' ')" -eq \(data.count) ] || { rm -f "$t"; echo "The connection was lost while saving; the file wasn't changed." >&2; exit 1; }
+        cat "$t" > "$f"; s=$?
+        rm -f "$t"
+        exit $s
+        """
+        run(script, input: data) { [weak self] status, _, err in
             done(self?.check(status, err, "Couldn't save \(path)."))
         }
     }
@@ -482,8 +493,8 @@ enum FileTransfer {
         return p
     }
 
-    private static func text(_ pipe: Pipe) -> String {
-        String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    private static func text(_ data: Data) -> String {
+        String(decoding: data, as: UTF8.self)
             .split(separator: "\n").filter { !$0.contains("Error exit delayed") }.joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -503,9 +514,17 @@ enum FileTransfer {
                 DispatchQueue.main.async { done(error) }
                 return
             }
+            // Both stderrs are drained as the transfer goes: one that filled its pipe would stall its process.
+            let group = DispatchGroup()
+            var fromErr = Data(), toErr = Data()
+            group.enter()
+            DispatchQueue.global().async { fromErr = errFrom.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+            group.enter()
+            DispatchQueue.global().async { toErr = errTo.fileHandleForReading.readDataToEndOfFile(); group.leave() }
             from.waitUntilExit()
             to.waitUntilExit()
-            let (readErr, writeErr) = (text(errFrom), text(errTo))
+            group.wait()
+            let (readErr, writeErr) = (text(fromErr), text(toErr))
             // Whichever end failed first: if the reader just lost its pipe, the writer gave up (e.g. the name
             // was taken); otherwise the writer's complaint (an empty archive) is only a consequence.
             let readerBroke = readErr.isEmpty || readErr.contains("Write error") || readErr.contains("Broken pipe")

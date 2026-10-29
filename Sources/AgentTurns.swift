@@ -46,9 +46,10 @@ extension Terminal {
     }
 
     /// Line range a block occupies that is still in the buffer.
+    /// A running agent can park the cursor mid-screen (on the focused option of a question), so its range runs to the bottom.
     private func scanRange(_ b: Block) -> ClosedRange<Int>? {
         let lo = max(b.outputLine ?? b.promptLine, firstAbs)
-        let hi = min(b.lastLine(cursorAbs: cursorAbs), lastAbs)
+        let hi = b.state == .running ? lastAbs : min(b.lastLine(cursorAbs: cursorAbs), lastAbs)
         return lo <= hi ? lo...hi : nil
     }
 

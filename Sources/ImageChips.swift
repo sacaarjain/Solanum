@@ -97,8 +97,8 @@ final class ImageChipState {
     /// The image shown in a popup (clicked), and where that popup was drawn.
     var popup: Int?
     var popupRect: CGRect = .null
-    /// Images pasted here (several files at once, in order), waiting for their "[Image #N]"s to appear.
-    var pending: (images: [NSImage], at: Date)?
+    /// Images pasted here, oldest first (several files at once, in order), each waiting for its "[Image #N]" to appear.
+    var pending: [(image: NSImage, at: Date)] = []
     /// Numbers already on screen, so a new one can be matched to `pending`.
     var seen: Set<Int> = []
     /// A redraw is coming to look again for images not found yet.
@@ -116,7 +116,8 @@ extension TerminalView {
         } else {
             images = NSImage(pasteboard: pb).map { [$0] } ?? []
         }
-        imageChipState.pending = images.isEmpty ? nil : (images, Date())
+        let now = Date()
+        imageChipState.pending += images.map { ($0, now) }
     }
 
     /// "[Image #N]" runs on a line: (start column, length, N).
@@ -185,6 +186,8 @@ extension TerminalView {
         st.hidden = [:]
         guard remote == nil, let pid = pty?.foregroundPID, let cwd = PTYProcess.directory(of: pid) else { return }
         var onScreen: Set<Int> = []
+        // Pastes still waiting after 10 s never got a number of their own.
+        st.pending.removeAll { Date().timeIntervalSince($0.at) > 10 }
         var retry = false
         defer {
             if retry && !st.retryScheduled {
@@ -195,12 +198,12 @@ extension TerminalView {
                 }
             }
         }
-        func image(_ n: Int) -> ClaudeImages.Found? {
-            // A number not seen before, right after a paste here: that's the (next) pasted image.
-            if !st.seen.contains(n), let p = st.pending, Date().timeIntervalSince(p.at) < 10, let first = p.images.first {
-                ClaudeImages.remember(first, as: n, pid: pid, cwd: cwd)
+        /// `pasted`: a number in the prompt being written, where a new paste's number appears.
+        func image(_ n: Int, pasted: Bool = false) -> ClaudeImages.Found? {
+            // A number not seen before, after a paste here: the oldest pasted image still waiting.
+            if pasted, !st.seen.contains(n), !st.pending.isEmpty {
+                ClaudeImages.remember(st.pending.removeFirst().image, as: n, pid: pid, cwd: cwd)
                 st.seen.insert(n)
-                st.pending = p.images.count > 1 ? (Array(p.images.dropFirst()), p.at) : nil
             }
             return ClaudeImages.lookup(n, pid: pid, cwd: cwd, retry: &retry)
         }
@@ -241,7 +244,7 @@ extension TerminalView {
         }
         endRun()
         if let top = boxTop, let r = rowMap.firstIndex(of: top) {
-            let images = inBox.compactMap { n in image(n).map { (n, $0) } }
+            let images = inBox.compactMap { n in image(n, pasted: true).map { (n, $0) } }
             if !images.isEmpty {
                 let rows = max(1, blankRows(from: r, down: false, limit: 3))
                 let height = CGFloat(rows) * fonts.cellH - 6
