@@ -3,9 +3,12 @@ import AppKit
 // Images pasted into Claude Code. "[Image #N]" stays as text where it's typed; the image itself shows where Claude
 // Code lists a sent prompt's attachments ("⎿  [Image #8]" under the prompt), and, while a prompt is being written,
 // above its input box. Clicking one opens it in a small popup; clicking the popup opens the file. Claude Code keeps
-// each image pasted into a session as /tmp/claude-<uid>/<cwd, non-alphanumerics as "-">/<session>/images/<N>.png,
-// the session being its transcript's name in ~/.claude/projects/<same>/. An image pasted here is also kept from the
-// clipboard and matched to the next new "[Image #N]", in case that file isn't there yet.
+// each image pasted into a session as /tmp/claude-<uid>/<cwd, non-alphanumerics as "-">/<session>/images/<N>.<png,
+// jpg, gif or webp>, the session named in ~/.claude/sessions/<pid>.json (a new session has no transcript until its
+// first prompt, so the newest transcript in ~/.claude/projects/<same>/ is only a fallback: it's often another
+// Claude's). It writes that file just after showing "[Image #N]" (and rewrites it when the prompt is sent), so a
+// lookup that misses is retried for a while, redrawing even when nothing else changes. An image pasted here is also
+// kept from the clipboard and matched to the next new "[Image #N]", shown until Claude's file is found.
 
 /// Finds the image behind each "[Image #N]".
 enum ClaudeImages {
@@ -16,49 +19,70 @@ enum ClaudeImages {
     }
 
     private static var found: [String: Found] = [:]
-    /// Lookups that came up empty, retried after a moment (Claude may still be writing the file).
-    private static var missing: [String: Date] = [:]
-    /// The newest session per folder, re-read every couple of seconds.
-    private static var sessions: [String: (id: String?, checked: Date)] = [:]
+    /// Clipboard copies of images pasted here, by "session|N": used until Claude Code's file is there.
+    private static var pasted: [String: NSImage] = [:]
+    /// Lookups that came up empty: when first and last tried (Claude may still be writing the file).
+    private static var missing: [String: (first: Date, last: Date)] = [:]
+    private static let extensions = ["png", "jpg", "jpeg", "gif", "webp"]
+    /// Each Claude process's session, re-read every couple of seconds (/clear and /resume change it).
+    private static var sessions: [pid_t: (id: String?, checked: Date)] = [:]
 
     static func slug(_ cwd: String) -> String {
         String(String.UnicodeScalarView(cwd.unicodeScalars.map { $0.isASCII && CharacterSet.alphanumerics.contains($0) ? $0 : "-" }))
     }
 
-    /// The Claude session most recently active in `cwd`: its newest transcript.
-    private static func session(_ cwd: String) -> String? {
-        if let s = sessions[cwd], Date().timeIntervalSince(s.checked) < 2 { return s.id }
-        let dir = NSHomeDirectory() + "/.claude/projects/" + slug(cwd)
+    /// The session of the Claude running as `pid`: from its session file, else the newest transcript in `cwd`.
+    private static func session(_ pid: pid_t, cwd: String) -> String? {
+        if let s = sessions[pid], Date().timeIntervalSince(s.checked) < 2 { return s.id }
         let fm = FileManager.default
-        let newest = ((try? fm.contentsOfDirectory(atPath: dir)) ?? [])
-            .filter { $0.hasSuffix(".jsonl") }
-            .map { ($0, (try? fm.attributesOfItem(atPath: dir + "/" + $0)[.modificationDate] as? Date) ?? .distantPast) }
-            .max { $0.1 < $1.1 }
-        let id = newest.map { String($0.0.dropLast(6)) }
-        sessions[cwd] = (id, Date())
+        var id: String?
+        if let data = fm.contents(atPath: NSHomeDirectory() + "/.claude/sessions/\(pid).json"),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            id = json["sessionId"] as? String
+        }
+        if id == nil {
+            let dir = NSHomeDirectory() + "/.claude/projects/" + slug(cwd)
+            let newest = ((try? fm.contentsOfDirectory(atPath: dir)) ?? [])
+                .filter { $0.hasSuffix(".jsonl") }
+                .map { ($0, (try? fm.attributesOfItem(atPath: dir + "/" + $0)[.modificationDate] as? Date) ?? .distantPast) }
+                .max { $0.1 < $1.1 }
+            id = newest.map { String($0.0.dropLast(6)) }
+        }
+        sessions[pid] = (id, Date())
         return id
     }
 
-    static func lookup(_ n: Int, cwd: String) -> Found? {
-        guard let s = session(cwd) else { return nil }
+    /// Claude Code's file for image `n`, else the clipboard copy pasted here. `retry` is set while a miss is new
+    /// enough that the file may still be on its way (the caller redraws soon to look again).
+    static func lookup(_ n: Int, pid: pid_t, cwd: String, retry: inout Bool) -> Found? {
+        guard let s = session(pid, cwd: cwd) else { return nil }
         let key = "\(s)|\(n)"
         if let f = found[key] { return f }
-        if let t = missing[key], Date().timeIntervalSince(t) < 1.5 { return nil }
-        let url = URL(fileURLWithPath: "/private/tmp/claude-\(getuid())/\(slug(cwd))/\(s)/images/\(n).png")
-        guard let image = NSImage(contentsOf: url) else {
-            missing[key] = Date()
-            return nil
+        let now = Date()
+        let fallback = pasted[key].map { Found(image: $0, url: nil) }
+        if let m = missing[key], now.timeIntervalSince(m.last) < 0.25 {
+            if now.timeIntervalSince(m.first) < 10 { retry = true }
+            return fallback
         }
-        let f = Found(image: image, url: url)
+        let dir = "/private/tmp/claude-\(getuid())/\(slug(cwd))/\(s)/images/"
+        guard let path = extensions.lazy.map({ dir + "\(n).\($0)" }).first(where: { FileManager.default.fileExists(atPath: $0) }),
+              let image = NSImage(contentsOfFile: path) else {
+            let first = missing[key]?.first ?? now
+            missing[key] = (first, now)
+            if now.timeIntervalSince(first) < 10 { retry = true }
+            return fallback
+        }
+        let f = Found(image: image, url: URL(fileURLWithPath: path))
         found[key] = f
         missing[key] = nil
+        pasted[key] = nil
         return f
     }
 
-    /// An image pasted here, before (or instead of) Claude Code's own copy.
-    static func remember(_ image: NSImage, as n: Int, cwd: String) {
-        guard let s = session(cwd) else { return }
-        found["\(s)|\(n)"] = Found(image: image, url: nil)
+    /// An image pasted here, shown until (or instead of) Claude Code's own copy.
+    static func remember(_ image: NSImage, as n: Int, pid: pid_t, cwd: String) {
+        guard let s = session(pid, cwd: cwd) else { return }
+        pasted["\(s)|\(n)"] = image
     }
 }
 
@@ -73,21 +97,26 @@ final class ImageChipState {
     /// The image shown in a popup (clicked), and where that popup was drawn.
     var popup: Int?
     var popupRect: CGRect = .null
-    /// An image pasted here, waiting for its "[Image #N]" to appear.
-    var pending: (image: NSImage, at: Date)?
+    /// Images pasted here (several files at once, in order), waiting for their "[Image #N]"s to appear.
+    var pending: (images: [NSImage], at: Date)?
     /// Numbers already on screen, so a new one can be matched to `pending`.
     var seen: Set<Int> = []
+    /// A redraw is coming to look again for images not found yet.
+    var retryScheduled = false
 }
 
 extension TerminalView {
     /// Remembers the clipboard's image as it's pasted into Claude Code.
     func notePastedImage(_ pb: NSPasteboard) {
-        var image = NSImage(pasteboard: pb)
-        if image == nil, let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
-           let u = urls.first, ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp"].contains(u.pathExtension.lowercased()) {
-            image = NSImage(contentsOf: u)
+        // Files (copied in Finder): each image file's contents. NSImage(pasteboard:) would give the file's icon.
+        let images: [NSImage]
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+            images = urls.filter { ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp"].contains($0.pathExtension.lowercased()) }
+                .compactMap { NSImage(contentsOf: $0) }
+        } else {
+            images = NSImage(pasteboard: pb).map { [$0] } ?? []
         }
-        if let image { imageChipState.pending = (image, Date()) }
+        imageChipState.pending = images.isEmpty ? nil : (images, Date())
     }
 
     /// "[Image #N]" runs on a line: (start column, length, N).
@@ -99,7 +128,10 @@ extension TerminalView {
         while i < c.count {
             guard c[i].ch == 0x5B, i + 1 + word.count < c.count else { i += 1; continue }
             var ok = true
-            for (k, w) in word.enumerated() where c[i + 1 + k].ch != w { ok = false; break }
+            // Claude Code skips over cells that are already blank, so its "space" can be an empty cell.
+            for (k, w) in word.enumerated() where w == 0x20 ? !Self.isSpace(c[i + 1 + k].ch) : c[i + 1 + k].ch != w {
+                ok = false; break
+            }
             var j = i + 1 + word.count
             var n = 0
             while ok, j < c.count, c[j].ch >= 0x30, c[j].ch <= 0x39, n < 100_000 { n = n * 10 + Int(c[j].ch - 0x30); j += 1 }
@@ -153,13 +185,24 @@ extension TerminalView {
         st.hidden = [:]
         guard remote == nil, let pid = pty?.foregroundPID, let cwd = PTYProcess.directory(of: pid) else { return }
         var onScreen: Set<Int> = []
+        var retry = false
+        defer {
+            if retry && !st.retryScheduled {
+                st.retryScheduled = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    self?.imageChipState.retryScheduled = false
+                    self?.needsDisplay = true
+                }
+            }
+        }
         func image(_ n: Int) -> ClaudeImages.Found? {
-            if let f = ClaudeImages.lookup(n, cwd: cwd) { return f }
-            // A number not seen before, right after a paste here: that's the pasted image.
-            guard !st.seen.contains(n), let p = st.pending, Date().timeIntervalSince(p.at) < 10 else { return nil }
-            ClaudeImages.remember(p.image, as: n, cwd: cwd)
-            st.pending = nil
-            return ClaudeImages.lookup(n, cwd: cwd)
+            // A number not seen before, right after a paste here: that's the (next) pasted image.
+            if !st.seen.contains(n), let p = st.pending, Date().timeIntervalSince(p.at) < 10, let first = p.images.first {
+                ClaudeImages.remember(first, as: n, pid: pid, cwd: cwd)
+                st.seen.insert(n)
+                st.pending = p.images.count > 1 ? (Array(p.images.dropFirst()), p.at) : nil
+            }
+            return ClaudeImages.lookup(n, pid: pid, cwd: cwd, retry: &retry)
         }
         let block = terminal.currentBlock
         let boxRows = block.flatMap { terminal.agentInputRows($0) }
@@ -223,8 +266,9 @@ extension TerminalView {
         if let n = st.popup, !st.chips.contains(where: { $0.n == n }) { st.popup = nil }
     }
 
-    /// Thumbnails in rows across `area`: as tall as fits (wrapping onto more rows when there are many), never
-    /// larger than the image itself, each keeping its shape within limits. At the top of the area, or the bottom.
+    /// Thumbnails in rows across `area`: all one height, as tall as fits (wrapping onto more rows when there are many)
+    /// but no taller than the largest image, each keeping its shape within limits. A smaller image sits at its own
+    /// size in its tile (see `drawThumb`). At the top of the area, or the bottom.
     private static func wrap(_ images: [(n: Int, found: ClaudeImages.Found)], in area: CGRect, bottom: Bool,
                              minHeight: CGFloat) -> [(CGRect, Int, ClaudeImages.Found)] {
         guard !images.isEmpty, area.width > 20 else { return [] }
@@ -234,12 +278,13 @@ extension TerminalView {
             guard s.width > 0, s.height > 0 else { return (1.5, area.height) }
             return (min(max(s.width / s.height, 0.75), 2.5), s.height)
         }
+        let tallest = shapes.map { max($0.natural, minHeight) }.max() ?? area.height
         /// Rows of (index, size) at height `h`.
         func lines(_ h: CGFloat) -> [[(Int, CGSize)]] {
             var out: [[(Int, CGSize)]] = [[]]
             var x: CGFloat = 0
+            let ih = min(h, tallest)
             for (i, shape) in shapes.enumerated() {
-                let ih = min(h, max(shape.natural, minHeight))
                 let size = CGSize(width: (ih * shape.aspect).rounded(), height: ih)
                 if x > 0, x + size.width > area.width { out.append([]); x = 0 }
                 out[out.count - 1].append((i, size))
@@ -280,7 +325,9 @@ extension TerminalView {
         ctx.clip()
         let s = image.size
         if s.width > 0, s.height > 0 {
-            let scale = max(rect.width / s.width, rect.height / s.height)
+            // Filling the tile, unless that would enlarge it: then whole, at most its own size, centered.
+            let fill = max(rect.width / s.width, rect.height / s.height)
+            let scale = fill <= 1 ? fill : min(1, rect.width / s.width, rect.height / s.height)
             let w = s.width * scale, h = s.height * scale
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)

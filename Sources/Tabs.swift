@@ -659,14 +659,15 @@ final class StatusBarView: NSView {
     }
 
     /// Draws a hoverable icon (+ optional text) button starting at `x`; returns where the next item goes.
-    /// `iconSpace` leaves that much room for an icon drawn by the caller instead of `icon`.
+    /// `iconSpace` leaves that much room for an icon drawn by the caller instead of `icon` (0: no icon).
     private func drawButton(_ kind: Button, at x: CGFloat, icon: String, color: NSColor, text: String? = nil,
                             textAttrs: [NSAttributedString.Key: Any] = [:], maxTextWidth: CGFloat = 220,
                             iconSpace: CGFloat? = nil) -> CGFloat {
         let img = iconSpace == nil ? symbol(icon, color) : nil
         let iw = iconSpace ?? img?.size.width ?? 0
         let tw = text.map { min(maxTextWidth, ($0 as NSString).size(withAttributes: textAttrs).width) } ?? 0
-        let w = text == nil ? 22 : 6 + iw + 4 + tw + 7
+        let gap: CGFloat = iw > 0 ? 4 : 0
+        let w = text == nil ? 22 : 6 + iw + gap + tw + 7
         let r = NSRect(x: x, y: 2, width: w, height: bounds.height - 6)
         if measuring { return r.maxX + 2 }
         buttons.append((r, kind))
@@ -684,7 +685,7 @@ final class StatusBarView: NSView {
             var attrs = textAttrs
             attrs[.paragraphStyle] = para
             let font = textAttrs[.font] as? NSFont ?? barFont
-            (text as NSString).draw(in: textFrame(font, x: r.minX + 6 + iw + 4, width: tw + 1), withAttributes: attrs)
+            (text as NSString).draw(in: textFrame(font, x: r.minX + 6 + iw + gap, width: tw + 1), withAttributes: attrs)
         }
         return r.maxX + 2
     }
@@ -709,14 +710,16 @@ final class StatusBarView: NSView {
                                                         .foregroundColor: hoverButton == .theme ? th.foreground : th.dimText]
             let name = th.name.uppercased()
             // A planet theme's planet stands in for the palette icon, centered on the label like the icon was;
-            // Solanum Default gets the flower.
-            let planet = Config.shared.planetCompanion ? PlanetArt.planet(for: th) : nil
-            let flower = Config.shared.planetCompanion && !th.isCustom && th.name == ThemeLibrary.solanumDefault.name
-            let iw = planet != nil ? Self.planetSide : flower ? Self.flowerSide : symbol("paintpalette", th.dimText)?.size.width ?? 0
-            let w = 6 + iw + 4 + min(200, (name as NSString).size(withAttributes: attrs).width) + 7
+            // Solanum Default gets the flower. With the theme icon off, just the name.
+            let showIcon = Config.shared.themeIcon
+            let planet = showIcon ? PlanetArt.planet(for: th) : nil
+            let flower = showIcon && !th.isCustom && th.name == ThemeLibrary.solanumDefault.name
+            let iw = !showIcon ? 0 : planet != nil ? Self.planetSide : flower ? Self.flowerSide
+                : symbol("paintpalette", th.dimText)?.size.width ?? 0
+            let w = 6 + iw + (iw > 0 ? 4 : 0) + min(200, (name as NSString).size(withAttributes: attrs).width) + 7
             let start = bounds.width - (showsRightSidebarToggle ? 36 : 8) - w
             _ = drawButton(.theme, at: start, icon: "paintpalette", color: hoverButton == .theme ? th.accent : th.dimText,
-                           text: name, textAttrs: attrs, maxTextWidth: 200, iconSpace: planet != nil || flower ? iw : nil)
+                           text: name, textAttrs: attrs, maxTextWidth: 200, iconSpace: !showIcon || planet != nil || flower ? iw : nil)
             themeRect = CGRect(x: start, y: 2, width: w, height: bounds.height - 6)
             if let planet { drawPlanet(planet, x: start + 6) }
             if flower { drawFlowerOutline(x: start + 6) }
@@ -3137,8 +3140,18 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect, .cursorUpdate],
+                                       owner: self))
     }
+
+    /// A pointing hand over the flower (it opens Settings), the arrow elsewhere: without this the strip keeps
+    /// whatever cursor the view below set, such as the terminal's I-beam.
+    private func updateCursor(at p: NSPoint) {
+        if let ed = editor, ed.frame.contains(p) { return }  // renaming a tab: the field's I-beam
+        (flowerRect.contains(p) ? NSCursor.pointingHand : NSCursor.arrow).set()
+    }
+
+    override func cursorUpdate(with e: NSEvent) { updateCursor(at: convert(e.locationInWindow, from: nil)) }
 
     /// The strip lives under the titlebar/toolbar, which the window server treats as a drag region, so a
     /// press there would move the window before we ever see mouseDragged. Make the window immovable while
@@ -3155,6 +3168,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     override func mouseMoved(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
         updateWindowMovable(at: p)
+        updateCursor(at: p)
         let idx = tabIndex(at: p)
         let hc = idx.map { closeRects[$0].contains(p) } ?? false
         let hp = plusRect.contains(p)

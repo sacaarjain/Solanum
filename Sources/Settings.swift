@@ -1008,10 +1008,10 @@ enum SettingsPages {
         grid.add(newCard)
         let count = grid.cards.count, vsCount = vsGrid.cards.count
         v.add(grid, height: { ThemeGridView.height(forWidth: $0, count: count) }, gap: 24)
-        v.add(sectionHeader("Planets"), height: 16, gap: 10)
+        v.add(sectionHeader("Status Bar"), height: 16, gap: 10)
         card(v, [
-            SettingRow(icon: "globe.americas", title: "Planet icon", detail: "Outer Wilds themes show their planet beside the theme name in the status bar.",
-                       accessory: toggle(c.planetCompanion) { [weak ctl] on in Config.shared.planetCompanion = on; ctl?.commit() }),
+            SettingRow(icon: "globe.americas", title: "Theme icon", detail: "An icon beside the theme name in the status bar; Outer Wilds themes show their planet. Off shows just the name.",
+                       accessory: toggle(c.themeIcon) { [weak ctl] on in Config.shared.themeIcon = on; ctl?.commit() }),
         ])
         v.add(sectionHeader("VS Code"), height: 16, gap: 10)
         v.add(vsGrid, height: { ThemeGridView.height(forWidth: $0, count: vsCount) }, gap: 30)

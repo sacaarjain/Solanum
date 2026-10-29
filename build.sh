@@ -12,20 +12,34 @@ BUILD_DIR="build"
 APP="$BUILD_DIR/$APP_NAME.app"
 INSTALL_DIR="$HOME/Applications"
 
-OPT="-O"
-[[ "${1:-}" == "--debug" ]] && OPT="-Onone -g"
+OPT="-O"; MODE="release"
+[[ "${1:-}" == "--debug" ]] && { OPT="-Onone -g"; MODE="debug"; }
 
 mkdir -p "$BUILD_DIR"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
+# Incremental and parallel: objects are kept per mode in build/obj-<mode>, so a rebuild only recompiles the files
+# that changed (and those depending on what changed), across all cores. Not whole-module: that's one job on one core.
+OBJ="$BUILD_DIR/obj-$MODE"
+mkdir -p "$OBJ"
+{
+  printf '{"": {"swift-dependencies": "%s/master.swiftdeps"}' "$OBJ"
+  for f in Sources/*.swift; do
+    b="$(basename "$f" .swift)"
+    printf ',\n"%s": {"object": "%s/%s.o", "swift-dependencies": "%s/%s.swiftdeps"}' "$f" "$OBJ" "$b" "$OBJ" "$b"
+  done
+  echo '}'
+} > "$OBJ/output-file-map.json"
+
 echo "› Compiling…"
 swiftc $OPT -swift-version 5 \
+  -incremental -enable-batch-mode -j"$(sysctl -n hw.ncpu)" -output-file-map "$OBJ/output-file-map.json" \
   -target arm64-apple-macosx14.0 \
   -import-objc-header Support/Bridging.h \
   -framework AppKit -framework Carbon -framework UserNotifications -framework AVKit -framework PDFKit -framework WebKit \
   Sources/*.swift \
-  -o "$APP/Contents/MacOS/$APP_NAME" 2>&1 | grep -v -E "^(.*warning:|\s*\||\s*$|.*note:)" || true
+  -o "$APP/Contents/MacOS/$APP_NAME" 2>&1 | grep -v -E "^(.*warning:|\s*[0-9]*\s*\||\s*$|.*note:)" || true
 [[ -x "$APP/Contents/MacOS/$APP_NAME" ]] || { echo "Build failed"; exit 1; }
 
 echo "› Generating icon…"

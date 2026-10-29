@@ -193,7 +193,8 @@ enum PlanetArt {
     private static func craters(_ p: V3, _ n: V3, _ spin: simd_float3x3, _ s: Int32, density: Float = 0.45, depth: Float = 1) -> (shade: Float, n: V3) {
         var shade: Float = 0
         var tilt = V3.zero
-        for (i, (scale, weight)) in [(Float(2.6), Float(1)), (5.5, 0.7), (11, 0.45)].enumerated() {
+        let sizes: [(scale: Float, weight: Float)] = [(2.6, 1), (5.5, 0.7), (11, 0.45)]
+        for (i, (scale, weight)) in sizes.enumerated() {
             let w = worley(p * scale, s &+ Int32(i) &* 7)
             guard w.id < density else { continue }
             let radius: Float = 0.22 + 0.22 * (w.id / density)
@@ -205,8 +206,9 @@ enum PlanetArt {
                 shade -= 0.08 * weight * depth * (1 - x * x)
                 tilt += toward * (0.9 * weight * depth * smooth(0.35, 1, x))
             } else {
-                shade += 0.07 * weight * depth * (1 - (x - 1) / 0.35)
-                tilt -= toward * (0.5 * weight * depth * (1 - (x - 1) / 0.35))
+                let rim: Float = weight * depth * (1 - (x - 1) / 0.35)
+                shade += 0.07 * rim
+                tilt -= toward * (0.5 * rim)
             }
         }
         let tangent = tilt - n * simd_dot(tilt, n)
