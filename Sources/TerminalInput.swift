@@ -968,3 +968,38 @@ extension TerminalView {
         }
     }
 }
+
+// MARK: - Text input client
+
+/// Lets the Character Viewer (⌃⌘Space / fn-E emoji picker) and dictation type into the terminal.
+/// Keys still go straight to encodeKey; only text sent by these system panels arrives here.
+extension TerminalView: NSTextInputClient {
+    func insertText(_ string: Any, replacementRange: NSRange) {
+        let s = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+        guard !s.isEmpty else { return }
+        // Several characters at once (dictation) is a paste; a single emoji is typed.
+        if s.count > 1 || s.contains(where: \.isNewline) { sendPaste(s) } else { send(s) }
+        if scrollOffset != 0 { scrollOffset = 0 }
+        selectedBlock = nil
+        selectedTurnLine = nil
+        resetBlink()
+        needsDisplay = true
+    }
+
+    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {}
+    func unmarkText() {}
+    func selectedRange() -> NSRange { NSRange(location: 0, length: 0) }
+    func markedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
+    func hasMarkedText() -> Bool { false }
+    func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
+    func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
+    func characterIndex(for point: NSPoint) -> Int { NSNotFound }
+
+    /// The cursor cell in screen coordinates, so the picker opens beside it.
+    func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        guard let window else { return .zero }
+        let r = rowMap.firstIndex(of: terminal.cursorAbs) ?? max(0, rowMap.count - 1)
+        let local = NSRect(x: padX + CGFloat(terminal.cursorX) * fonts.cellW, y: rowY(r), width: fonts.cellW, height: fonts.cellH)
+        return window.convertToScreen(convert(local, to: nil))
+    }
+}
