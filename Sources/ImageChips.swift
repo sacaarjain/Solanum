@@ -1,10 +1,11 @@
 import AppKit
 
-// "[Image #N]" in Claude Code (in its input box, and in the prompts it shows above) gets a thumbnail of that image
-// drawn over it; hovering shows it larger and clicking opens it. Claude Code keeps each image pasted into a
-// session as /tmp/claude-<uid>/<cwd, non-alphanumerics as "-">/<session>/images/<N>.png, the session being its
-// transcript's name in ~/.claude/projects/<same>/. An image pasted here is also kept from the clipboard and
-// matched to the next new "[Image #N]", in case that file isn't there yet.
+// Images pasted into Claude Code. "[Image #N]" stays as text where it's typed; the image itself shows where Claude
+// Code lists a sent prompt's attachments ("⎿  [Image #8]" under the prompt), and, while a prompt is being written,
+// above its input box. Clicking one opens it in a small popup; clicking the popup opens the file. Claude Code keeps
+// each image pasted into a session as /tmp/claude-<uid>/<cwd, non-alphanumerics as "-">/<session>/images/<N>.png,
+// the session being its transcript's name in ~/.claude/projects/<same>/. An image pasted here is also kept from the
+// clipboard and matched to the next new "[Image #N]", in case that file isn't there yet.
 
 /// Finds the image behind each "[Image #N]".
 enum ClaudeImages {
@@ -61,12 +62,13 @@ enum ClaudeImages {
     }
 }
 
-/// Per terminal: the chips drawn this frame, and the one hovered or just pasted.
+/// Per terminal: the thumbnails drawn this frame, the one hovered, and the one open in a popup.
 final class ImageChipState {
     var chips: [(rect: CGRect, n: Int, found: ClaudeImages.Found)] = []
     var hover: Int?
-    /// Shown for a moment after pasting, without hovering.
-    var flash: Int?
+    /// The image shown in a popup (clicked), and where that popup was drawn.
+    var popup: Int?
+    var popupRect: CGRect = .null
     /// An image pasted here, waiting for its "[Image #N]" to appear.
     var pending: (image: NSImage, at: Date)?
     /// Numbers already on screen, so a new one can be matched to `pending`.
@@ -107,93 +109,139 @@ extension TerminalView {
         return out
     }
 
-    /// A rounded chip over each "[Image #N]" whose image is known: the thumbnail, then "Image #N" (or "#N").
+    /// "⎿  [Image #8] [Image #9]": a sent prompt's attachments, as Claude Code lists them under it. Nil for any
+    /// other line (inline mentions stay text).
+    private func attachmentTokens(_ line: Line) -> [(Int, Int, Int)]? {
+        let c = line.cells
+        guard let mark = c.firstIndex(where: { $0.ch != 0x20 && $0.ch != 0 }), c[mark].ch == 0x23BF else { return nil }
+        let tokens = imageTokens(line)
+        guard !tokens.isEmpty else { return nil }
+        var covered = Set<Int>()
+        for (start, len, _) in tokens { covered.formUnion(start..<(start + len)) }
+        for x in (mark + 1)..<max(mark + 1, line.trimmedLength) where !covered.contains(x) && c[x].ch != 0x20 && c[x].ch != 0 {
+            return nil
+        }
+        return tokens
+    }
+
+    /// Blank screen rows next to row `r` (below when `down`, else above), at most `limit`: room for a taller thumbnail.
+    private func blankRows(from r: Int, down: Bool, limit: Int) -> Int {
+        var k = 0
+        while k < limit {
+            let i = down ? r + 1 + k : r - 1 - k
+            guard rowMap.indices.contains(i), rowMap[i] >= 0, terminal.line(abs: rowMap[i])?.isBlank ?? true else { break }
+            k += 1
+        }
+        return k
+    }
+
+    /// The images on screen: in place of each attachment line's "[Image #N]", and above the live input box for the
+    /// ones in the prompt being written.
     func drawImageChips(_ ctx: CGContext) {
         let st = imageChipState
         st.chips = []
         guard remote == nil, let pid = pty?.foregroundPID, let cwd = PTYProcess.directory(of: pid) else { return }
         let th = palette.theme
-        let font = NSFont.systemFont(ofSize: max(9.5, fonts.size - 2.5), weight: .medium)
         var onScreen: Set<Int> = []
-        for (r, abs) in rowMap.enumerated() where abs >= 0 {
-            guard let line = terminal.line(abs: abs) else { continue }
-            for (col, len, n) in imageTokens(line) {
-                onScreen.insert(n)
-                var f = ClaudeImages.lookup(n, cwd: cwd)
-                // A number not seen before, right after a paste here: that's the pasted image. Preview it a moment.
-                var justPasted = false
-                if !st.seen.contains(n), let p = st.pending, Date().timeIntervalSince(p.at) < 10 {
-                    if f == nil {
-                        ClaudeImages.remember(p.image, as: n, cwd: cwd)
-                        f = ClaudeImages.lookup(n, cwd: cwd)
-                    }
-                    st.pending = nil
-                    justPasted = true
-                }
-                guard let f else { continue }
-                if justPasted { flashImage(n) }
-                let rect = CGRect(x: padX + CGFloat(col) * fonts.cellW, y: rowY(r) + 1, width: CGFloat(len) * fonts.cellW, height: fonts.cellH - 2)
-                drawChip(rect, n: n, image: f.image, hovered: st.hover == n, font: font, th: th, ctx)
+        func image(_ n: Int) -> ClaudeImages.Found? {
+            if let f = ClaudeImages.lookup(n, cwd: cwd) { return f }
+            // A number not seen before, right after a paste here: that's the pasted image.
+            guard !st.seen.contains(n), let p = st.pending, Date().timeIntervalSince(p.at) < 10 else { return nil }
+            ClaudeImages.remember(p.image, as: n, cwd: cwd)
+            st.pending = nil
+            return ClaudeImages.lookup(n, cwd: cwd)
+        }
+        // Thumbnails `height` tall, keeping each image's shape (within limits), left to right from `x`.
+        func strip(_ ns: [Int], x: CGFloat, top: CGFloat, height: CGFloat) {
+            var x = x
+            for n in ns {
+                guard let f = image(n) else { continue }
+                let s = f.image.size
+                let aspect = s.width > 0 && s.height > 0 ? min(max(s.width / s.height, 0.75), 2.5) : 1.5
+                let rect = CGRect(x: x, y: top, width: (height * aspect).rounded(), height: height)
+                drawThumb(rect, n: n, image: f.image, hovered: st.hover == n, open: st.popup == n, th: th, ctx)
                 st.chips.append((rect, n, f))
+                x = rect.maxX + 6
             }
         }
+
+        let block = terminal.currentBlock
+        let boxRows = block.flatMap { terminal.agentInputRows($0) }
+        let boxTop = block.flatMap { terminal.agentInputBoxTop($0) }
+        var inBox: [Int] = []
+        for (r, abs) in rowMap.enumerated() where abs >= 0 {
+            guard let line = terminal.line(abs: abs) else { continue }
+            let tokens = imageTokens(line)
+            tokens.forEach { onScreen.insert($0.2) }
+            if let rows = boxRows, rows.contains(abs) {
+                for t in tokens where !inBox.contains(t.2) { inBox.append(t.2) }
+                continue
+            }
+            guard let attached = attachmentTokens(line), let first = attached.first, let last = attached.last else { continue }
+            // Cover the "[Image #N]" text, then draw over it and the blank rows below.
+            let y = rowY(r)
+            let x = padX + CGFloat(first.0) * fonts.cellW
+            ctx.setFillColor(th.background.cgColor)
+            ctx.fill(CGRect(x: x, y: y, width: CGFloat(last.0 + last.1 - first.0) * fonts.cellW, height: fonts.cellH))
+            let rows = 1 + blankRows(from: r, down: true, limit: 3)
+            strip(attached.map(\.2), x: x, top: y + 2, height: CGFloat(rows) * fonts.cellH - 6)
+        }
+        // The prompt being written: its images in the blank rows above the box's top rule.
+        if let top = boxTop, !inBox.isEmpty, let r = rowMap.firstIndex(of: top) {
+            let rows = max(1, blankRows(from: r, down: false, limit: 3))
+            let height = CGFloat(rows) * fonts.cellH - 6
+            strip(inBox, x: padX + fonts.cellW * 2, top: rowY(r) - height - 3, height: height)
+        }
         st.seen.formUnion(onScreen)
+        if let n = st.popup, !st.chips.contains(where: { $0.n == n }) { st.popup = nil }
     }
 
-    private func drawChip(_ rect: CGRect, n: Int, image: NSImage, hovered: Bool, font: NSFont, th: Theme, _ ctx: CGContext) {
-        let pill = CGPath(roundedRect: rect, cornerWidth: 4, cornerHeight: 4, transform: nil)
-        // Opaque first, so the bracketed text underneath doesn't show through.
-        ctx.setFillColor(th.background.mix(th.accent, hovered ? 0.22 : 0.12).cgColor)
-        ctx.addPath(pill)
-        ctx.fillPath()
-        ctx.setStrokeColor(th.accent.withAlphaComponent(hovered ? 0.8 : 0.45).cgColor)
-        ctx.setLineWidth(1)
-        ctx.addPath(pill)
-        ctx.strokePath()
-        // Thumbnail, cropped to fill a small landscape frame.
-        let thumbH = rect.height - 4
-        let thumb = CGRect(x: rect.minX + 2, y: rect.minY + 2, width: min(thumbH * 1.5, rect.width * 0.4), height: thumbH)
+    /// A thumbnail with rounded corners, a hairline border (the accent while hovered or open) and its number.
+    private func drawThumb(_ rect: CGRect, n: Int, image: NSImage, hovered: Bool, open: Bool, th: Theme, _ ctx: CGContext) {
+        let path = CGPath(roundedRect: rect, cornerWidth: 4, cornerHeight: 4, transform: nil)
         ctx.saveGState()
-        ctx.addPath(CGPath(roundedRect: thumb, cornerWidth: 2.5, cornerHeight: 2.5, transform: nil))
+        ctx.setFillColor(th.background.mix(th.foreground, 0.06).cgColor)
+        ctx.addPath(path)
+        ctx.fillPath()
+        ctx.addPath(path)
         ctx.clip()
         let s = image.size
         if s.width > 0, s.height > 0 {
-            let scale = max(thumb.width / s.width, thumb.height / s.height)
+            let scale = max(rect.width / s.width, rect.height / s.height)
             let w = s.width * scale, h = s.height * scale
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
-            image.draw(in: CGRect(x: thumb.midX - w / 2, y: thumb.midY - h / 2, width: w, height: h), from: .zero, operation: .sourceOver,
+            image.draw(in: CGRect(x: rect.midX - w / 2, y: rect.midY - h / 2, width: w, height: h), from: .zero, operation: .sourceOver,
                        fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high.rawValue])
             NSGraphicsContext.restoreGraphicsState()
         }
-        ctx.restoreGState()
-        let color = hovered ? th.foreground : th.foreground.withAlphaComponent(0.85)
-        let room = rect.maxX - thumb.maxX - 9
-        var label = NSAttributedString(string: "Image #\(n)", attributes: [.font: font, .foregroundColor: color])
-        if label.size().width > room { label = NSAttributedString(string: "#\(n)", attributes: [.font: font, .foregroundColor: color]) }
-        let size = label.size()
-        drawLabel(label, at: CGPoint(x: thumb.maxX + 5 + max(0, (room - size.width) / 2), y: rect.midY - size.height / 2), ctx)
-    }
-
-    /// Shows the preview card for `n` for a moment (after pasting it).
-    func flashImage(_ n: Int) {
-        imageChipState.flash = n
-        needsDisplay = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
-            guard let self, self.imageChipState.flash == n else { return }
-            self.imageChipState.flash = nil
-            self.needsDisplay = true
+        // "#N" in the corner, when there's room.
+        if rect.height >= 18 {
+            let label = NSAttributedString(string: "#\(n)", attributes: [.font: NSFont.systemFont(ofSize: 9.5, weight: .semibold),
+                                                                        .foregroundColor: NSColor.white])
+            let ls = label.size()
+            let tag = CGRect(x: rect.minX + 3, y: rect.maxY - ls.height - 4, width: ls.width + 8, height: ls.height + 1)
+            ctx.setFillColor(NSColor.black.withAlphaComponent(0.55).cgColor)
+            ctx.addPath(CGPath(roundedRect: tag, cornerWidth: 3, cornerHeight: 3, transform: nil))
+            ctx.fillPath()
+            drawLabel(label, at: CGPoint(x: tag.minX + 4, y: tag.minY + 0.5), ctx)
         }
+        ctx.restoreGState()
+        ctx.setStrokeColor((hovered || open ? th.accent : th.foreground.withAlphaComponent(0.25)).cgColor)
+        ctx.setLineWidth(hovered || open ? 1.5 : 1)
+        ctx.addPath(path)
+        ctx.strokePath()
     }
 
-    /// The hovered (or just pasted) image, larger, in a card above its chip (below when there's no room).
+    /// The clicked image, larger, in a card above its thumbnail (below when there's no room).
     func drawImagePreview(_ ctx: CGContext) {
         let st = imageChipState
-        guard let n = st.hover ?? st.flash, let chip = st.chips.first(where: { $0.n == n }) else { return }
+        st.popupRect = .null
+        guard let n = st.popup, let chip = st.chips.first(where: { $0.n == n }) else { return }
         let th = palette.theme
         let s = chip.found.image.size
         guard s.width > 0, s.height > 0 else { return }
-        let maxW = min(320, bounds.width - 24), maxH = min(220, bounds.height * 0.45)
+        let maxW = min(420, bounds.width - 24), maxH = min(300, bounds.height * 0.55)
         let scale = min(maxW / s.width, maxH / s.height, 2)
         let iw = (s.width * scale).rounded(), ih = (s.height * scale).rounded()
         let pad: CGFloat = 6, caption: CGFloat = 18
@@ -202,6 +250,7 @@ extension TerminalView {
         if y < 4 { y = chip.rect.maxY + 6 }
         let x = max(8, min(chip.rect.minX, bounds.width - w - 8))
         let card = CGRect(x: x, y: y, width: w, height: h)
+        st.popupRect = card
         let path = CGPath(roundedRect: card, cornerWidth: 8, cornerHeight: 8, transform: nil)
         ctx.saveGState()
         ctx.setShadow(offset: CGSize(width: 0, height: 4), blur: 14, color: NSColor.black.withAlphaComponent(0.45).cgColor)
@@ -224,7 +273,7 @@ extension TerminalView {
         ctx.restoreGState()
         let px = chip.found.image.representations.first.map { "\($0.pixelsWide) × \($0.pixelsHigh)" } ?? ""
         let font = NSFont.systemFont(ofSize: 10.5, weight: .medium)
-        let text = "Image #\(n)" + (px.isEmpty ? "" : "  ·  \(px)") + (chip.found.url != nil ? "  ·  click to open" : "")
+        let text = "Image #\(n)" + (px.isEmpty ? "" : "  ·  \(px)") + "  ·  click to open"
         let label = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: th.dimText])
         drawLabel(label, at: CGPoint(x: card.minX + pad + 1, y: imageRect.maxY + 3), ctx)
     }
@@ -233,7 +282,27 @@ extension TerminalView {
         imageChipState.chips.first { $0.rect.contains(p) }
     }
 
-    /// Opens a chip's image in the default viewer (Claude Code's saved copy, or the pasted one written out).
+    /// A click on a thumbnail opens (or closes) its popup; on the popup, opens the image; anywhere else, closes the
+    /// popup. Returns whether the click was used up.
+    func handleImageClick(at p: NSPoint) -> Bool {
+        let st = imageChipState
+        if st.popupRect.contains(p), let n = st.popup, let chip = st.chips.first(where: { $0.n == n }) {
+            openImageChip(chip)
+            return true
+        }
+        if let chip = imageChip(at: p) {
+            st.popup = st.popup == chip.n ? nil : chip.n
+            needsDisplay = true
+            return true
+        }
+        if st.popup != nil {
+            st.popup = nil
+            needsDisplay = true
+        }
+        return false
+    }
+
+    /// Opens an image in the default viewer (Claude Code's saved copy, or the pasted one written out).
     func openImageChip(_ chip: (rect: CGRect, n: Int, found: ClaudeImages.Found)) {
         if let url = chip.found.url { NSWorkspace.shared.open(url); return }
         guard let tiff = chip.found.image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return }

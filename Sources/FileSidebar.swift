@@ -28,6 +28,8 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
     var onOpenFileInTab: ((FileSystem, String) -> Void)?
     /// "Open Working Tree": the file's uncommitted changes side by side.
     var onOpenDiff: ((FileSystem, String) -> Void)?
+    /// "Open Preview": a Markdown file rendered as on the web.
+    var onOpenPreview: ((FileSystem, String) -> Void)?
     var onChangeDirectory: ((String) -> Void)?
 
     /// The tree stays on the pinned folder instead of following the terminal.
@@ -995,6 +997,9 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         menuContext = true
         if let n = single, !n.item.isDirectory {
             add("Open", #selector(openFromMenu(_:)))
+            if ["md", "markdown", "mdown", "mkd"].contains((n.item.name as NSString).pathExtension.lowercased()), !n.item.isDeleted {
+                add("Open Preview", #selector(openPreviewFromMenu(_:)))
+            }
             if n.item.isDeleted || gitStatus?.code(for: n.item.path, isDirectory: false) != nil {
                 add("Open Working Tree", #selector(openDiffFromMenu(_:)))
             }
@@ -1039,6 +1044,10 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
 
     @objc private func openFromMenu(_ sender: Any?) {
         if let n = targets.first { onOpenFile?(fs, n.item.path) }
+    }
+
+    @objc private func openPreviewFromMenu(_ sender: Any?) {
+        if let n = targets.first { onOpenPreview?(fs, n.item.path) }
     }
 
     @objc private func openDiffFromMenu(_ sender: Any?) {

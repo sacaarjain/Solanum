@@ -110,3 +110,198 @@ enum SyntaxHighlighter {
         }
     }
 }
+
+/// Format Document (⇧⌥F) for the same languages: consistent indentation, one property or item per line.
+enum Prettifier {
+    struct Failure: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    static func format(_ text: String, as language: SyntaxLanguage, strictJSON: Bool = true) throws -> String {
+        switch language {
+        case .json: return try json(text, strict: strictJSON)
+        case .yaml: return yaml(text)
+        case .xml: return try xml(text)
+        }
+    }
+
+    // MARK: JSON
+
+    /// Re-indents token by token, so key order and any comments (JSON with comments) are kept. `strict` checks
+    /// the text is valid JSON first, so a mistake is reported instead of being reformatted.
+    static func json(_ text: String, strict: Bool) throws -> String {
+        if strict {
+            do {
+                _ = try JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])
+            } catch {
+                let detail = (error as NSError).userInfo["NSDebugDescription"] as? String
+                throw Failure(message: detail ?? "This isn't valid JSON.")
+            }
+        }
+        let c = Array(text.unicodeScalars)
+        var out = String.UnicodeScalarView()
+        var level = 0
+        var pendingBreak = false
+        /// The source had a line break since the last token (a comment after it stays on its own line).
+        var brokeLine = false
+        func emit<S: Sequence>(_ s: S) where S.Element == Unicode.Scalar {
+            if pendingBreak {
+                out.append("\n")
+                for _ in 0..<(level * 2) { out.append(" ") }
+                pendingBreak = false
+            }
+            out.append(contentsOf: s)
+            brokeLine = false
+        }
+        var k = 0
+        while k < c.count {
+            let ch = c[k]
+            switch ch {
+            case "\"", "'":
+                var j = k + 1
+                while j < c.count, c[j] != ch {
+                    if c[j] == "\\" { j += 1 }
+                    j += 1
+                }
+                guard j < c.count else { throw Failure(message: "A string never ends.") }
+                emit(c[k...j])
+                k = j + 1
+                continue
+            case "{", "[":
+                var j = k + 1
+                while j < c.count, " \t\r\n".unicodeScalars.contains(c[j]) { j += 1 }
+                if j < c.count, c[j] == (ch == "{" ? "}" : "]") {
+                    emit(ch == "{" ? "{}".unicodeScalars : "[]".unicodeScalars)
+                    k = j + 1
+                    continue
+                }
+                emit([ch])
+                level += 1
+                pendingBreak = true
+            case "}", "]":
+                level -= 1
+                guard level >= 0 else { throw Failure(message: "A closing \(ch) has no opening bracket.") }
+                pendingBreak = true
+                emit([ch])
+            case ",":
+                pendingBreak = false
+                emit([ch])
+                pendingBreak = true
+            case ":":
+                emit(": ".unicodeScalars)
+            case "\n":
+                brokeLine = true
+            case " ", "\t", "\r":
+                break
+            case "/" where k + 1 < c.count && (c[k + 1] == "/" || c[k + 1] == "*"):
+                let line = c[k + 1] == "/"
+                var j = k + 2
+                if line {
+                    while j < c.count, c[j] != "\n" { j += 1 }
+                } else {
+                    while j + 1 < c.count, !(c[j] == "*" && c[j + 1] == "/") { j += 1 }
+                    j = min(c.count, j + 2)
+                }
+                // A comment that followed a value on its line stays beside it.
+                if !brokeLine, !out.isEmpty, pendingBreak {
+                    pendingBreak = false
+                    out.append(" ")
+                    out.append(contentsOf: c[k..<j])
+                } else {
+                    emit(c[k..<j])
+                }
+                pendingBreak = true
+                k = j
+                continue
+            default:
+                emit([ch])
+            }
+            k += 1
+        }
+        guard level == 0 else { throw Failure(message: "A bracket is never closed.") }
+        return String(out) + "\n"
+    }
+
+    // MARK: YAML
+
+    /// Two spaces per level of nesting, one space after "key:" and "-", no trailing spaces, at most one blank line
+    /// in a row. Block text (after "|" or ">") keeps its own indentation, moved along with its key.
+    static func yaml(_ text: String) -> String {
+        var out: [String] = []
+        var stack: [Int] = []
+        /// Inside "key: |" text: the key's new indentation, and the text's original first-line indentation.
+        var block: (keyIndent: Int, contentIndent: Int?, keyOld: Int)?
+        var blanks = 0
+        let keySpacing = try? NSRegularExpression(pattern: #"^((?:- +)*)("[^"\n]*"|'[^'\n]*'|[^\s#'"\-][^:#\n]*?):[ \t]{2,}(?=\S)"#)
+        let dashSpacing = try? NSRegularExpression(pattern: #"^-[ \t]{2,}(?=\S)"#)
+        func indentOf(_ s: Substring) -> Int { s.prefix { $0 == " " }.count }
+        for raw in text.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+            if line.isEmpty {
+                blanks += 1
+                continue
+            }
+            let w = indentOf(Substring(line))
+            if let b = block {
+                if w > b.keyOld {
+                    let first = b.contentIndent ?? w
+                    block?.contentIndent = first
+                    if blanks > 0 { out.append(contentsOf: Array(repeating: "", count: min(blanks, 1))) }
+                    blanks = 0
+                    out.append(String(repeating: " ", count: b.keyIndent + 2 + max(0, w - first)) + line.drop { $0 == " " })
+                    continue
+                }
+                block = nil
+            }
+            if blanks > 0, !out.isEmpty { out.append("") }
+            blanks = 0
+            var body = String(line.dropFirst(w))
+            if body == "---" || body == "..." {
+                stack = []
+                out.append(body)
+                continue
+            }
+            while let last = stack.last, last > w { stack.removeLast() }
+            if body.hasPrefix("#") {
+                out.append(String(repeating: " ", count: max(0, stack.count - (stack.last == w ? 1 : 0)) * 2) + body)
+                continue
+            }
+            if stack.last != w { stack.append(w) }
+            let indent = (stack.count - 1) * 2
+            let range = NSRange(body.startIndex..., in: body)
+            if let re = dashSpacing { body = re.stringByReplacingMatches(in: body, range: range, withTemplate: "- ") }
+            if let re = keySpacing {
+                body = re.stringByReplacingMatches(in: body, range: NSRange(body.startIndex..., in: body), withTemplate: "$1$2: ")
+            }
+            out.append(String(repeating: " ", count: indent) + body)
+            // "key: |", "key: >-", "- |2" and the like start block text on the following lines.
+            if body.range(of: #"(^|[:\-]\s+)[|>][+\-0-9]*\s*(#.*)?$"#, options: .regularExpression) != nil {
+                block = (indent, nil, w)
+            }
+        }
+        while out.last == "" { out.removeLast() }
+        return out.joined(separator: "\n") + "\n"
+    }
+
+    // MARK: XML
+
+    /// AppKit's XML parser, printed with indentation. Comments and CDATA are kept; external DTDs aren't fetched.
+    static func xml(_ text: String) throws -> String {
+        let doc: XMLDocument
+        do {
+            doc = try XMLDocument(xmlString: text, options: [.nodePreserveCDATA, .nodeLoadExternalEntitiesNever])
+        } catch {
+            throw Failure(message: error.localizedDescription)
+        }
+        var out = doc.xmlString(options: [.nodePrettyPrint, .nodeCompactEmptyElement, .nodePreserveCDATA])
+        // The file's own declaration as it was written (the parser's adds standalone="yes"), or none if it had none.
+        if out.hasPrefix("<?xml"), let end = out.range(of: "?>") {
+            let body = String(out[end.upperBound...]).trimmingCharacters(in: .newlines)
+            let original = text.range(of: #"^\s*<\?xml[^>]*\?>"#, options: .regularExpression)
+                .map { text[$0].trimmingCharacters(in: .whitespacesAndNewlines) }
+            out = original.map { $0 + "\n" + body } ?? body
+        }
+        return out.trimmingCharacters(in: .newlines) + "\n"
+    }
+}

@@ -32,10 +32,11 @@ purple, and each planet theme is colored like its planet, with that planet besid
   when you switch tabs or folders and come back.
 - Git status in the sidebar: U / A / M / D / R / C letters on changed files and folders, with muted row tints.
   Right-click a changed file › Open Working Tree for its changes side by side, as in VS Code.
-- A Git Graph of every branch's history (the status bar's branch picker, or Show Git Graph in the command palette):
+- A Git Graph of every branch's history (⌃⌘G, the status bar's branch picker, or Show Git Graph in the command palette):
   colored lanes, branch and tag labels, and a card with each commit's author, date, message and size on hover.
-- A plain-text editor above the terminal, with syntax colors for JSON, YAML and XML, and previews for images, PDFs,
-  video and audio.
+- A plain-text editor above the terminal, with syntax colors for JSON, YAML and XML, Format Document (⇧⌥F) to
+  re-indent them, and previews for images, PDFs, video and audio.
+- Right-click a Markdown file › Open Preview to see it rendered as on GitHub.
 - Drag and drop or copy/paste between this Mac and ssh hosts (or between two hosts). Transfers stream over the existing
   ssh connection, so there's no second login, and they never overwrite: a taken name gets " copy".
 - The status bar shows each column's folder as clickable breadcrumbs and its git branch, sync state and changes.
@@ -66,8 +67,9 @@ folder access) each time. To keep them, create a self-signed code-signing certif
 | ⌃` | Quick terminal (change in Settings) |
 | ⌘T / ⌘N / ⌘W | New tab / new window / close pane |
 | ⌘D / ⇧⌘D | Split right / split down |
-| ⌘] ⌘[ · ⌥⌘ arrows | Next / previous pane · move between panes |
-| ⇧⌘] ⇧⌘[ · ⌃Tab · ⌘1…9 | Switch tabs |
+| ⌘] ⌘[ · ⌥⌘ arrows | Next / previous pane · move between panes (and split columns) |
+| ⌘Home / ⌘End | Scroll to top / bottom |
+| ⇧⌘] ⇧⌘[ · ⇧⌘← ⇧⌘→ · ⌃Tab · ⌘1…9 | Switch tabs |
 | ⌘↑ / ⌘↓ | Previous / next command block (or Claude prompt) |
 | ⌘J | Jump to a Claude prompt |
 | ⇧⌘C / ⌥⌘C / ⌥⌘R | Copy command / copy output / re-run |

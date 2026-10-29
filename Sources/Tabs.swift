@@ -494,7 +494,13 @@ final class TabSession: NSObject {
             let d = hypot(r.midX - from.midX, r.midY - from.midY)
             if best == nil || d < best!.1 { best = (p, d) }
         }
-        if let b = best { w.makeFirstResponder(b.0) }
+        if let b = best {
+            w.makeFirstResponder(b.0)
+            return
+        }
+        // Nothing that way in this tab: the other column of a split window, when it lies that way.
+        guard let wc = w.windowController as? TerminalWindowController, wc.columns.count > 1 else { return }
+        if (direction == .right && wc.focusedIndex == 0) || (direction == .left && wc.focusedIndex == 1) { wc.focusOtherColumn(nil) }
     }
 
     func cycleFocus(from pane: TerminalView, by d: Int) {
@@ -1465,6 +1471,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             }
             sidebar.onOpenFile = { fs, path in column()?.activeTab?.openFile(fs, path) }
             sidebar.onOpenDiff = { fs, path in column()?.activeTab?.openFile(fs, path, mode: .diff) }
+            sidebar.onOpenPreview = { fs, path in column()?.activeTab?.openFile(fs, path, mode: .preview) }
             sidebar.onOpenFileInTab = { fs, path in
                 guard let c = column() else { return }
                 c.activeTab?.closeEditorJustOpened(path)
@@ -1918,7 +1925,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         }
     }
 
+    /// Tag of the ⇧⌘←/→ tab items, which give way to text selection in an editor or field.
+    static let arrowTabTag = 900
+
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.tag == Self.arrowTabTag, let text = window?.firstResponder as? NSTextView, text.isEditable { return false }
         switch item.action {
         case #selector(removeCurrentTabFromGroup(_:)), #selector(renameCurrentGroup(_:)), #selector(collapseCurrentGroup(_:)):
             return activeTab?.group != nil

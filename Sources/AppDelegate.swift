@@ -325,6 +325,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let arrowDown = String(UnicodeScalar(NSDownArrowFunctionKey)!)
         let arrowLeft = String(UnicodeScalar(NSLeftArrowFunctionKey)!)
         let arrowRight = String(UnicodeScalar(NSRightArrowFunctionKey)!)
+        let home = String(UnicodeScalar(NSHomeFunctionKey)!)
+        let end = String(UnicodeScalar(NSEndFunctionKey)!)
 
         // App
         let app = top("Solanum")
@@ -360,6 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         _ = add(shell, "Collapse Tab Group", #selector(TerminalWindowController.collapseCurrentGroup(_:)), "")
         shell.addItem(.separator())
         _ = add(shell, "Save File", #selector(FileEditorView.saveDocument(_:)), "s")
+        _ = add(shell, "Format Document", #selector(FileEditorView.formatDocument(_:)), "f", [.shift, .option])
         shell.addItem(.separator())
         // Two columns, each with its own tabs (like VS Code's editor groups).
         _ = add(shell, "Split Right", #selector(TerminalWindowController.splitIntoColumns(_:)), "d")
@@ -371,7 +374,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         _ = add(shell, "Close Window", #selector(NSWindow.performClose(_:)), "w", [.command, .shift])
         shell.addItem(.separator())
         _ = add(shell, "Keep Awake (caffeinate 8h)", #selector(TerminalView.keepAwake(_:)), "a", [.command, .shift])
-        _ = add(shell, "Show Git Graph", #selector(TerminalWindowController.showGitGraph(_:)), "")
+        _ = add(shell, "Show Git Graph", #selector(TerminalWindowController.showGitGraph(_:)), "g", [.command, .control])
 
         // Edit
         let edit = top("Edit")
@@ -409,8 +412,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         _ = add(view, "Smaller Text", #selector(decreaseFontSize(_:)), "-")
         _ = add(view, "Default Text Size", #selector(resetFontSize(_:)), "0")
         view.addItem(.separator())
-        _ = add(view, "Scroll to Top", #selector(TerminalView.scrollToTop(_:)), arrowUp, [.command, .option])
-        _ = add(view, "Scroll to Bottom", #selector(TerminalView.scrollToBottom(_:)), arrowDown, [.command, .option])
+        // ⌘Home / ⌘End, as in Ghostty (⌥⌘ arrows move between panes).
+        _ = add(view, "Scroll to Top", #selector(TerminalView.scrollToTop(_:)), home)
+        _ = add(view, "Scroll to Bottom", #selector(TerminalView.scrollToBottom(_:)), end)
         view.addItem(.separator())
         _ = add(view, "Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control])
 
@@ -446,6 +450,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         win.addItem(.separator())
         _ = add(win, "Show Next Tab", #selector(TerminalWindowController.selectNextTab(_:)), "]", [.command, .shift])
         _ = add(win, "Show Previous Tab", #selector(TerminalWindowController.selectPreviousTab(_:)), "[", [.command, .shift])
+        // ⇧⌘ arrows too, except while typing in a file or field (where they select to the line's end).
+        hide(add(win, "Show Next Tab", #selector(TerminalWindowController.selectNextTab(_:)), arrowRight, [.command, .shift],
+                 tag: TerminalWindowController.arrowTabTag))
+        hide(add(win, "Show Previous Tab", #selector(TerminalWindowController.selectPreviousTab(_:)), arrowLeft, [.command, .shift],
+                 tag: TerminalWindowController.arrowTabTag))
         // ⌃Tab / ⌥Tab (with ⇧ for previous) are handled in installTabSwitchMonitor().
         for n in 1...9 {
             hide(add(win, n == 9 ? "Last Tab" : "Tab \(n)", #selector(TerminalWindowController.selectTabByNumber(_:)), "\(n)", tag: n))
@@ -455,8 +464,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         _ = add(win, "Previous Pane", #selector(TerminalView.previousPane(_:)), "[")
         _ = add(win, "Select Pane Left", #selector(TerminalView.focusPaneLeft(_:)), arrowLeft, [.command, .option])
         _ = add(win, "Select Pane Right", #selector(TerminalView.focusPaneRight(_:)), arrowRight, [.command, .option])
-        _ = add(win, "Select Pane Above", #selector(TerminalView.focusPaneUp(_:)), arrowUp, [.command, .option, .shift])
-        _ = add(win, "Select Pane Below", #selector(TerminalView.focusPaneDown(_:)), arrowDown, [.command, .option, .shift])
+        _ = add(win, "Select Pane Above", #selector(TerminalView.focusPaneUp(_:)), arrowUp, [.command, .option])
+        _ = add(win, "Select Pane Below", #selector(TerminalView.focusPaneDown(_:)), arrowDown, [.command, .option])
         win.addItem(.separator())
         _ = add(win, "Bring All to Front", #selector(NSApplication.arrangeInFront(_:)), "")
         NSApp.windowsMenu = win

@@ -23,7 +23,7 @@ echo "› Compiling…"
 swiftc $OPT -swift-version 5 \
   -target arm64-apple-macosx14.0 \
   -import-objc-header Support/Bridging.h \
-  -framework AppKit -framework Carbon -framework UserNotifications -framework AVKit -framework PDFKit \
+  -framework AppKit -framework Carbon -framework UserNotifications -framework AVKit -framework PDFKit -framework WebKit \
   Sources/*.swift \
   -o "$APP/Contents/MacOS/$APP_NAME" 2>&1 | grep -v -E "^(.*warning:|\s*\||\s*$|.*note:)" || true
 [[ -x "$APP/Contents/MacOS/$APP_NAME" ]] || { echo "Build failed"; exit 1; }

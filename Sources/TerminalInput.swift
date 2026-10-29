@@ -347,10 +347,7 @@ extension TerminalView {
             needsDisplay = true
             return
         }
-        if let chip = imageChip(at: p) {
-            openImageChip(chip)
-            return
-        }
+        if handleImageClick(at: p) { return }
         if let button = blockCopyButton, button.rect.contains(p) {
             copyOutput(of: button.block)
             return
@@ -726,6 +723,8 @@ extension TerminalView {
             imageChipState.hover = chipHover
             needsDisplay = true
         }
+        // A hand over an open popup (clicking it opens the image).
+        if !imageChipState.popupRect.isNull { updateCursor() }
         let copyHover = codeCopyButtons.first { $0.0.contains(p) }?.1
         let blockHover = blockCopyButton?.rect.contains(p) ?? false
         let pillHover = jumpPillRect.contains(p)
@@ -768,7 +767,9 @@ extension TerminalView {
         }
         // Normal arrow over the scrollbar and the jump-to-bottom button; a hand over copy buttons and ⌘-links.
         if scrollbarHover || scrollbarGrab != nil || hoverJumpPill { return NSCursor.arrow.set() }
-        (hoverCopyButton != nil || hoverBlockCopy || hoverURL != nil || imageChipState.hover != nil ? NSCursor.pointingHand : NSCursor.iBeam).set()
+        let overPopup = window.map { imageChipState.popupRect.contains(convert($0.mouseLocationOutsideOfEventStream, from: nil)) } ?? false
+        (hoverCopyButton != nil || hoverBlockCopy || hoverURL != nil || imageChipState.hover != nil || overPopup
+            ? NSCursor.pointingHand : NSCursor.iBeam).set()
     }
 
     override func mouseExited(with e: NSEvent) {

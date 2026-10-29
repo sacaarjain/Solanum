@@ -14,6 +14,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         case .file: return (path as NSString).lastPathComponent
         case .diff: return (path as NSString).lastPathComponent + " (Working Tree)"
         case .graph: return "Git Graph"
+        case .preview: return "Preview " + (path as NSString).lastPathComponent
         }
     }
     var onClose: (() -> Void)?
@@ -35,6 +36,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private var media: MediaPreviewView?
     private var diffView: DiffView?
     private var graphView: GitGraphView?
+    private var previewView: MarkdownPreviewView?
     /// A remote file's local copy for the preview; removed with the editor.
     private var mediaCopy: URL?
 
@@ -142,10 +144,11 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         media?.frame = scroll.frame
         diffView?.frame = scroll.frame
         graphView?.frame = scroll.frame
+        previewView?.frame = scroll.frame
     }
 
     func focus() {
-        window?.makeFirstResponder(media?.focusView ?? diffView ?? graphView ?? textView)
+        window?.makeFirstResponder(media?.focusView ?? diffView ?? graphView ?? previewView ?? textView)
     }
 
     private func applyTheme() {
@@ -173,6 +176,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         media?.applyTheme()
         diffView?.applyTheme()
         graphView?.applyTheme()
+        if mode == .preview, previewView != nil { loadPreview() }
         header.needsDisplay = true
         needsDisplay = true
     }
@@ -194,6 +198,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private func load() {
         if mode == .diff { return loadDiff() }
         if mode == .graph { return loadGraph() }
+        if mode == .preview { return loadPreview() }
         if let kind = MediaKind(path: path) { return loadMedia(kind) }
         showMessage("Loading…")
         fs.read(path) { [weak self] result in
@@ -279,6 +284,70 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 self.scroll.isHidden = true
                 if self.window?.firstResponder === self.window { self.focus() }
             }
+        }
+    }
+
+    /// The Markdown file rendered as a page (see Markdown.swift), refreshed when it's saved.
+    private func loadPreview() {
+        header.editable = false
+        if previewView == nil { showMessage("Loading…") }
+        fs.read(path) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let e):
+                self.showMessage(e.localizedDescription)
+            case .success(let data):
+                let view = self.previewView ?? MarkdownPreviewView()
+                if self.previewView == nil {
+                    self.previewView = view
+                    self.addSubview(view)
+                    self.needsLayout = true
+                    self.layoutSubtreeIfNeeded()
+                }
+                let folder = self.fs.isRemote ? nil : URL(fileURLWithPath: (self.path as NSString).deletingLastPathComponent, isDirectory: true)
+                view.show(String(decoding: data, as: UTF8.self), folder: folder)
+                self.message.isHidden = true
+                self.scroll.isHidden = true
+                if self.window?.firstResponder === self.window { self.focus() }
+            }
+        }
+    }
+
+    // MARK: Format Document
+
+    /// ⇧⌥F: JSON, YAML or XML re-indented (see `Prettifier`), as one step ⌘Z undoes.
+    @objc func formatDocument(_ sender: Any?) {
+        guard mode == .file, loaded, media == nil else { return NSSound.beep() }
+        guard let language else {
+            header.status = "No formatter for this kind of file"
+            return clearStatus(after: 2.5)
+        }
+        let text = textView.string
+        let ext = (path as NSString).pathExtension.lowercased()
+        let formatted: String
+        do {
+            // .jsonc / .json5 allow comments and other relaxations, so they skip the strict check.
+            formatted = try Prettifier.format(text, as: language, strictJSON: ext == "json" || ext == "geojson" || ext == "webmanifest")
+        } catch {
+            return presentAlert("Couldn't format “\((path as NSString).lastPathComponent)”", error.localizedDescription)
+        }
+        guard formatted != text else {
+            header.status = "Already formatted"
+            return clearStatus(after: 1.5)
+        }
+        let caret = textView.selectedRange().location
+        let all = NSRange(location: 0, length: (text as NSString).length)
+        textView.insertText(formatted, replacementRange: all)
+        textView.setSelectedRange(NSRange(location: min(caret, (formatted as NSString).length), length: 0))
+        textView.scrollRangeToVisible(textView.selectedRange())
+        header.status = "Formatted"
+        clearStatus(after: 1.5)
+    }
+
+    private func clearStatus(after seconds: Double) {
+        let shown = header.status
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+            if self?.header.status == shown { self?.header.status = nil }
         }
     }
 
@@ -458,9 +527,9 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     }
 }
 
-/// What an editor shows: a file to edit, a file's uncommitted changes (Diff.swift), or a repository's history
-/// (GitGraph.swift).
-enum EditorMode { case file, diff, graph }
+/// What an editor shows: a file to edit, a file's uncommitted changes (Diff.swift), a repository's history
+/// (GitGraph.swift), or a Markdown file rendered (Markdown.swift).
+enum EditorMode { case file, diff, graph, preview }
 
 /// ⌥Z toggles wrapping, as in VS Code.
 final class EditorTextView: NSTextView {

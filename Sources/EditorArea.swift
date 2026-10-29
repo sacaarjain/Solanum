@@ -96,7 +96,13 @@ final class FileTabStrip: NSView {
                 NSBezierPath(roundedRect: NSRect(x: r.minX + 8, y: r.maxY - 2, width: r.width - 16, height: 2), xRadius: 1, yRadius: 1).fill()
             }
             let name = ed.displayName
-            let symbol = ed.mode == .diff ? "plusminus" : ed.mode == .graph ? "arrow.triangle.branch" : FileSidebarView.symbol(for: name)
+            let symbol: String
+            switch ed.mode {
+            case .diff: symbol = "plusminus"
+            case .graph: symbol = "arrow.triangle.branch"
+            case .preview: symbol = "eye"
+            case .file: symbol = FileSidebarView.symbol(for: name)
+            }
             let config = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular).applying(.init(paletteColors: [th.dimText]))
             if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(config) {
                 img.draw(in: NSRect(x: r.minX + 9, y: r.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
