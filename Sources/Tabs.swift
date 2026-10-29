@@ -1393,8 +1393,13 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         }
         if let f = saved.splitFraction { rootView.splitFraction = CGFloat(f) }
         if let rs = saved.rightSidebar { rootView.rightSidebarVisible = rs }
-        if let r = saved.frame.map(NSRectFromString), NSScreen.screens.contains(where: { $0.visibleFrame.intersects(r) }) {
-            window?.setFrame(r, display: false)
+        // Back where it was, at the size set in Settings › Preferences › Window Size, kept on its screen.
+        if let r = saved.frame.map(NSRectFromString), let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(r) }) {
+            let vis = screen.visibleFrame
+            let size = Self.frameSize(columns: Config.shared.windowColumns, rows: Config.shared.windowRows)
+            let w = min(size.width, vis.width), h = min(size.height, vis.height)
+            let x = min(max(r.midX - w / 2, vis.minX), vis.maxX - w), y = min(max(r.midY - h / 2, vis.minY), vis.maxY - h)
+            window?.setFrame(NSRect(x: x, y: y, width: w, height: h), display: false)
         }
         if let pinned = saved.pinnedFolder, let tab = columns[0].activeTab, tab.pinnedFolder == nil {
             tab.pinnedFolder = (LocalFileSystem.shared, pinned)

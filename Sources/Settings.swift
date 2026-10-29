@@ -937,14 +937,15 @@ final class WindowSizePicker: NSView {
 
     static func height(forWidth w: CGFloat) -> CGFloat {
         guard let s = screen else { return 300 }
-        return min(w - 48, 520) * s.frame.height / s.frame.width + 44
+        return (w - 8) * s.frame.height / s.frame.width + 8
     }
 
     /// The miniature screen, and how many of its points one of the real screen's points is.
     private var screenRect: (rect: NSRect, scale: CGFloat) {
         let full = Self.screen?.frame ?? NSRect(x: 0, y: 0, width: 1512, height: 982)
-        let w = min(bounds.width - 48, 520)
-        return (NSRect(x: (bounds.width - w) / 2, y: 22, width: w, height: w * full.height / full.width), w / full.width)
+        // Inset just enough for the corner brackets when the window fills the screen.
+        let w = bounds.width - 8
+        return (NSRect(x: 4, y: 4, width: w, height: w * full.height / full.width), w / full.width)
     }
 
     /// The part of the miniature not covered by the menu bar and Dock: where windows go.
@@ -966,22 +967,11 @@ final class WindowSizePicker: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let th = Config.shared.theme
-        let card = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 12, yRadius: 12)
-        th.surface.withAlphaComponent(0.55).setFill()
-        card.fill()
-        th.border.setStroke()
-        card.stroke()
-
-        // The screen, with the menu bar across the top.
+        // The screen.
         let (scr, scale) = screenRect
-        let screenShape = NSBezierPath(roundedRect: scr, xRadius: 7, yRadius: 7)
-        NSGraphicsContext.saveGraphicsState()
-        screenShape.addClip()
+        let screenShape = NSBezierPath(roundedRect: scr, xRadius: 12, yRadius: 12)
         NSColor.black.withAlphaComponent(0.22).setFill()
-        scr.fill()
-        NSColor.black.withAlphaComponent(0.2).setFill()
-        NSRect(x: scr.minX, y: scr.minY, width: scr.width, height: max(4, usableRect.minY - scr.minY)).fill()
-        NSGraphicsContext.restoreGraphicsState()
+        screenShape.fill()
         th.border.setStroke()
         screenShape.stroke()
 

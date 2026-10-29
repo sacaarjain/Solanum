@@ -2,7 +2,7 @@ import AppKit
 
 // "Show Git Graph" (top of the status bar's branch picker, or the command palette): the repository's history as
 // a graph, as VS Code's Git Graph draws it. Each line of development gets a lane in its own color, with curves
-// where branches split off and merge back, and branch and tag labels beside the commits. Hovering a commit shows
+// where branches split off and merge back, and branch and tag labels beside the commits. Clicking a commit shows
 // a card with its author, date, full message and size, and buttons to copy its hash or message.
 
 struct GraphCommit {
@@ -118,7 +118,7 @@ enum GraphLayout {
     }
 }
 
-/// The graph, plus the card shown over it while a commit is hovered.
+/// The graph, plus the card shown over it for the commit last clicked.
 final class GitGraphView: NSView {
     private let scroll = NSScrollView()
     private let rowsView = GraphRowsView()
@@ -126,8 +126,7 @@ final class GitGraphView: NSView {
     private let runner: GitRunner
     private var details: [String: CommitCard.Details] = [:]
     private var cardRow: Int?
-    private var cardHovered = false
-    private var pendingCard: DispatchWorkItem?
+    private var scrollObserver: NSObjectProtocol?
 
     init(runner: GitRunner) {
         self.runner = runner
@@ -140,23 +139,29 @@ final class GitGraphView: NSView {
         scroll.autohidesScrollers = true
         addSubview(scroll)
         card.isHidden = true
-        card.onHover = { [weak self] inside in
-            guard let self else { return }
-            self.cardHovered = inside
-            if !inside {
-                self.rowsView.forgetHover()
-                self.scheduleCard(nil)
-            }
-        }
         addSubview(card)
-        // Rows under the card still see the pointer; while it's on the card, the card stays.
-        rowsView.onHover = { [weak self] row in
-            guard let self, !self.cardHovered else { return }
-            self.scheduleCard(row)
+        // A click on a commit opens its card; on the same commit again, or anywhere else, closes it.
+        rowsView.onClick = { [weak self] row in
+            guard let self else { return }
+            // Focus here, so Escape reaches keyDown and closes the card.
+            self.window?.makeFirstResponder(self)
+            if let row, row != self.cardRow { self.showCard(row) } else { self.hideCard() }
+        }
+        // The card stays by the row it was opened for, so scrolling puts it away.
+        scroll.contentView.postsBoundsChangedNotifications = true
+        scrollObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView,
+                                                                queue: .main) { [weak self] _ in
+            if self?.cardRow != nil { self?.hideCard() }
         }
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    deinit { scrollObserver.map(NotificationCenter.default.removeObserver) }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53, cardRow != nil { hideCard() } else { super.keyDown(with: event) }
+    }
 
     override var isFlipped: Bool { true }
     /// Takes focus so ⌘W and the other editor commands reach the editor around it.
@@ -180,34 +185,21 @@ final class GitGraphView: NSView {
         rowsView.fitSize()
     }
 
-    // MARK: Hover card
+    // MARK: Commit card
 
     func devHover(_ row: Int) { showCard(row) }
-
-    /// Shows the card for `row` after a short pause (sooner when one is up already), or hides it once the
-    /// pointer has left both the row and the card.
-    private func scheduleCard(_ row: Int?) {
-        pendingCard?.cancel()
-        if row == cardRow, row != nil { return }
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            if let row { self.showCard(row) } else if !self.cardHovered { self.hideCard() }
-        }
-        pendingCard = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + (row == nil ? 0.25 : card.isHidden ? 0.4 : 0.12), execute: work)
-    }
 
     private func hideCard() {
         card.isHidden = true
         cardRow = nil
-        rowsView.hovered = nil
+        rowsView.selected = nil
     }
 
     private func showCard(_ row: Int) {
         guard rowsView.rows.indices.contains(row) else { return }
         let commit = rowsView.rows[row].commit
         cardRow = row
-        rowsView.hovered = row
+        rowsView.selected = row
         card.set(commit, details: details[commit.hash])
         placeCard(row)
         card.isHidden = false
@@ -241,8 +233,10 @@ final class GitGraphView: NSView {
 final class GraphRowsView: NSView {
     var rows: [GraphRow] = [] { didSet { needsDisplay = true } }
     var head = ""
-    var hovered: Int? { didSet { if hovered != oldValue { needsDisplay = true } } }
-    var onHover: ((Int?) -> Void)?
+    /// The row under the pointer, and the one whose card is open; only their rows are redrawn when they change.
+    private var hovered: Int? { didSet { if hovered != oldValue { redraw(oldValue, hovered) } } }
+    var selected: Int? { didSet { if selected != oldValue { redraw(oldValue, selected) } } }
+    var onClick: ((Int?) -> Void)?
 
     static let rowHeight: CGFloat = 24
     private static let laneWidth: CGFloat = 14
@@ -252,14 +246,19 @@ final class GraphRowsView: NSView {
     private let font = NSFont.systemFont(ofSize: 12.5)
     private let boldFont = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
     private let pillFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
-    private var lastHover: Int?
+    /// Label icons by name and color, made once rather than on every draw.
+    private var symbols: [String: NSImage] = [:]
 
     override var isFlipped: Bool { true }
 
+    /// Resizing redraws it; otherwise nothing changed and nothing needs drawing.
     func fitSize() {
         let size = NSSize(width: enclosingScrollView?.contentSize.width ?? 0, height: CGFloat(rows.count) * Self.rowHeight + 8)
         if size != frame.size { setFrameSize(size) }
-        needsDisplay = true
+    }
+
+    private func redraw(_ rows: Int?...) {
+        for r in rows.compactMap({ $0 }) { setNeedsDisplay(rect(ofRow: r)) }
     }
 
     static func color(_ i: Int) -> NSColor { palette[i % palette.count] }
@@ -274,23 +273,14 @@ final class GraphRowsView: NSView {
                                        owner: self))
     }
 
-    override func mouseMoved(with e: NSEvent) {
-        let p = convert(e.locationInWindow, from: nil)
-        let r = Int(p.y / Self.rowHeight)
-        let row = rows.indices.contains(r) ? r : nil
-        if row != lastHover {
-            lastHover = row
-            onHover?(row)
-        }
+    private func row(at e: NSEvent) -> Int? {
+        let r = Int(convert(e.locationInWindow, from: nil).y / Self.rowHeight)
+        return rows.indices.contains(r) ? r : nil
     }
 
-    override func mouseExited(with e: NSEvent) {
-        lastHover = nil
-        onHover?(nil)
-    }
-
-    /// The next move reports its row even if it's the one last reported.
-    func forgetHover() { lastHover = nil }
+    override func mouseMoved(with e: NSEvent) { hovered = row(at: e) }
+    override func mouseExited(with e: NSEvent) { hovered = nil }
+    override func mouseDown(with e: NSEvent) { onClick?(row(at: e)) }
 
     override func draw(_ dirtyRect: NSRect) {
         guard !rows.isEmpty else { return }
@@ -304,8 +294,8 @@ final class GraphRowsView: NSView {
             let y = CGFloat(r) * h
             let mid = y + h / 2
             let isHead = row.commit.hash == head
-            if r == hovered || isHead {
-                th.foreground.withAlphaComponent(r == hovered ? 0.07 : 0.04).setFill()
+            if r == hovered || r == selected || isHead {
+                th.foreground.withAlphaComponent(r == selected ? 0.1 : r == hovered ? 0.07 : 0.04).setFill()
                 NSRect(x: 0, y: y, width: bounds.width, height: h).fill()
             }
             // The lines, then the commit's dot over them.
@@ -477,12 +467,16 @@ final class GraphRowsView: NSView {
     }
 
     private func symbol(_ name: String, _ color: NSColor) -> NSImage? {
-        NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+        let key = "\(name) \(color)"
+        if let img = symbols[key] { return img }
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 9.5, weight: .semibold).applying(.init(paletteColors: [color])))
+        symbols[key] = img
+        return img
     }
 }
 
-/// The hover card: who and when, the full message, how much changed, and copy buttons for the hash and message.
+/// The commit card: who and when, the full message, how much changed, and copy buttons for the hash and message.
 final class CommitCard: NSView {
     struct Details {
         let message: String
@@ -490,7 +484,6 @@ final class CommitCard: NSView {
         let stats: String
     }
 
-    var onHover: ((Bool) -> Void)?
     private let byline = NSTextField(labelWithString: "")
     private let message = NSTextField(wrappingLabelWithString: "")
     private let stats = NSTextField(labelWithString: "")
@@ -623,15 +616,6 @@ final class CommitCard: NSView {
         NSPasteboard.general.setString(text, forType: .string)
         button.flash("Copied")
     }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
-    }
-
-    override func mouseEntered(with event: NSEvent) { onHover?(true) }
-    override func mouseExited(with event: NSEvent) { onHover?(false) }
 }
 
 /// A link-style button on the card: an icon and a title in the accent color, "Copied" for a moment after a click.
