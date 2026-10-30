@@ -150,8 +150,10 @@ Interactive, and isn't affiliated with them in any way.
 - **Non-commercial:** Solanum is 100% free to download and use. There are no purchases, in-app or otherwise, no
   subscriptions or paywalls, and no advertising.
 - **Credit:** *Outer Wilds* and everything from it here (its name and Solanum's, the planets the themes are colored
-  after, the Nomai quantum symbol, and the lines from Bells and Solanum in the Quantum Moon's easter egg) belong to its creators,
+  after, Nomai script, and the lines from Bells and Solanum in the Quantum Moon's easter egg) belong to its creators,
   [Mobius Digital](https://www.mobiusdigitalgames.com) and [Annapurna Interactive](https://annapurnainteractive.com).
   The themes and the planets drawn in the status bar are fan renditions.
 - **Community:** with thanks to the *Outer Wilds* fan community, whose artwork and wikis inspired the planet art and
   the Quantum Moon's easter egg.
+- **Font:** the easter egg's translations are set in [Space Mono](https://github.com/googlefonts/spacemono), bundled
+  under the SIL Open Font License (`Support/Fonts/OFL.txt`).

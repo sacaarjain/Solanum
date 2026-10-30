@@ -960,6 +960,11 @@ final class StatusBarView: NSView {
         needsDisplay = true
     }
 
+    /// Dev aid (DevTools nomai-read): clicks the Quantum Moon when it's by the folders.
+    func devClickMoon() {
+        if let b = buttons.first(where: { $0.kind == .moon }) { QuantumMoon.toggleReading(from: self, moon: b.rect) }
+    }
+
     override func mouseDown(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
         if let b = buttons.first(where: { $0.rect.contains(p) }) {
@@ -972,7 +977,7 @@ final class StatusBarView: NSView {
             case .branch: onBranch?()
             case .sync: if gitBusy == nil { onSync?(at) }
             case .changes: onChanges?(at)
-            case .moon: QuantumMoon.showQuote(over: window)
+            case .moon: QuantumMoon.toggleReading(from: self, moon: b.rect)
             }
             return
         }
@@ -1080,6 +1085,9 @@ final class ColumnDivider: NSView {
 
 /// Root content view: blur + background + the columns (each a tab strip in the title bar over its content)
 /// + the file sidebars (left, and right while split) + status bar.
+/// A view laid over a whole window (the Quantum Moon's reading): `WindowRootView` keeps it above everything else.
+protocol WindowOverlay: NSView {}
+
 final class WindowRootView: NSView {
     let effect = NSVisualEffectView()
     let background = BackgroundView()
@@ -1282,8 +1290,11 @@ final class WindowRootView: NSView {
             n.frame = NSRect(x: bounds.width - w - 14, y: noticeY, width: w, height: n.preferredHeight)
             noticeY += n.preferredHeight + 8
         }
-        // Keep the overlay above columns added later.
-        if subviews.last !== dropOverlay { addSubview(dropOverlay) }
+        // Keep the overlay above columns added later (but under anything floating over the whole window).
+        let floating = subviews.filter { $0 is WindowOverlay }
+        if subviews.last(where: { !($0 is WindowOverlay) }) !== dropOverlay {
+            if let f = floating.first { addSubview(dropOverlay, positioned: .below, relativeTo: f) } else { addSubview(dropOverlay) }
+        }
         // Columns are added after the resize strips; keep the strips above them so their whole width works.
         for handle in [sidebarHandle, rightSidebarHandle] {
             let at = subviews.firstIndex(of: handle) ?? 0
@@ -1291,6 +1302,8 @@ final class WindowRootView: NSView {
                 addSubview(handle, positioned: .below, relativeTo: dropOverlay)
             }
         }
+        // And whatever floats over the window stays above all of it, strips and overlay included.
+        for v in floating where subviews.last !== v { addSubview(v) }
         window?.invalidateCursorRects(for: sidebarHandle)
         window?.invalidateCursorRects(for: rightSidebarHandle)
         window?.invalidateCursorRects(for: divider)
