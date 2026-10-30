@@ -219,11 +219,11 @@ final class GitGraphView: NSView {
         }
     }
 
-    /// Just below the row, beside the graph, kept inside the view (above the row when there's no room below).
+    /// Just below the row, against the right edge so the messages stay readable (above the row when there's no room below).
     private func placeCard(_ row: Int) {
         let size = card.fittingSize(width: min(460, bounds.width - 24))
         let rowRect = convert(rowsView.rect(ofRow: row), from: rowsView)
-        let x = min(max(12, rowsView.textX(row) + 24), bounds.width - size.width - 12)
+        let x = max(12, bounds.width - size.width - 56)
         var y = rowRect.maxY + 2
         if y + size.height > bounds.height - 8 { y = max(8, rowRect.minY - size.height - 2) }
         card.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
