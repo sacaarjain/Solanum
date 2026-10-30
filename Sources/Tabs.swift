@@ -2630,6 +2630,27 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         }
     }
 
+    /// A tab title too wide for `full`, cut to fit `width`: at the last whole word that fits, then "…" (or within the
+    /// first word, if even that doesn't fit). Nil for one that fits, and for a path or a single word, which the middle
+    /// truncation cuts instead to keep their end (a folder's name).
+    static func fitTitle(_ title: String, full: CGFloat, width: CGFloat, attrs: [NSAttributedString.Key: Any]) -> String? {
+        func w(_ s: String) -> CGFloat { (s as NSString).size(withAttributes: attrs).width }
+        guard title.contains(" "), !title.contains("/"), w(title) > full else { return nil }
+        var words = title.split(separator: " ")
+        let trailing = CharacterSet(charactersIn: " ,;:-–—·")
+        while words.count > 1 {
+            words.removeLast()
+            let cut = words.joined(separator: " ").trimmingCharacters(in: trailing) + "…"
+            if w(cut) <= width { return cut }
+        }
+        var first = String(words[0])
+        while first.count > 1 {
+            first.removeLast()
+            if w(first + "…") <= width { return first + "…" }
+        }
+        return "…"
+    }
+
     /// `picked`: one of several ⌘/⇧-picked tabs, shaded like a hovered tab (but without its close button).
     /// `docked`: the active tab is drawn in place, opening onto the terminal (the strip already left it clear);
     /// otherwise (dragged, lifted with its group) it's a raised pill.
@@ -2683,12 +2704,24 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: titleColor, .paragraphStyle: para]
         let titleRect = NSRect(x: textX, y: r.midY - 8, width: r.maxX - textX - 12, height: 16)
         if !isEditing(tab) {
-            let tw = min(titleRect.width, ceil((tab.title as NSString).size(withAttributes: attrs).width))
             let fadeEnd = r.maxX - 26, fadeStart = fadeEnd - 14
+            // A cut title is centered in the room before the close button's fade, so its "…" shows (the same
+            // whether the button shows or not).
+            var attrs = attrs, titleRect = titleRect
+            let cut = Self.fitTitle(tab.title, full: titleRect.width, width: fadeStart - titleRect.minX, attrs: attrs)
+            if cut != nil {
+                let centered = NSMutableParagraphStyle()
+                centered.lineBreakMode = .byClipping
+                centered.alignment = .center
+                attrs[.paragraphStyle] = centered
+                titleRect.size.width = fadeStart - titleRect.minX
+            }
+            let title = cut ?? tab.title
+            let tw = min(titleRect.width, ceil((title as NSString).size(withAttributes: attrs).width))
             if showClose, titleRect.midX + tw / 2 > fadeStart, let ctx = NSGraphicsContext.current?.cgContext {
                 ctx.saveGState()
                 ctx.beginTransparencyLayer(auxiliaryInfo: nil)
-                (tab.title as NSString).draw(in: titleRect, withAttributes: attrs)
+                (title as NSString).draw(in: titleRect, withAttributes: attrs)
                 ctx.setBlendMode(.destinationOut)
                 let clear = CGColor(gray: 0, alpha: 0), solid = CGColor(gray: 0, alpha: 1)
                 if let fade = CGGradient(colorsSpace: nil, colors: [clear, solid] as CFArray, locations: [0, 1]) {
@@ -2702,7 +2735,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
                 ctx.endTransparencyLayer()
                 ctx.restoreGState()
             } else {
-                (tab.title as NSString).draw(in: titleRect, withAttributes: attrs)
+                (title as NSString).draw(in: titleRect, withAttributes: attrs)
             }
         }
 
