@@ -232,6 +232,7 @@ final class FontSet {
     let cellH: CGFloat
     let ascent: CGFloat
     let descent: CGFloat
+    let capHeight: CGFloat
     let baseline: CGFloat
     let underlineOffset: CGFloat
     let lineWidth: CGFloat
@@ -282,6 +283,7 @@ final class FontSet {
         cellW = adv.width > 0 ? adv.width : size * 0.6
         ascent = CTFontGetAscent(regular)
         descent = CTFontGetDescent(regular)
+        capHeight = CTFontGetCapHeight(regular)
         let natural = ceil(ascent + descent + CTFontGetLeading(regular))
         cellH = max(natural, round(natural * config.lineHeight))
         baseline = round((cellH - (ascent + descent)) / 2 + ascent)
@@ -312,6 +314,48 @@ final class FontSet {
         }
         glyphCache[v] = result
         return result
+    }
+
+    /// A symbol this font lacks, as drawn from the fallback font Core Text picks for it, with the scale that sizes it
+    /// to this font's capitals. Fallback fonts draw icons at their own size and height (Menlo's ↻ is lowercase-sized
+    /// and sits on the baseline), out of line with the text beside them.
+    struct Symbol {
+        let font: CTFont
+        let glyph: CGGlyph
+        let ink: CGRect
+        let scale: CGFloat
+    }
+    private var symbolCache: [Int: Symbol?] = [:]
+
+    /// Nil for what's drawn as is: text, glyphs the font has, color emoji, the stars and asterisks of spinners (their
+    /// sizes differ on purpose), glyphs drawn to span the line (⎿) and dots too small to be icons.
+    func symbol(_ v: UInt32, style: Int) -> Symbol? {
+        let key = Int(v) << 2 | style
+        if let s = symbolCache[key] { return s }
+        let s = measureSymbol(v, style: style)
+        symbolCache[key] = s
+        return s
+    }
+
+    private func measureSymbol(_ v: UInt32, style: Int) -> Symbol? {
+        switch v {
+        case 0x2721...0x274B: return nil
+        case 0x2190...0x21FF, 0x2300...0x23FF, 0x25A0...0x27BF, 0x27F0...0x27FF, 0x2900...0x297F, 0x2B00...0x2BFF: break
+        default: return nil
+        }
+        guard !hasGlyph(v), let scalar = Unicode.Scalar(v) else { return nil }
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: String(scalar), attributes: attrs[style]))
+        guard let runs = CTLineGetGlyphRuns(line) as? [CTRun], runs.count == 1, CTRunGetGlyphCount(runs[0]) == 1,
+              let found = (CTRunGetAttributes(runs[0]) as NSDictionary)[kCTFontAttributeName] else { return nil }
+        let font = found as! CTFont
+        guard !CTFontGetSymbolicTraits(font).contains(.traitColorGlyphs) else { return nil }
+        var glyph = CGGlyph(0)
+        CTRunGetGlyphs(runs[0], CFRange(location: 0, length: 1), &glyph)
+        let ink = CTFontGetBoundingRectsForGlyphs(font, .horizontal, &glyph, nil, 1)
+        guard ink.height > 0, ink.width > 0, ink.height <= capHeight * 1.25,
+              max(ink.width, ink.height) >= capHeight * 0.45 else { return nil }
+        let fit = min(capHeight / ink.height, cellW * 0.92 / ink.width)
+        return Symbol(font: font, glyph: glyph, ink: ink, scale: min(1.35, max(0.8, fit)))
     }
 }
 

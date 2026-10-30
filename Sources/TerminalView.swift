@@ -1281,6 +1281,10 @@ final class TerminalView: NSView, TerminalDelegate {
                     }
                 } else {
                     flush()
+                    if c.width == 1, line.extras?[x] == nil, let sym = fonts.symbol(v, style: style) {
+                        drawSymbol(sym, color: fg, x: padX + CGFloat(x) * cw, baseline: baseY, ctx)
+                        continue
+                    }
                     let s = line.string(at: x)
                     let cellsWide = CGFloat(c.width == 2 ? 2 : 1)
                     drawString(s, style: style, color: fg, x: padX + CGFloat(x) * cw, baseline: baseY, ctx, fitWidth: cellsWide * cw)
@@ -1336,6 +1340,21 @@ final class TerminalView: NSView, TerminalDelegate {
         ctx.setFillColor(color)
         ctx.textPosition = CGPoint(x: x + dx, y: baseline)
         CTLineDraw(line, ctx)
+    }
+
+    /// A fallback symbol, sized to the capitals and centered on them and in its cell (see FontSet.symbol).
+    func drawSymbol(_ s: FontSet.Symbol, color: CGColor, x: CGFloat, baseline: CGFloat, _ ctx: CGContext) {
+        ctx.saveGState()
+        ctx.setFillColor(color)
+        ctx.translateBy(x: x + fonts.cellW / 2, y: baseline - fonts.capHeight / 2)
+        ctx.scaleBy(x: s.scale, y: s.scale)
+        // Glyph positions are in text space, from the text position (where the last string ended) and through the
+        // flipped text matrix: zero, and the ink's middle negated, put that middle at the cell's.
+        ctx.textPosition = .zero
+        var glyph = s.glyph
+        var at = CGPoint(x: -s.ink.midX, y: -s.ink.midY)
+        CTFontDrawGlyphs(s.font, &glyph, &at, 1, ctx)
+        ctx.restoreGState()
     }
 
     private func drawCursor(_ ctx: CGContext) {
