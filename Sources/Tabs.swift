@@ -1543,7 +1543,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             guard let self, self.columns.indices.contains(i) else { return nil }
             return self.columns[i]
         }
-        bar.onNavigate = { dir in column()?.activeTab?.focusedPane.changeDirectory(to: dir) }
+        // A local pane that's busy (Claude Code, an editor…) can't take a typed cd, so the folder opens in a new tab.
+        bar.onNavigate = { dir in
+            guard let c = column(), let pane = c.activeTab?.focusedPane else { return }
+            if pane.canChangeDirectory || pane.remote != nil { pane.changeDirectory(to: dir) } else { c.addTab(cwd: dir) }
+        }
         bar.listFolders = { dir, done in
             guard let fs = column()?.activeTab?.browseFS else { return }
             fs.list(dir) { result in

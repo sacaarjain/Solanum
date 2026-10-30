@@ -406,10 +406,13 @@ final class TerminalView: NSView, TerminalDelegate {
         return terminal.remoteCwd ?? remote.cwd ?? remote.home
     }
 
+    /// Whether a typed `cd` would reach a shell: not while a program (Claude Code, an editor…) has the terminal.
+    var canChangeDirectory: Bool { !exited && !terminal.usingAlt && (remote != nil || !hasRunningJob) }
+
     /// Types a `cd` at the prompt (local, or inside a running ssh session).
     @discardableResult
     func changeDirectory(to path: String) -> Bool {
-        guard !exited, !terminal.usingAlt, remote != nil || !hasRunningJob else {
+        guard canChangeDirectory else {
             NSSound.beep()
             return false
         }
