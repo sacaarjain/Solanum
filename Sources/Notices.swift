@@ -158,3 +158,66 @@ final class CornerNoticeView: NSView {
         }
     }
 }
+
+/// In the corner of a pane whose ssh connection was lost: what to do about it, for as long as that's still the
+/// question (the notice saying so goes away on its own, or gets closed).
+final class ConnectionLostBar: NSView {
+    static let height: CGFloat = 32
+    private let label: NSTextField
+    private let reconnectButton: NSButton
+    private let closeButton: NSButton
+
+    init(host: String, onReconnect: @escaping () -> Void, onClose: @escaping () -> Void) {
+        let th = Config.shared.theme
+        label = NSTextField(labelWithString: "Lost connection to \(host)")
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = th.foreground
+        label.lineBreakMode = .byTruncatingMiddle
+        reconnectButton = SettingsPages.linkButton("Reconnect", onReconnect)
+        closeButton = SettingsPages.linkButton("Close", onClose)
+        super.init(frame: .zero)
+        [label, reconnectButton, closeButton].forEach(addSubview)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isFlipped: Bool { true }
+
+    var preferredWidth: CGFloat {
+        32 + ceil(label.fittingSize.width) + 12 + reconnectButton.fittingSize.width + 10 + closeButton.fittingSize.width + 12
+    }
+
+    override func layout() {
+        super.layout()
+        let closeW = closeButton.fittingSize.width, reconnectW = reconnectButton.fittingSize.width
+        closeButton.frame = NSRect(x: bounds.width - closeW - 12, y: 6, width: closeW, height: 20)
+        reconnectButton.frame = NSRect(x: closeButton.frame.minX - reconnectW - 10, y: 6, width: reconnectW, height: 20)
+        label.frame = NSRect(x: 32, y: 7, width: max(0, reconnectButton.frame.minX - 44), height: 17)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let th = Config.shared.theme
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
+        th.surface.withAlphaComponent(1).setFill()
+        path.fill()
+        th.border.setStroke()
+        path.stroke()
+        let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold).applying(.init(paletteColors: [.white, th.red]))
+        if let img = NSImage(systemSymbolName: "wifi.exclamationmark", accessibilityDescription: nil)?.withSymbolConfiguration(cfg) {
+            img.draw(in: NSRect(x: 11, y: (bounds.height - img.size.height) / 2, width: img.size.width, height: img.size.height))
+        }
+    }
+
+    // Clicks and the pointer stay here, not with the terminal underneath.
+    override func mouseDown(with e: NSEvent) {}
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.cursorUpdate, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func cursorUpdate(with event: NSEvent) { NSCursor.arrow.set() }
+
+    func devPress(_ title: String) { [reconnectButton, closeButton].first { $0.title == title }?.performClick(nil) }
+}

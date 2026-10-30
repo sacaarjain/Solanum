@@ -189,6 +189,56 @@ private extension Result {
 
 // MARK: - Remote (ssh)
 
+/// How many background commands run at once over one ssh connection. They share the user's own login as channels,
+/// and sshd allows only so many per connection (MaxSessions, 10 by default, the login included). Past that it refuses
+/// them, and the user's ssh prints "channel N: open failed: connect failed: open failed" into their terminal. The rest
+/// wait in line, so leaving room for the login and any tabs sharing it.
+final class ChannelGate {
+    private static let lock = NSLock()
+    private static var gates: [String: ChannelGate] = [:]
+
+    static func shared(for controlPath: String) -> ChannelGate {
+        lock.lock()
+        defer { lock.unlock() }
+        if let g = gates[controlPath] { return g }
+        let g = ChannelGate()
+        gates[controlPath] = g
+        return g
+    }
+
+    private let lock = NSLock()
+    private let limit: Int
+    private var active = 0
+    private var waiting: [() -> Void] = []
+
+    init(limit: Int = 4) { self.limit = limit }
+
+    /// Runs `work` now or when there's room. It must call `leave` once it's done with its channel.
+    func enter(_ work: @escaping () -> Void) {
+        lock.lock()
+        guard active < limit else {
+            waiting.append(work)
+            lock.unlock()
+            return
+        }
+        active += 1
+        lock.unlock()
+        work()
+    }
+
+    func leave() {
+        lock.lock()
+        guard !waiting.isEmpty else {
+            active -= 1
+            lock.unlock()
+            return
+        }
+        let next = waiting.removeFirst()
+        lock.unlock()
+        next()
+    }
+}
+
 /// The remote end of an ssh session running in a pane. Created as soon as the wrapper announces the
 /// control socket; the socket only appears once ssh has authenticated, so `start` waits for it.
 final class RemoteSession: FileSystem {
@@ -362,30 +412,42 @@ final class RemoteSession: FileSystem {
             done(255, Data(), "The ssh session has ended.")
             return
         }
-        let p = sshProcess(script)
-        let outPipe = Pipe(), errPipe = Pipe(), inPipe = Pipe()
-        p.standardOutput = outPipe
-        p.standardError = errPipe
-        p.standardInput = inPipe
-        DispatchQueue.global(qos: .userInitiated).async {
-            do { try p.run() } catch {
-                DispatchQueue.main.async { done(255, Data(), error.localizedDescription) }
-                return
+        // Waits its turn: each of these is a channel on the user's own ssh connection (see `ChannelGate`).
+        let gate = ChannelGate.shared(for: controlPath)
+        gate.enter { [self] in
+            let p = sshProcess(script)
+            let outPipe = Pipe(), errPipe = Pipe(), inPipe = Pipe()
+            p.standardOutput = outPipe
+            p.standardError = errPipe
+            p.standardInput = inPipe
+            DispatchQueue.global(qos: .userInitiated).async {
+                do { try p.run() } catch {
+                    gate.leave()
+                    DispatchQueue.main.async { done(255, Data(), error.localizedDescription) }
+                    return
+                }
+                DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { if p.isRunning { p.terminate() } }
+                let group = DispatchGroup()
+                var out = Data(), err = Data()
+                group.enter()
+                DispatchQueue.global().async { out = outPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+                group.enter()
+                DispatchQueue.global().async { err = errPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+                if let input { try? inPipe.fileHandleForWriting.write(contentsOf: input) }
+                try? inPipe.fileHandleForWriting.close()
+                // Past the limit, given up on rather than waited for (something on the host can hold the pipes open).
+                guard group.wait(timeout: .now() + timeout + 3) == .success else {
+                    if p.isRunning { p.terminate() }
+                    gate.leave()
+                    DispatchQueue.main.async { done(124, Data(), "Timed out.") }
+                    return
+                }
+                p.waitUntilExit()
+                gate.leave()
+                let status = p.terminationStatus
+                let errText = String(decoding: err, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                DispatchQueue.main.async { done(status, out, errText) }
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { if p.isRunning { p.terminate() } }
-            let group = DispatchGroup()
-            var out = Data(), err = Data()
-            group.enter()
-            DispatchQueue.global().async { out = outPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
-            group.enter()
-            DispatchQueue.global().async { err = errPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
-            if let input { try? inPipe.fileHandleForWriting.write(contentsOf: input) }
-            try? inPipe.fileHandleForWriting.close()
-            group.wait()
-            p.waitUntilExit()
-            let status = p.terminationStatus
-            let errText = String(decoding: err, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            DispatchQueue.main.async { done(status, out, errText) }
         }
     }
 

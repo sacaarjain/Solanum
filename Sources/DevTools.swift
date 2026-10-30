@@ -139,6 +139,54 @@ enum SelfTest {
             check("ssh args: quoted command dropped", c("-t -o 'ProxyJump bastion' host 'cd /x; exec $SHELL -l'") == "-o 'ProxyJump bastion' host")
             check("ssh args: flags kept, -t dropped", c("-A -tt -v host ls") == "-A -v host" && c("-o") == nil && c("") == nil)
         }
+        do {
+            // Background commands over ssh wait their turn rather than go past the server's limit.
+            let gate = ChannelGate(limit: 2)
+            var started: [Int] = []
+            for i in 0..<5 { gate.enter { started.append(i) } }
+            check("channels: only so many at once", started == [0, 1])
+            gate.leave()
+            check("channels: the next goes as one ends", started == [0, 1, 2])
+            gate.leave(); gate.leave(); gate.leave(); gate.leave()
+            check("channels: all get their turn, in order", started == [0, 1, 2, 3, 4])
+            gate.enter { started.append(5) }
+            check("channels: room again once they've ended", started.last == 5)
+        }
+        do {
+            // Closing a pane stops what's running in it, also jobs a script put in process groups of their own (`set -m`),
+            // which the shell doesn't know about. Jobs the user kept (nohup, disown) keep running.
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("solanum-hangup-\(getpid())").path
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let script = """
+            #!/bin/bash
+            set -m
+            echo $$ > '\(dir)/script'
+            sleep 300 & echo $! > '\(dir)/nested'
+            nohup sleep 300 >/dev/null 2>&1 & echo $! > '\(dir)/nohup'
+            wait
+            """
+            try? script.write(toFile: dir + "/run.sh", atomically: true, encoding: .utf8)
+            func pid(_ name: String) -> pid_t? {
+                (try? String(contentsOfFile: dir + "/" + name, encoding: .utf8)).flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            }
+            func alive(_ p: pid_t?) -> Bool { p.map { kill($0, 0) == 0 } ?? false }
+            func waitUntil(_ cond: () -> Bool) { for _ in 0..<100 where !cond() { RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05)) } }
+            let pty = PTYProcess(executable: "/bin/bash", args: ["bash", "--noprofile", "--norc", "-i"], env: ["TERM": "dumb", "PATH": "/usr/bin:/bin"], cwd: dir, cols: 80, rows: 24)
+            pty?.start()
+            pty?.write(Array("sleep 300 & echo $! > disowned; disown; /bin/bash run.sh\n".utf8))
+            waitUntil { pid("disowned") != nil && pid("script") != nil && pid("nested") != nil && pid("nohup") != nil }
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+            check("hangup: all started", alive(pid("disowned")) && alive(pid("script")) && alive(pid("nested")) && alive(pid("nohup")))
+            pty?.terminate()
+            waitUntil { !alive(pid("script")) && !alive(pid("nested")) }
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+            check("hangup: the script stops", !alive(pid("script")))
+            check("hangup: its job in a process group of its own stops too", !alive(pid("nested")))
+            check("hangup: nohup keeps running", alive(pid("nohup")))
+            check("hangup: disowned keeps running", alive(pid("disowned")))
+            for name in ["script", "nested", "nohup", "disowned"] { if let p = pid(name) { kill(p, SIGKILL) } }
+        }
         func make(_ c: Int = 20, _ r: Int = 5) -> (Terminal, Sink) {
             let t = Terminal(cols: c, rows: r, scrollbackLimit: 1000)
             let s = Sink()
@@ -282,7 +330,7 @@ enum SelfTest {
 /// Development aid: SOLANUM_SNAPSHOT=/path.png renders the first window to a PNG after a delay.
 /// SOLANUM_SNAPSHOT_INPUT types text first; SOLANUM_SNAPSHOT_ACTIONS=split,palette,select-block,collapse,jump-prompt,find,find-commands,find-output,click:<col>:<row>,keys:<text>,theme:<name>,
 /// newtab,rename-tab,new-group,edit:<text>,select-tab:<i>,collapse-group:<i>,split-down,save-session,
-/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,crumb-menu[:<item>],press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>
+/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,crumb-menu[:<item>],press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>
 /// (with SOLANUM_SESSION_FILE set, which also makes the run restore from that file).
 enum SnapshotHelper {
     static func runIfRequested() {
@@ -785,6 +833,13 @@ enum SnapshotHelper {
                         let tabs = c.allTabs.map { $0.pinnedFolder?.path ?? "-" }.joined(separator: ", ")
                         FileHandle.standardError.write("pins tabs=[\(tabs)] active=\(c.activeIndex) sidebarPinned=\(c.rootView.sidebar.isPinned)\n".data(using: .utf8)!)
                     }
+                    if action.hasPrefix("pane-send:") { pane.send(action.dropFirst(10).replacingOccurrences(of: "\\r", with: "\r")) }
+                    if action.hasPrefix("lost-bar:") { c.activeTab?.panes.compactMap(\.devLostBar).first?.devPress(String(action.dropFirst(9))) }
+                    if action == "print-lost-bar" {
+                        let frames = c.activeTab?.panes.map { p in p.devLostBar.map { "\(Int($0.frame.minX)),\(Int($0.frame.minY)) \(Int($0.frame.width))x\(Int($0.frame.height)) of \(Int(p.bounds.width))x\(Int(p.bounds.height))" } ?? "none" } ?? []
+                        FileHandle.standardError.write("lost-bar panes=\(frames)\n".data(using: .utf8)!)
+                    }
+                    if action == "refresh-sidebar" { c.rootView.sidebar.refresh(nil) }
                     if action == "refresh-tab" { c.refreshTab(nil) }
                     if action == "glide-bottom" { pane.smoothScroll(to: 0) }
                     if action == "print-scroll" { FileHandle.standardError.write("scroll offset=\(pane.scrollOffset) shift=\(String(format: "%.1f", pane.scrollPixelShift))\n".data(using: .utf8)!) }

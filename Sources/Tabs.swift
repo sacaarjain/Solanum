@@ -266,7 +266,16 @@ final class TabSession: NSObject {
 
     /// The title only shows the last path component, so a cwd change needs its own nudge for the status bar.
     func paneCwdChanged(_ p: TerminalView) {
+        repinAfterReconnect(to: p.remote)
         owner?.tabDidUpdate(self)
+    }
+
+    /// A folder pinned on an ssh host stays pinned through a lost connection: once logged back in to that host, the
+    /// pin moves to the new session, or the sidebar would keep asking the one that ended.
+    private func repinAfterReconnect(to session: RemoteSession?) {
+        guard let pinned = pinnedFolder, let old = pinned.fs as? RemoteSession, let session, session !== old,
+              session.isReady, !old.isConnected, session.hostLabel == old.hostLabel else { return }
+        pinnedFolder = (session, pinned.path)
     }
 
     func updateDimming() {

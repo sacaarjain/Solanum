@@ -177,15 +177,21 @@ struct GitRunner {
         do { try p.run() } catch { return (127, Data(), error.localizedDescription) }
         let kill = DispatchWorkItem { if p.isRunning { p.terminate() } }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: kill)
-        var errData = Data()
+        var errData = Data(), outData = Data()
         let group = DispatchGroup()
-        group.enter()
-        DispatchQueue.global().async {
-            errData = err.fileHandleForReading.readDataToEndOfFile()
-            group.leave()
+        for (pipe, isOut) in [(out, true), (err, false)] {
+            group.enter()
+            DispatchQueue.global().async {
+                let d = pipe.fileHandleForReading.readDataToEndOfFile()
+                if isOut { outData = d } else { errData = d }
+                group.leave()
+            }
         }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        group.wait()
+        // Past the limit, whatever is still holding the pipes open is given up on rather than waited for.
+        guard group.wait(timeout: .now() + timeout + 2) == .success else {
+            if p.isRunning { p.terminate() }
+            return (124, Data(), "Timed out.")
+        }
         p.waitUntilExit()
         kill.cancel()
         return (p.terminationStatus, outData, String(decoding: errData, as: UTF8.self))
@@ -207,6 +213,9 @@ final class GitController {
     private var runner: GitRunner?
     private var refreshing = false
     private var refreshAgain = false
+    /// The refresh that counts: one for a folder no longer shown, or stuck, is let go rather than waited on.
+    private var refreshID = 0
+    private var refreshStarted = Date.distantPast
     private var lastRefresh = Date.distantPast
     private var trailingRefresh: DispatchWorkItem?
     private var timer: Timer?
@@ -239,6 +248,12 @@ final class GitController {
             bar?.git = nil
             bar?.gitBusy = nil
             lastRefresh = .distantPast
+            // Another folder: don't wait behind a refresh of the last one (a slow ssh host's, say).
+            refreshID += 1
+            refreshing = false
+            refreshAgain = false
+            trailingRefresh?.cancel()
+            trailingRefresh = nil
         }
         refresh()
     }
@@ -247,7 +262,8 @@ final class GitController {
     func refresh(now: Bool = false) {
         guard let runner else { return }
         if now { lastRefresh = .distantPast }
-        if refreshing { refreshAgain = true; return }
+        // One at a time, unless the one going has been at it far longer than it's allowed.
+        if refreshing, Date().timeIntervalSince(refreshStarted) < 20 { refreshAgain = true; return }
         let wait = 1.5 - Date().timeIntervalSince(lastRefresh)
         if wait > 0 {
             if trailingRefresh == nil {
@@ -262,9 +278,12 @@ final class GitController {
         }
         refreshing = true
         lastRefresh = Date()
+        refreshStarted = Date()
+        refreshID += 1
+        let id = refreshID
         let key = runner.key
         runner.run(GitInfo.statusScript, timeout: 15) { [weak self] status, out, _ in
-            guard let self else { return }
+            guard let self, id == self.refreshID else { return }
             self.refreshing = false
             if self.runner?.key == key {
                 let info = status == 0 ? GitInfo(statusOutput: out) : nil
