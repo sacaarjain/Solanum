@@ -142,6 +142,25 @@ enum PlanetArt {
         return p * c + simd_cross(axis, p) * s + axis * simd_dot(axis, p) * (1 - c)
     }
 
+    /// The point on a polyline nearest `q`: its distance, how far along the line it is (0…1), which side `q` is on
+    /// (signed distance along `normal`, the left of the direction of travel), and that normal.
+    private static func nearest(_ q: V2, on line: [V2]) -> (d: Float, t: Float, side: Float, normal: V2) {
+        var best: Float = .greatestFiniteMagnitude, t: Float = 0, side: Float = 0, normal = V2(0, 1)
+        for i in 0..<(line.count - 1) {
+            let p0 = line[i], e = line[i + 1] - p0
+            let f: Float = clamp01(simd_dot(q - p0, e) / simd_dot(e, e))
+            let to: V2 = q - (p0 + e * f)
+            let d2: Float = simd_dot(to, to)
+            if d2 < best {
+                best = d2
+                t = (Float(i) + f) / Float(line.count - 1)
+                normal = V2(-e.y, e.x) / simd_length(e)
+                side = simd_dot(to, normal)
+            }
+        }
+        return (best.squareRoot(), t, side, normal)
+    }
+
     // MARK: Spheres
 
     private struct Ball {
@@ -342,12 +361,12 @@ enum PlanetArt {
     // Twin desert planets: Ash Twin's pale sand pours across onto Ember Twin's red rock.
     private static func hourglass(_ icon: Bool) -> Scene {
         let l = simd_normalize(V3(-0.85, 0.15, 0.5))
-        let ash = Ball(c: icon ? V2(-0.55, 0.53) : V2(-0.48, 0.44), r: icon ? 0.42 : 0.36, spin: rotation(0.2, 0.6, 0.3))
-        let ember = Ball(c: icon ? V2(0.32, -0.32) : V2(0.28, -0.26), r: icon ? 0.62 : 0.54, spin: rotation(0.9, 2.1, 0.1))
-        // The sand column: from Ash Twin's near side to where it lands on Ember Twin.
-        let a = ash.c + simd_normalize(ember.c - ash.c) * ash.r * 0.92
-        let b = ember.c + simd_normalize(V2(-0.62, 0.78)) * ember.r * 0.94
-        let ctrl = (a + b) / 2 + V2(0.06, 0.08)
+        let ash = Ball(c: icon ? V2(-0.6, 0.58) : V2(-0.54, 0.5), r: icon ? 0.38 : 0.33, spin: rotation(0.2, 0.6, 0.3))
+        let ember = Ball(c: icon ? V2(0.34, -0.34) : V2(0.3, -0.28), r: icon ? 0.6 : 0.53, spin: rotation(0.9, 2.1, 0.1))
+        // The sand column: from just inside Ash Twin's near side to where it lands on Ember Twin.
+        let a = ash.c + simd_normalize(ember.c - ash.c) * ash.r * 0.8
+        let b = ember.c + simd_normalize(V2(-0.62, 0.78)) * ember.r * 0.9
+        let ctrl = (a + b) / 2 + V2(0.05, 0.07)
         let samples = 40
         let curve: [V2] = (0...samples).map { (i: Int) -> V2 in
             let t: Float = Float(i) / Float(samples)
@@ -355,6 +374,7 @@ enum PlanetArt {
             return a * (s * s) + ctrl * (2 * s * t) + b * (t * t)
         }
         let landing = simd_normalize(V3(-0.62, 0.78, 0.5))
+        let column: Float = icon ? 0.075 : 0.085
         return Scene(pixel: { (u: Float, v: Float, px: Float) -> C4 in
             var out = halo(ember, u, v, l, rgb(0xFF9A5A), width: 0.08, strength: 0.4)
             out = over(halo(ash, u, v, l, rgb(0xFFD49A), width: 0.1, strength: 0.4), out)
@@ -369,32 +389,30 @@ enum PlanetArt {
                 let cact = worley(h.p * 30, 45)
                 if cact.f1 < 0.12, cact.id > 0.7 { c = mix(c, rgb(0x6F8A3A), 0.8 * (1 - drift)) }
                 c = c * (0.03 + diffuse(n, l)) + rgb(0xFFB070) * rim(h.n, l) * 0.35
+                // A puff of sand thrown up where the column lands.
+                let puff = exp(-simd_length_squared(V2(u, v) - b) / 0.01)
+                c = mix(c, rgb(0xE6BC84) * (0.25 + 0.8 * diffuse(h.n, l)), puff * 0.7)
                 out = over(paint(c, h.cover), out)
             }
-            // The column, shaded as a twisting rope of sand.
-            var best: Float = 9, bestT: Float = 0, side: Float = 0
-            for i in 0..<samples {
-                let p0 = curve[i], p1 = curve[i + 1]
-                let e = p1 - p0
-                let t: Float = clamp01(simd_dot(V2(u, v) - p0, e) / simd_dot(e, e))
-                let q: V2 = p0 + e * t
-                let d: Float = simd_length(V2(u, v) - q)
-                if d < best {
-                    best = d
-                    bestT = (Float(i) + t) / Float(samples)
-                    let nrm = V2(-e.y, e.x) / simd_length(e)
-                    side = simd_dot(V2(u, v) - q, nrm)
-                }
-            }
-            let w: Float = (icon ? 0.05 : 0.075) * (1 - 0.4 * sin(Float.pi * bestT))
-            if best < w + px {
-                let grain: Float = smooth(-0.3, 0.3, fbm(V3(bestT * 18, side / w * 2, 0), 3, 46))
-                let cover: Float = clamp01((w - best) / px + 0.5) * (0.82 + 0.18 * grain)
+            // The column: a funnel drawn off Ash Twin that narrows to a twisting stream and spreads a little where it
+            // lands, wrapped in helical bands, its edges dusty and slowly rippling.
+            let (best, t, side, normal) = nearest(V2(u, v), on: curve)
+            let w: Float = column * (0.4 + 0.6 * pow(1 - t, 2.4) + 0.22 * smooth(0.7, 1, t))
+            if best < w * 1.2 + px {
                 let s: Float = max(-1, min(1, side / w))
-                let n: V3 = simd_normalize(V3(s * 0.6, s * 0.8, (1 - s * s).squareRoot() + 0.1))
-                let streak: Float = 0.85 + 0.15 * fbm(V3(bestT * 30, s * 4, 1), 3, 47)
-                let c: V3 = rgb(0xE9BE82) * streak * (0.1 + diffuse(n, l))
-                out = over(paint(c, cover), out)
+                // The edges ripple slowly, like a dust devil's.
+                let fray: Float = 0.9 + 0.12 * fbm(V3(t * 9, s > 0 ? 1 : -1, 0), 2, 46)
+                // Round across the column: the normal turns with the curve, so the light falls on the right side.
+                let n: V3 = simd_normalize(V3(normal.x * s, normal.y * s, (1 - s * s).squareRoot() + 0.05))
+                // Bands spiral around it, wound tighter where it narrows.
+                let swirl: Float = t * 24 + t * t * 12 - asin(s) * 2.4 + fbm(V3(t * 5, s, 1), 2, 47) * 1.6
+                let band: Float = smooth(-0.3, 0.7, sin(swirl)) * (0.6 + 0.4 * fbm(V3(t * 12, s * 2, 3), 2, 52))
+                let sand: V3 = mix(rgb(0xF0CB92), rgb(0xB07A44), band * 0.55) * (0.93 + 0.12 * fbm(V3(t * 70, s * 5, 2), 2, 51))
+                // Dusty at the edges rather than hard.
+                let body: Float = smooth(w * fray + px, w * fray * 0.8, best)
+                // Melts into the drift on landing instead of ending in a cap.
+                let fade: Float = smooth(1, 0.82, t)
+                out = over(paint(sand * (0.12 + diffuse(n, l)), body * fade), out)
             }
             if let h = hit(ash, u, v, px) {
                 let ripple: Float = (h.p.x * 0.6 + h.p.z) * 38 + fbm(h.p * 4, 3, 48) * 6
@@ -500,132 +518,159 @@ enum PlanetArt {
         })
     }
 
-    // A dense tangle of twisted brown vines around a white light, held in a ring of broken slabs of its icy shell.
+    // A knot of brown vines around a pale yellow light, curling out through a ring of broken slabs of its blue shell.
+    // Drawn flat, like a sketch: each slab a dark inner face under a pale outer rim, brushed in strokes.
     private static func darkBramble(_ icon: Bool) -> Scene {
-        let l = simd_normalize(V2(0.35, 0.94))
-        // The shell's slabs: center angle, half-width (radians), and inner and outer radius.
-        let slabs: [(a: Float, w: Float, r0: Float, r1: Float)] = [
-            (1.6, 0.48, 0.58, 0.98), (2.62, 0.3, 0.6, 0.86), (3.42, 0.28, 0.56, 0.92), (4.2, 0.3, 0.62, 0.88),
-            (4.95, 0.44, 0.57, 0.97), (5.85, 0.28, 0.62, 0.86), (0.42, 0.36, 0.58, 0.92),
+        // The slabs: center angle, half-width (radians), inner and outer radius, and where the pale rim begins (0…1).
+        let slabs: [(a: Float, w: Float, r0: Float, r1: Float, rim: Float)] = [
+            (1.75, 0.5, 0.6, 0.95, 0.62), (1.0, 0.16, 0.63, 0.85, 0.62), (0.22, 0.48, 0.57, 0.98, 0.42),
+            (-0.8, 0.42, 0.6, 0.94, 0.55), (-2.25, 0.36, 0.62, 0.95, 0.58), (3.08, 0.12, 0.7, 0.9, 0.5),
         ]
-        let strands: [V2] = [0.3, 1.35, 2.4].map { V2(cos($0), sin($0)) }
+        // The vines: each walks outward from the knot, its heading wavering and, on some, curling over at the tip.
+        let count = 19
+        let vines: [(line: [V2], w: Float, lo: V2, hi: V2)] = (0..<count).map { (k: Int) in
+            let h = (0..<4).map { hash(Int32(k), Int32($0), 0, 185) }
+            let start: Float = Float(k) / Float(count) * 2 * .pi + (h[0] - 0.5) * 0.3
+            let length: Float = 0.4 + 0.45 * h[1]
+            let curl: Float = (h[3] > 0.5 ? 1 : -1) * (h[2] > 0.55 ? 4.2 : 1)
+            var p = V2(cos(start), sin(start)) * 0.08
+            var line = [p]
+            for i in 1...24 {
+                let t = Float(i) / 24
+                let heading = start + (0.4 + 0.5 * h[2]) * sin(t * (5 + 4 * h[3]) + h[0] * 6.3) * (0.3 + t) + curl * t * t * t
+                p += V2(cos(heading), sin(heading)) * length / 24
+                line.append(p)
+            }
+            let w: Float = 0.042 + 0.026 * h[1]
+            return (line, w, line.reduce(V2(repeating: 9)) { simd_min($0, $1) } - w, line.reduce(V2(repeating: -9)) { simd_max($0, $1) } + w)
+        }
+        let light = simd_normalize(V3(-0.45, 0.6, 0.66))
+        let ink: Float = icon ? 0.022 : 0.014
         return Scene(pixel: { (u: Float, v: Float, px: Float) -> C4 in
             let q = V2(u, v)
             let d = simd_length(q)
             let angle = atan2(v, u)
-            // The light inside, haze around it.
-            var out = paint(rgb(0xB4B4AC), clamp01(0.5 * exp(-d / 0.28)))
-            // Vines: three layers of wavy strands, each shaded round and twisted.
-            // A rough ball, with arms reaching out to hold each slab.
-            let arm = slabs.map { s -> Float in
-                var da = angle - s.a
-                da -= 2 * .pi * (da / (2 * .pi)).rounded()
-                return smooth(s.w * 1.1, s.w * 0.3, abs(da)) * (s.r0 + 0.14)
-            }.max() ?? 0
-            let edge = max(0.6, arm) + 0.05 * fbm(V3(cos(angle), sin(angle), 0) * 2.5, 3, 180)
-            if d < edge + px {
-                var vine: Float = 0, shade: Float = 0
-                for (k, dir) in strands.enumerated() {
-                    let warp: Float = fbm(V3(q.x, q.y, Float(k)) * 3, 3, 181 &+ Int32(k)) * 1.6
-                    let phase: Float = simd_dot(q, dir) * 6.5 + warp
-                    let ridge: Float = 1 - abs((phase - floor(phase)) * 2 - 1)
-                    let rope: Float = smooth(0.45, 0.68, ridge)
-                    if rope > vine {
-                        let across: Float = simd_dot(q, V2(-dir.y, dir.x)) * 70 + phase * 9
-                        let twist: Float = 0.7 + 0.3 * sin(across)
-                        vine = rope
-                        shade = ridge.squareRoot() * twist
-                    }
-                }
-                var c = mix(rgb(0x1E120A), rgb(0x6E4628), shade)
-                // Darker against the light at the middle.
-                c *= 0.55 + 0.45 * smooth(0.12, 0.45, d)
-                let gaps = mix(rgb(0x0C0806), rgb(0x8A8A82) * exp(-d / 0.2), smooth(0.4, 0.1, d))
-                let body = clamp01((edge - d) / px + 0.5) * smooth(0.07, 0.18, d)
-                out = over(paint(mix(gaps, c, vine), body * (0.75 + 0.25 * vine)), out)
-            }
-            // The white core.
-            out = over(paint(rgb(0xF6F6F0), clamp01((0.075 - d) / px + 0.5) + clamp01(exp(-d / 0.06) * 0.6)), out)
-            // The slabs, each a broken piece of the shell: dark underneath, icy blue-grey on top, pale at the rim.
+            var out = C4.zero
+            // The slabs, behind the vines.
             for (i, s) in slabs.enumerated() {
                 var da = angle - s.a
                 da -= 2 * .pi * (da / (2 * .pi)).rounded()
-                let jag = 0.05 * fbm(V3(angle * 5, Float(i), 0), 2, 183)
-                let r0 = s.r0 + jag, r1 = s.r1 + jag * 0.6
-                // Fanning out from the vines: narrow where they hold it, broad at the rim.
-                let w = s.w * (0.4 + 0.6 * smooth(0, 0.7, (d - r0) / (r1 - r0))) + 0.04 * sin(d * 18 + Float(i))
-                let cover = clamp01(min(d - r0, r1 - d, (w - abs(da)) * d) / px + 0.5)
+                guard abs(da) < s.w + 0.15 else { continue }
+                let f = Float(i)
+                let jag = 0.03 * fbm(V3(angle * 7, f, 0), 2, 190)
+                let r0 = s.r0 + jag, r1 = s.r1 + jag * 0.8
+                let side = s.w + 0.04 * fbm(V3(d * 9, f, 1), 2, 191)
+                let sd = min(d - r0, r1 - d, (side - abs(da)) * d)
+                let cover = clamp01(sd / px + 0.5)
                 guard cover > 0 else { continue }
-                let t = clamp01((d - r0) / (r1 - r0))
-                let facing = 0.55 + 0.45 * smooth(-0.6, 0.9, simd_dot(q / max(d, 0.0001), l))
-                let grain = 0.8 + 0.3 * fbm(V3(angle * 7, d * 12, Float(i)), 3, 184)
-                var c = mix(rgb(0x121A1C), rgb(0x46646A) * grain, smooth(0, 0.45, t)) * facing
-                c = mix(c, rgb(0xA6D2CC) * facing, smooth(0.8, 0.98, t) * 0.75)
+                let t = (d - r0) / (r1 - r0)
+                let rim = s.rim + 0.06 * fbm(V3(angle * 5, f, 2), 2, 192)
+                // Dark inner face brushed in radial strokes; pale outer rim brushed along its curve.
+                let radial = 0.5 + 0.5 * fbm(V3(da * d * 48, d * 3, f), 2, 193)
+                let along = 0.5 + 0.5 * fbm(V3(da * 3, d * 55, f), 2, 194)
+                var c = mix(rgb(0x223852), rgb(0x3A5B7C), radial * (0.4 + 0.6 * t))
+                c = mix(c, mix(rgb(0x5A87AA), rgb(0x8DB6D2), along), smooth(rim, rim + 0.02, t))
+                // Ink along the edges and the fold between face and rim.
+                let fold = smooth(0.03, 0.0, abs(t - rim) * (r1 - r0))
+                c = mix(c, rgb(0x182638), max(smooth(ink, ink * 0.4, sd), fold * 0.8))
                 out = over(paint(c, cover), out)
             }
+            // The vines.
+            for (k, vine) in vines.enumerated() {
+                guard u > vine.lo.x, v > vine.lo.y, u < vine.hi.x, v < vine.hi.y else { continue }
+                let (dist, t, side, normal) = nearest(q, on: vine.line)
+                let w = vine.w * (1 - 0.72 * t)
+                guard dist < w + px else { continue }
+                let s = max(-1, min(1, side / w))
+                let n = V3(normal.x * s, normal.y * s, (1 - s * s).squareRoot())
+                let lum = 0.3 + 0.7 * max(0, simd_dot(n, light))
+                var c = mix(rgb(0x2A1D10), rgb(0x86704A), lum) * (0.88 + 0.16 * fbm(V3(t * 28, s * 2, Float(k)), 2, 195))
+                // Lit from the knot near their roots.
+                c = mix(c, rgb(0xD8CC8C), exp(-d / 0.09) * 0.5)
+                c = mix(c, rgb(0x140D06), smooth(w - ink, w, dist))
+                out = over(paint(c, clamp01((w - dist) / px + 0.5)), out)
+            }
+            // The knot: a lumpy brown mass of vines wound around it, glowing pale yellow at its heart.
+            let edge: Float = 0.2 + 0.03 * fbm(V3(cos(angle), sin(angle), 0) * 3, 3, 186)
+            if d < edge + px {
+                let wound = angle + d * 9
+                let coil = 0.5 + 0.5 * fbm(V3(cos(wound) * 2, sin(wound) * 2, d * 26), 3, 187)
+                var c = mix(rgb(0x2A1D10), rgb(0x6A5432), smooth(0.3, 0.75, coil))
+                c = mix(c, rgb(0x140D06), smooth(edge - ink, edge, d))
+                out = over(paint(c, clamp01((edge - d) / px + 0.5)), out)
+            }
+            let streaks = 0.75 + 0.25 * fbm(V3(cos(angle) * 4, sin(angle) * 4, d * 8), 2, 189)
+            out = over(paint(rgb(0xE9E0A0), clamp01(exp(-max(0, d - 0.06) / 0.05) * streaks)), out)
+            out = over(paint(rgb(0xFBF7D6), clamp01((0.065 - d) / px + 0.5)), out)
             return out
         })
     }
 
-    // The comet: a lumpy, icy nucleus with dark rock showing through, a glowing coma, and two tails streaming away
-    // from the sun (a straight blue ion tail and a broader, curving white dust tail).
+    // The comet, drawn flat with ink outlines: a ball of cracked pale ice plates, trailing a jagged tail of icy spikes
+    // in three blues.
     private static func interloper(_ icon: Bool) -> Scene {
-        let l = simd_normalize(V3(-0.6, -0.5, 0.62))
-        // The icon's nucleus sits near the middle, level with the label beside it, under a flatter tail.
-        let c0 = icon ? V2(-0.26, -0.1) : V2(-0.36, -0.38)
-        let tailDir = simd_normalize(icon ? V2(0.8, 0.6) : V2(0.62, 0.78))
-        let angle: Float = 0.55
-        let rx: Float = icon ? 0.4 : 0.27, ry: Float = icon ? 0.32 : 0.19
-        // The icon is mostly tail: wider and brighter, from a cleaner, icier nucleus.
-        let tailW: Float = icon ? 1.9 : 1, tailA: Float = icon ? 1.35 : 1, rockA: Float = icon ? 0.45 : 0.85
-        let spin = rotation(0.7, 0.4, 0.2)
-        return Scene(pixel: { (u: Float, v: Float, px: Float) -> C4 in
-            let rel = V2(u, v) - c0
-            var out = C4.zero
-            // The icon's glow fades out before the frame's edge instead of being cut off.
-            let edge = icon ? smooth(1, 0.75, max(abs(u), abs(v))) : 1
-            // Tails.
-            let s = simd_dot(rel, tailDir)
-            if s > -0.05 {
-                let perp = rel.x * tailDir.y - rel.y * tailDir.x
-                let sp = max(0, s)
-                let ionW = (0.025 + 0.07 * sp) * tailW
-                let streak = 0.7 + 0.3 * fbm(V3(perp / ionW * 2.5, sp * 1.5, 0), 3, 91)
-                let ion = exp(-pow(perp / ionW, 2)) * pow(max(0, 1 - sp / 1.75), 1.3) * streak * 0.75
-                let curved = perp + 0.22 * sp * sp
-                let dustW = (0.05 + 0.17 * sp) * (icon ? 1.3 : 1)
-                let dust = exp(-pow(curved / dustW, 2)) * pow(max(0, 1 - sp / 1.5), 1.6) * 0.6 * (0.8 + 0.2 * fbm(V3(curved / dustW * 1.5, sp * 2, 3), 3, 92))
-                let fadeIn = smooth(-0.05, 0.15, s)
-                let a = clamp01((ion + dust) * fadeIn * tailA)
-                if a > 0.001 {
-                    let col = (rgb(icon ? 0x5AAEFF : 0x86CCFF) * ion + rgb(0xF4F7FF) * dust) / max(0.0001, ion + dust)
-                    out = over(paint(col, a * edge), out)
-                }
+        // Heading left, the tail streaming right. The icon is level and centered, so it lines up with the label beside
+        // it; the full picture tilts a little, its tail dipping.
+        let R: Float = icon ? 0.44 : 0.38
+        let head = icon ? V2(-0.46, 0) : V2(-0.54, 0.08)
+        let back = icon ? V2(1, 0) : simd_normalize(V2(1, -0.13))
+        let up = V2(-back.y, back.x)
+        let ink: Float = icon ? 0.03 : 0.018
+        // Each layer of the tail is a fan of tapering spikes: offset across the tail and half-width at the root (in
+        // head radii), and length (in head radii).
+        func spikes(_ layer: Int32, _ n: Int, reach: Float, spread: Float, shift: Float) -> [(y: Float, w: Float, len: Float)] {
+            (0..<n).map { (i: Int) in
+                let f = (Float(i) + 0.5) / Float(n) * 2 - 1
+                let h0 = hash(Int32(i), layer, 0, 200), h1 = hash(Int32(i), layer, 1, 200), h2 = hash(Int32(i), layer, 2, 200)
+                return (f * spread + shift + (h0 - 0.5) * 0.12, 0.2 + 0.14 * h1, reach * (0.55 + 0.45 * h2) * (1 - 0.3 * f * f))
             }
-            // Coma.
+        }
+        let layers = [
+            spikes(0, 7, reach: icon ? 3.2 : 3.7, spread: 0.9, shift: 0),
+            spikes(1, 6, reach: 2.8, spread: 0.7, shift: -0.06),
+            spikes(2, 4, reach: 2, spread: 0.48, shift: -0.14),
+        ]
+        // Signed distance (in frame units, > 0 inside) to a layer, its spikes fanning slightly as they go.
+        func tail(_ layer: Int, _ x: Float, _ y: Float) -> Float {
+            var sd: Float = -9
+            for (i, s) in layers[layer].enumerated() {
+                let jag = 0.06 * fbm(V3(x * 2, Float(i), Float(layer)), 2, 201)
+                let half = (s.w + jag) * pow(max(0, 1 - x / s.len), 0.75) - (x > s.len ? x - s.len : 0)
+                sd = max(sd, min(half - abs(y - s.y * (1 + 0.1 * x)), x + 0.2))
+            }
+            return sd * R
+        }
+        return Scene(pixel: { (u: Float, v: Float, px: Float) -> C4 in
+            let rel = V2(u, v) - head
+            // Tail coordinates in head radii: along the tail, and across it.
+            let x = simd_dot(rel, back) / R, y = simd_dot(rel, up) / R
             let r = simd_length(rel)
-            out = over(paint(rgb(0xD8F0FF), clamp01(exp(-r / (icon ? 0.2 : 0.18)) * 0.55 * edge)), out)
-            // Nucleus: a rotated, lumpy ellipsoid.
-            let x = rel.x * cos(angle) + rel.y * sin(angle), y = -rel.x * sin(angle) + rel.y * cos(angle)
-            let theta = atan2(y / ry, x / rx)
-            let lump = 1 + 0.13 * fbm(V3(cos(theta) * 1.6, sin(theta) * 1.6, 0.5), 4, 93)
-            let d = (pow(x / rx, 2) + pow(y / ry, 2)).squareRoot() / lump
-            let cover = clamp01((1 - d) * ry * lump / px + 0.5)
-            if cover > 0 {
-                let z = max(0, 1 - min(1, d * d)).squareRoot()
-                var n = simd_normalize(V3(x / (rx * lump), y / (ry * lump) * 1.2, z + 0.0001))
-                n = V3(n.x * cos(angle) - n.y * sin(angle), n.x * sin(angle) + n.y * cos(angle), n.z)
-                let p = spin * n
-                let bump = V3(fbm(p * 6, 3, 94), fbm(p * 6 + 3, 3, 95), 0) * 0.25
-                let nb = simd_normalize(n + bump)
-                let rock = smooth(0.1, 0.35, fbm(p * 3.5, 5, 96))
-                var a = mix(rgb(0xE4F2FA), rgb(0x3E4A58), rock * rockA)
-                a = mix(a, rgb(0xB8DCF0), smooth(0.3, 0.6, fbm(p * 9, 3, 97)) * 0.3)
-                var c = a * (0.05 + diffuse(nb, l))
-                // Ghost matter glimmering in the dark side's cracks.
-                if !icon { c += rgb(0x4CF0C0) * smooth(0.35, 0.6, fbm(p * 8, 3, 98)) * (1 - smooth(-0.2, 0.3, simd_dot(nb, l))) * 0.18 }
-                c += rgb(0xCDEBFF) * rim(n, l) * 0.5
-                out = over(paint(c, cover), out)
+            let edge = R * (1 + 0.04 * fbm(V3(rel.x, rel.y, 0) / R * 2, 2, 202))
+            let ball = edge - r
+            let outline = max(ball, tail(0, x, y))
+            guard outline > -px else { return .zero }
+            func fill(_ c: V3, _ sd: Float) -> C4 { paint(c, clamp01(sd / px + 0.5)) }
+            var out = fill(rgb(0x0E1420), outline)
+            out = over(fill(rgb(0x1E4C8F), tail(0, x, y) - ink * 0.7), out)
+            // The lighter layers each have a darker stroke at their edge.
+            for (layer, colors) in [(1, (0x183E78, 0x2F6FB8)), (2, (0x285E9E, 0x5E9EDB))] as [(Int, (UInt32, UInt32))] {
+                let sd = tail(layer, x, y)
+                guard sd > -px else { continue }
+                out = over(fill(rgb(colors.0), sd), out)
+                out = over(fill(rgb(colors.1), sd - ink * 0.6), out)
+            }
+            // The head: pale ice plates on a sphere, so they shrink toward its edge, separated by blue cracks.
+            if ball > -px {
+                let b = rel / edge
+                let z = max(0, 1 - min(1, simd_length_squared(b))).squareRoot()
+                let plate = worley(rotation(0.3, -0.5, 0.2) * V3(b.x, b.y, z) * 2.4, 203)
+                let crack = smooth(0.1, 0.15, plate.f2 - plate.f1)
+                // Plates fade into the tail's blue on the trailing side.
+                let trailing = smooth(-0.15, 0.65, simd_dot(b, back))
+                var ice = mix(rgb(0xB4DDF4), rgb(0xE4F5FC), plate.id)
+                ice = mix(ice, rgb(0x7FBDE8), trailing * 0.8)
+                let c = mix(rgb(0x4A93D6), ice, crack * (1 - trailing * 0.6))
+                out = over(fill(c, ball - ink), out)
             }
             return out
         })
