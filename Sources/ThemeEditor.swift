@@ -56,7 +56,7 @@ enum ThemeEditor {
         let nameCard = SettingsCard()
         nameCard.add(SettingRow(icon: "character.cursor.ibeam", title: "Theme name", detail: "Shown on its card and in the Theme menu.",
                                 accessory: name, width: 220))
-        v.add(nameCard, height: nameCard.totalHeight, gap: 26)
+        v.add(nameCard, height: { nameCard.height(forWidth: $0) }, gap: 26)
 
         v.add(sectionHeader("Base colors"), height: 16, gap: 10)
         func colorRow(_ icon: String, _ title: String, _ detail: String?, alpha: Bool = false,
@@ -76,7 +76,7 @@ enum ThemeEditor {
         base.add(colorRow("character.cursor.ibeam", "Cursor", nil, get: { model.theme.cursor }, set: { model.theme.cursor = $0 }))
         base.add(colorRow("selection.pin.in.out", "Selection", "Usually see-through so the text stays readable.", alpha: true,
                           get: { model.theme.selection }, set: { model.theme.selection = $0 }))
-        v.add(base, height: base.totalHeight, gap: 26)
+        v.add(base, height: { base.height(forWidth: $0) }, gap: 26)
 
         v.add(sectionHeader("Terminal colors"), height: 16, gap: 10)
         let palette = PaletteEditorView(model.theme.ansi)

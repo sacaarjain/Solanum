@@ -354,14 +354,15 @@ final class SettingsCard: NSView {
         addSubview(row)
     }
 
-    var totalHeight: CGFloat { rows.reduce(0) { $0 + $1.rowHeight } }
+    func height(forWidth w: CGFloat) -> CGFloat { rows.reduce(0) { $0 + $1.height(forWidth: w) } }
 
     override func layout() {
         super.layout()
         var y: CGFloat = 0
         for r in rows {
-            r.frame = NSRect(x: 0, y: y, width: bounds.width, height: r.rowHeight)
-            y += r.rowHeight
+            let h = r.height(forWidth: bounds.width)
+            r.frame = NSRect(x: 0, y: y, width: bounds.width, height: h)
+            y += h
         }
     }
 
@@ -376,15 +377,15 @@ final class SettingsCard: NSView {
         th.border.setFill()
         var y: CGFloat = 0
         for r in rows.dropLast() {
-            y += r.rowHeight
+            y += r.height(forWidth: bounds.width)
             NSRect(x: 16, y: y, width: bounds.width - 32, height: 1).fill()
         }
     }
 }
 
-/// Icon, title and description on the left; a control (or anything) on the right.
+/// Icon, title and description on the left; a control (or anything) on the right. The description wraps
+/// rather than trailing off, so the row grows to fit it.
 class SettingRow: NSView {
-    let rowHeight: CGFloat
     private let icon: String?
     private let titleLabel: NSTextField
     private let detailLabel: NSTextField?
@@ -394,10 +395,16 @@ class SettingRow: NSView {
     init(icon: String? = nil, title: String, detail: String? = nil, accessory: NSView? = nil, width: CGFloat? = nil, mono: Bool = false) {
         self.icon = icon
         titleLabel = settingsLabel(title, size: 13, weight: .medium, mono: mono)
-        detailLabel = detail.map { settingsLabel($0, size: 11.5, dim: true) }
+        detailLabel = detail.map {
+            let l = settingsLabel($0, size: 11.5, dim: true)
+            l.lineBreakMode = .byWordWrapping
+            l.maximumNumberOfLines = 0
+            l.cell?.wraps = true
+            l.cell?.truncatesLastVisibleLine = false
+            return l
+        }
         self.accessory = accessory
         accessoryWidth = width ?? accessory?.fittingSize.width ?? 0
-        rowHeight = detail == nil ? 46 : 58
         super.init(frame: .zero)
         addSubview(titleLabel)
         detailLabel.map(addSubview)
@@ -408,15 +415,28 @@ class SettingRow: NSView {
 
     override var isFlipped: Bool { true }
 
+    private var textX: CGFloat { icon == nil ? 18 : 58 }
+    private func accessoryW(_ w: CGFloat) -> CGFloat { min(accessoryWidth, w * 0.6) }
+    private func textWidth(_ w: CGFloat) -> CGFloat { w - 16 - accessoryW(w) - 16 - textX }
+
+    /// The description's height at this row width: one line is 16, and each wrapped line adds to it.
+    private func detailHeight(_ w: CGFloat) -> CGFloat {
+        guard let d = detailLabel, let cell = d.cell else { return 0 }
+        let fit = cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: max(textWidth(w), 1), height: .greatestFiniteMagnitude)).height
+        return max(16, ceil(fit))
+    }
+
+    func height(forWidth w: CGFloat) -> CGFloat { detailLabel == nil ? 46 : 29 + detailHeight(w) + 13 }
+
     override func layout() {
         super.layout()
-        let x: CGFloat = icon == nil ? 18 : 58
+        let x = textX
         let right = bounds.width - 16
-        let aw = min(accessoryWidth, bounds.width * 0.6)
-        let textW = right - aw - 16 - x
+        let aw = accessoryW(bounds.width)
+        let textW = textWidth(bounds.width)
         if let d = detailLabel {
             titleLabel.frame = NSRect(x: x, y: 10, width: textW, height: 18)
-            d.frame = NSRect(x: x, y: 29, width: textW, height: 16)
+            d.frame = NSRect(x: x, y: 29, width: textW, height: detailHeight(bounds.width))
         } else {
             titleLabel.frame = NSRect(x: x, y: (bounds.height - 18) / 2, width: textW, height: 18)
         }
@@ -1239,7 +1259,7 @@ enum SettingsPages {
     private static func card(_ v: SettingsPageView, _ rows: [SettingRow], gap: CGFloat = 26) {
         let c = SettingsCard()
         rows.forEach(c.add)
-        v.add(c, height: c.totalHeight, gap: gap)
+        v.add(c, height: { c.height(forWidth: $0) }, gap: gap)
     }
 
     private static func toggle(_ on: Bool, _ set: @escaping (Bool) -> Void) -> ThemedToggle {
@@ -1648,7 +1668,7 @@ enum SettingsPages {
                 }
                 c.add(row)
             }
-            v.add(c, height: c.totalHeight, gap: 14)
+            v.add(c, height: { c.height(forWidth: $0) }, gap: 14)
         }
         let add = NewAliasButton()
         add.onCreate = { [weak ctl] in
