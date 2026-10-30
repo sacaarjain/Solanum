@@ -139,7 +139,19 @@ Create one in Settings › Appearance, or drop a JSON file into `~/.config/solan
 | `CommandPalette.swift`, `QuickTerminal.swift`, `History.swift`, `Aliases.swift`, `SSHHosts.swift` | The UI around the terminal |
 | `DevTools.swift` | Self-tests and the snapshot tool |
 | `SolanumArt.swift`, `Tools/MakeIcon.swift` | The flower, drawn in code, and the app icon generator |
+| `PlanetArt.swift`, `QuantumMoon.swift` | The planets, drawn in code, and the Quantum Moon's easter egg |
+| `IconPacks.swift`, `VSCodeLanguages.swift` | VS Code file icon themes for the sidebar and editor tabs |
 
----
+## Fan project
 
-*Solanum is a fan project and isn't affiliated with Mobius Digital or Annapurna Interactive, the makers of Outer Wilds.*
+Solanum is an **unofficial fan project**. It isn't authorized, endorsed or produced by Mobius Digital or Annapurna
+Interactive, and isn't affiliated with them in any way.
+
+- **Non-commercial:** Solanum is 100% free to download and use. There are no purchases, in-app or otherwise, no
+  subscriptions or paywalls, and no advertising.
+- **Credit:** *Outer Wilds* and everything from it here (its name and Solanum's, the planets the themes are colored
+  after, the Nomai quantum symbol, and the lines from Bells and Solanum in the Quantum Moon's easter egg) belong to its creators,
+  [Mobius Digital](https://www.mobiusdigitalgames.com) and [Annapurna Interactive](https://annapurnainteractive.com).
+  The themes and the planets drawn in the status bar are fan renditions.
+- **Community:** with thanks to the *Outer Wilds* fan community, whose artwork and wikis inspired the planet art and
+  the Quantum Moon's easter egg.

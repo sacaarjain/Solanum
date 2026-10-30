@@ -609,7 +609,7 @@ final class StatusBarView: NSView {
     var onSync: ((NSPoint) -> Void)?
     var onChanges: ((NSPoint) -> Void)?
 
-    private enum Button { case sidebar, hosts, branch, sync, changes, rightSidebar, theme }
+    private enum Button { case sidebar, hosts, branch, sync, changes, rightSidebar, theme, moon }
 
     private var crumbs: [(rect: NSRect, path: String, label: String)] = []
     private var buttons: [(rect: NSRect, kind: Button)] = []
@@ -712,14 +712,16 @@ final class StatusBarView: NSView {
             // A planet theme's planet stands in for the palette icon, centered on the label like the icon was;
             // Solanum Default gets the flower. With the theme icon off, just the name.
             let showIcon = Config.shared.themeIcon
-            let planet = showIcon ? PlanetArt.planet(for: th) : nil
+            // The Quantum Moon may have wandered off (see QuantumMoon); its name stays.
+            let planet = showIcon && !(QuantumMoon.active && !QuantumMoon.at(.home)) ? PlanetArt.planet(for: th) : nil
             let flower = showIcon && !th.isCustom && th.name == ThemeLibrary.solanumDefault.name
-            let iw = !showIcon ? 0 : planet != nil ? Self.planetSide : flower ? Self.flowerSide
+            let iw = !showIcon || QuantumMoon.active && planet == nil ? 0 : planet != nil ? Self.planetSide : flower ? Self.flowerSide
                 : symbol("paintpalette", th.dimText)?.size.width ?? 0
             let w = 6 + iw + (iw > 0 ? 4 : 0) + min(200, (name as NSString).size(withAttributes: attrs).width) + 7
             let start = bounds.width - (showsRightSidebarToggle ? 36 : 8) - w
             _ = drawButton(.theme, at: start, icon: "paintpalette", color: hoverButton == .theme ? th.accent : th.dimText,
-                           text: name, textAttrs: attrs, maxTextWidth: 200, iconSpace: !showIcon || planet != nil || flower ? iw : nil)
+                           text: name, textAttrs: attrs, maxTextWidth: 200,
+                           iconSpace: !showIcon || planet != nil || flower || QuantumMoon.active ? iw : nil)
             themeRect = CGRect(x: start, y: 2, width: w, height: bounds.height - 6)
             if let planet { drawPlanet(planet, x: start + 6) }
             if flower { drawFlowerOutline(x: start + 6) }
@@ -763,6 +765,16 @@ final class StatusBarView: NSView {
             drawInfo(at: infoX)
         } else {
             x = drawInfo(at: x)
+            if QuantumMoon.at(.folders) {
+                let r = NSRect(x: x, y: 2, width: Self.planetSide + 4, height: bounds.height - 6)
+                buttons.append((r, .moon))
+                if hoverButton == .moon {
+                    th.foreground.withAlphaComponent(0.1).setFill()
+                    NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4).fill()
+                }
+                drawPlanet(.quantumMoon, x: x + 2)
+                x = r.maxX + 4
+            }
             drawPath(from: x, avail: limit - x - 12)
         }
     }
@@ -909,6 +921,7 @@ final class StatusBarView: NSView {
         case .sidebar: return sidebarVisible ? "Hide File Sidebar (⌘B)" : "Show File Sidebar (⌘B)"
         case .rightSidebar: return rightSidebarVisible ? "Hide Right Sidebar (⌥⌘B)" : "Show Right Sidebar (⌥⌘B)"
         case .theme: return "Theme: \(Config.shared.theme.name) — click to switch"
+        case .moon: return "The Quantum Moon?"
         case .hosts: return "SSH Hosts"
         case .branch: return git.map { $0.detached ? "Detached at \($0.branch) — switch branch" : "On \($0.branch) — switch branch" } ?? ""
         case .sync:
@@ -959,6 +972,7 @@ final class StatusBarView: NSView {
             case .branch: onBranch?()
             case .sync: if gitBusy == nil { onSync?(at) }
             case .changes: onChanges?(at)
+            case .moon: QuantumMoon.showQuote(over: window)
             }
             return
         }
@@ -2531,7 +2545,13 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             th.surface.withAlphaComponent(0.7).setFill()
             NSBezierPath(roundedRect: flowerRect, xRadius: 6, yRadius: 6).fill()
         }
-        if showsFlower { Self.flower.draw(in: flowerRect.insetBy(dx: 2, dy: 2)) }
+        if showsFlower {
+            if QuantumMoon.at(.flower) {
+                QuantumMoon.draw(in: flowerRect.insetBy(dx: 3, dy: 3), viewHeight: bounds.height)
+            } else {
+                Self.flower.draw(in: flowerRect.insetBy(dx: 2, dy: 2))
+            }
+        }
         // An update waiting (its card dismissed): a "1" on the flower; clicking it opens it in Settings.
         if showsFlower, Updater.shared.needsAttention {
             let badge = CGRect(x: flowerRect.maxX - 9, y: flowerRect.minY - 2, width: 13, height: 13)

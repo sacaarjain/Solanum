@@ -145,7 +145,7 @@ enum ThemeLibrary {
               ansi: ["#1B3046", "#F27C8E", "#56F0B4", "#ECE296", "#6FBCFF", "#B3A0FF", "#86EEF6", "#CDE2EE",
                      "#4E6880", "#FF9DAC", "#82F6C8", "#F5EDB2", "#99D0FF", "#CBBDFF", "#ADF4FA", "#F5FBFF"]),
         // Solanum's home: grey rock wrapped in a shifting grey-white fog.
-        Theme(name: "Quantum Moon", bg: "#202125", bg2: "#09090B", fg: "#E6E6EA", accent: "#C9CCD6", chrome: "#2C2D33",
+        Theme(name: "Quantum Moon", bg: "#202125", bg2: "#09090B", fg: "#E6E6EA", accent: "#C9CCD6", chrome: "#33304C",
               ansi: ["#2E2F35", "#EC7A8A", "#93D8AE", "#E8D492", "#93A9D8", "#C5A3D8", "#93D2DC", "#CFD0D6",
                      "#62646C", "#F799A6", "#B0E6C6", "#F2E2AE", "#B0C2E6", "#D8BEE6", "#B0E2EA", "#F6F6F8"]),
     ]

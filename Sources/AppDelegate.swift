@@ -43,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             if let last, !last.windows.isEmpty { offerRestore(last) }
         }
         Updater.shared.start()
+        QuantumMoon.start()
         // Saved periodically too, so a crash or force-quit loses at most a few seconds of layout.
         autosaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             SessionStore.save(self?.windows ?? [])
