@@ -577,7 +577,7 @@ final class StatusBarView: NSView {
     private func drawFlowerOutline(x: CGFloat) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let th = Config.shared.theme
-        let color = hoverButton == .theme ? (th.isDark ? SolanumArt.purple : SolanumArt.purpleOnLight) : th.dimText
+        let color = hoverButton == .theme ? (th.isDark ? SolanumArt.purple : SolanumArt.purpleOnLight) : dimIcon
         // The art is drawn y-up.
         ctx.saveGState()
         ctx.translateBy(x: 0, y: bounds.height)
@@ -617,6 +617,10 @@ final class StatusBarView: NSView {
     private var hoverButton: Button?
 
     override var isFlipped: Bool { true }
+
+    /// Resting color for the bar's icons. Stronger than the dim text beside them: thin symbol strokes in the same
+    /// color read far fainter than letters do, and nearly vanish on some themes.
+    private var dimIcon: NSColor { Config.shared.theme.foreground.withAlphaComponent(0.75) }
 
     private func symbol(_ name: String, _ color: NSColor, size: CGFloat = 11) -> NSImage? {
         let config = NSImage.SymbolConfiguration(pointSize: size, weight: .medium).applying(.init(paletteColors: [color]))
@@ -700,7 +704,7 @@ final class StatusBarView: NSView {
         buttons = []
 
         if showsRightSidebarToggle {
-            _ = drawButton(.rightSidebar, at: bounds.width - 30, icon: "sidebar.right", color: rightSidebarVisible ? th.accent : th.dimText)
+            _ = drawButton(.rightSidebar, at: bounds.width - 30, icon: "sidebar.right", color: rightSidebarVisible ? th.accent : dimIcon)
         }
         if leadingEdge { NSRect(x: 0, y: 0, width: 1, height: bounds.height).fill() }
         themeRect = .null
@@ -716,10 +720,10 @@ final class StatusBarView: NSView {
             let planet = showIcon && !(QuantumMoon.active && !QuantumMoon.at(.home)) ? PlanetArt.planet(for: th) : nil
             let flower = showIcon && !th.isCustom && th.name == ThemeLibrary.solanumDefault.name
             let iw = !showIcon || QuantumMoon.active && planet == nil ? 0 : planet != nil ? Self.planetSide : flower ? Self.flowerSide
-                : symbol("paintpalette", th.dimText)?.size.width ?? 0
+                : symbol("paintpalette", dimIcon)?.size.width ?? 0
             let w = 6 + iw + (iw > 0 ? 4 : 0) + min(200, (name as NSString).size(withAttributes: attrs).width) + 7
             let start = bounds.width - (showsRightSidebarToggle ? 36 : 8) - w
-            _ = drawButton(.theme, at: start, icon: "paintpalette", color: hoverButton == .theme ? th.accent : th.dimText,
+            _ = drawButton(.theme, at: start, icon: "paintpalette", color: hoverButton == .theme ? th.accent : dimIcon,
                            text: name, textAttrs: attrs, maxTextWidth: 200,
                            iconSpace: !showIcon || planet != nil || flower || QuantumMoon.active ? iw : nil)
             themeRect = CGRect(x: start, y: 2, width: w, height: bounds.height - 6)
@@ -748,10 +752,10 @@ final class StatusBarView: NSView {
         // Clear of the window's rounded bottom-left corner.
         var x: CGFloat = 12
         if showsSidebarToggle {
-            x = drawButton(.sidebar, at: x, icon: "sidebar.left", color: sidebarVisible ? th.accent : th.dimText)
+            x = drawButton(.sidebar, at: x, icon: "sidebar.left", color: sidebarVisible ? th.accent : dimIcon)
         }
         if onShowHosts != nil {
-            x = drawButton(.hosts, at: x, icon: "server.rack", color: th.dimText)
+            x = drawButton(.hosts, at: x, icon: "server.rack", color: dimIcon)
         }
         if !buttons.isEmpty { x += 4 }
         let rightEdge = transferRect.isNull ? rightItems : transferRect
@@ -827,18 +831,18 @@ final class StatusBarView: NSView {
             let bright: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: th.foreground.withAlphaComponent(0.85)]
             x = drawButton(.branch, at: x - 4, icon: "arrow.triangle.branch", color: th.accent, text: git.branch, textAttrs: bright, maxTextWidth: 200)
             if let busy = gitBusy {
-                x = drawButton(.sync, at: x, icon: "arrow.triangle.2.circlepath", color: th.dimText, text: busy, textAttrs: dim)
+                x = drawButton(.sync, at: x, icon: "arrow.triangle.2.circlepath", color: dimIcon, text: busy, textAttrs: dim)
             } else if git.upstream != nil {
                 var counts: [String] = []
                 if git.behind > 0 { counts.append("\(git.behind)↓") }
                 if git.ahead > 0 { counts.append("\(git.ahead)↑") }
-                x = drawButton(.sync, at: x, icon: "arrow.triangle.2.circlepath", color: counts.isEmpty ? th.dimText : th.accent,
+                x = drawButton(.sync, at: x, icon: "arrow.triangle.2.circlepath", color: counts.isEmpty ? dimIcon : th.accent,
                                text: counts.isEmpty ? nil : counts.joined(separator: " "), textAttrs: bright)
             } else if !git.detached {
-                x = drawButton(.sync, at: x, icon: "icloud.and.arrow.up", color: th.dimText)
+                x = drawButton(.sync, at: x, icon: "icloud.and.arrow.up", color: dimIcon)
             }
             if !git.changes.isEmpty {
-                x = drawButton(.changes, at: x, icon: "square.and.pencil", color: th.dimText, text: "\(git.changes.count)", textAttrs: dim)
+                x = drawButton(.changes, at: x, icon: "square.and.pencil", color: dimIcon, text: "\(git.changes.count)", textAttrs: dim)
             }
             if !mirrored { divider() }
         }
@@ -857,7 +861,7 @@ final class StatusBarView: NSView {
         var x = start
         var avail = full
         // The folder icon is part of the first button after it (the first folder, or "…" for the hidden ones).
-        var icon = host == nil ? symbol("folder", th.dimText) : nil
+        var icon = host == nil ? symbol("folder", dimIcon) : nil
         if let icon {
             x += icon.size.width + 4
             avail -= icon.size.width + 4
@@ -873,7 +877,7 @@ final class StatusBarView: NSView {
                 NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4).fill()
             }
             let color = bright || hover == idx ? th.foreground.withAlphaComponent(0.85) : th.dimText
-            if icon != nil, let lit = symbol("folder", hover == idx ? color : th.dimText) {
+            if icon != nil, let lit = symbol("folder", hover == idx ? color : dimIcon) {
                 lit.draw(in: iconFrame(lit, x: r.minX + 4))
                 icon = nil
             }
