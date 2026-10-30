@@ -1,12 +1,12 @@
 import AppKit
 
-/// Settings (⌘,, the flower in the tab bar, or `settings` at a prompt): Appearance, Text & Size, Shortcuts,
-/// Aliases, Preferences and System. Drawn in the current theme; every change is written to the config file and applied live.
+/// Settings (⌘,, the flower in the tab bar, or `settings` at a prompt): System, Preferences, Appearance, Text & Size,
+/// Shortcuts and Aliases. Drawn in the current theme; every change is written to the config file and applied live.
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     static let shared = SettingsWindowController()
 
     enum Page: Int, CaseIterable {
-        case appearance, text, shortcuts, aliases, preferences, system
+        case system, preferences, appearance, text, shortcuts, aliases
 
         var title: String {
             switch self {
@@ -33,7 +33,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private let root = SettingsRootView()
-    private(set) var page = Page.appearance
+    private(set) var page = Page.system
     /// The custom theme open in the editor (Appearance shows the editor instead of the cards while set).
     var editingTheme: URL?
     private var observer: NSObjectProtocol?
