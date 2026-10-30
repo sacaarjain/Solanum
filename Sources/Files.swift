@@ -217,10 +217,70 @@ final class RemoteSession: FileSystem {
     /// A command that opens another shell on the same host, in `dir` (running `command` there first): the
     /// original ssh arguments again, or, if those weren't reported, a session over the original connection
     /// while it's still open.
+    /// Just how to reach the host from a session's `ssh` arguments (as the shell quoted them): its options and
+    /// destination, without a command to run there or a `-t`/`-T`. The session may itself have been a reconnect,
+    /// whose command would otherwise be run again ahead of the new one. Nil without a destination.
+    static func connectionArgs(_ args: String) -> String? {
+        // Words as the shell splits them, each as written (to put back as is) and as it reads (to look at).
+        var words: [(raw: Substring, value: String)] = []
+        var i = args.startIndex
+        while i < args.endIndex {
+            while i < args.endIndex, args[i] == " " || args[i] == "\t" { i = args.index(after: i) }
+            guard i < args.endIndex else { break }
+            let start = i
+            var value = ""
+            var quote: Character?
+            while i < args.endIndex {
+                let c = args[i]
+                if quote == nil, c == " " || c == "\t" { break }
+                if c == "\\", quote != "'", args.index(after: i) < args.endIndex {
+                    i = args.index(after: i)
+                    value.append(args[i])
+                } else if quote == nil, c == "'" || c == "\"" {
+                    quote = c
+                } else if c == quote {
+                    quote = nil
+                } else {
+                    value.append(c)
+                }
+                i = args.index(after: i)
+            }
+            words.append((args[start..<i], value))
+        }
+        // Options of ssh's that take a value (as the next word, or joined on: -p22).
+        let valued = Set("BbcDEeFIiJLlmOoPpQRSWw")
+        var kept: [Substring] = []
+        var k = 0
+        while k < words.count {
+            let w = words[k].value
+            guard w.hasPrefix("-"), w.count > 1 else {
+                // The destination; anything after it is a command for the host.
+                kept.append(words[k].raw)
+                return kept.joined(separator: " ")
+            }
+            if w == "--" { k += 1; continue }
+            let flags = w.dropFirst()
+            if let at = flags.firstIndex(where: { valued.contains($0) }) {
+                let joined = flags[flags.index(after: at)...]
+                kept.append(words[k].raw)
+                if joined.isEmpty, k + 1 < words.count {
+                    k += 1
+                    kept.append(words[k].raw)
+                }
+            } else if !flags.allSatisfy({ $0 == "t" || $0 == "T" }) {
+                // Other flags (-A, -v, -4…) stay; -t and -T are the reconnect's own business.
+                kept.append(words[k].raw)
+            }
+            k += 1
+        }
+        return nil
+    }
+
     func reconnectCommand(in dir: String?, then command: String? = nil) -> String? {
         let first = command.map { $0 + "; " } ?? ""
-        let remote = dir.map { " " + shellQuote("cd " + shellQuote($0) + " && " + first + "exec \"$SHELL\" -l") } ?? ""
-        if let sshArgs, !sshArgs.isEmpty { return "ssh -t " + sshArgs + remote }
+        // A folder that's gone (since a session was saved, say) leaves the login in the home folder rather than ending it.
+        let remote = dir.map { " " + shellQuote("cd " + shellQuote($0) + " 2>/dev/null; " + first + "exec \"$SHELL\" -l") } ?? ""
+        if let sshArgs, let connect = Self.connectionArgs(sshArgs) { return "ssh -t " + connect + remote }
         guard isConnected else { return nil }
         return "ssh -t -S " + shellQuote(controlPath) + " -o ControlMaster=no solanum-remote" + remote
     }

@@ -1756,9 +1756,17 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     /// ⌥⌘T: a new tab in the current tab's group (or a new group with the current tab).
     @objc func newTabInGroup(_ sender: Any?) { focused.newTabInGroup() }
 
-    /// ⌘O: picks folders in the open panel, starting from the terminal's folder; each opens in a new tab.
+    /// ⌘O: picks folders in the open panel, starting from the terminal's folder; each opens in a new tab. On an ssh
+    /// tab, browses that host's folders instead.
     @objc func openFolder(_ sender: Any?) {
         guard let w = window else { return }
+        // An ssh tab: the host's folders, browsed in the palette (Finder can't see them), from the terminal's folder.
+        if let tab = activeTab, let remote = tab.browseRemote, remote.isReady {
+            let dir = tab.browseDirectory ?? remote.home ?? "/"
+            let shown = FilePaths.abbreviate(dir, home: remote.home)
+            CommandPalette.showGoTo(in: w, path: shown + (shown.hasSuffix("/") ? "" : "/"))
+            return
+        }
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -1800,10 +1808,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         }
     }
 
-    /// The palette with "Go to: " typed in, for a folder whose path you know (see `CommandPalette.goToItems`).
+    /// Go to Folder's palette, for a folder whose path you know (see `CommandPalette.goToItems`).
     @objc func goToFolder(_ sender: Any?) {
         guard let w = window else { return }
-        CommandPalette.show(in: w, items: CommandPalette.collectItems(), tracksRecents: true, query: CommandPalette.goToPrefix)
+        CommandPalette.showGoTo(in: w)
     }
 
     /// The focused column's repository history, as a graph above its terminal.

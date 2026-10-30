@@ -131,6 +131,14 @@ enum SelfTest {
             let ranges = [NSRange(location: 5, length: 1), NSRange(location: 10, length: 1)]
             check("find in file: starts at or after the caret, then wraps", EditorFind.index(of: ranges, from: 0) == 0 && EditorFind.index(of: ranges, from: 6) == 1 && EditorFind.index(of: ranges, from: 11) == 0 && EditorFind.index(of: [], from: 0) == nil)
         }
+        do {
+            // Reconnecting keeps just how to reach the host, whatever the session ran there.
+            let c = RemoteSession.connectionArgs
+            check("ssh args: plain", c("myhost") == "myhost" && c("-p 2222 me@host") == "-p 2222 me@host" && c("-p2222 -i ~/k host") == "-p2222 -i ~/k host")
+            check("ssh args: a reconnect's command dropped", c("-t mb1.example.com cd\\ \\'/mnt\\'\\ 2\\>/dev/null\\;\\ exec\\ \\\"\\$SHELL\\\"\\ -l") == "mb1.example.com")
+            check("ssh args: quoted command dropped", c("-t -o 'ProxyJump bastion' host 'cd /x; exec $SHELL -l'") == "-o 'ProxyJump bastion' host")
+            check("ssh args: flags kept, -t dropped", c("-A -tt -v host ls") == "-A -v host" && c("-o") == nil && c("") == nil)
+        }
         func make(_ c: Int = 20, _ r: Int = 5) -> (Terminal, Sink) {
             let t = Terminal(cols: c, rows: r, scrollbackLimit: 1000)
             let s = Sink()
@@ -643,6 +651,10 @@ enum SnapshotHelper {
                     if action.hasPrefix("sidebar-rename:") { c.rootView.sidebar.devBeginRename(String(action.dropFirst(15))) }
                     if action.hasPrefix("sidebar-rename-to:") { c.rootView.sidebar.devFinishRename(String(action.dropFirst(18))) }
                     if action.hasPrefix("sidebar-click:") { c.rootView.sidebar.devClick(String(action.dropFirst(14))) }
+                    if action == "press-cmd-return", let w = c.window,
+                       let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                windowNumber: w.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+                                                isARepeat: false, keyCode: 36) { NSApp.sendEvent(e) }
                     if action == "press-return", let w = c.window,
                        let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                                 windowNumber: w.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
@@ -797,6 +809,7 @@ enum SnapshotHelper {
                     if action.hasPrefix("palette-query:"), let w = c.window {
                         CommandPalette.show(in: w, items: CommandPalette.collectItems(), tracksRecents: true, query: String(action.dropFirst(14)))
                     }
+                    if action.hasPrefix("goto-folder") { c.goToFolder(nil) }
                     if action == "palette-run" { CommandPalette.devRunSelected() }
                     if action == "print-cwds" {
                         let cwds = c.allTabs.map { $0.focusedPane.currentDirectory ?? "-" }
