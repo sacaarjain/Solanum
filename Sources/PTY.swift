@@ -445,6 +445,9 @@ enum ShellIntegration {
     autoload -Uz add-zsh-hook
     add-zsh-hook precmd _solanum_precmd
     add-zsh-hook preexec _solanum_preexec
+    # _solanum_precmd moves _solanum_post to the end for the next prompt; zsh has already listed this prompt's hooks
+    # by then, so it's added now too, or the first prompt has no marks (and a restored `claude -c` waits for a key).
+    add-zsh-hook precmd _solanum_post
 
     """#
 }

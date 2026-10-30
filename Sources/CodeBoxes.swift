@@ -178,10 +178,36 @@ extension LineSnapshot {
         return x < n ? x : nil
     }
 
+    /// A full-width line of ─, as Claude Code draws above and below its prompt.
+    private static func isRule(_ l: Line) -> Bool {
+        let n = l.trimmedLength
+        guard n >= 20, n * 10 >= l.cells.count * 9 else { return false }
+        return l.cells[..<n].allSatisfy { $0.ch == 0x2500 || $0.width == 0 }
+    }
+
+    /// Top of Claude Code's prompt box when it's at the bottom of the screen. Below that is the user's typing and
+    /// the status line, never a reply, so text there that happens to match a code block gets no box.
+    private func promptTop() -> Int? {
+        var rules: [Int] = []
+        var text = 0
+        var a = lastAbs
+        while a >= firstAbs, rules.count < 2, let l = line(abs: a) {
+            if Self.isRule(l) {
+                rules.append(a)
+            } else if l.trimmedLength > 0 {
+                text += 1
+                if rules.isEmpty && text > 8 { return nil }  // no prompt box under the footer
+                if text > 60 { break }
+            }
+            a -= 1
+        }
+        return rules.last
+    }
+
     /// Code blocks (from `code`, newest last) and tables on screen. Each block is matched to its latest
     /// unclaimed appearance, so a command shown twice gets both boxes.
     func findBoxes(code: [String]) -> [CodeBox] {
-        let lo = firstAbs, hi = lastAbs
+        let lo = firstAbs, hi = promptTop().map { $0 - 1 } ?? lastAbs
         guard hi >= lo else { return [] }
         var starts: [Int: (col: Int, ch: UInt32)] = [:]
         for a in lo...hi {
@@ -197,7 +223,7 @@ extension LineSnapshot {
             var a = hi
             while a >= lo {
                 if !claimed.contains(a), let s = starts[a], s.ch == firstCh,
-                   let box = match(scalars, target, from: a, col: s.col, source: src, claimed: claimed) {
+                   let box = match(scalars, target, from: a, through: hi, col: s.col, source: src, claimed: claimed) {
                     boxes.append(box)
                     claimed.insert(integersIn: box.first...box.last)
                     break
@@ -208,13 +234,13 @@ extension LineSnapshot {
         return boxes.sorted { $0.first < $1.first }
     }
 
-    private func match(_ scalars: [Unicode.Scalar], _ target: [Int], from a: Int, col: Int, source: String,
+    private func match(_ scalars: [Unicode.Scalar], _ target: [Int], from a: Int, through hi: Int, col: Int, source: String,
                        claimed: IndexSet) -> CodeBox? {
         var k = 0
         var offsets: [GridPos: Int] = [:]
         var ln = a, x = col, indent = col
         while k < target.count {
-            guard ln <= lastAbs, ln - a < target.count + 50, !claimed.contains(ln), let l = line(abs: ln) else { return nil }
+            guard ln <= hi, ln - a < target.count + 50, !claimed.contains(ln), let l = line(abs: ln) else { return nil }
             let n = l.trimmedLength
             var lineStart = true
             while x < n {
