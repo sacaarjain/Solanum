@@ -53,10 +53,22 @@ final class RenderPalette {
     let ansi: [CGColor]
     let boldIsBright: Bool
     private var rgbCache: [UInt32: CGColor] = [:]
+    /// Text too faint against its background is adjusted (see `readable`): light themes only, since programs
+    /// mostly pick their colors for dark backgrounds.
+    let adjustsContrast: Bool
+    /// What default-background text is measured against: on a gradient, its end closest to the text, the hardest to read on.
+    private let contrastBase: CGColor
+    private struct ContrastKey: Hashable {
+        let fg: ObjectIdentifier, bg: ObjectIdentifier?, dim: Bool
+    }
+    /// The colors are kept alongside the result so their identities in the key stay theirs.
+    private var contrastCache: [ContrastKey: (fg: CGColor, bg: CGColor?, out: CGColor)] = [:]
 
     init(theme: Theme, boldIsBright: Bool) {
         self.theme = theme
         self.boldIsBright = boldIsBright
+        adjustsContrast = Config.shared.minimumContrast && !theme.isDark
+        contrastBase = (theme.background2.map { $0.luminance < theme.background.luminance ? $0 : theme.background } ?? theme.background).cgColor
         fg = theme.foreground.cgColor
         bg = theme.background.cgColor
         cursor = theme.cursor.cgColor
@@ -67,6 +79,61 @@ final class RenderPalette {
         matchCurrent = NSColor(hex: "#FF9F1C").cgColor
         matchText = NSColor.black.cgColor
         ansi = (0..<256).map { theme.paletteColor($0).cgColor }
+    }
+
+    /// `fg`, darkened or lightened just enough to read over `bg` (nil: the window's background), its hue kept.
+    /// Text the same color as its background stays that way: that's how programs hide it. `dim` text is drawn at
+    /// half strength (so asks less of the color, and is measured as it'll look).
+    func readable(_ fg: CGColor, over bg: CGColor?, dim: Bool) -> CGColor {
+        let key = ContrastKey(fg: ObjectIdentifier(fg), bg: bg.map { ObjectIdentifier($0) }, dim: dim)
+        if let hit = contrastCache[key] { return hit.out }
+        let out = Self.adjusted(fg, over: bg ?? contrastBase, minimum: dim ? Self.minimumDimContrast : Self.minimumContrast, dim: dim)
+        if contrastCache.count > 4096 { contrastCache.removeAll() }
+        contrastCache[key] = (fg, bg, out)
+        return out
+    }
+
+    static let minimumContrast: CGFloat = 4.5
+    static let minimumDimContrast: CGFloat = 3
+
+    static func rgb(_ c: CGColor) -> (r: CGFloat, g: CGFloat, b: CGFloat)? {
+        guard let srgb = CGColorSpace(name: CGColorSpace.sRGB), let p = c.converted(to: srgb, intent: .defaultIntent, options: nil)?.components,
+              p.count >= 3 else { return nil }
+        return (p[0], p[1], p[2])
+    }
+
+    /// WCAG relative luminance.
+    private static func luminance(_ c: (r: CGFloat, g: CGFloat, b: CGFloat)) -> CGFloat {
+        func lin(_ v: CGFloat) -> CGFloat { v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+        return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+    }
+
+    /// WCAG contrast ratio, from 1 (the same) to 21 (black on white).
+    static func contrast(_ a: CGColor, _ b: CGColor) -> CGFloat {
+        guard let x = rgb(a), let y = rgb(b) else { return 21 }
+        let l1 = luminance(x), l2 = luminance(y)
+        return (max(l1, l2) + 0.05) / (min(l1, l2) + 0.05)
+    }
+
+    static func adjusted(_ fg: CGColor, over bg: CGColor, minimum: CGFloat, dim: Bool) -> CGColor {
+        guard let f = rgb(fg), let b = rgb(bg), f != b else { return fg }
+        // Toward black on a light background, white on a dark one; the least mix that's enough.
+        let to: CGFloat = luminance(b) > 0.18 ? 0 : 1
+        func color(_ t: CGFloat) -> (r: CGFloat, g: CGFloat, b: CGFloat) { (f.r + (to - f.r) * t, f.g + (to - f.g) * t, f.b + (to - f.b) * t) }
+        func ratio(_ c: (r: CGFloat, g: CGFloat, b: CGFloat)) -> CGFloat {
+            // Dim text is drawn at half strength over its background.
+            let shown = dim ? (r: (c.r + b.r) / 2, g: (c.g + b.g) / 2, b: (c.b + b.b) / 2) : c
+            let l1 = luminance(shown), l2 = luminance(b)
+            return (max(l1, l2) + 0.05) / (min(l1, l2) + 0.05)
+        }
+        guard ratio(f) < minimum else { return fg }
+        var lo: CGFloat = 0, hi: CGFloat = 1
+        for _ in 0..<12 {
+            let t = (lo + hi) / 2
+            if ratio(color(t)) < minimum { lo = t } else { hi = t }
+        }
+        let c = color(hi)
+        return CGColor(srgbRed: c.r, green: c.g, blue: c.b, alpha: 1)
     }
 
     @inline(__always) func color(_ code: UInt32, bold: Bool = false) -> CGColor {
@@ -176,6 +243,9 @@ final class TerminalView: NSView, TerminalDelegate {
     var pendingClickTimer: Timer?
     /// Arrow keys were sent to move the cursor and the program hasn't redrawn since.
     var awaitingCursorEcho = false
+    /// While a selection in Claude Code's box is being removed: what follows it, keys typed meanwhile included.
+    var afterSelectionDeleted: [() -> Void]?
+    var selectionDeleteGeneration = 0
     /// Output from a previous session, replayed above the new shell's first prompt.
     var restoredText: String?
     /// When the program last printed anything (see `whenOutputQuiet`).
@@ -1216,6 +1286,10 @@ final class TerminalView: NSView, TerminalDelegate {
                     let f = fg
                     fg = bg ?? palette.bg
                     bg = f
+                }
+                // Block characters (a progress bar, a Powerline arrow) are shapes, not text: their colors stay.
+                if palette.adjustsContrast, c.ch > 32, !(c.ch >= 0x2580 && c.ch <= 0x259F), !(c.ch >= 0xE0B0 && c.ch <= 0xE0B6) {
+                    fg = palette.readable(fg, over: bg, dim: c.flags.contains(.dim))
                 }
                 if c.flags.contains(.dim) { fg = fg.copy(alpha: 0.5) ?? fg }
                 if let lm = lineMatches {

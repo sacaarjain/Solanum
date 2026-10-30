@@ -10,6 +10,12 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
         var isHeader = false
         /// What ⌘↩ does instead of `run`, when set.
         var alternate: (() -> Void)? = nil
+        /// What Tab puts in the field (a "Go to:" folder suggestion).
+        var completion: String? = nil
+        /// A section label shown as written (a file's path), not in capitals.
+        var keepsCase = false
+        /// Search in Project Folder: the title is a line of text, with this shown picked out in it.
+        var highlight: String? = nil
         let run: () -> Void
 
         var recentKey: String { path + " › " + title }
@@ -36,6 +42,12 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
     private let panel = NSVisualEffectView()
     private let list = PaletteList()
     private let maxRows = 10
+    /// A live list (Search in Project Folder): called with each change to the field, instead of filtering `allItems`.
+    private var onQuery: ((CommandPalette, String) -> Void)?
+    /// Shown when the list is empty.
+    private(set) var emptyMessage = "No matching commands"
+    /// What a live list is over, at the right of the field.
+    private let scopeLabel = NSTextField(labelWithString: "")
     private let rowH: CGFloat = 34
 
     static func toggle(in window: NSWindow) {
@@ -48,7 +60,7 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
 
     /// Opens the palette over a custom list (e.g. prompts to jump to).
     static func show(in window: NSWindow, items: [Item], placeholder: String = "Type a command, theme, or snippet…",
-                     tracksRecents: Bool = false, keepsOrder: Bool = false, icon: String = "command") {
+                     tracksRecents: Bool = false, keepsOrder: Bool = false, icon: String = "command", query: String = "") {
         current?.dismiss(restoreFocus: false)
         guard let content = window.contentView else { return }
         let palette = CommandPalette(items: items, placeholder: placeholder, tracksRecents: tracksRecents, keepsOrder: keepsOrder,
@@ -59,6 +71,60 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
         current = palette
         palette.layoutPanel()
         window.makeFirstResponder(palette.field)
+        if !query.isEmpty {
+            palette.field.stringValue = query
+            palette.field.currentEditor()?.selectedRange = NSRange(location: (query as NSString).length, length: 0)
+            palette.filter(query)
+        }
+    }
+
+    /// A palette whose list comes from `onQuery`, which answers through `setResults`. The same shortcut closes it.
+    static func showLive(in window: NSWindow, placeholder: String, scope: String, message: String, query: String,
+                         onQuery: @escaping (CommandPalette, String) -> Void) {
+        if let c = current, c.window === window, c.onQuery != nil {
+            c.dismiss(restoreFocus: true)
+            return
+        }
+        current?.dismiss(restoreFocus: false)
+        guard let content = window.contentView else { return }
+        let palette = CommandPalette(items: [], placeholder: placeholder, tracksRecents: false, keepsOrder: false, icon: "magnifyingglass",
+                                     previous: window.firstResponder)
+        palette.frame = content.bounds
+        palette.autoresizingMask = [.width, .height]
+        palette.onQuery = onQuery
+        palette.emptyMessage = message
+        palette.scopeLabel.stringValue = scope
+        palette.scopeLabel.isHidden = false
+        content.addSubview(palette)
+        current = palette
+        palette.layoutPanel()
+        window.makeFirstResponder(palette.field)
+        if !query.isEmpty {
+            palette.field.stringValue = query
+            palette.field.currentEditor()?.selectedRange = NSRange(location: (query as NSString).length, length: 0)
+            palette.filter(query)
+        }
+    }
+
+    /// A live list's new results.
+    /// `keepSelection`: more of the same search arrived, so what's selected and scrolled to stays where it is.
+    func setResults(_ items: [Item], scope: String, message: String, keepSelection: Bool = false) {
+        let keep = keepSelection && filtered.indices.contains(selected) && items.indices.contains(selected)
+            && !items[selected].isHeader && items[selected].title == filtered[selected].title
+        filtered = items
+        emptyMessage = message
+        scopeLabel.stringValue = scope
+        if !keep {
+            selected = filtered.firstIndex { !$0.isHeader } ?? 0
+            scrollTop = 0
+        }
+        layoutPanel()
+    }
+
+    /// A search has started: what's listed stays until its results come.
+    func setSearching() {
+        if filtered.isEmpty { emptyMessage = "Searching…" }
+        list.needsDisplay = true
     }
 
     private init(items: [Item], placeholder: String, tracksRecents: Bool, keepsOrder: Bool, icon symbol: String, previous: NSResponder?) {
@@ -102,6 +168,13 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
         field.cell?.isScrollable = true
         panel.addSubview(field)
 
+        scopeLabel.font = .systemFont(ofSize: 11.5)
+        scopeLabel.textColor = th.dimText
+        scopeLabel.alignment = .right
+        scopeLabel.lineBreakMode = .byTruncatingHead
+        scopeLabel.isHidden = true
+        panel.addSubview(scopeLabel)
+
         list.palette = self
         panel.addSubview(list)
         filter("")
@@ -126,14 +199,21 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
         let width = min(620, bounds.width - 40)
         let rows = min(maxRows, max(filtered.count, 1))
         let height = 52 + CGFloat(rows) * rowH + 12
-        let top: CGFloat = min(90, bounds.height * 0.14)
+        // Centered in the window at its full height, and kept there as it shrinks while typing, so the field
+        // doesn't move.
+        let fullHeight = 52 + CGFloat(maxRows) * rowH + 12
+        let top = max(12, (bounds.height - fullHeight) / 2)
         panel.frame = NSRect(x: (bounds.width - width) / 2, y: top, width: width, height: height)
         panel.subviews.first?.frame = panel.bounds
         // NSVisualEffectView is not flipped; place subviews from the top.
         let h = panel.bounds.height
         // Icon and text share a center line (the field's text sits at the top of its frame).
         panel.viewWithTag(1)?.frame = NSRect(x: 16, y: h - 35, width: 18, height: 18)
-        field.frame = NSRect(x: 42, y: h - 37, width: width - 58, height: 22)
+        // A live list's scope shares the field's line, and never takes more than half of it.
+        let scopeFull = (scopeLabel.stringValue as NSString).size(withAttributes: [.font: scopeLabel.font ?? .systemFont(ofSize: 11.5)]).width
+        let scopeW = scopeLabel.isHidden ? 0 : min(ceil(scopeFull) + 8, (width - 58) / 2)
+        field.frame = NSRect(x: 42, y: h - 37, width: width - 58 - (scopeW > 0 ? scopeW + 10 : 0), height: 22)
+        scopeLabel.frame = NSRect(x: width - 16 - scopeW, y: h - 34, width: scopeW, height: 16)
         list.frame = NSRect(x: 6, y: 6, width: width - 12, height: h - 58)
         list.needsDisplay = true
     }
@@ -218,8 +298,11 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
     }
 
     private func filter(_ q: String) {
+        if let onQuery { return onQuery(self, q) }
         let query = Array(q.lowercased().filter { $0 != " " })
-        if query.isEmpty {
+        if tracksRecents, let path = Self.goToPath(q) {
+            filtered = goToItems(path)
+        } else if query.isEmpty {
             filtered = allItems
             // With no query, the last few commands run go on top, then everything else.
             let recents = tracksRecents ? recentItems() : []
@@ -257,7 +340,8 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
     }
 
     private func recordRecent(_ item: Item) {
-        guard tracksRecents else { return }
+        // Only commands that will be there next time ("Go to:" folders aren't).
+        guard tracksRecents, allItems.contains(where: { $0.recentKey == item.recentKey }) else { return }
         var keys = UserDefaults.standard.stringArray(forKey: CommandPalette.recentsKey) ?? []
         keys.removeAll { $0 == item.recentKey }
         keys.insert(item.recentKey, at: 0)
@@ -312,6 +396,76 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
         if restoreFocus, let r = previousResponder { w?.makeFirstResponder(r) }
     }
 
+    // MARK: Go to a folder
+
+    static let goToPrefix = "Go to: "
+
+    /// Dev aid (DevTools palette-run): Return in the open palette.
+    static func devRunSelected() { current?.runSelected() }
+
+    /// What follows "Go to:" (or "goto:"), as typed, when the query starts with it.
+    static func goToPath(_ q: String) -> String? {
+        let t = q.drop { $0 == " " }
+        for p in ["go to:", "goto:"] where t.lowercased().hasPrefix(p) {
+            return String(t.dropFirst(p.count)).trimmingCharacters(in: .whitespaces)
+        }
+        return nil
+    }
+
+    /// For "Go to: <path>": open that folder (or a file's folder) in a new tab, with the folders that start
+    /// with what's typed so far as suggestions (Tab completes one). Relative paths start at the terminal's folder.
+    private func goToItems(_ raw: String) -> [Item] {
+        let controller = window?.windowController as? TerminalWindowController
+            ?? NSApp.windows.lazy.compactMap { $0.windowController as? TerminalWindowController }.first
+        let base = controller?.focused.currentLocalFolder ?? NSHomeDirectory()
+        // Pasted from a shell: quotes around it, or backslash-escaped spaces.
+        var typed = raw.replacingOccurrences(of: "\\ ", with: " ")
+        if typed.count >= 2, let f = typed.first, f == typed.last, f == "\"" || f == "'" { typed = String(typed.dropFirst().dropLast()) }
+        func resolve(_ p: String) -> String {
+            let e = (p as NSString).expandingTildeInPath
+            return ((e.hasPrefix("/") ? e : (base as NSString).appendingPathComponent(e)) as NSString).standardizingPath
+        }
+        func open(_ dir: String) -> () -> Void { { [weak controller] in controller?.addTab(cwd: dir) } }
+        func shown(_ p: String) -> String { (p as NSString).abbreviatingWithTildeInPath }
+
+        var out: [Item] = []
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        let target = resolve(typed.isEmpty ? "." : typed)
+        let exists = fm.fileExists(atPath: target, isDirectory: &isDir)
+        if exists, isDir.boolValue {
+            out.append(Item(title: "Open \(shown(target)) in a New Tab", path: "Go to", shortcut: "↩", run: open(target)))
+        } else if exists {
+            let dir = (target as NSString).deletingLastPathComponent
+            out.append(Item(title: "Open \(shown(dir)) in a New Tab", path: "Folder of \((target as NSString).lastPathComponent)",
+                            shortcut: "↩", run: open(dir)))
+        }
+        // Suggestions: inside the folder when the path ends at one ("~/Projects/" or nothing typed), otherwise
+        // the folders next to it whose names start with its last part.
+        let inside = typed.isEmpty || typed.hasSuffix("/") || (exists && isDir.boolValue && typed.hasSuffix("."))
+        let parent = inside ? target : (target as NSString).deletingLastPathComponent
+        let stem = inside ? "" : (typed as NSString).lastPathComponent.lowercased()
+        let typedParent = typed.isEmpty || typed.hasSuffix("/") ? typed
+            : typed.contains("/") ? String(typed[...typed.lastIndex(of: "/")!]) : ""
+        let names = ((try? fm.contentsOfDirectory(atPath: parent)) ?? [])
+            .filter { $0.lowercased().hasPrefix(stem) && ($0.hasPrefix(".") == stem.hasPrefix(".")) }
+            .filter { var d: ObjCBool = false; return fm.fileExists(atPath: (parent as NSString).appendingPathComponent($0), isDirectory: &d) && d.boolValue }
+            .filter { inside || $0.lowercased() != stem }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            .prefix(30)
+        if !names.isEmpty {
+            out.append(.header(inside ? "In \(shown(parent))" : "Folders"))
+            for n in names {
+                let dir = (parent as NSString).appendingPathComponent(n)
+                var item = Item(title: n, path: shown(parent), shortcut: "⇥", run: open(dir))
+                item.completion = typedParent + n + "/"
+                out.append(item)
+            }
+        }
+        if out.isEmpty { out.append(.header("No folder at \(shown(target))")) }
+        return out
+    }
+
     // MARK: NSTextFieldDelegate
 
     func controlTextDidChange(_ obj: Notification) {
@@ -326,6 +480,13 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
             runSelected(alternate: NSApp.currentEvent?.modifierFlags.contains(.command) == true)
             return true
         case #selector(NSResponder.cancelOperation(_:)): dismiss(restoreFocus: true); return true
+        case #selector(NSResponder.insertTab(_:)):
+            guard filtered.indices.contains(selected), let c = filtered[selected].completion else { return true }
+            let text = Self.goToPrefix + c
+            field.stringValue = text
+            textView.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+            filter(text)
+            return true
         default: return false
         }
     }
@@ -341,7 +502,7 @@ final class PaletteList: NSView {
         let items = Array(p.visibleItems)
         if items.isEmpty {
             let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: th.dimText]
-            ("No matching commands" as NSString).draw(at: NSPoint(x: 14, y: 9), withAttributes: attrs)
+            (p.emptyMessage as NSString).draw(at: NSPoint(x: 14, y: 9), withAttributes: attrs)
             return
         }
         // Divider under the search field
@@ -352,8 +513,9 @@ final class PaletteList: NSView {
             if item.isHeader {
                 // Section label sitting low in its row, with a hairline above all but the first.
                 let hAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: th.dimText]
-                let hs = (item.title.uppercased() as NSString).size(withAttributes: hAttrs)
-                (item.title.uppercased() as NSString).draw(at: NSPoint(x: 14, y: r.maxY - hs.height - 6), withAttributes: hAttrs)
+                let label = (item.keepsCase ? item.title : item.title.uppercased()) as NSString
+                let hs = label.size(withAttributes: hAttrs)
+                label.draw(at: NSPoint(x: 14, y: r.maxY - hs.height - 6), withAttributes: hAttrs)
                 if i > 0 {
                     th.border.setFill()
                     NSRect(x: 10, y: r.minY + 8, width: r.width - 20, height: 1).fill()
@@ -377,15 +539,26 @@ final class PaletteList: NSView {
                 right = kr.minX - 10
             }
             // Long titles end in "…" so the path stays visible; the title keeps at least half the row.
-            let titleAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13.5, weight: .medium), .foregroundColor: th.foreground, .paragraphStyle: truncate]
-            let title = item.title as NSString
-            let ts = title.size(withAttributes: titleAttrs)
+            // A line of a file is in the terminal's font, with what was searched for picked out.
+            let titleFont = item.highlight == nil ? NSFont.systemFont(ofSize: 13.5, weight: .medium)
+                : NSFont(descriptor: (FontSet.current.regular as NSFont).fontDescriptor, size: 12.5) ?? .monospacedSystemFont(ofSize: 12.5, weight: .regular)
+            let titleAttrs: [NSAttributedString.Key: Any] = [.font: titleFont, .foregroundColor: th.foreground, .paragraphStyle: truncate]
+            let title = NSMutableAttributedString(string: item.title, attributes: titleAttrs)
+            if let h = item.highlight {
+                var from = item.title.startIndex
+                while let m = item.title.range(of: h, options: .caseInsensitive, range: from..<item.title.endIndex), !m.isEmpty {
+                    let ns = NSRange(m, in: item.title)
+                    title.addAttributes([.foregroundColor: th.accent, .backgroundColor: th.accent.withAlphaComponent(0.18)], range: ns)
+                    from = m.upperBound
+                }
+            }
+            let ts = title.size()
             let pAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: th.dimText, .paragraphStyle: truncate]
             let ps = item.path.isEmpty ? .zero : (item.path as NSString).size(withAttributes: pAttrs)
             var titleMax = right - 14
             if !item.path.isEmpty { titleMax = max(titleMax / 2, titleMax - ps.width - 16) }
             let tw = min(ts.width, titleMax)
-            title.draw(in: NSRect(x: 14, y: r.midY - ts.height / 2, width: tw, height: ts.height), withAttributes: titleAttrs)
+            title.draw(in: NSRect(x: 14, y: r.midY - ts.height / 2, width: tw, height: ts.height))
 
             if !item.path.isEmpty {
                 let x = max(14 + tw + 16, right - ps.width)

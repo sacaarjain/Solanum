@@ -539,6 +539,11 @@ extension Notification.Name {
     /// Posted with a `FileSystem` as the object after items were added to or removed from it outside the
     /// sidebar doing the work; sidebars showing that file system refresh.
     static let solanumFilesChanged = Notification.Name("SolanumFilesChanged")
+    /// A file or folder was renamed in place: `object` is its file system, `userInfo["old"]` and `["new"]` its paths.
+    /// Open editors of it, or of anything inside it, move along.
+    static let solanumFileRenamed = Notification.Name("SolanumFileRenamed")
+    /// A sidebar saw `git status` change: `object` is its file system. Open editors check their own file again.
+    static let solanumGitStatusChanged = Notification.Name("SolanumGitStatusChanged")
     /// An editor saved a file: `object` is its file system, `userInfo["path"]` its path.
     static let solanumFileSaved = Notification.Name("SolanumFileSaved")
 }

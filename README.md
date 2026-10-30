@@ -36,7 +36,7 @@ purple, and each planet theme is colored like its planet, with that planet besid
   Right-click a changed file › Open Working Tree for its changes side by side, as in VS Code.
 - A Git Graph of every branch's history (⌃⌘G, the status bar's branch picker, or Show Git Graph in the command palette):
   colored lanes, branch and tag labels, and a card with each commit's author, date, message and size on hover.
-- A plain-text editor above the terminal, with syntax colors for JSON, YAML and XML, Format Document (⇧⌥F) to
+- A plain-text editor above the terminal, with syntax colors for JSON, YAML and XML, Beautify (⌥⌘F) to
   re-indent them, and previews for images, PDFs, video and audio. Files up to 50 MB open for editing; bigger ones
   (logs, on ssh hosts too) open read-only, in full up to 512 MB and past that their last 10 MB. The eye in the editor's header follows a file as it changes,
   re-reading it every 5 seconds while it's showing, like tail -f for a growing log.
@@ -116,6 +116,9 @@ Create one in Settings › Appearance, or drop a JSON file into `~/.config/solan
 ```
 
 `background2` is optional and gives a vertical gradient. The built-in themes are in `Sources/Theme.swift`.
+
+On light themes, text too faint to read (colors a program chose for dark backgrounds) is darkened just enough to
+read, keeping its hue. Turn it off with `minimum-contrast = false`, or in Settings › Appearance.
 
 ## Development
 

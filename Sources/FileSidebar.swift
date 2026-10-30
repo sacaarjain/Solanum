@@ -24,12 +24,16 @@ private let internalDragType = NSPasteboard.PasteboardType("local.solanum.file-p
 /// move within one file system (⌥ copies) and copy between two (⌘ moves); ssh files drag out to Finder too.
 final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate, NSTextFieldDelegate {
     var onOpenFile: ((FileSystem, String) -> Void)?
+    /// Shows a file while the focus stays on the tree (a click, Space), so Return can go on to rename it.
+    var onShowFile: ((FileSystem, String) -> Void)?
     /// Double-click on a file: open it in a tab of its own (no terminal).
     var onOpenFileInTab: ((FileSystem, String) -> Void)?
     /// "Open Working Tree": the file's uncommitted changes side by side.
     var onOpenDiff: ((FileSystem, String) -> Void)?
     /// "Open Preview": a Markdown file rendered as on the web.
     var onOpenPreview: ((FileSystem, String) -> Void)?
+    /// The magnifying glass: search the text of the files in this folder.
+    var onSearchFolder: ((FileSystem, String) -> Void)?
     var onChangeDirectory: ((String) -> Void)?
 
     /// The tree stays on the pinned folder instead of following the terminal.
@@ -126,6 +130,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
                                       ("doc.badge.plus", "New File…", #selector(newFile(_:))),
                                       ("folder.badge.plus", "New Folder…", #selector(newFolder(_:))),
                                       ("arrow.clockwise", "Refresh", #selector(refresh(_:))),
+                                      ("magnifyingglass", "Search in Project Folder (⇧⌘F)", #selector(searchFolder(_:))),
                                       ("ellipsis", "More", #selector(showMoreMenu(_:)))] {
             let b = SidebarHeaderButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: tip) ?? NSImage(), target: self, action: action)
             b.isBordered = false
@@ -388,11 +393,20 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
+        if let r = renaming, (obj.object as? NSTextField) === r.field { return endInlineRename(commit: true, refocus: false) }
         guard (obj.object as? NSTextField) === titleEditor else { return }
         endRename(commit: true)
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if let r = renaming, control === r.field {
+            switch selector {
+            case #selector(insertNewline(_:)): endInlineRename(commit: true, refocus: true)
+            case #selector(cancelOperation(_:)): endInlineRename(commit: false, refocus: true)
+            default: return false
+            }
+            return true
+        }
         guard control === titleEditor, selector == #selector(cancelOperation(_:)) else { return false }
         endRename(commit: false)
         window?.makeFirstResponder(outline)
@@ -497,6 +511,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
     /// down to the terminal's folder and the open file).
     private func reload(expanding: Set<String>, revealTargets: Bool = false) {
         guard let root = rootPath else { return }
+        if renaming != nil { reloadAfterRename = true; return }
         loadToken += 1
         let token = loadToken
         let fs = self.fs
@@ -575,6 +590,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
             guard next != self.gitStatus else { return }
             let deletedBefore = Set(self.gitStatus?.deleted.keys.map { $0 } ?? [])
             self.gitStatus = next
+            NotificationCenter.default.post(name: .solanumGitStatusChanged, object: fs)
             deletedBefore.union(next?.deleted.keys.map { $0 } ?? []).forEach(self.refreshFolder)
             self.refreshMarks()
         }
@@ -668,6 +684,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
     /// Re-lists one folder already in the tree and inserts / removes just the rows that changed, so open
     /// folders, the selection and the scroll position stay as they are. A folder not loaded yet needs nothing.
     private func refreshFolder(_ dir: String) {
+        if renaming != nil { reloadAfterRename = true; return }
         let parent: FileNode?
         if dir == rootPath {
             parent = nil
@@ -713,6 +730,11 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
                 self.outline.insertItems(at: IndexSet(integer: i), inParent: parent, withAnimation: .effectFade)
             }
             self.outline.endUpdates()
+            if let path = self.selectAfterRefresh, let n = self.loadedNode(at: path) {
+                self.selectAfterRefresh = nil
+                let row = self.outline.row(forItem: n)
+                if row >= 0 { self.outline.selectRowIndexes([row], byExtendingSelection: false); self.outline.scrollRowToVisible(row) }
+            }
             self.refreshMarks()
         }
         refreshGit()
@@ -721,6 +743,40 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
     /// Dev aids (DevTools sidebar-expand / sidebar-import / print-rows).
     func devExpand(_ name: String) {
         if let n = shownRoot.first(where: { $0.item.name == name }) { loadChildren(n) { [weak self] in self?.outline.expandItem(n) } }
+    }
+    /// The folder it's on, for Search in Project Folder.
+    var shownFolder: (fs: FileSystem, path: String)? { rootPath.map { (fs, $0) } }
+
+    /// Dev aid (DevTools sidebar-search): presses the magnifying glass.
+    func devPressSearch() { buttons.first { $0.action == #selector(searchFolder(_:)) }?.performClick(nil) }
+
+    @objc private func searchFolder(_ sender: Any?) {
+        guard let (fs, path) = shownFolder else { return NSSound.beep() }
+        onSearchFolder?(fs, path)
+    }
+
+    /// Dev aid (DevTools sidebar-click): a real click on the top-level row `name`.
+    func devClick(_ name: String) {
+        guard let w = window, let n = shownRoot.first(where: { $0.item.name == name }) else { return }
+        let r = outline.rect(ofRow: outline.row(forItem: n))
+        let p = outline.convert(NSPoint(x: r.minX + 80, y: r.midY), to: nil)
+        func event(_ t: NSEvent.EventType) -> NSEvent? {
+            NSEvent.mouseEvent(with: t, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        // The table tracks the press until it sees the release, so the release goes in the queue first.
+        if let up = event(.leftMouseUp) { NSApp.postEvent(up, atStart: false) }
+        if let down = event(.leftMouseDown) { w.sendEvent(down) }
+    }
+
+    /// Dev aids (DevTools sidebar-rename / sidebar-rename-to): starts renaming the top-level row `name`, and
+    /// finishes it with `name` typed in, as Return does.
+    func devBeginRename(_ name: String) {
+        if let n = shownRoot.first(where: { $0.item.name == name }) { beginInlineRename(n) }
+    }
+    func devFinishRename(_ name: String) {
+        renaming?.field.stringValue = name
+        endInlineRename(commit: true, refocus: true)
     }
     func devImport(_ path: String) { if let root = rootPath { importFiles([path], into: root) } }
     var devRows: String {
@@ -972,7 +1028,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         if n.item.isDirectory {
             outline.isItemExpanded(n) ? outline.collapseItem(n) : outline.expandItem(n)
         } else {
-            onOpenFile?(fs, n.item.path)
+            onShowFile?(fs, n.item.path)
         }
     }
 
@@ -981,13 +1037,15 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         if n.item.isDirectory { onChangeDirectory?(n.item.path) } else { onOpenFileInTab?(fs, n.item.path) }
     }
 
-    /// Return opens the selected file or toggles the selected folder.
-    func openSelection() {
+    /// Opens the selected file, or toggles the selected folder: ⌘↓ moves the focus into the file, Space stays here.
+    func openSelection(focus: Bool) {
         guard let n = node(at: outline.selectedRow), !n.item.isDeleted else { return }
         if n.item.isDirectory {
             outline.isItemExpanded(n) ? outline.collapseItem(n) : outline.expandItem(n)
-        } else {
+        } else if focus {
             onOpenFile?(fs, n.item.path)
+        } else {
+            onShowFile?(fs, n.item.path)
         }
     }
 
@@ -1028,7 +1086,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         menuContext = true
         if let n = single, !n.item.isDirectory {
             add("Open", #selector(openFromMenu(_:)))
-            if ["md", "markdown", "mdown", "mkd"].contains((n.item.name as NSString).pathExtension.lowercased()), !n.item.isDeleted {
+            if MarkdownHTML.isMarkdown(path: n.item.name), !n.item.isDeleted {
                 add("Open Preview", #selector(openPreviewFromMenu(_:)))
             }
             if n.item.isDeleted || gitStatus?.code(for: n.item.path, isDirectory: false) != nil {
@@ -1182,13 +1240,88 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
 
     @objc func rename(_ sender: Any?) {
         guard let n = targets.first else { return }
-        askName("Rename “\(n.item.name)”", initial: n.item.name, button: "Rename") { [weak self] name in
-            guard let self, name != n.item.name else { return }
-            let to = FilePaths.join(FilePaths.parent(n.item.path), name)
-            self.fs.perform(.move(n.item.path, to: to)) { error in
-                if let error { return self.fail("Couldn't rename “\(n.item.name)”", error) }
-                self.refresh(nil)
+        // From the context menu: once it has closed, or the row's field loses focus to it straight away.
+        DispatchQueue.main.async { [weak self] in self?.beginInlineRename(n) }
+    }
+
+    /// Return (or F2) on the selected row.
+    func renameSelection() {
+        if let n = node(at: outline.selectedRow) { beginInlineRename(n) }
+    }
+
+    // MARK: Renaming in place
+
+    /// The row being renamed, as in VS Code: its name becomes a field right there, with the name before the
+    /// extension selected. Return or clicking away renames; Escape puts the name back.
+    private var renaming: (node: FileNode, field: NSTextField, fill: NSLayoutConstraint)?
+    /// Reloads that came in meanwhile (a reload would take the field away mid-edit), run once it's done.
+    private var reloadAfterRename = false
+    /// The renamed item's new path, selected once its folder has been listed again.
+    private var selectAfterRefresh: String?
+
+    private func beginInlineRename(_ n: FileNode) {
+        guard renaming == nil, !n.item.isDeleted else { return }
+        let row = outline.row(forItem: n)
+        guard row >= 0 else { return }
+        outline.selectRowIndexes([row], byExtendingSelection: false)
+        outline.scrollRowToVisible(row)
+        guard let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView,
+              let field = cell.textField else { return }
+        let th = Config.shared.theme
+        field.stringValue = n.item.name
+        field.textColor = th.foreground
+        field.isEditable = true
+        field.isSelectable = true
+        field.drawsBackground = true
+        field.backgroundColor = th.background
+        field.focusRingType = .none
+        field.wantsLayer = true
+        field.layer?.borderWidth = 1
+        field.layer?.borderColor = th.accent.cgColor
+        field.layer?.cornerRadius = 3
+        field.delegate = self
+        // As wide as the row allows (still clear of the git letter), so a longer name has room.
+        let fill = field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -20)
+        fill.isActive = true
+        renaming = (n, field, fill)
+        window?.makeFirstResponder(field)
+        let stem = n.item.isDirectory ? n.item.name : (n.item.name as NSString).deletingPathExtension
+        field.currentEditor()?.selectedRange = NSRange(location: 0, length: (stem.isEmpty ? n.item.name : stem).utf16.count)
+    }
+
+    /// `refocus`: back to the tree (Return, Escape), as opposed to focus having already moved elsewhere.
+    private func endInlineRename(commit: Bool, refocus: Bool) {
+        guard let (n, field, fill) = renaming else { return }
+        renaming = nil
+        if refocus { window?.makeFirstResponder(outline) }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        fill.isActive = false
+        field.isEditable = false
+        field.isSelectable = false
+        field.drawsBackground = false
+        field.layer?.borderWidth = 0
+        field.delegate = nil
+        let dir = FilePaths.parent(n.item.path)
+        if commit, name != n.item.name, !name.isEmpty, !name.contains("/"), name != ".", name != ".." {
+            let to = FilePaths.join(dir, name)
+            field.stringValue = name
+            fs.perform(.move(n.item.path, to: to)) { [weak self] error in
+                guard let self else { return }
+                if let error {
+                    self.outline.reloadItem(n)
+                    return self.fail("Couldn't rename “\(n.item.name)”", error)
+                }
+                NotificationCenter.default.post(name: .solanumFileRenamed, object: self.fs, userInfo: ["old": n.item.path, "new": to])
+                self.selectAfterRefresh = to
+                self.refreshFolder(dir)
+                self.announce(self.fs, [dir])
             }
+        } else {
+            outline.reloadItem(n)
+        }
+        if reloadAfterRename {
+            reloadAfterRename = false
+            refreshVisible()
         }
     }
 
@@ -1466,7 +1599,8 @@ final class RemoteFilePromise: NSFilePromiseProvider, NSFilePromiseProviderDeleg
     }
 }
 
-/// Keyboard shortcuts for the tree: Return opens, ⌘⌫ deletes, ⌘C / ⌘X / ⌘V copy, cut and paste.
+/// Keyboard shortcuts for the tree, as in VS Code: Return (or F2) renames, ⌘↓ opens, Space shows, ⌘⌫ deletes,
+/// ⌘C / ⌘X / ⌘V copy, cut and paste.
 final class FileOutlineView: NSOutlineView {
     weak var sidebar: FileSidebarView?
 
@@ -1486,7 +1620,9 @@ final class FileOutlineView: NSOutlineView {
     override func keyDown(with e: NSEvent) {
         let mods = e.modifierFlags.intersection([.command, .control, .option, .shift])
         switch (e.keyCode, mods) {
-        case (36, []), (76, []): sidebar?.openSelection()
+        case (36, []), (76, []), (120, []): sidebar?.renameSelection()
+        case (125, .command): sidebar?.openSelection(focus: true)
+        case (49, []): sidebar?.openSelection(focus: false)
         case (51, .command): sidebar?.delete(nil)
         case (7, .command): sidebar?.cut(nil)
         default: super.keyDown(with: e)

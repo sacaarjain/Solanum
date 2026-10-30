@@ -154,9 +154,11 @@ final class FileTabStrip: NSView {
     private func drawSymbol(_ mode: EditorMode, _ name: String, _ r: NSRect, _ th: Theme) {
         let symbol: String
         switch mode {
-        case .diff: symbol = "plusminus"
+        case .diff, .stagedDiff, .commitDiff: symbol = "plusminus"
+        case .commit: symbol = "smallcircle.filled.circle"
+        case .status: symbol = "square.and.pencil"
         case .graph: symbol = "arrow.triangle.branch"
-        case .preview: symbol = "eye"
+        case .preview: symbol = "doc.richtext"
         case .file: symbol = FileSidebarView.symbol(for: name)
         }
         let config = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular).applying(.init(paletteColors: [th.dimText]))

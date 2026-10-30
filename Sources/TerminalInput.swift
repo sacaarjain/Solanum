@@ -44,8 +44,19 @@ extension TerminalView {
             return
         }
         guard !bytes.isEmpty else { return }
-        cancelPendingClick()
-        send(bytes)
+        // Not while a selection's being removed: its cursor move is the pending one, and what's typed waits for it.
+        if afterSelectionDeleted == nil { cancelPendingClick() }
+        // Typing over text selected in the line being edited replaces it, as in a text field: anything that prints,
+        // space included. Control characters, arrows and the like (they start below a space) go through as usual.
+        let prints = plainMods.subtracting([.shift, .option]).isEmpty && bytes[0] >= 0x20 && bytes[0] != 0x7F
+        if let waiting = afterSelectionDeleted {
+            // Keys typed while a selection is still going follow it, in order.
+            afterSelectionDeleted = waiting + [{ [weak self] in self?.send(bytes) }]
+        } else if prints, selection != nil, deleteSelectedInput(then: { [weak self] in self?.send(bytes) }) {
+            // Sent once the selection has gone.
+        } else {
+            send(bytes)
+        }
         if scrollOffset != 0 { scrollOffset = 0 }
         selectedBlock = nil
         selectedTurnLine = nil
@@ -165,7 +176,11 @@ extension TerminalView {
             sendPaste(urls.map { Self.shellEscaped($0.path) }.joined(separator: " ") + " ")
             return
         }
-        if let s = pb.string(forType: .string) { return sendPaste(s) }
+        if let s = pb.string(forType: .string) {
+            // Over text selected in the line being edited, as typing does.
+            if selection != nil, deleteSelectedInput(then: { [weak self] in self?.sendPaste(s) }) { return }
+            return sendPaste(s)
+        }
         guard pb.availableType(from: [.png, .tiff]) != nil else { return NSSound.beep() }
         // Image data only (a screenshot, "Copy Image"). Claude Code reads the clipboard itself on Ctrl+V.
         if pty?.foregroundIsClaudeCode == true {
@@ -571,8 +586,9 @@ extension TerminalView {
     /// Removes the selected part of the command being typed: moves the cursor to the end of the selection
     /// and backspaces over it. Works at a shell prompt (any number of rows) and in Claude Code's input box
     /// (within one row, since it word-wraps itself). Returns false when the selection isn't in the input.
+    /// `then` runs once it's gone (only if this returned true), for what replaces it.
     @discardableResult
-    func deleteSelectedInput() -> Bool {
+    func deleteSelectedInput(then: (() -> Void)? = nil) -> Bool {
         guard let s = selection, !terminal.usingAlt, terminal.mouseMode == .none, let b = terminal.currentBlock else { return false }
         let st = s.start, en = s.end
         if let input = shellInput(b) {
@@ -584,6 +600,7 @@ extension TerminalView {
             let cursor = input.index(terminal.cursorAbs, terminal.cursorX)
             sendArrows(to - cursor, back: "D", forward: "C")
             send(String(repeating: "\u{7f}", count: to - from))
+            then?()
         } else if b.state == .running, let rows = terminal.agentInputRows(b), rows.contains(terminal.cursorAbs),
                   en.line >= rows.lowerBound, st.line <= rows.upperBound {
             // Any number of rows of Claude Code's input box (the selection is clipped to the box's text).
@@ -593,8 +610,25 @@ extension TerminalView {
             let target = GridPos(line: first, col: startCol)
             guard GridPos(line: last, col: endCol) > target else { return false }
             let targetOffset = agentInputOffset(rows, target)
+            // Keys are worked through in order, so arrows, backspaces and whatever replaces the text can all go at
+            // once. Within a row the count is exact. Across rows it re-wraps as characters go and the breaks between
+            // rows may or may not be characters, so those are counted and topped up after it's redrawn.
+            let selected = (first...last).reduce(0) { n, a in
+                n + charCount(a, from: a == first ? startCol : 2, to: a == last ? endCol : agentTextEnd(a))
+            }
+            let oneRow = first == last
+            // In the queue from the start, so it goes even if the cursor can't be placed.
+            beginDeletingSelection(then)
             placeAgentCursor(row: last - rows.lowerBound, col: endCol, sentVertical: false) { [weak self] in
-                self?.whenOutputQuiet { self?.backspaceAgentInput(toOffset: targetOffset, rounds: 0) }
+                guard let self else { return }
+                self.send(String(repeating: "\u{7f}", count: selected))
+                if oneRow {
+                    self.endDeletingSelection()
+                } else {
+                    self.whenOutputQuiet(0.06) {
+                        self.backspaceAgentInput(toOffset: targetOffset, rounds: 0) { self.endDeletingSelection() }
+                    }
+                }
             }
         } else {
             return false
@@ -603,6 +637,23 @@ extension TerminalView {
         selectedBlock = nil
         needsDisplay = true
         return true
+    }
+
+    /// Keys typed while Claude Code's selection is still being removed (nil when none is).
+    private func beginDeletingSelection(_ first: (() -> Void)?) {
+        afterSelectionDeleted = first.map { [$0] } ?? []
+        // Should the cursor never get there (the box closed, say), what's waiting still goes.
+        selectionDeleteGeneration += 1
+        let generation = selectionDeleteGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            if self?.selectionDeleteGeneration == generation { self?.endDeletingSelection() }
+        }
+    }
+
+    private func endDeletingSelection() {
+        guard let waiting = afterSelectionDeleted else { return }
+        afterSelectionDeleted = nil
+        waiting.forEach { $0() }
     }
 
     /// Characters from the start of Claude Code's input text to `p`: each row's text plus one per row break (the
@@ -616,12 +667,12 @@ extension TerminalView {
     /// Backspaces from the cursor back to `target` characters into Claude Code's input. It re-wraps its text as
     /// characters go, so the gap is measured again after each redraw (text before the target never moves) and
     /// topped up until the cursor gets there.
-    private func backspaceAgentInput(toOffset target: Int, rounds: Int) {
-        guard rounds < 12, let b = terminal.currentBlock, let rows = terminal.agentInputRows(b), rows.contains(terminal.cursorAbs) else { return }
+    private func backspaceAgentInput(toOffset target: Int, rounds: Int, done: @escaping () -> Void) {
+        guard rounds < 12, let b = terminal.currentBlock, let rows = terminal.agentInputRows(b), rows.contains(terminal.cursorAbs) else { return done() }
         let n = agentInputOffset(rows, GridPos(line: terminal.cursorAbs, col: terminal.cursorX)) - target
-        guard n > 0 else { return }
+        guard n > 0 else { return done() }
         send(String(repeating: "\u{7f}", count: n))
-        whenOutputQuiet { [weak self] in self?.backspaceAgentInput(toOffset: target, rounds: rounds + 1) }
+        whenOutputQuiet(0.06) { [weak self] in self?.backspaceAgentInput(toOffset: target, rounds: rounds + 1, done: done) }
     }
 
     /// Runs `work` once the program has stopped drawing for a moment (it may take several frames to work through
@@ -665,8 +716,15 @@ extension TerminalView {
     /// Claude Code word-wraps its input box itself, so cells don't map linearly to text. Move to the
     /// target row with up/down first (it moves by visual row), wait for the redraw, then fix the column.
     private func placeAgentCursor(row: Int, col: Int, sentVertical: Bool, giveUpAt: Date = .distantFuture, then: (() -> Void)? = nil) {
-        guard let b = terminal.currentBlock, b.state == .running, let rows = terminal.agentInputRows(b),
-              rows.contains(terminal.cursorAbs) else { return }
+        guard let b = terminal.currentBlock, b.state == .running else { return }
+        guard let rows = terminal.agentInputRows(b), rows.contains(terminal.cursorAbs) else {
+            // Caught partway through a redraw after our arrows, with the box not all there: look again in a moment.
+            guard sentVertical, Date() < giveUpAt else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
+                self?.placeAgentCursor(row: row, col: col, sentVertical: true, giveUpAt: giveUpAt, then: then)
+            }
+            return
+        }
         let target = rows.lowerBound + row
         guard rows.contains(target) else { return }
         let cursorLine = terminal.cursorAbs

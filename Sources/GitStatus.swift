@@ -200,6 +200,8 @@ final class GitController {
     private let openFile: (FileSystem, String) -> Void
     /// Opens the history graph of the repository whose top folder is given.
     private let openGraph: (FileSystem, String) -> Void
+    /// Opens the status page of the repository whose top folder is given.
+    private let openStatus: (FileSystem, String) -> Void
     /// Opens a tab (in a local folder, if given) and returns its pane, for commands the focused pane can't take.
     private let newTab: (String?) -> TerminalView?
     private var runner: GitRunner?
@@ -210,11 +212,12 @@ final class GitController {
     private var timer: Timer?
 
     init(bar: StatusBarView, pane: @escaping () -> TerminalView?, openFile: @escaping (FileSystem, String) -> Void,
-         openGraph: @escaping (FileSystem, String) -> Void, newTab: @escaping (String?) -> TerminalView?) {
+         openGraph: @escaping (FileSystem, String) -> Void, openStatus: @escaping (FileSystem, String) -> Void, newTab: @escaping (String?) -> TerminalView?) {
         self.bar = bar
         self.pane = pane
         self.openFile = openFile
         self.openGraph = openGraph
+        self.openStatus = openStatus
         self.newTab = newTab
         // Picks up commits, edits and checkouts made outside Solanum.
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -300,6 +303,7 @@ final class GitController {
             typealias Item = CommandPalette.Item
             var items: [Item] = [
                 Item(title: "Show Git Graph", path: "every branch's history", shortcut: "") { [weak self] in _ = self?.showGraph() },
+                Item(title: "Show Git Changes", path: "what's changed", shortcut: "") { [weak self] in _ = self?.showStatus() },
                 Item(title: "Create New Branch…", path: "from \(info.branch)", shortcut: "") { [weak self] in
                     self?.promptNewBranch()
                 },
@@ -326,6 +330,14 @@ final class GitController {
     func showGraph() -> Bool {
         guard let runner, let info = bar?.git else { return false }
         openGraph(runner.fileSystem, info.root)
+        return true
+    }
+
+    /// Opens the repository's status page; false outside a repository.
+    @discardableResult
+    func showStatus() -> Bool {
+        guard let runner, let info = bar?.git else { return false }
+        openStatus(runner.fileSystem, info.root)
         return true
     }
 
@@ -424,7 +436,10 @@ final class GitController {
             menu.addItem(more)
         }
         menu.addItem(.separator())
-        menu.addItem(ActionMenuItem("Show git status in Solanum") { [weak self] in self?.type("git status") })
+        let show = ActionMenuItem("Show Git Changes") { [weak self] in _ = self?.showStatus() }
+        show.keyEquivalent = "s"
+        show.keyEquivalentModifierMask = [.command, .control]
+        menu.addItem(show)
         menu.autoenablesItems = false
         menu.popUpAbove(point, in: view)
     }

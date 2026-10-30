@@ -25,11 +25,30 @@ enum IconPacks {
 
     /// The theme in use, or nil for Solanum's own icons (also when the configured one is missing or unreadable).
     static var current: VSCodeIconTheme? {
-        let id = Config.shared.fileIcons
+        let id = shownID
         if let loaded, loaded.id == id { return loaded.theme }
         let theme = installed.first { $0.id == id }.flatMap(VSCodeIconTheme.init)
         loaded = (id, theme)
         return theme
+    }
+
+    /// The theme to show for the `file-icons` setting: Catppuccin's flavors are made for one kind of background, so
+    /// its dark ones give way to Latte on a light Solanum theme, and Latte to Mocha on a dark one. The setting keeps
+    /// what was picked, so a Frappé or Macchiato comes back with a dark theme.
+    static var shownID: String {
+        let id = Config.shared.fileIcons
+        guard isCatppuccin(id) else { return id }
+        return Config.shared.theme.isDark ? darkFlavor(of: id) : "catppuccin-latte"
+    }
+
+    private static func isCatppuccin(_ id: String) -> Bool { ["catppuccin-latte", "catppuccin-mocha", "catppuccin-macchiato", "catppuccin-frappe"].contains(id) }
+    private static func darkFlavor(of id: String) -> String { id == "catppuccin-latte" ? "catppuccin-mocha" : id }
+
+    /// For Settings: which flavor shows when, as the checked one is only the one showing now.
+    static var flavorNote: String? {
+        let id = Config.shared.fileIcons
+        guard isCatppuccin(id), let dark = label(for: darkFlavor(of: id)) else { return nil }
+        return "Latte on light themes, \(dark.replacingOccurrences(of: "Catppuccin ", with: "")) on dark ones."
     }
 
     static func label(for id: String) -> String? {

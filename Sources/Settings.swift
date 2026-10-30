@@ -310,6 +310,11 @@ final class SettingsPageView: NSView {
         add(view, height: { _ in height }, gap: gap)
     }
 
+    /// A card, as tall as its rows need at the page's width.
+    func add(card: SettingsCard, gap: CGFloat = 18) {
+        add(card, height: { [weak card] w in card?.height(forWidth: w) ?? 0 }, gap: gap)
+    }
+
     func height(forWidth w: CGFloat) -> CGFloat {
         let inner = w - Self.margin * 2
         return blocks.reduce(46) { $0 + $1.height(inner) + $1.gapAfter } + 24
@@ -354,14 +359,15 @@ final class SettingsCard: NSView {
         addSubview(row)
     }
 
-    var totalHeight: CGFloat { rows.reduce(0) { $0 + $1.rowHeight } }
+    func height(forWidth w: CGFloat) -> CGFloat { rows.reduce(0) { $0 + $1.height(forWidth: w) } }
 
     override func layout() {
         super.layout()
         var y: CGFloat = 0
         for r in rows {
-            r.frame = NSRect(x: 0, y: y, width: bounds.width, height: r.rowHeight)
-            y += r.rowHeight
+            let h = r.height(forWidth: bounds.width)
+            r.frame = NSRect(x: 0, y: y, width: bounds.width, height: h)
+            y += h
         }
     }
 
@@ -376,7 +382,7 @@ final class SettingsCard: NSView {
         th.border.setFill()
         var y: CGFloat = 0
         for r in rows.dropLast() {
-            y += r.rowHeight
+            y += r.height(forWidth: bounds.width)
             NSRect(x: 16, y: y, width: bounds.width - 32, height: 1).fill()
         }
     }
@@ -384,8 +390,9 @@ final class SettingsCard: NSView {
 
 /// Icon, title and description on the left; a control (or anything) on the right.
 class SettingRow: NSView {
-    let rowHeight: CGFloat
     private let icon: String?
+    /// Shown in the icon's place, in its own colors: the icon pack's own folder.
+    var iconImage: NSImage?
     private let titleLabel: NSTextField
     private let detailLabel: NSTextField?
     private let accessory: NSView?
@@ -394,10 +401,17 @@ class SettingRow: NSView {
     init(icon: String? = nil, title: String, detail: String? = nil, accessory: NSView? = nil, width: CGFloat? = nil, mono: Bool = false) {
         self.icon = icon
         titleLabel = settingsLabel(title, size: 13, weight: .medium, mono: mono)
-        detailLabel = detail.map { settingsLabel($0, size: 11.5, dim: true) }
+        detailLabel = detail.map { text in
+            let l = settingsLabel(text, size: 11.5, dim: true)
+            // As many lines as it takes (see `height(forWidth:)`), rather than cut off.
+            l.lineBreakMode = .byWordWrapping
+            l.maximumNumberOfLines = 0
+            l.cell?.wraps = true
+            l.cell?.isScrollable = false
+            return l
+        }
         self.accessory = accessory
         accessoryWidth = width ?? accessory?.fittingSize.width ?? 0
-        rowHeight = detail == nil ? 46 : 58
         super.init(frame: .zero)
         addSubview(titleLabel)
         detailLabel.map(addSubview)
@@ -408,15 +422,29 @@ class SettingRow: NSView {
 
     override var isFlipped: Bool { true }
 
+    private var textX: CGFloat { icon == nil ? 18 : 58 }
+    private func textWidth(forWidth w: CGFloat) -> CGFloat { w - 16 - min(accessoryWidth, w * 0.6) - 16 - textX }
+
+    private func detailHeight(forWidth w: CGFloat) -> CGFloat {
+        guard let cell = detailLabel?.cell else { return 0 }
+        let bounds = NSRect(x: 0, y: 0, width: max(1, textWidth(forWidth: w)), height: .greatestFiniteMagnitude)
+        return max(16, ceil(cell.cellSize(forBounds: bounds).height))
+    }
+
+    /// Tall enough for the description, however many lines it wraps to at this width.
+    func height(forWidth w: CGFloat) -> CGFloat {
+        detailLabel == nil ? 46 : 29 + detailHeight(forWidth: w) + 13
+    }
+
     override func layout() {
         super.layout()
-        let x: CGFloat = icon == nil ? 18 : 58
+        let x = textX
         let right = bounds.width - 16
         let aw = min(accessoryWidth, bounds.width * 0.6)
-        let textW = right - aw - 16 - x
+        let textW = textWidth(forWidth: bounds.width)
         if let d = detailLabel {
             titleLabel.frame = NSRect(x: x, y: 10, width: textW, height: 18)
-            d.frame = NSRect(x: x, y: 29, width: textW, height: 16)
+            d.frame = NSRect(x: x, y: 29, width: textW, height: detailHeight(forWidth: bounds.width))
         } else {
             titleLabel.frame = NSRect(x: x, y: (bounds.height - 18) / 2, width: textW, height: 18)
         }
@@ -432,6 +460,10 @@ class SettingRow: NSView {
         let box = NSRect(x: 16, y: (bounds.height - 30) / 2, width: 30, height: 30)
         th.accent.withAlphaComponent(0.16).setFill()
         NSBezierPath(roundedRect: box, xRadius: 8, yRadius: 8).fill()
+        if let iconImage {
+            iconImage.draw(in: NSRect(x: box.midX - 9, y: box.midY - 9, width: 18, height: 18), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            return
+        }
         let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium).applying(.init(paletteColors: [th.accent]))
         if let img = NSImage(systemSymbolName: icon, accessibilityDescription: nil)?.withSymbolConfiguration(cfg) {
             img.draw(in: NSRect(x: box.midX - img.size.width / 2, y: box.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
@@ -1239,7 +1271,7 @@ enum SettingsPages {
     private static func card(_ v: SettingsPageView, _ rows: [SettingRow], gap: CGFloat = 26) {
         let c = SettingsCard()
         rows.forEach(c.add)
-        v.add(c, height: c.totalHeight, gap: gap)
+        v.add(card: c, gap: gap)
     }
 
     private static func toggle(_ on: Bool, _ set: @escaping (Bool) -> Void) -> ThemedToggle {
@@ -1285,6 +1317,9 @@ enum SettingsPages {
             SettingRow(icon: "circle.lefthalf.filled", title: "Background opacity", detail: "How much of the desktop shows through.", accessory: opacity),
             SettingRow(icon: "drop", title: "Blur behind the window", detail: "Frosted glass when the background is see-through.",
                        accessory: toggle(c.blur) { [weak ctl] on in Config.shared.blur = on; ctl?.commit() }),
+            SettingRow(icon: "circle.righthalf.filled", title: "Keep text readable on light themes",
+                       detail: "Darkens text too faint to read, such as colors a program chose for dark backgrounds.",
+                       accessory: toggle(c.minimumContrast) { [weak ctl] on in Config.shared.minimumContrast = on; ctl?.commit() }),
             SettingRow(icon: "rectangle.inset.filled", title: "Padding", detail: "Space between the text and the window edge.", accessory: padding),
         ])
         v.add(sectionHeader("Status Bar"), height: 16, gap: 10)
@@ -1313,15 +1348,24 @@ enum SettingsPages {
     private static func fileIcons(_ v: SettingsPageView, _ ctl: SettingsWindowController) {
         v.add(sectionHeader("File Icons"), height: 16, gap: 10)
         let packs = [(IconPacks.solanumID, "Solanum")] + IconPacks.installed.map { ($0.id, $0.label) }
-        let current = IconPacks.label(for: Config.shared.fileIcons) ?? "Solanum"
+        // A folder as this pack draws it, or Solanum's own.
+        let folder = IconPacks.current?.icon(forName: "folder", directory: true, light: !Config.shared.theme.isDark)
+        // Checked is the one showing, which for Catppuccin follows the theme (see `IconPacks.shownID`).
+        let current = IconPacks.label(for: IconPacks.shownID) ?? "Solanum"
         let picker = ChoicePopup(packs.map(\.1), selected: current)
         picker.onChange = { [weak ctl] label in
-            Config.shared.fileIcons = packs.first { $0.1 == label }?.0 ?? IconPacks.solanumID
+            let id = packs.first { $0.1 == label }?.0 ?? IconPacks.solanumID
+            // Choosing the one already showing changes nothing: Latte shouldn't replace the dark flavor picked.
+            guard id != IconPacks.shownID else { return }
+            Config.shared.fileIcons = id
             ctl?.commit()
+            ctl?.rebuild()
         }
-        let detail = IconPacks.downloading.map { "Downloading \($0)…" }
-            ?? "For the sidebar and editor tabs. Any VS Code icon theme works."
-        card(v, [SettingRow(icon: "doc.richtext", title: "Icon pack", detail: detail, accessory: picker, width: 200)], gap: 12)
+        let detail = IconPacks.downloading.map { "Downloading \($0)…" } ?? IconPacks.flavorNote
+            ?? "For the sidebar and editor tabs. VS Code icon themes work."
+        let row = SettingRow(icon: "folder.fill", title: "Icon pack", detail: detail, accessory: picker, width: 200)
+        row.iconImage = folder
+        card(v, [row], gap: 12)
 
         let menu = NSMenu()
         for item in IconPacks.catalog {
@@ -1648,7 +1692,7 @@ enum SettingsPages {
                 }
                 c.add(row)
             }
-            v.add(c, height: c.totalHeight, gap: 14)
+            v.add(card: c, gap: 14)
         }
         let add = NewAliasButton()
         add.onCreate = { [weak ctl] in

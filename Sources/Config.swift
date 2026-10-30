@@ -19,6 +19,8 @@ final class Config {
     var ligatures = true
     var optionAsMeta = true
     var boldIsBright = false
+    /// On light themes, darken text too faint to read (colors programs chose for dark backgrounds).
+    var minimumContrast = true
     var scrollback = 10_000
     var shell = ""
     var shellIntegration = true
@@ -86,6 +88,7 @@ final class Config {
         case "font-ligatures": ligatures = bool()
         case "option-as-meta": optionAsMeta = bool()
         case "bold-is-bright": boldIsBright = bool()
+        case "minimum-contrast": minimumContrast = bool()
         case "scrollback-lines": if let n = Int(value) { scrollback = min(max(n, 100), 200_000) }
         case "shell": shell = value
         case "shell-integration": shellIntegration = bool()
@@ -136,6 +139,9 @@ final class Config {
 
         option-as-meta = \(optionAsMeta)
         bold-is-bright = \(boldIsBright)
+
+        # On light themes, darken text too faint to read, such as colors a program chose for dark backgrounds.
+        minimum-contrast = \(minimumContrast)
         copy-on-select = \(copyOnSelect)
         scrollback-lines = \(scrollback)
 
