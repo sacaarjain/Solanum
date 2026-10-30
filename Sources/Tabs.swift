@@ -1028,7 +1028,7 @@ final class SidebarResizeHandle: NSView {
     var isRight = false
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .resizeLeftRight)
+        boundsOutsideOverlays.forEach { addCursorRect($0, cursor: .resizeLeftRight) }
     }
 
     override func mouseDragged(with e: NSEvent) {
@@ -1067,7 +1067,7 @@ final class DropPreviewView: NSView {
 /// The band between the two columns of a split window (as between files and terminal); drag it to resize them.
 final class ColumnDivider: NSView {
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .resizeLeftRight)
+        boundsOutsideOverlays.forEach { addCursorRect($0, cursor: .resizeLeftRight) }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -1083,11 +1083,32 @@ final class ColumnDivider: NSView {
     }
 }
 
+/// A view laid over a whole window (the Quantum Moon's reading): `WindowRootView` keeps it above everything else.
+protocol WindowOverlay: NSView {
+    /// What it covers, in its superview: the resize strips don't show their cursor there.
+    var coveredRects: [NSRect] { get }
+}
+
+extension NSView {
+    /// `bounds` less what the window's overlays cover of it, as the bands left above and below each (for the
+    /// tall, thin resize strips).
+    var boundsOutsideOverlays: [NSRect] {
+        var pieces = [bounds]
+        for case let o as WindowOverlay in superview?.subviews ?? [] {
+            for r in o.coveredRects.map({ convert($0, from: superview) }) {
+                pieces = pieces.flatMap { p -> [NSRect] in
+                    guard p.intersects(r) else { return [p] }
+                    return [NSRect(x: p.minX, y: p.minY, width: p.width, height: r.minY - p.minY),
+                            NSRect(x: p.minX, y: r.maxY, width: p.width, height: p.maxY - r.maxY)].filter { $0.height > 0 }
+                }
+            }
+        }
+        return pieces
+    }
+}
+
 /// Root content view: blur + background + the columns (each a tab strip in the title bar over its content)
 /// + the file sidebars (left, and right while split) + status bar.
-/// A view laid over a whole window (the Quantum Moon's reading): `WindowRootView` keeps it above everything else.
-protocol WindowOverlay: NSView {}
-
 final class WindowRootView: NSView {
     let effect = NSVisualEffectView()
     let background = BackgroundView()

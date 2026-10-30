@@ -64,6 +64,7 @@ enum QuantumMoon {
         v.frame = root.bounds
         v.autoresizingMask = [.width, .height]
         root.addSubview(v)
+        root.needsLayout = true
         reading = v
         v.start()
     }
@@ -203,6 +204,8 @@ private final class NomaiReadingView: NSView, WindowOverlay {
         dismissedAt = CACurrentMediaTime()
         if let m = clickMonitor { NSEvent.removeMonitor(m) }
         clickMonitor = nil
+        // The resize strips under it take their cursor back.
+        superview?.needsLayout = true
         run()
     }
 
@@ -280,6 +283,27 @@ private final class NomaiReadingView: NSView, WindowOverlay {
     }
 
     override func mouseDown(with event: NSEvent) { dismiss() }
+
+    var coveredRects: [NSRect] {
+        guard dismissedAt == nil else { return [] }
+        place()
+        return [wallRect, boxRect].map { convert($0, to: superview) }
+    }
+
+    // An arrow over the wall and the box; the views underneath (the terminal, the resize strips) don't get a say.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.cursorUpdate, .mouseMoved, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func cursorUpdate(with event: NSEvent) { track(event) }
+    override func mouseMoved(with event: NSEvent) { track(event) }
+
+    private func track(_ e: NSEvent) {
+        let p = convert(e.locationInWindow, from: nil)
+        if dismissedAt == nil, wallRect.contains(p) || boxRect.contains(p) { NSCursor.arrow.set() }
+    }
 
     // MARK: Drawing
 

@@ -155,5 +155,7 @@ Interactive, and isn't affiliated with them in any way.
   The themes and the planets drawn in the status bar are fan renditions.
 - **Community:** with thanks to the *Outer Wilds* fan community, whose artwork and wikis inspired the planet art and
   the Quantum Moon's easter egg.
+- **Nomai script:** the easter egg's script for Bells' and Solanum's lines was made with the
+  [Nomai Generator](https://nomai-writing.com/).
 - **Font:** the easter egg's translations are set in [Space Mono](https://github.com/googlefonts/spacemono), bundled
   under the SIL Open Font License (`Support/Fonts/OFL.txt`).

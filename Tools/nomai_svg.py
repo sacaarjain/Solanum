@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepares Nomai script from a Nomai text generator's SVG export for Solanum's Quantum Moon easter egg.
+"""Prepares Nomai script from the Nomai Generator's (https://nomai-writing.com/) SVG export for Solanum's Quantum Moon easter egg.
 
     python3 Tools/nomai_svg.py export.svg Support/Name.svg [cell]
 
