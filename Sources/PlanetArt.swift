@@ -231,20 +231,22 @@ enum PlanetArt {
         var data = [UInt8](repeating: 0, count: S * S * 4)
         let px: Float = 2 / Float(S)
         let sub = px / Float(n)
-        data.withUnsafeMutableBufferPointer { buf in
+        data.withUnsafeMutableBufferPointer { (buf: inout UnsafeMutableBufferPointer<UInt8>) in
             guard let base = buf.baseAddress else { return }
-            DispatchQueue.concurrentPerform(iterations: S) { j in
+            DispatchQueue.concurrentPerform(iterations: S) { (j: Int) in
                 for i in 0..<S {
                     var sum = C4.zero
                     for sj in 0..<n {
-                        let v = 1 - (Float(j) * px + (Float(sj) + 0.5) * sub)
+                        let y: Float = Float(j) * px + (Float(sj) + 0.5) * sub
+                        let v: Float = 1 - y
                         for si in 0..<n {
-                            let u = Float(i) * px + (Float(si) + 0.5) * sub - 1
+                            let x: Float = Float(i) * px + (Float(si) + 0.5) * sub
+                            let u: Float = x - 1
                             sum += simd_clamp(f(u, v, sub), C4.zero, C4(repeating: 1))
                         }
                     }
-                    let c = sum / Float(n * n)
-                    let o = (j * S + i) * 4
+                    let c: C4 = sum / Float(n * n)
+                    let o: Int = (j * S + i) * 4
                     base[o] = UInt8(min(c.x, c.w) * 255 + 0.5)
                     base[o + 1] = UInt8(min(c.y, c.w) * 255 + 0.5)
                     base[o + 2] = UInt8(min(c.z, c.w) * 255 + 0.5)
@@ -292,7 +294,7 @@ enum PlanetArt {
         let th = Ball(c: icon ? .zero : V2(-0.1, -0.08), r: icon ? 0.92 : 0.7, spin: rotation(0.5, 0.9, 0.15))
         let moon = Ball(c: V2(0.64, 0.62), r: 0.15, spin: rotation(1.1, 0.3, 0.4))
         let sky = rgb(0x9CCBFF)
-        return Scene(pixel: { u, v, px in
+        return Scene(pixel: { (u: Float, v: Float, px: Float) -> C4 in
             var out = halo(th, u, v, l, sky, width: 0.1, strength: 0.6)
             if let h = hit(th, u, v, px) {
                 let p = h.p
@@ -331,7 +333,7 @@ enum PlanetArt {
     private static func attlerock(_ icon: Bool) -> Scene {
         let l = simd_normalize(V3(-0.6, 0.5, 0.62))
         let moon = Ball(c: .zero, r: icon ? 0.96 : 0.86, spin: rotation(0.3, 1.2, 0))
-        return Scene(pixel: { u, v, px in
+        return Scene(pixel: { (u: Float, v: Float, px: Float) -> C4 in
             guard let h = hit(moon, u, v, px) else { return .zero }
             return paint(moonRock(h, moon, l, 31), h.cover)
         })
@@ -347,12 +349,13 @@ enum PlanetArt {
         let b = ember.c + simd_normalize(V2(-0.62, 0.78)) * ember.r * 0.94
         let ctrl = (a + b) / 2 + V2(0.06, 0.08)
         let samples = 40
-        let curve: [V2] = (0...samples).map { i in
-            let t = Float(i) / Float(samples)
-            return a * (1 - t) * (1 - t) + ctrl * 2 * (1 - t) * t + b * t * t
+        let curve: [V2] = (0...samples).map { (i: Int) -> V2 in
+            let t: Float = Float(i) / Float(samples)
+            let s: Float = 1 - t
+            return a * (s * s) + ctrl * (2 * s * t) + b * (t * t)
         }
         let landing = simd_normalize(V3(-0.62, 0.78, 0.5))
-        return Scene(pixel: { u, v, px in
+        return Scene(pixel: { (u: Float, v: Float, px: Float) -> C4 in
             var out = halo(ember, u, v, l, rgb(0xFF9A5A), width: 0.08, strength: 0.4)
             out = over(halo(ash, u, v, l, rgb(0xFFD49A), width: 0.1, strength: 0.4), out)
             if let h = hit(ember, u, v, px) {
@@ -373,9 +376,9 @@ enum PlanetArt {
             for i in 0..<samples {
                 let p0 = curve[i], p1 = curve[i + 1]
                 let e = p1 - p0
-                let t = clamp01(simd_dot(V2(u, v) - p0, e) / simd_dot(e, e))
-                let q = p0 + e * t
-                let d = simd_length(V2(u, v) - q)
+                let t: Float = clamp01(simd_dot(V2(u, v) - p0, e) / simd_dot(e, e))
+                let q: V2 = p0 + e * t
+                let d: Float = simd_length(V2(u, v) - q)
                 if d < best {
                     best = d
                     bestT = (Float(i) + t) / Float(samples)
@@ -383,19 +386,21 @@ enum PlanetArt {
                     side = simd_dot(V2(u, v) - q, nrm)
                 }
             }
-            let w = (icon ? 0.05 : 0.075) * (1 - 0.4 * sin(.pi * bestT))
+            let w: Float = (icon ? 0.05 : 0.075) * (1 - 0.4 * sin(Float.pi * bestT))
             if best < w + px {
-                let cover = clamp01((w - best) / px + 0.5) * (0.82 + 0.18 * smooth(-0.3, 0.3, fbm(V3(bestT * 18, side / w * 2, 0), 3, 46)))
-                let s = max(-1, min(1, side / w))
-                let n = simd_normalize(V3(s * 0.6, s * 0.8, (1 - s * s).squareRoot() + 0.1))
-                let streak = 0.85 + 0.15 * fbm(V3(bestT * 30, s * 4, 1), 3, 47)
-                let c = rgb(0xE9BE82) * streak * (0.1 + diffuse(n, l))
+                let grain: Float = smooth(-0.3, 0.3, fbm(V3(bestT * 18, side / w * 2, 0), 3, 46))
+                let cover: Float = clamp01((w - best) / px + 0.5) * (0.82 + 0.18 * grain)
+                let s: Float = max(-1, min(1, side / w))
+                let n: V3 = simd_normalize(V3(s * 0.6, s * 0.8, (1 - s * s).squareRoot() + 0.1))
+                let streak: Float = 0.85 + 0.15 * fbm(V3(bestT * 30, s * 4, 1), 3, 47)
+                let c: V3 = rgb(0xE9BE82) * streak * (0.1 + diffuse(n, l))
                 out = over(paint(c, cover), out)
             }
             if let h = hit(ash, u, v, px) {
-                let dunes = sin((h.p.x * 0.6 + h.p.z) * 38 + fbm(h.p * 4, 3, 48) * 6) * 0.05
-                let sand = mix(rgb(0xD8A060), rgb(0xF0CE96), 0.5 + 0.5 * fbm(h.p * 3, 4, 49)) * (1 + dunes)
-                let c = sand * (0.05 + diffuse(h.n, l)) + rgb(0xFFD8A0) * rim(h.n, l) * 0.35
+                let ripple: Float = (h.p.x * 0.6 + h.p.z) * 38 + fbm(h.p * 4, 3, 48) * 6
+                let dunes: Float = sin(ripple) * 0.05
+                let sand: V3 = mix(rgb(0xD8A060), rgb(0xF0CE96), 0.5 + 0.5 * fbm(h.p * 3, 4, 49)) * (1 + dunes)
+                let c: V3 = sand * (0.05 + diffuse(h.n, l)) + rgb(0xFFD8A0) * rim(h.n, l) * 0.35
                 out = over(paint(c, h.cover), out)
             }
             return out
@@ -417,7 +422,7 @@ enum PlanetArt {
             return edges[i] + (edges[(i + 1) % edges.count] - edges[i]) * f
         }
         let core = V2(-0.1, 0.07)
-        return Scene(pixel: { u, v, px in
+        return Scene(pixel: { (u: Float, v: Float, px: Float) -> C4 in
             let out = halo(bh, u, v, V3(0, 0, 1), rgb(0x4A38C8), width: 0.08, strength: 0.75)
             guard let h = hit(bh, u, v, px) else { return out }
             let q = (V2(u, v) - bh.c) / bh.r
@@ -473,16 +478,17 @@ enum PlanetArt {
         let l = simd_normalize(V3(-0.58, 0.4, 0.7))
         let gd = Ball(c: .zero, r: icon ? 0.92 : 0.84, spin: rotation(0.25, 0.3, -0.15))
         let eyes = [simd_normalize(V3(0.4, 0.35, 0.85)), simd_normalize(V3(-0.5, -0.4, 0.75)), simd_normalize(V3(0.1, -0.7, 0.7))]
-        return Scene(pixel: { u, v, px in
+        return Scene(pixel: { (u: Float, v: Float, px: Float) -> C4 in
             var out = halo(gd, u, v, l, rgb(0x7CF0C4), width: 0.1, strength: 0.5)
             if let h = hit(gd, u, v, px) {
                 var q = h.p
                 q = twist(q, eyes[0], 4.2, 0.03)
                 q = twist(q, eyes[1], -3.6, 0.025)
                 q = twist(q, eyes[2], 3, 0.02)
-                let warp = V3(fbm(q * 2, 4, 71), fbm(q * 2 + 5, 4, 72), 0) * 0.35
-                let band = sin((q.y + warp.x) * 9 + fbm(q * 3, 4, 73) * 2.2)
-                let cloud = fbm(V3(q.x * 1.3, q.y * 5, q.z * 1.3) + warp, 5, 74)
+                let warp: V3 = V3(fbm(q * 2, 4, 71), fbm(q * 2 + 5, 4, 72), 0) * 0.35
+                let stripe: Float = (q.y + warp.x) * 9 + fbm(q * 3, 4, 73) * 2.2
+                let band: Float = sin(stripe)
+                let cloud: Float = fbm(V3(q.x * 1.3, q.y * 5, q.z * 1.3) + warp, 5, 74)
                 var a = mix(rgb(0x17614F), rgb(0x3E9E78), 0.5 + 0.3 * band)
                 a = mix(a, rgb(0xCDEFD6), smooth(0.12, 0.55, cloud) * 0.75)
                 a = mix(a, rgb(0x0B3A31), smooth(-0.1, -0.5, cloud) * 0.7)
@@ -503,7 +509,7 @@ enum PlanetArt {
             (4.95, 0.44, 0.57, 0.97), (5.85, 0.28, 0.62, 0.86), (0.42, 0.36, 0.58, 0.92),
         ]
         let strands: [V2] = [0.3, 1.35, 2.4].map { V2(cos($0), sin($0)) }
-        return Scene(pixel: { u, v, px in
+        return Scene(pixel: { (u: Float, v: Float, px: Float) -> C4 in
             let q = V2(u, v)
             let d = simd_length(q)
             let angle = atan2(v, u)
@@ -520,12 +526,13 @@ enum PlanetArt {
             if d < edge + px {
                 var vine: Float = 0, shade: Float = 0
                 for (k, dir) in strands.enumerated() {
-                    let warp = fbm(V3(q.x, q.y, Float(k)) * 3, 3, 181 &+ Int32(k)) * 1.6
-                    let phase = simd_dot(q, dir) * 6.5 + warp
-                    let ridge = 1 - abs((phase - floor(phase)) * 2 - 1)
-                    let rope = smooth(0.45, 0.68, ridge)
+                    let warp: Float = fbm(V3(q.x, q.y, Float(k)) * 3, 3, 181 &+ Int32(k)) * 1.6
+                    let phase: Float = simd_dot(q, dir) * 6.5 + warp
+                    let ridge: Float = 1 - abs((phase - floor(phase)) * 2 - 1)
+                    let rope: Float = smooth(0.45, 0.68, ridge)
                     if rope > vine {
-                        let twist = 0.7 + 0.3 * sin(simd_dot(q, V2(-dir.y, dir.x)) * 70 + phase * 9)
+                        let across: Float = simd_dot(q, V2(-dir.y, dir.x)) * 70 + phase * 9
+                        let twist: Float = 0.7 + 0.3 * sin(across)
                         vine = rope
                         shade = ridge.squareRoot() * twist
                     }
@@ -572,7 +579,7 @@ enum PlanetArt {
         // The icon is mostly tail: wider and brighter, from a cleaner, icier nucleus.
         let tailW: Float = icon ? 1.9 : 1, tailA: Float = icon ? 1.35 : 1, rockA: Float = icon ? 0.45 : 0.85
         let spin = rotation(0.7, 0.4, 0.2)
-        return Scene(pixel: { u, v, px in
+        return Scene(pixel: { (u: Float, v: Float, px: Float) -> C4 in
             let rel = V2(u, v) - c0
             var out = C4.zero
             // The icon's glow fades out before the frame's edge instead of being cut off.
@@ -628,7 +635,7 @@ enum PlanetArt {
     private static func quantumMoon(_ icon: Bool) -> Scene {
         let l = simd_normalize(V3(-0.55, 0.45, 0.7))
         let qm = Ball(c: .zero, r: icon ? 0.8 : 0.66, spin: rotation(0.6, 0.2, 0.3))
-        return Scene(pixel: { u, v, px in
+        return Scene(pixel: { (u: Float, v: Float, px: Float) -> C4 in
             var out = halo(qm, u, v, l, rgb(0xD6D7DC), width: 0.22, strength: 0.4)
             // Fog trailing beyond the limb.
             let dd = simd_length(V2(u, v) - qm.c) / qm.r

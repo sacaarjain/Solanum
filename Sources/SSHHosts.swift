@@ -61,7 +61,12 @@ enum SSHHosts {
                 covered.insert(a.lowercased())
                 // The alias is often the host name itself; then only the user (and port) add anything.
                 let name = hostName.flatMap { $0.lowercased() == a.lowercased() ? nil : $0 }
-                var detail = name.map { (user.map { $0 + "@" } ?? "") + $0 } ?? user.map { "as " + $0 } ?? ""
+                var detail: String
+                if let name {
+                    detail = (user.map { $0 + "@" } ?? "") + name
+                } else {
+                    detail = user.map { "as " + $0 } ?? ""
+                }
                 if let port, port != "22" { detail += (detail.isEmpty ? "port " : ":") + port }
                 hosts.append(SSHHost(target: shellQuote(a), title: a, detail: detail.isEmpty ? nil : detail))
             }

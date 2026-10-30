@@ -47,8 +47,11 @@ purple, and each planet theme is colored like its planet, with that planet besid
 
 ## Requirements
 
-- macOS 14 (Sonoma) or later on Apple silicon.
-- The Swift compiler from Xcode or the Command Line Tools (`xcode-select --install`).
+- macOS 14 (Sonoma) or later, on Apple silicon (Intel Macs build too, and pass the self-tests).
+- The Swift compiler from Xcode or the Command Line Tools (`xcode-select --install`), with a macOS 14 SDK or later.
+
+`build.sh` checks these first and says what to do if one is missing (including an Xcode license that hasn't been
+accepted yet).
 
 ## Building
 
