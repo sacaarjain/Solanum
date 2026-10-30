@@ -388,7 +388,8 @@ final class SettingsCard: NSView {
     }
 }
 
-/// Icon, title and description on the left; a control (or anything) on the right.
+/// Icon, title and description on the left; a control (or anything) on the right. The description wraps
+/// rather than trailing off, so the row grows to fit it.
 class SettingRow: NSView {
     private let icon: String?
     /// Shown in the icon's place, in its own colors: the icon pack's own folder.

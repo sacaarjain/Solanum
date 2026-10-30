@@ -591,7 +591,7 @@ final class StatusBarView: NSView {
     private func drawFlowerOutline(x: CGFloat) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let th = Config.shared.theme
-        let color = hoverButton == .theme ? (th.isDark ? SolanumArt.purple : SolanumArt.purpleOnLight) : th.dimText
+        let color = hoverButton == .theme ? (th.isDark ? SolanumArt.purple : SolanumArt.purpleOnLight) : dimIcon
         // The art is drawn y-up.
         ctx.saveGState()
         ctx.translateBy(x: 0, y: bounds.height)
@@ -631,6 +631,10 @@ final class StatusBarView: NSView {
     private var hoverButton: Button?
 
     override var isFlipped: Bool { true }
+
+    /// Resting color for the bar's icons. Stronger than the dim text beside them: thin symbol strokes in the same
+    /// color read far fainter than letters do, and nearly vanish on some themes.
+    private var dimIcon: NSColor { Config.shared.theme.foreground.withAlphaComponent(0.75) }
 
     private func symbol(_ name: String, _ color: NSColor, size: CGFloat = 11) -> NSImage? {
         let config = NSImage.SymbolConfiguration(pointSize: size, weight: .medium).applying(.init(paletteColors: [color]))
@@ -714,7 +718,7 @@ final class StatusBarView: NSView {
         buttons = []
 
         if showsRightSidebarToggle {
-            _ = drawButton(.rightSidebar, at: bounds.width - 30, icon: "sidebar.right", color: rightSidebarVisible ? th.accent : th.dimText)
+            _ = drawButton(.rightSidebar, at: bounds.width - 30, icon: "sidebar.right", color: rightSidebarVisible ? th.accent : dimIcon)
         }
         if leadingEdge { NSRect(x: 0, y: 0, width: 1, height: bounds.height).fill() }
         themeRect = .null
@@ -730,10 +734,10 @@ final class StatusBarView: NSView {
             let planet = showIcon && !(QuantumMoon.active && !QuantumMoon.at(.home)) ? PlanetArt.planet(for: th) : nil
             let flower = showIcon && !th.isCustom && th.name == ThemeLibrary.solanumDefault.name
             let iw = !showIcon || QuantumMoon.active && planet == nil ? 0 : planet != nil ? Self.planetSide : flower ? Self.flowerSide
-                : symbol("paintpalette", th.dimText)?.size.width ?? 0
+                : symbol("paintpalette", dimIcon)?.size.width ?? 0
             let w = 6 + iw + (iw > 0 ? 4 : 0) + min(200, (name as NSString).size(withAttributes: attrs).width) + 7
             let start = bounds.width - (showsRightSidebarToggle ? 36 : 8) - w
-            _ = drawButton(.theme, at: start, icon: "paintpalette", color: hoverButton == .theme ? th.accent : th.dimText,
+            _ = drawButton(.theme, at: start, icon: "paintpalette", color: hoverButton == .theme ? th.accent : dimIcon,
                            text: name, textAttrs: attrs, maxTextWidth: 200,
                            iconSpace: !showIcon || planet != nil || flower || QuantumMoon.active ? iw : nil)
             themeRect = CGRect(x: start, y: 2, width: w, height: bounds.height - 6)
@@ -762,10 +766,10 @@ final class StatusBarView: NSView {
         // Clear of the window's rounded bottom-left corner.
         var x: CGFloat = 12
         if showsSidebarToggle {
-            x = drawButton(.sidebar, at: x, icon: "sidebar.left", color: sidebarVisible ? th.accent : th.dimText)
+            x = drawButton(.sidebar, at: x, icon: "sidebar.left", color: sidebarVisible ? th.accent : dimIcon)
         }
         if onShowHosts != nil {
-            x = drawButton(.hosts, at: x, icon: "server.rack", color: th.dimText)
+            x = drawButton(.hosts, at: x, icon: "server.rack", color: dimIcon)
         }
         if !buttons.isEmpty { x += 4 }
         let rightEdge = transferRect.isNull ? rightItems : transferRect
@@ -841,18 +845,18 @@ final class StatusBarView: NSView {
             let bright: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: th.foreground.withAlphaComponent(0.85)]
             x = drawButton(.branch, at: x - 4, icon: "arrow.triangle.branch", color: th.accent, text: git.branch, textAttrs: bright, maxTextWidth: 200)
             if let busy = gitBusy {
-                x = drawButton(.sync, at: x, icon: "arrow.triangle.2.circlepath", color: th.dimText, text: busy, textAttrs: dim)
+                x = drawButton(.sync, at: x, icon: "arrow.triangle.2.circlepath", color: dimIcon, text: busy, textAttrs: dim)
             } else if git.upstream != nil {
                 var counts: [String] = []
                 if git.behind > 0 { counts.append("\(git.behind)↓") }
                 if git.ahead > 0 { counts.append("\(git.ahead)↑") }
-                x = drawButton(.sync, at: x, icon: "arrow.triangle.2.circlepath", color: counts.isEmpty ? th.dimText : th.accent,
+                x = drawButton(.sync, at: x, icon: "arrow.triangle.2.circlepath", color: counts.isEmpty ? dimIcon : th.accent,
                                text: counts.isEmpty ? nil : counts.joined(separator: " "), textAttrs: bright)
             } else if !git.detached {
-                x = drawButton(.sync, at: x, icon: "icloud.and.arrow.up", color: th.dimText)
+                x = drawButton(.sync, at: x, icon: "icloud.and.arrow.up", color: dimIcon)
             }
             if !git.changes.isEmpty {
-                x = drawButton(.changes, at: x, icon: "square.and.pencil", color: th.dimText, text: "\(git.changes.count)", textAttrs: dim)
+                x = drawButton(.changes, at: x, icon: "square.and.pencil", color: dimIcon, text: "\(git.changes.count)", textAttrs: dim)
             }
             if !mirrored { divider() }
         }
@@ -871,7 +875,7 @@ final class StatusBarView: NSView {
         var x = start
         var avail = full
         // The folder icon is part of the first button after it (the first folder, or "…" for the hidden ones).
-        var icon = host == nil ? symbol("folder", th.dimText) : nil
+        var icon = host == nil ? symbol("folder", dimIcon) : nil
         if let icon {
             x += icon.size.width + 4
             avail -= icon.size.width + 4
@@ -887,7 +891,7 @@ final class StatusBarView: NSView {
                 NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4).fill()
             }
             let color = bright || hover == idx ? th.foreground.withAlphaComponent(0.85) : th.dimText
-            if icon != nil, let lit = symbol("folder", hover == idx ? color : th.dimText) {
+            if icon != nil, let lit = symbol("folder", hover == idx ? color : dimIcon) {
                 lit.draw(in: iconFrame(lit, x: r.minX + 4))
                 icon = nil
             }
@@ -1585,7 +1589,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             guard let self, self.columns.indices.contains(i) else { return nil }
             return self.columns[i]
         }
-        bar.onNavigate = { dir in column()?.activeTab?.focusedPane.changeDirectory(to: dir) }
+        // A local pane that's busy (Claude Code, an editor…) can't take a typed cd, so the folder opens in a new tab.
+        bar.onNavigate = { dir in
+            guard let c = column(), let pane = c.activeTab?.focusedPane else { return }
+            if pane.canChangeDirectory || pane.remote != nil { pane.changeDirectory(to: dir) } else { c.addTab(cwd: dir) }
+        }
         bar.listFolders = { dir, done in
             guard let fs = column()?.activeTab?.browseFS else { return }
             fs.list(dir) { result in
@@ -2800,6 +2808,27 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         }
     }
 
+    /// A tab title too wide for `full`, cut to fit `width`: at the last whole word that fits, then "…" (or within the
+    /// first word, if even that doesn't fit). Nil for one that fits, and for a path or a single word, which the middle
+    /// truncation cuts instead to keep their end (a folder's name).
+    static func fitTitle(_ title: String, full: CGFloat, width: CGFloat, attrs: [NSAttributedString.Key: Any]) -> String? {
+        func w(_ s: String) -> CGFloat { (s as NSString).size(withAttributes: attrs).width }
+        guard title.contains(" "), !title.contains("/"), w(title) > full else { return nil }
+        var words = title.split(separator: " ")
+        let trailing = CharacterSet(charactersIn: " ,;:-–—·")
+        while words.count > 1 {
+            words.removeLast()
+            let cut = words.joined(separator: " ").trimmingCharacters(in: trailing) + "…"
+            if w(cut) <= width { return cut }
+        }
+        var first = String(words[0])
+        while first.count > 1 {
+            first.removeLast()
+            if w(first + "…") <= width { return first + "…" }
+        }
+        return "…"
+    }
+
     /// `picked`: one of several ⌘/⇧-picked tabs, shaded like a hovered tab (but without its close button).
     /// `docked`: the active tab is drawn in place, opening onto the terminal (the strip already left it clear);
     /// otherwise (dragged, lifted with its group) it's a raised pill.
@@ -2853,12 +2882,24 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: titleColor, .paragraphStyle: para]
         let titleRect = NSRect(x: textX, y: r.midY - 8, width: r.maxX - textX - 12, height: 16)
         if !isEditing(tab) {
-            let tw = min(titleRect.width, ceil((tab.title as NSString).size(withAttributes: attrs).width))
             let fadeEnd = r.maxX - 26, fadeStart = fadeEnd - 14
+            // A cut title is centered in the room before the close button's fade, so its "…" shows (the same
+            // whether the button shows or not).
+            var attrs = attrs, titleRect = titleRect
+            let cut = Self.fitTitle(tab.title, full: titleRect.width, width: fadeStart - titleRect.minX, attrs: attrs)
+            if cut != nil {
+                let centered = NSMutableParagraphStyle()
+                centered.lineBreakMode = .byClipping
+                centered.alignment = .center
+                attrs[.paragraphStyle] = centered
+                titleRect.size.width = fadeStart - titleRect.minX
+            }
+            let title = cut ?? tab.title
+            let tw = min(titleRect.width, ceil((title as NSString).size(withAttributes: attrs).width))
             if showClose, titleRect.midX + tw / 2 > fadeStart, let ctx = NSGraphicsContext.current?.cgContext {
                 ctx.saveGState()
                 ctx.beginTransparencyLayer(auxiliaryInfo: nil)
-                (tab.title as NSString).draw(in: titleRect, withAttributes: attrs)
+                (title as NSString).draw(in: titleRect, withAttributes: attrs)
                 ctx.setBlendMode(.destinationOut)
                 let clear = CGColor(gray: 0, alpha: 0), solid = CGColor(gray: 0, alpha: 1)
                 if let fade = CGGradient(colorsSpace: nil, colors: [clear, solid] as CFArray, locations: [0, 1]) {
@@ -2872,7 +2913,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
                 ctx.endTransparencyLayer()
                 ctx.restoreGState()
             } else {
-                (tab.title as NSString).draw(in: titleRect, withAttributes: attrs)
+                (title as NSString).draw(in: titleRect, withAttributes: attrs)
             }
         }
 
