@@ -1075,11 +1075,13 @@ final class TerminalView: NSView, TerminalDelegate {
         for (i, b) in codeBoxes.enumerated() {
             guard let r = rowMap.firstIndex(of: b.first) else { continue }
             let copied = copiedBox == i
-            // Above the box when the line there is empty (Claude leaves one), so it never covers a long first line.
+            // Above the box when the line there is empty (Claude leaves one), so it never covers a long first line:
+            // flush with the box's right edge and a few points clear of its top border, within that empty line.
             let roomAbove = b.kind == .code && r > 0 && rowMap[r - 1] == b.first - 1 && (terminal.line(abs: b.first - 1)?.isBlank ?? false)
             let rect = drawCopyPill(copied ? "Copied" : b.kind == .table ? "Copy table" : "Copy", copied: copied, hover: hoverCopyButton == i,
-                                    rightX: bounds.width - padX + 2,
-                                    top: { roomAbove ? self.rowY(r) - $0 - 1 : self.rowY(r) + (self.fonts.cellH - $0) / 2 }, ctx)
+                                    rightX: bounds.width - padX + (roomAbove ? 6 : 2),
+                                    top: { roomAbove ? max(self.rowY(r) - self.fonts.cellH, self.rowY(r) - $0 - 4)
+                                                     : self.rowY(r) + (self.fonts.cellH - $0) / 2 }, ctx)
             codeCopyButtons.append((rect, i))
         }
     }
