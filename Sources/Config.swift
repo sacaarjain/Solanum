@@ -31,6 +31,8 @@ final class Config {
     /// The theme's icon in the status bar, beside its name (a planet theme's planet, Solanum's flower, else a
     /// palette). Off: just the name.
     var themeIcon = true
+    /// File and folder icons: "solanum", or the id of an installed VS Code icon theme (see IconPacks).
+    var fileIcons = IconPacks.solanumID
     var restoreSession = true
     var restoreScrollback = true
     /// Where ⌘T opens a tab: "current" (the focused terminal's folder, as Terminal does) or "home".
@@ -94,6 +96,7 @@ final class Config {
         case "copy-on-select": copyOnSelect = bool()
         case "confirm-quit": confirmQuit = bool()
         case "theme-icon", "planet-companion": themeIcon = bool()
+        case "file-icons": fileIcons = value.isEmpty ? IconPacks.solanumID : value
         case "restore-session": restoreSession = bool()
         case "restore-scrollback": restoreScrollback = bool()
         case "new-tab-folder": newTabFolder = value.lowercased() == "home" ? "home" : "current"
@@ -123,6 +126,9 @@ final class Config {
 
         # The theme's icon beside its name in the status bar (Outer Wilds themes: their planet).
         theme-icon = \(themeIcon)
+
+        # File and folder icons: solanum, or the id of a VS Code icon theme in ~/.config/solanum/icon-packs/.
+        file-icons = \(fileIcons)
 
         # bar | block | underline
         cursor-style = \(cursorStyle)

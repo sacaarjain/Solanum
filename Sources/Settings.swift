@@ -1274,6 +1274,8 @@ enum SettingsPages {
         v.add(sectionHeader("VS Code"), height: 16, gap: 10)
         v.add(vsGrid, height: { ThemeGridView.height(forWidth: $0, count: vsCount) }, gap: 30)
 
+        fileIcons(v, ctl)
+
         v.add(sectionHeader("Window"), height: 16, gap: 10)
         let opacity = ValueSlider(min: 0.5, max: 1, value: Double(c.opacity)) { "\(Int(($0 * 100).rounded()))%" }
         opacity.onChange = { [weak ctl] val in Config.shared.opacity = (CGFloat(val) * 100).rounded() / 100; ctl?.commit() }
@@ -1305,6 +1307,79 @@ enum SettingsPages {
         buttons.alignment = .centerY
         buttons.distribution = .gravityAreas
         v.add(buttons, height: 20, gap: 0)
+    }
+
+    // File icons: Solanum's own or a VS Code icon theme (see IconPacks), imported or downloaded.
+    private static func fileIcons(_ v: SettingsPageView, _ ctl: SettingsWindowController) {
+        v.add(sectionHeader("File Icons"), height: 16, gap: 10)
+        let packs = [(IconPacks.solanumID, "Solanum")] + IconPacks.installed.map { ($0.id, $0.label) }
+        let current = IconPacks.label(for: Config.shared.fileIcons) ?? "Solanum"
+        let picker = ChoicePopup(packs.map(\.1), selected: current)
+        picker.onChange = { [weak ctl] label in
+            Config.shared.fileIcons = packs.first { $0.1 == label }?.0 ?? IconPacks.solanumID
+            ctl?.commit()
+        }
+        let detail = IconPacks.downloading.map { "Downloading \($0)…" }
+            ?? "For the sidebar and editor tabs. Any VS Code icon theme works."
+        card(v, [SettingRow(icon: "doc.richtext", title: "Icon pack", detail: detail, accessory: picker, width: 200)], gap: 12)
+
+        let menu = NSMenu()
+        for item in IconPacks.catalog {
+            menu.addItem(ActionMenuItem(item.label) { [weak ctl] in
+                IconPacks.download(item.label, item.source) { error in
+                    if let error { SettingsPages.alert(ctl, "Couldn't install \(item.label)", error.localizedDescription) }
+                    ctl?.rebuild()
+                }
+                ctl?.rebuild()
+            })
+        }
+        weak var getButton: NSButton?
+        let get = linkButton(IconPacks.downloading == nil ? "Download…" : "Downloading…") {
+            guard let b = getButton else { return }
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: b.isFlipped ? b.bounds.height + 4 : -4), in: b)
+        }
+        getButton = get
+        get.isEnabled = IconPacks.downloading == nil
+        let buttons = NSStackView(views: [
+            linkButton("Import Icon Pack…") { [weak ctl] in
+                let panel = NSOpenPanel()
+                panel.canChooseFiles = true
+                panel.canChooseDirectories = true
+                panel.allowedContentTypes = [.init(filenameExtension: "vsix") ?? .zip, .zip, .folder]
+                panel.message = "Choose a VS Code icon theme: a .vsix file, or an unpacked extension folder."
+                panel.prompt = "Import"
+                guard let w = ctl?.window else { return }
+                panel.beginSheetModal(for: w) { resp in
+                    guard resp == .OK, let url = panel.url else { return }
+                    do {
+                        if let first = try IconPacks.install(from: url).first {
+                            Config.shared.fileIcons = first.id
+                            Config.shared.commit()
+                        }
+                    } catch {
+                        SettingsPages.alert(ctl, "Couldn't import “\(url.lastPathComponent)”", error.localizedDescription)
+                    }
+                    ctl?.rebuild()
+                }
+            },
+            get,
+            linkButton("Open Icon Packs Folder") {
+                try? FileManager.default.createDirectory(at: IconPacks.dir, withIntermediateDirectories: true)
+                NSWorkspace.shared.open(IconPacks.dir)
+            },
+        ])
+        buttons.orientation = .horizontal
+        buttons.spacing = 18
+        buttons.alignment = .centerY
+        buttons.distribution = .gravityAreas
+        v.add(buttons, height: 20, gap: 30)
+    }
+
+    private static func alert(_ ctl: SettingsWindowController?, _ title: String, _ text: String) {
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = text
+        if let w = ctl?.window { a.beginSheetModal(for: w) } else { a.runModal() }
     }
 
     // Preferences: startup, window size, tabs and file transfers.

@@ -842,10 +842,19 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
             openFolders[openFoldersKey, default: []].insert(n.item.path)
             onOpenFoldersChanged?(openFolders)
         }
+        reloadIcon(notification)
         refreshMarks()
     }
 
+    /// An icon pack can draw open folders differently.
+    private func reloadIcon(_ notification: Notification) {
+        guard IconPacks.current != nil, let n = notification.userInfo?["NSObject"] as? FileNode else { return }
+        let row = outline.row(forItem: n)
+        if row >= 0 { outline.reloadData(forRowIndexes: [row], columnIndexes: [0]) }
+    }
+
     func outlineViewItemDidCollapse(_ notification: Notification) {
+        reloadIcon(notification)
         if let n = notification.userInfo?["NSObject"] as? FileNode {
             // Folders inside close with it.
             let path = n.item.path
@@ -894,6 +903,11 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         } else {
             cell.textField?.stringValue = node.item.name
             cell.textField?.textColor = node.item.isHidden ? th.foreground.withAlphaComponent(0.55) : th.foreground.withAlphaComponent(0.9)
+        }
+        if let img = IconPacks.current?.icon(forName: node.item.name, directory: node.item.isDirectory,
+                                             expanded: outlineView.isItemExpanded(node), light: !th.isDark) {
+            cell.imageView?.image = img
+            return cell
         }
         let symbol = node.item.isDirectory ? "folder.fill" : Self.symbol(for: node.item.name)
         let tint = node.item.isDirectory ? th.accent.withAlphaComponent(0.85) : th.dimText
