@@ -39,16 +39,31 @@ extension TerminalView {
             default: break
             }
         }
+        // Text goes through the input method, so Chinese, Japanese and Korean input and dead keys (⌥E E → é) compose:
+        // what it types comes back through insertText, and keys it doesn't use through doCommand.
+        // Not a held key's repeats, unless composing: the input method makes holding a letter offer accents instead of
+        // repeating it, and holding j in vim or less has to repeat.
+        if hasMarkedText() || (typesText(event) && !event.isARepeat) {
+            keyEventForInput = event
+            interpretKeyEvents([event])
+            keyEventForInput = nil
+            return
+        }
         guard let bytes = encodeKey(event) else {
             super.keyDown(with: event)
             return
         }
+        typed(bytes, prints: plainMods.subtracting([.shift, .option]).isEmpty)
+    }
+
+    /// Bytes from a key: replaces text selected in the line being edited when it's printable, then goes to the program.
+    func typed(_ bytes: [UInt8], prints printable: Bool) {
         guard !bytes.isEmpty else { return }
         // Not while a selection's being removed: its cursor move is the pending one, and what's typed waits for it.
         if afterSelectionDeleted == nil { cancelPendingClick() }
         // Typing over text selected in the line being edited replaces it, as in a text field: anything that prints,
         // space included. Control characters, arrows and the like (they start below a space) go through as usual.
-        let prints = plainMods.subtracting([.shift, .option]).isEmpty && bytes[0] >= 0x20 && bytes[0] != 0x7F
+        let prints = printable && bytes[0] >= 0x20 && bytes[0] != 0x7F
         if let waiting = afterSelectionDeleted {
             // Keys typed while a selection is still going follow it, in order.
             afterSelectionDeleted = waiting + [{ [weak self] in self?.send(bytes) }]
@@ -63,6 +78,35 @@ extension TerminalView {
         NSCursor.setHiddenUntilMouseMoves(true)
         resetBlink()
         redrawChanges()
+    }
+
+    /// Keys that type text rather than move, delete or control: no ⌘ or ⌃, not a function key, and not ⌥ acting as Meta.
+    private func typesText(_ e: NSEvent) -> Bool {
+        let m = e.modifierFlags
+        guard !m.contains(.command), !m.contains(.control), !Self.functionKeyCodes.contains(e.keyCode) else { return false }
+        return !optionIsMeta(e)
+    }
+
+    /// Arrows, Home/End, Page Up/Down, delete, return, enter, tab, escape and F1–F12.
+    private static let functionKeyCodes: Set<UInt16> = [123, 124, 125, 126, 115, 119, 116, 121, 117, 51, 36, 76, 48, 53,
+                                                        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111]
+
+    /// Whether ⌥ in this key acts as Meta (sends Esc first): it's a ⌥ key set to (Settings › Shortcuts), and the
+    /// layout doesn't put a plain ASCII character there. German, French and other layouts type @ [ ] { } | ~ with ⌥,
+    /// and those are typed; US ⌥ characters (å ∫ ç…) and dead keys aren't ASCII, so they stay Meta.
+    func optionIsMeta(_ e: NSEvent) -> Bool {
+        let m = e.modifierFlags
+        guard m.contains(.option) else { return false }
+        let left = m.rawValue & 0x20 != 0, right = m.rawValue & 0x40 != 0  // NX_DEVICELALTKEYMASK, NX_DEVICERALTKEYMASK
+        switch Config.shared.optionAsMeta {
+        case "off": return false
+        case "left": if !left { return false }
+        case "right": if !right { return false }
+        default: break
+        }
+        if !m.contains(.control), let v = e.characters?.unicodeScalars.first?.value, e.characters?.unicodeScalars.count == 1,
+           v > 0x20, v < 0x7F { return false }
+        return true
     }
 
     func encodeKey(_ e: NSEvent) -> [UInt8]? {
@@ -143,11 +187,11 @@ extension TerminalView {
             default: break
             }
             if var o = out {
-                if opt && Config.shared.optionAsMeta { o.insert(0x1B, at: 0) }
+                if opt && optionIsMeta(e) { o.insert(0x1B, at: 0) }
                 return o
             }
         }
-        if opt && Config.shared.optionAsMeta {
+        if opt && optionIsMeta(e) {
             let base = e.characters(byApplyingModifiers: shift ? .shift : []) ?? e.charactersIgnoringModifiers ?? ""
             if !base.isEmpty { return [0x1B] + Array(base.utf8) }
         }
@@ -236,7 +280,13 @@ extension TerminalView {
     }
 
     func textForSelection(_ s: Selection) -> String {
-        codeText(from: s.start, to: s.end) ?? textForRange(from: s.start, to: s.end)
+        if s.rect {
+            return (s.start.line...s.end.line).compactMap { a -> String? in
+                guard !hiddenRanges.contains(where: { $0.contains(a) }) else { return nil }
+                return terminal.line(abs: a)?.text(from: s.cols.lowerBound, to: s.cols.upperBound, trim: true) ?? ""
+            }.joined(separator: "\n")
+        }
+        return codeText(from: s.start, to: s.end) ?? textForRange(from: s.start, to: s.end)
     }
 
     /// A selection inside one of Claude's code blocks copies that stretch of the original code: no indentation,
@@ -460,7 +510,7 @@ extension TerminalView {
             }
             selection = s
         } else if let a = mouseAnchor, a != pos {
-            selection = Selection(mode: .char, aStart: a, aEnd: a, hStart: pos, hEnd: pos)
+            selection = Selection(mode: .char, aStart: a, aEnd: a, hStart: pos, hEnd: pos, rect: e.modifierFlags.contains(.option))
         }
         needsDisplay = true
     }
@@ -486,14 +536,24 @@ extension TerminalView {
         let p = convert(e.locationInWindow, from: nil)
         if !didDrag && e.clickCount == 1 {
             let pos = gridPos(at: p)
-            let plain = e.modifierFlags.intersection([.command, .shift, .option, .control]).isEmpty
-            if plain, let u = urlAt(p), plainClickOpensLinks(on: u.line) {
+            let mods = e.modifierFlags.intersection([.command, .shift, .option, .control])
+            if mods.isEmpty, let u = urlAt(p), plainClickOpensLinks(on: u.line) {
                 mouseAnchor = nil
                 openLink(u.url)
                 return
             }
             let cmd = e.modifierFlags.contains(.command)
-            whenCursorSettled { [weak self] in self?.handleClick(at: pos, plain: plain, cmd: cmd) }
+            // ⌥-click moves the cursor there, as a plain click does in the line being typed; in a full-screen program
+            // that doesn't read the mouse (vim, nano, less) it sends the arrow keys that get there.
+            if mods == .option {
+                mouseAnchor = nil
+                whenCursorSettled { [weak self] in
+                    guard let self else { return }
+                    if self.placeCursor(at: pos) { self.needsDisplay = true } else { self.arrowCursor(to: pos) }
+                }
+                return
+            }
+            whenCursorSettled { [weak self] in self?.handleClick(at: pos, plain: mods.isEmpty, cmd: cmd) }
         } else if Config.shared.copyOnSelect, let s = selection {
             let t = textForSelection(s)
             if !t.isEmpty {
@@ -572,6 +632,13 @@ extension TerminalView {
         return placeShellCursor(b, at: pos)
     }
 
+    /// Up or down to a cell's row, then left or right to its column (Terminal's ⌥-click).
+    private func arrowCursor(to pos: GridPos) {
+        guard terminal.usingAlt, terminal.mouseMode == .none else { return }
+        sendArrows(pos.line - terminal.cursorAbs, back: "A", forward: "B")
+        sendArrows(pos.col - terminal.cursorX, back: "D", forward: "C")
+    }
+
     private func arrowKey(_ c: String) -> String { terminal.appCursorKeys ? "\u{1b}O" + c : "\u{1b}[" + c }
 
     private func sendArrows(_ n: Int, back: String, forward: String) {
@@ -622,7 +689,7 @@ extension TerminalView {
     /// `then` runs once it's gone (only if this returned true), for what replaces it.
     @discardableResult
     func deleteSelectedInput(then: (() -> Void)? = nil) -> Bool {
-        guard let s = selection, !terminal.usingAlt, terminal.mouseMode == .none, let b = terminal.currentBlock else { return false }
+        guard let s = selection, !s.rect, !terminal.usingAlt, terminal.mouseMode == .none, let b = terminal.currentBlock else { return false }
         let st = s.start, en = s.end
         if let input = shellInput(b) {
             guard en.line >= input.start, st.line <= input.last else { return false }
@@ -941,6 +1008,10 @@ extension TerminalView {
 
     override func resignFirstResponder() -> Bool {
         if terminal.focusEvents { send("\u{1b}[O") }
+        if hasMarkedText() {
+            inputContext?.discardMarkedText()
+            markedText = ""
+        }
         needsDisplay = true
         return true
     }
@@ -1019,12 +1090,20 @@ extension TerminalView {
 
 // MARK: - Text input client
 
-/// Lets the Character Viewer (⌃⌘Space / fn-E emoji picker) and dictation type into the terminal.
-/// Keys still go straight to encodeKey; only text sent by these system panels arrives here.
+/// Typed text comes through here from the input method (see keyDown): plain keys, dead keys and what Chinese,
+/// Japanese and Korean input compose. Text still being composed is marked text, drawn at the cursor until it's
+/// committed. The Character Viewer (⌃⌘Space / fn-E emoji picker) and dictation type here too.
 extension TerminalView: NSTextInputClient {
     func insertText(_ string: Any, replacementRange: NSRange) {
         let s = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+        let composed = hasMarkedText()
+        markedText = ""
+        if composed { needsDisplay = true }
         guard !s.isEmpty else { return }
+        if keyEventForInput != nil {
+            typed(Array(s.utf8), prints: true)
+            return
+        }
         // Several characters at once (dictation) is a paste; a single emoji is typed.
         if s.count > 1 || s.contains(where: \.isNewline) { sendPaste(s) } else { send(s) }
         if scrollOffset != 0 { scrollOffset = 0 }
@@ -1034,11 +1113,30 @@ extension TerminalView: NSTextInputClient {
         needsDisplay = true
     }
 
-    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {}
-    func unmarkText() {}
-    func selectedRange() -> NSRange { NSRange(location: 0, length: 0) }
-    func markedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
-    func hasMarkedText() -> Bool { false }
+    /// A key the input method passed on (return, arrows, delete…): what it sends without one.
+    override func doCommand(by selector: Selector) {
+        guard let e = keyEventForInput, let bytes = encodeKey(e) else { return }
+        typed(bytes, prints: e.modifierFlags.intersection([.command, .control]).isEmpty)
+    }
+
+    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        markedText = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+        markedSelection = selectedRange
+        if scrollOffset != 0 { scrollOffset = 0 }
+        needsDisplay = true
+    }
+
+    /// Accepts the text being composed as it stands.
+    func unmarkText() {
+        let s = markedText
+        markedText = ""
+        needsDisplay = true
+        if !s.isEmpty { send(s) }
+    }
+
+    func selectedRange() -> NSRange { hasMarkedText() ? markedSelection : NSRange(location: 0, length: 0) }
+    func markedRange() -> NSRange { hasMarkedText() ? NSRange(location: 0, length: markedText.utf16.count) : NSRange(location: NSNotFound, length: 0) }
+    func hasMarkedText() -> Bool { !markedText.isEmpty }
     func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
     func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
     func characterIndex(for point: NSPoint) -> Int { NSNotFound }

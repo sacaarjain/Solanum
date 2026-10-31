@@ -247,6 +247,10 @@ final class TabSession: NSObject {
     var lastCommandFailed: Bool { focusedPane.terminal.blocks.last(where: { $0.state == .finished })?.failed ?? false }
     var hasRunningJobs: Bool { panes.contains { $0.hasRunningJob } }
     var isActive: Bool { owner?.isActiveTab(self) ?? false }
+    /// Showing in its column (whether or not its window is in front).
+    var isShown: Bool { (owner as? TabColumn).map { $0.activeTab === self } ?? true }
+    /// A program rang the bell while the tab was in the background: a bell in the tab until it's next shown.
+    var rang = false
 
     func focus() {
         if !showsTerminal, let ed = editor { return ed.focus() }
@@ -2898,10 +2902,12 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             path.fill()
         }
 
-        // An agent's mark and status, a dot for a running (accent) / failed (red) command, or else what the tab holds
-        // (its file's icon, or the petal prompt for a terminal), at the tab's left edge with the title right after it. The title stays clear of the close button's room and
-        // is laid out the same whether the tab is active, hovered or neither.
-        let dot = tab.agent == nil && (tab.isRunningCommand || tab.lastCommandFailed)
+        // An agent's mark and status, a bell rung in the background, a dot for a running (accent) / failed (red) command,
+        // or else what the tab holds (its file's icon, or the petal prompt for a terminal), at the tab's left edge with
+        // the title right after it. The title stays clear of the close button's room and is laid out the same whether
+        // the tab is active, hovered or neither.
+        let bell = tab.agent == nil && tab.rang
+        let dot = tab.agent == nil && !bell && (tab.isRunningCommand || tab.lastCommandFailed)
         let pad = Self.tabPad, closeRoom: CGFloat = 28
         let showClose = (hovered || active) && !dragging && !dragGroupMoved && r.width >= 60
         let titleColor = active ? th.foreground : th.foreground.withAlphaComponent(0.55)
@@ -2917,6 +2923,13 @@ final class TabBarView: NSView, NSTextFieldDelegate {
 
         if let agent = tab.agent {
             agent.draw(at: r.minX + pad, midY: r.midY)
+        } else if bell {
+            let config = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold).applying(.init(paletteColors: [th.yellow]))
+            if let img = NSImage(systemSymbolName: "bell.fill", accessibilityDescription: "Bell")?.withSymbolConfiguration(config) {
+                // In the prompt's place, as the dot is, so the title doesn't move.
+                img.draw(in: NSRect(x: r.minX + pad + (SolanumArt.promptSize.width - img.size.width) / 2, y: r.midY - img.size.height / 2,
+                                    width: img.size.width, height: img.size.height), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            }
         } else if dot {
             (tab.isRunningCommand ? th.accent : th.red).setFill()
             // In the prompt's place, so the title doesn't move when a command starts or ends.

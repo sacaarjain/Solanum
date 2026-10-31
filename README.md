@@ -8,7 +8,11 @@ purple, and each planet theme is colored like its planet, with that planet besid
 ## Features
 
 **Terminal**
-- Fast xterm-compatible emulator with scrollback reflow, ligatures, true color and synchronized output.
+- Fast xterm-compatible emulator with scrollback reflow, ligatures, true color, synchronized output and OSC 8 links.
+- Input methods (Chinese, Japanese, Korean) and dead keys compose at the cursor. ⌥ acts as Meta from both keys, one
+  or neither, and still types what your layout puts on it in plain ASCII (`@ [ ] { } | ~` on German or French layouts).
+- ⌥-click moves the cursor (in vim, nano and the like too); ⌥-drag selects a rectangle.
+- A bell in a background tab marks it until you look; the alert sound is optional (`audible-bell`).
 - Command blocks (via shell integration for bash and zsh): select, copy, re-run, collapse or jump between commands.
 - Split panes, tabs, tab groups (named, colored, collapsible) and a split window with two independent columns.
 - Command palette (⇧⌘P), searchable history (⌃H), snippets and aliases.

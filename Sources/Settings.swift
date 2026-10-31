@@ -1582,6 +1582,8 @@ enum SettingsPages {
                        accessory: newTabFolder, width: 150),
             SettingRow(icon: "bell", title: "Notify after (seconds)", detail: "When a command in a background tab runs at least this long. 0 turns it off.",
                        accessory: notify, width: 70),
+            SettingRow(icon: "speaker.wave.2", title: "Bell sound", detail: "Play the alert sound when a program rings the bell. It always flashes, and marks a background tab.",
+                       accessory: toggle(c.audibleBell) { [weak ctl] on in Config.shared.audibleBell = on; ctl?.commit() }),
             SettingRow(icon: "scroll", title: "Lines kept per tab", detail: "Older output is dropped past this.", accessory: lines, width: 90),
         ])
 
@@ -1712,10 +1714,17 @@ enum SettingsPages {
             ctl?.commit()
             (NSApp.delegate as? AppDelegate)?.registerHotKey()
         }
+        let metaNames = ["both": "Both", "left": "Left", "right": "Right", "off": "Off"]
+        let meta = ChoicePopup(["Both", "Left", "Right", "Off"], selected: metaNames[c.optionAsMeta] ?? "Both")
+        meta.onChange = { [weak ctl] s in
+            Config.shared.optionAsMeta = metaNames.first { $0.value == s }?.key ?? "both"
+            ctl?.commit()
+        }
         v.add(sectionHeader("Keyboard & Mouse"), height: 16, gap: 10)
         card(v, [
-            SettingRow(icon: "option", title: "Option key acts as Meta", detail: "⌥← and ⌥→ jump words; ⌥ shortcuts reach the shell.",
-                       accessory: toggle(c.optionAsMeta) { [weak ctl] on in Config.shared.optionAsMeta = on; ctl?.commit() }),
+            SettingRow(icon: "option", title: "Option key acts as Meta",
+                       detail: "⌥ shortcuts reach the shell. Characters your layout puts on ⌥, like @ [ ] { } | ~, still type. Off: ⌥ types é, ñ, € and the like.",
+                       accessory: meta, width: 100),
             SettingRow(icon: "doc.on.clipboard", title: "Copy on select",
                        accessory: toggle(c.copyOnSelect) { [weak ctl] on in Config.shared.copyOnSelect = on; ctl?.commit() }),
         ])
