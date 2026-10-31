@@ -1587,6 +1587,23 @@ enum SettingsPages {
             SettingRow(icon: "scroll", title: "Lines kept per tab", detail: "Older output is dropped past this.", accessory: lines, width: 90),
         ])
 
+        v.add(sectionHeader("Keep Awake"), height: 16, gap: 10)
+        let awake = ThemedField(String(c.keepAwakeSeconds), placeholder: String(Config.defaultKeepAwakeSeconds))
+        awake.alignment = .right
+        awake.onCommit = { [weak ctl, weak awake] s in
+            // Empty goes back to the default; anything that isn't a number leaves it as it was.
+            let text = s.trimmingCharacters(in: .whitespaces)
+            if let n = text.isEmpty ? Config.defaultKeepAwakeSeconds : Int(text) {
+                Config.shared.keepAwakeSeconds = n
+                ctl?.commit()
+            }
+            awake?.stringValue = String(Config.shared.keepAwakeSeconds)
+        }
+        card(v, [
+            SettingRow(icon: "cup.and.saucer", title: "Keep awake for (seconds)",
+                       detail: "How long ⇧⌘A runs caffeinate. The default, 28800, is 8 hours.", accessory: awake, width: 90),
+        ])
+
         v.add(sectionHeader("File Transfers"), height: 16, gap: 10)
         let shown = c.transferFolder.isEmpty ? "" : FilePaths.abbreviate(c.transferFolder, home: NSHomeDirectory())
         let folder = ThemedField(shown, placeholder: FilePaths.abbreviate(Config.defaultTransferDir.path, home: NSHomeDirectory()))

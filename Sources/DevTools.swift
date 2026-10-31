@@ -381,7 +381,7 @@ enum SelfTest {
             check("chats: every known agent can start", AgentKind.known.allSatisfy { !$0.command.isEmpty } && AgentKind.known.contains(.other("aider")))
             check("agents: astra is found by its command", AgentKind.detect(name: "astra", path: "/usr/local/bin/astra", args: []) == .other("astra"))
             check("agents: continue commands", AgentKind.claude.defaultContinueCommand == "claude -c" && AgentKind.codex.defaultContinueCommand == "codex resume --last"
-                  && AgentKind.gemini.defaultContinueCommand == "gemini --resume latest" && AgentKind.other("amp").defaultContinueCommand.isEmpty)
+                  && AgentKind.antigravity.defaultContinueCommand == "agy -c" && AgentKind.other("amp").defaultContinueCommand.isEmpty)
             check("agents: known by their commands", AgentKind.known.allSatisfy { AgentKind.named($0.command) == $0 } && AgentKind.named("zsh") == nil)
             check("agents: continue goes through an alias", AgentKind.claude.throughAlias("claude -c", alias: "c") == "c -c"
                   && AgentKind.claude.throughAlias("claudette -c", alias: "c") == "claudette -c" && AgentKind.codex.throughAlias("codex resume --last", alias: nil) == "codex resume --last")
@@ -389,7 +389,11 @@ enum SelfTest {
                 let old = try? JSONDecoder().decode(PaneState.self, from: Data(#"{"claude":true}"#.utf8))
                 return old?.claude == true && old?.agent == nil
             }())
-            check("agents: logos load", AgentLogos.gemini.isValid && AgentLogos.openAI(.white) != nil)
+            check("agents: Antigravity is found by its command", AgentKind.detect(name: "agy", path: "/usr/local/bin/agy", args: []) == .antigravity && AgentKind.named("agy") == .antigravity)
+            check("keep awake: durations read short", Config.shortDuration(28800) == "8h" && Config.shortDuration(5400) == "1h 30m"
+                  && Config.shortDuration(90) == "1m 30s" && Config.shortDuration(45) == "45s" && Config.shortDuration(3661) == "1h 1m 1s")
+            check("keep awake: defaults to 8 hours", Config.defaultKeepAwakeSeconds == 28800)
+            check("agents: logo loads", AgentLogos.openAI(.white) != nil)
             check("chats: paste waits", !AgentChats.readyForPaste(bracketed: false, status: .done, quietFor: 9)
                   && !AgentChats.readyForPaste(bracketed: true, status: nil, quietFor: 9)
                   && !AgentChats.readyForPaste(bracketed: true, status: .waiting, quietFor: 9)

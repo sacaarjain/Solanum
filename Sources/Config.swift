@@ -38,6 +38,20 @@ final class Config {
     var themeIcon = true
     /// File and folder icons: "solanum", or the id of an installed VS Code icon theme (see IconPacks).
     var fileIcons = IconPacks.solanumID
+    /// How long ⇧⌘A's `caffeinate` runs.
+    static let defaultKeepAwakeSeconds = 28800
+    var keepAwakeSeconds = Config.defaultKeepAwakeSeconds {
+        didSet { keepAwakeSeconds = min(max(keepAwakeSeconds, 1), 31_536_000) }
+    }
+    var keepAwakeCommand: String { "caffeinate -d -i -s -t \(keepAwakeSeconds)" }
+    var keepAwakeTitle: String { "Keep Awake (caffeinate \(Self.shortDuration(keepAwakeSeconds)))" }
+
+    /// 28800 as "8h", 5400 as "1h 30m", 90 as "1m 30s".
+    static func shortDuration(_ seconds: Int) -> String {
+        let parts = [(seconds / 3600, "h"), (seconds % 3600 / 60, "m"), (seconds % 60, "s")].filter { $0.0 > 0 }
+        return parts.isEmpty ? "0s" : parts.map { "\($0.0)\($0.1)" }.joined(separator: " ")
+    }
+
     var restoreSession = true
     /// Restoring a session continues the agents that were running in it.
     var continueAgents = true
@@ -122,6 +136,7 @@ final class Config {
         case "quick-terminal-height": if let n = num() { quickTerminalHeight = min(max(n, 0.2), 0.95) }
         case "quick-terminal-autohide": quickTerminalAutoHide = bool()
         case "notify-after-seconds": if let n = Double(value) { notifyAfterSeconds = n }
+        case "keep-awake-seconds": if let n = Int(value) { keepAwakeSeconds = n }
         case "copy-on-select": copyOnSelect = bool()
         case "confirm-quit": confirmQuit = bool()
         case "theme-icon", "planet-companion": themeIcon = bool()
@@ -187,6 +202,10 @@ final class Config {
 
         # Notify when a command running in the background takes at least this long (0 = off).
         notify-after-seconds = \(fmt(CGFloat(notifyAfterSeconds)))
+
+        # How long Keep Awake (⇧⌘A) runs caffeinate, in seconds.
+        keep-awake-seconds = \(keepAwakeSeconds)
+
         confirm-quit = \(confirmQuit)
 
         # Reopen windows, tabs, splits, tab names and groups on launch; optionally with recent output.

@@ -1,13 +1,13 @@
 import AppKit
 
-// Coding agents (Claude Code, Codex, Gemini CLI, …) running in a pane: which one, and whether it's working,
+// Coding agents (Claude Code, Codex, Antigravity, …) running in a pane: which one, and whether it's working,
 // waiting on you, done, or failed. Shown on the tab and in the file sidebar's header.
 //
 // Agents don't report their state to the terminal, so it's read from what they draw: each prints a
 // "esc to interrupt"-style hint while working and a numbered "1. Yes" menu when asking for approval.
 
 enum AgentKind: Equatable {
-    case claude, codex, gemini
+    case claude, codex, antigravity
     case other(String)
 
     /// Command names of other terminal agents, as they appear in argv.
@@ -17,7 +17,7 @@ enum AgentKind: Equatable {
         switch self {
         case .claude: return "Claude Code"
         case .codex: return "Codex"
-        case .gemini: return "Gemini"
+        case .antigravity: return "Antigravity"
         case .other(let n): return n.prefix(1).uppercased() + n.dropFirst()
         }
     }
@@ -27,12 +27,12 @@ enum AgentKind: Equatable {
         switch self {
         case .claude: return "claude"
         case .codex: return "codex"
-        case .gemini: return "gemini"
+        case .antigravity: return "agy"
         case .other(let n): return n
         }
     }
 
-    static var known: [AgentKind] { [.claude, .codex, .gemini] + others.map { .other($0) } }
+    static var known: [AgentKind] { [.claude, .codex, .antigravity] + others.map { .other($0) } }
 
     static func named(_ command: String) -> AgentKind? { known.first { $0.command == command } }
 
@@ -42,7 +42,7 @@ enum AgentKind: Equatable {
         switch self {
         case .claude: return "claude -c"
         case .codex: return "codex resume --last"
-        case .gemini: return "gemini --resume latest"
+        case .antigravity: return "agy -c"
         case .other(let n):
             let commands = ["aider": "aider --restore-chat-history", "opencode": "opencode --continue", "cursor-agent": "cursor-agent --continue",
                             "goose": "goose session --resume", "crush": "crush --continue", "qwen": "qwen --continue", "copilot": "copilot --continue",
@@ -75,7 +75,7 @@ enum AgentKind: Equatable {
         let all = ([path] + args.prefix(3)).joined(separator: " ").lowercased()
         if words.contains("claude") || path.contains("/claude/versions/") || all.contains("claude-code") { return .claude }
         if words.contains(where: { $0 == "codex" || $0.hasPrefix("codex-") }) || all.contains("@openai/codex") { return .codex }
-        if words.contains("gemini") || all.contains("gemini-cli") { return .gemini }
+        if words.contains("agy") { return .antigravity }
         if let o = others.first(where: { words.contains($0) }) { return .other(o) }
         return nil
     }
@@ -94,8 +94,8 @@ enum AgentKind: Equatable {
         switch self {
         case .claude:
             Self.drawGlyph("✳", color: NSColor(srgbRed: 0.85, green: 0.47, blue: 0.34, alpha: alpha), in: r)
-        case .gemini:
-            place(AgentLogos.gemini, r)
+        case .antigravity:
+            Self.drawGlyph("✦", color: NSColor(srgbRed: 0.30, green: 0.55, blue: 0.97, alpha: alpha), in: r)
         case .codex, .other("astra"):
             place(AgentLogos.openAI(Config.shared.theme.foreground), r)
         case .other:

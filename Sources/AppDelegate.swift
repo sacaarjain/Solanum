@@ -4,6 +4,8 @@ import UserNotifications
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
     private(set) var windows: [TerminalWindowController] = []
     private var hotKey: HotKey?
+    /// Its title says how long, which Settings can change.
+    private weak var keepAwakeItem: NSMenuItem?
     private let themeMenu = NSMenu(title: "Theme")
     private let snippetsMenu = NSMenu(title: "Snippets")
     private var quickTerminalItem: NSMenuItem?
@@ -33,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             UNUserNotificationCenter.current().delegate = self
         }
         NotificationCenter.default.addObserver(forName: .solanumConfigChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.keepAwakeItem?.title = Config.shared.keepAwakeTitle
             self?.rebuildThemeMenu()
         }
         if Config.shared.restoreSession {
@@ -394,7 +397,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         _ = add(shell, "Close Tab", #selector(TerminalWindowController.closeTab(_:)), "w", [.command, .option])
         _ = add(shell, "Close Window", #selector(NSWindow.performClose(_:)), "w", [.command, .shift])
         shell.addItem(.separator())
-        _ = add(shell, "Keep Awake (caffeinate 8h)", #selector(TerminalView.keepAwake(_:)), "a", [.command, .shift])
+        keepAwakeItem = add(shell, Config.shared.keepAwakeTitle, #selector(TerminalView.keepAwake(_:)), "a", [.command, .shift])
         _ = add(shell, "Show Git Graph", #selector(TerminalWindowController.showGitGraph(_:)), "g", [.command, .control])
         _ = add(shell, "Show Git Changes", #selector(TerminalWindowController.showGitStatus(_:)), "s", [.command, .control])
 

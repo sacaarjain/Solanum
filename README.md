@@ -29,7 +29,7 @@ purple, and each planet theme is colored like its planet, with that planet besid
   when it finishes or needs input in a background tab.
 - Code blocks and tables in Claude's replies get a Copy button.
 - Session restore relaunches Claude Code where it was running, continuing the conversation (your alias for
-  `claude`, if you have one, with `-c`). Other agents continue too (`codex resume --last`, `gemini --resume latest`, …);
+  `claude`, if you have one, with `-c`). Other agents continue too (`codex resume --last`, `agy -c`, …);
   each one's command, or none, is set in Settings › Preferences › Continue Agents.
 - Selecting text in Claude's input box stays on that text while Claude prints above it; ⌫ / ⌘⌫ delete the selection.
 

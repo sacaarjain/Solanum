@@ -222,7 +222,7 @@ final class PTYProcess {
         return pg > 0 && pg != pid
     }
 
-    /// The coding agent (Claude Code, Codex, Gemini CLI, …) running in the foreground, if any.
+    /// The coding agent (Claude Code, Codex, Antigravity, …) running in the foreground, if any.
     var foregroundAgent: AgentKind? {
         let pg = tcgetpgrp(fd)
         guard pg > 0, pg != pid else { return nil }

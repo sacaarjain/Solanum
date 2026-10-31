@@ -1,54 +1,10 @@
 import AppKit
 
-/// Agents' logos, kept here so no files need bundling: OpenAI's mark (SVG from Simple Icons), which takes the theme's
-/// color, and Gemini's star.
+/// Agents' logos, kept here so no files need bundling: OpenAI's mark (SVG from Simple Icons), which takes the theme's color.
 enum AgentLogos {
     private static func image(viewBox: Int, _ paths: String) -> NSImage? {
         let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"\(viewBox)\" height=\"\(viewBox)\" viewBox=\"0 0 \(viewBox) \(viewBox)\">\(paths)</svg>"
         return NSImage(data: Data(svg.utf8))
-    }
-
-    /// Gemini's four-point star with rounded tips, its colors blending across it: pink at the top, blue at the right,
-    /// green at the bottom, yellow at the left.
-    static let gemini = NSImage(size: NSSize(width: 48, height: 48), flipped: false) { r in
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
-        let c = CGPoint(x: r.midX, y: r.midY), R = r.width / 2 * 1.05
-        let dirs = [CGPoint(x: 0, y: 1), CGPoint(x: 1, y: 0), CGPoint(x: 0, y: -1), CGPoint(x: -1, y: 0)]
-        func toward(_ from: CGPoint, _ to: CGPoint, _ d: CGFloat) -> CGPoint {
-            let l = max(hypot(to.x - from.x, to.y - from.y), 0.01)
-            return CGPoint(x: from.x + (to.x - from.x) / l * d, y: from.y + (to.y - from.y) / l * d)
-        }
-        let tips = dirs.map { CGPoint(x: c.x + $0.x * R, y: c.y + $0.y * R) }
-        // Each side curves in close to the center; a tip is rounded by turning through it just short of the point.
-        let waists = (0..<4).map { i in
-            CGPoint(x: c.x + (dirs[i].x + dirs[(i + 1) % 4].x) * R * 0.25, y: c.y + (dirs[i].y + dirs[(i + 1) % 4].y) * R * 0.25)
-        }
-        let round = R * 0.17
-        let star = CGMutablePath()
-        star.move(to: toward(tips[0], waists[0], round))
-        for i in 0..<4 {
-            let next = (i + 1) % 4
-            star.addQuadCurve(to: toward(tips[next], waists[i], round), control: waists[i])
-            star.addQuadCurve(to: toward(tips[next], waists[next], round), control: tips[next])
-        }
-        star.closeSubpath()
-        ctx.addPath(star)
-        ctx.clip()
-        // Soft pools of color from each tip, blending where they meet: (where, in radii from the center; how far it reaches; color).
-        let pools: [(CGPoint, CGFloat, UInt32)] = [
-            (CGPoint(x: 0.02, y: -0.80), 0.82, 0x16A155), (CGPoint(x: -0.66, y: 0.05), 1.0, 0xFFD63F), (CGPoint(x: 0, y: 0.80), 0.82, 0xF0468F),
-            (CGPoint(x: 0.36, y: 0.40), 0.46, 0xC79AF0), (CGPoint(x: 0.62, y: -0.12), 0.92, 0x2F78F2),
-        ]
-        ctx.setFillColor(CGColor(srgbRed: 0.72, green: 0.76, blue: 0.70, alpha: 1))
-        ctx.fill(r)
-        for (at, reach, v) in pools {
-            let (red, green, blue) = (CGFloat(v >> 16 & 0xFF) / 255, CGFloat(v >> 8 & 0xFF) / 255, CGFloat(v & 0xFF) / 255)
-            let colors = [CGColor(srgbRed: red, green: green, blue: blue, alpha: 1), CGColor(srgbRed: red, green: green, blue: blue, alpha: 0.85), CGColor(srgbRed: red, green: green, blue: blue, alpha: 0)]
-            guard let pool = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: colors as CFArray, locations: [0, 0.35, 1]) else { continue }
-            let center = CGPoint(x: c.x + at.x * R, y: c.y + at.y * R)
-            ctx.drawRadialGradient(pool, startCenter: center, startRadius: 0, endCenter: center, endRadius: reach * R, options: [])
-        }
-        return true
     }
 
     private static var openAIs: [NSColor: NSImage] = [:]
