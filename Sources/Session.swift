@@ -87,6 +87,18 @@ enum SessionStore {
 
     private static var lastWritten: Data?
 
+    /// Set while quitting, after the last save: what closes on the way out doesn't change what's on file.
+    private static var stopped = false
+
+    static func stopSaving() { stopped = true }
+
+    /// Nothing comes back: the tabs were closed one by one, or Restart Fresh was asked for.
+    static func forget() {
+        guard enabled, !stopped else { return }
+        lastWritten = nil
+        try? FileManager.default.removeItem(at: url)
+    }
+
     static func load() -> SessionState? {
         guard enabled, let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(SessionState.self, from: data)
@@ -94,8 +106,9 @@ enum SessionStore {
 
     /// Saves the given windows. `sync` writes before returning (used at quit); otherwise the write happens
     /// in the background.
+    /// With no windows open there's nothing to save: the last ones closed stay on file, to come back.
     static func save(_ windows: [TerminalWindowController], sync: Bool = false) {
-        guard enabled else { return }
+        guard enabled, !stopped, !windows.isEmpty else { return }
         let state = SessionState(windows: windows.map(\.sessionState))
         guard let data = try? JSONEncoder().encode(state), data != lastWritten else { return }
         lastWritten = data

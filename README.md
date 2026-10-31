@@ -17,7 +17,8 @@ purple, and each planet theme is colored like its planet, with that planet besid
 - Split panes, tabs, tab groups (named, colored, collapsible) and a split window with two independent columns.
 - Command palette (⇧⌘P), searchable history (⌃H), snippets and aliases.
 - A quick-terminal drop-down available from any app (⌃` by default).
-- Session restore: windows, tabs, splits, groups, open files and recent output come back on launch, or are offered
+- Session restore: windows, tabs, splits, groups, open files and recent output come back on launch and after closing
+  the last window with its red button (closing its tabs one by one starts over, as does Restart Fresh), or are offered
   in the corner for a minute if you'd rather start fresh.
 - A corner notice when a long command finishes in a tab you're not looking at.
 - Updates itself: once a day it checks main in the repository it was built from and offers Update & Restart, which
@@ -78,6 +79,8 @@ folder access) each time. To keep them, create a self-signed code-signing certif
 | Keys | Action |
 |---|---|
 | ⇧⌘P | Command palette (every command, theme and snippet) |
+| ⇧⌘R | Restart Solanum, bringing everything back |
+| ⌥⇧⌘R | Restart Fresh: nothing that was open comes back |
 | ⌃` | Quick terminal (change in Settings) |
 | ⌘T / ⌘N / ⌘W | New tab / new window / close pane |
 | ⌘D / ⇧⌘D | Split right / split down |

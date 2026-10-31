@@ -1432,6 +1432,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     var allTabs: [TabSession] { columns.flatMap(\.tabs) }
     let rootView = WindowRootView()
     var onClose: ((TerminalWindowController) -> Void)?
+    var onWillClose: ((TerminalWindowController) -> Void)?
     private var configObserver: NSObjectProtocol?
     /// The tab each sidebar last showed (see `updateSidebar`).
     private var sidebarTabs: [ObjectIdentifier: ObjectIdentifier] = [:]
@@ -2160,15 +2161,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         alert.addButton(withTitle: "Close")
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: sender) { resp in
-            if resp == .alertFirstButtonReturn {
-                self.allTabs.forEach { $0.terminateAll() }
-                sender.close()
-            }
+            if resp == .alertFirstButtonReturn { sender.close() }
         }
         return false
     }
 
     func windowWillClose(_ notification: Notification) {
+        // Before anything stops, so what's saved knows which agents were running.
+        onWillClose?(self)
         allTabs.forEach { $0.terminateAll() }
         onClose?(self)
     }

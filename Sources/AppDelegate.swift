@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private var pendingOpens: [URL]? = []
     /// Set while ⇧⌘R is quitting so the app comes back up afterwards.
     private var restarting = false
+    /// Restart Fresh: quitting without saving what's open.
+    private var forgettingSession = false
     /// The app to open when restarting, if not this one: a freshly installed update (kept until a restart happens,
     /// so a restart postponed at the prompt still opens the new build).
     var relaunchPath: String?
@@ -38,14 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             self?.keepAwakeItem?.title = Config.shared.keepAwakeTitle
             self?.rebuildThemeMenu()
         }
-        if Config.shared.restoreSession {
-            if !restore(SessionStore.load()) { newWindow(nil) }
-        } else {
-            // Read before the fresh window's first autosave replaces it.
-            let last = SessionStore.load()
-            newWindow(nil)
-            if let last, !last.windows.isEmpty { offerRestore(last) }
-        }
+        reopenWorkspace()
         Updater.shared.start()
         QuantumMoon.start()
         // Saved periodically too, so a crash or force-quit loses at most a few seconds of layout.
@@ -72,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     /// Opens a local file in the editor beside the front window's panes (opening a window if there is none).
     func openInEditor(_ path: String) {
         let front = [NSApp.keyWindow, NSApp.mainWindow].lazy.compactMap { $0?.windowController as? TerminalWindowController }.first
-        if front == nil && windows.isEmpty { newWindow(nil) }
+        if front == nil && windows.isEmpty { reopenWorkspace() }
         guard let wc = front ?? windows.last else { return }
         wc.window?.makeKeyAndOrderFront(nil)
         wc.activeTab?.openFile(LocalFileSystem.shared, path)
@@ -98,13 +93,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !windows.contains(where: { $0.window?.isVisible == true }) { newWindow(nil) }
+        if windows.isEmpty { reopenWorkspace() }
+        else if !windows.contains(where: { $0.window?.isVisible == true }) { newWindow(nil) }
         return true
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let running = windows.contains { $0.hasRunningJobs }
-        guard running && Config.shared.confirmQuit else { return .terminateNow }
+        guard running && Config.shared.confirmQuit && !forgettingSession && !Headless.active else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = restarting ? "Restart Solanum?" : "Quit Solanum?"
         alert.informativeText = "Some tabs still have running processes. They will be terminated."
@@ -114,9 +110,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        SessionStore.save(windows, sync: true)
+        if forgettingSession { SessionStore.forget() } else { SessionStore.save(windows, sync: true) }
+        SessionStore.stopSaving()
         for w in windows { w.tabs.forEach { $0.terminateAll() } }
-        if restarting {
+        if restarting && !Headless.active {
             // A detached shell waits for this process to exit, then opens the app again (picking up a new build).
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -133,6 +130,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
     /// Solanum › Check for Updates…
     @objc func checkForUpdates(_ sender: Any?) { Updater.shared.check(manual: true) }
+
+    /// ⌥⇧⌘R: quit and reopen with one new window; nothing that was open comes back.
+    @objc func restartFresh(_ sender: Any?) {
+        if !Headless.active {
+            let alert = NSAlert()
+            alert.messageText = "Restart Fresh?"
+            alert.informativeText = "Every window and tab closes, along with anything running or unsaved in them, and none of it comes back."
+            alert.addButton(withTitle: "Restart Fresh")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        forgettingSession = true
+        restartApp(sender)
+    }
 
     /// ⇧⌘R: quit and reopen, restoring windows and tabs (and loading the installed build).
     @objc func restartApp(_ sender: Any?) {
@@ -163,6 +174,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     }
 
     @objc func newWindow(_ sender: Any?) {
+        // Asked for with none open, as from the menu after closing the last one: what was open comes back.
+        if sender != nil && windows.isEmpty { return reopenWorkspace() }
         let wc = TerminalWindowController(cwd: nil)
         if let last = windows.last?.window {
             wc.window?.setFrameTopLeftPoint(NSPoint(x: last.frame.minX + 28, y: last.frame.maxY - 28))
@@ -173,12 +186,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     }
 
     private func present(_ wc: TerminalWindowController) {
+        wc.onWillClose = { [weak self] c in
+            guard self?.windows.allSatisfy({ $0 === c }) == true else { return }
+            // The last window: its tabs come back, unless closing them is what closed it.
+            if c.allTabs.isEmpty { SessionStore.forget() } else { SessionStore.save([c], sync: true) }
+        }
         wc.onClose = { [weak self] c in
             DispatchQueue.main.async { self?.windows.removeAll { $0 === c } }
         }
         windows.append(wc)
         wc.showWindow(nil)
         wc.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// With no windows open (launching, or the last one was closed): the saved session, or per Settings a new window
+    /// offering it.
+    private func reopenWorkspace() {
+        if Config.shared.restoreSession {
+            if !restore(SessionStore.load()) { newWindow(nil) }
+        } else {
+            // Read before the fresh window's first autosave replaces it.
+            let last = SessionStore.load()
+            newWindow(nil)
+            if let last, !last.windows.isEmpty { offerRestore(last) }
+        }
     }
 
     /// Reopens the windows saved at last quit. Returns false if there was nothing to restore.
@@ -212,7 +243,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             wc.newTab(nil)
             wc.window?.makeKeyAndOrderFront(nil)
         } else {
-            newWindow(nil)
+            newWindow(sender)
         }
     }
 
@@ -358,6 +389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         _ = add(app, "Open Config File", #selector(openConfigFile(_:)), "")
         _ = add(app, "Reload Config", #selector(reloadConfig(_:)), "")
         _ = add(app, "Restart Solanum", #selector(restartApp(_:)), "r", [.command, .shift])
+        _ = add(app, "Restart Fresh…", #selector(restartFresh(_:)), "r", [.command, .shift, .option])
         app.addItem(.separator())
         let services = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
         services.submenu = NSMenu(title: "Services")
