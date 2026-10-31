@@ -2205,12 +2205,11 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     private var dragStartX: CGFloat = 0
     /// Where the press was, so a drag counts in any direction (straight down off the strip, too).
     private var dragStartY: CGFloat = 0
-    /// While a tab is being dragged: the pointer's x, where on the tab it was grabbed, and the tab it would
-    /// land in front of (tabs.count = the end). The tab follows the pointer; a line marks the landing spot.
+    /// While a tab is being dragged: the pointer's x and where on the tab it was grabbed. The tab follows the
+    /// pointer and trades places with each neighbor it slides halfway over, as in Chrome.
     private var dragging = false
     private var dragX: CGFloat = 0
     private var grabOffset: CGFloat = 0
-    private var insertBefore: Int?
     /// While a group's chip is being dragged, the group (chip and tabs) follows the pointer like a dragged tab;
     /// `groupInsertBefore` is the tab it would land in front of (tabs.count = the end).
     private var dragGroup: TabGroup?
@@ -2624,17 +2623,6 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             drawTab(c.tabs[di], at: di, in: r, active: true, hovered: false, keyWindow: keyWindow)
             ctx?.endTransparencyLayer()
             ctx?.setAlpha(1)
-            // The landing line goes on top so the floating tab never hides it.
-            if let ins = insertBefore, let x = insertionX(ins, dragged: di) {
-                let color = c.tabs[di].group?.color.color ?? th.accent
-                // Taller than the tabs, so it reads as a marker even where it crosses the floating tab.
-                let bar = NSBezierPath(roundedRect: NSRect(x: x - 1.5, y: bounds.midY - 17, width: 3, height: 34), xRadius: 1.5, yRadius: 1.5)
-                th.background.withAlphaComponent(0.8).setStroke()
-                bar.lineWidth = 2
-                bar.stroke()
-                color.setFill()
-                bar.fill()
-            }
         }
     }
 
@@ -2691,60 +2679,34 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             path.stroke()
         }
 
-        // An agent's mark and status, or a dot for a running (accent) / failed (red) command.
-        var textX = r.minX + 12
-        if let agent = tab.agent {
-            textX += agent.draw(at: textX, midY: r.midY) + 6
-        } else if tab.isRunningCommand || tab.lastCommandFailed {
-            (tab.isRunningCommand ? th.accent : th.red).setFill()
-            NSBezierPath(ovalIn: NSRect(x: textX, y: r.midY - 3, width: 6, height: 6)).fill()
-            textX += 12
-        }
-
+        // An agent's mark and status, or a dot for a running (accent) / failed (red) command, at the tab's left edge
+        // with the title right after it. A tab without one centers its title. Either way the title stays clear of
+        // the close button's room and is laid out the same whether the tab is active, hovered or neither.
+        let dot = tab.agent == nil && (tab.isRunningCommand || tab.lastCommandFailed)
+        let iconW: CGFloat = tab.agent != nil ? 13 + 3 + 6 : dot ? 6 : 0
+        let iconGap: CGFloat = iconW > 0 ? 7 : 0
+        let pad: CGFloat = 12, closeRoom: CGFloat = 28
         let showClose = (hovered || active) && !dragging && !dragGroupMoved && r.width >= 60
         let titleColor = active ? th.foreground : th.foreground.withAlphaComponent(0.55)
-        // The title is laid out the same whether the tab is active, hovered or neither (one weight, and no room
-        // kept for the close button), so it never moves; the close button fades out whatever runs under it.
         let font = NSFont.systemFont(ofSize: 12, weight: .medium)
         let para = NSMutableParagraphStyle()
         para.lineBreakMode = .byTruncatingMiddle
-        para.alignment = .center
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: titleColor, .paragraphStyle: para]
-        let titleRect = NSRect(x: textX, y: r.midY - 8, width: r.maxX - textX - 12, height: 16)
+        let titleX = r.minX + pad + iconW + iconGap
+        let room = max(0, r.maxX - closeRoom - titleX)
+        // Cut at a whole word where it can be; a path or a single word keeps its end instead (middle truncation).
+        let title = Self.fitTitle(tab.title, full: room, width: room, attrs: attrs) ?? tab.title
+        let titleW = min(room, ceil((title as NSString).size(withAttributes: attrs).width))
+        let x = iconW > 0 ? titleX : max(titleX, min(r.midX - titleW / 2, r.maxX - closeRoom - titleW))
+
+        if let agent = tab.agent {
+            agent.draw(at: r.minX + pad, midY: r.midY)
+        } else if dot {
+            (tab.isRunningCommand ? th.accent : th.red).setFill()
+            NSBezierPath(ovalIn: NSRect(x: r.minX + pad, y: r.midY - 3, width: 6, height: 6)).fill()
+        }
         if !isEditing(tab) {
-            let fadeEnd = r.maxX - 26, fadeStart = fadeEnd - 14
-            // A cut title is centered in the room before the close button's fade, so its "…" shows (the same
-            // whether the button shows or not).
-            var attrs = attrs, titleRect = titleRect
-            let cut = Self.fitTitle(tab.title, full: titleRect.width, width: fadeStart - titleRect.minX, attrs: attrs)
-            if cut != nil {
-                let centered = NSMutableParagraphStyle()
-                centered.lineBreakMode = .byClipping
-                centered.alignment = .center
-                attrs[.paragraphStyle] = centered
-                titleRect.size.width = fadeStart - titleRect.minX
-            }
-            let title = cut ?? tab.title
-            let tw = min(titleRect.width, ceil((title as NSString).size(withAttributes: attrs).width))
-            if showClose, titleRect.midX + tw / 2 > fadeStart, let ctx = NSGraphicsContext.current?.cgContext {
-                ctx.saveGState()
-                ctx.beginTransparencyLayer(auxiliaryInfo: nil)
-                (title as NSString).draw(in: titleRect, withAttributes: attrs)
-                ctx.setBlendMode(.destinationOut)
-                let clear = CGColor(gray: 0, alpha: 0), solid = CGColor(gray: 0, alpha: 1)
-                if let fade = CGGradient(colorsSpace: nil, colors: [clear, solid] as CFArray, locations: [0, 1]) {
-                    ctx.saveGState()
-                    ctx.clip(to: CGRect(x: fadeStart, y: r.minY, width: fadeEnd - fadeStart, height: r.height))
-                    ctx.drawLinearGradient(fade, start: CGPoint(x: fadeStart, y: 0), end: CGPoint(x: fadeEnd, y: 0), options: [])
-                    ctx.restoreGState()
-                }
-                ctx.setFillColor(solid)
-                ctx.fill(CGRect(x: fadeEnd, y: r.minY, width: r.maxX - fadeEnd, height: r.height))
-                ctx.endTransparencyLayer()
-                ctx.restoreGState()
-            } else {
-                (title as NSString).draw(in: titleRect, withAttributes: attrs)
-            }
+            (title as NSString).draw(in: NSRect(x: x, y: r.midY - 8, width: titleW, height: 16), withAttributes: attrs)
         }
 
         if showClose {
@@ -2976,36 +2938,6 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         let lo = viewport.minX
         let hi = max(lo, min(plusRect.maxX, viewport.maxX) - r.width)
         return CGRect(x: min(max(dragX - grabOffset, lo), hi), y: r.minY, width: r.width, height: r.height)
-    }
-
-    /// The group a tab would end up in if dropped in front of `ins` (mirrors `moveTab`'s rule).
-    private func groupAfterDrop(_ di: Int, before ins: Int) -> TabGroup? {
-        guard let c = controller else { return nil }
-        let others = c.tabs.indices.filter { $0 != di }
-        let left = others.last { $0 < ins }.map { c.tabs[$0].group } ?? nil
-        let right = ins < c.tabs.count ? c.tabs[ins].group : nil
-        let own = c.tabs[di].group
-        if let l = left, l === right { return l }
-        if let g = own, g === left || g === right { return g }
-        return nil
-    }
-
-    /// x of the landing line for a drop in front of `ins`; nil when the tab would stay where it is.
-    private func insertionX(_ ins: Int, dragged di: Int) -> CGFloat? {
-        guard let c = controller else { return nil }
-        let to = ins > di ? ins - 1 : ins
-        if to == di && groupAfterDrop(di, before: ins) === c.tabs[di].group { return nil }
-        if ins >= c.tabs.count {
-            guard let last = tabRects.indices.last(where: { $0 != di && !tabRects[$0].isNull }) else { return nil }
-            return tabRects[last].maxX + 2
-        }
-        let r = tabRects[ins]
-        // In front of a group's first tab but not joining it: the line goes before the group's chip.
-        if let g = c.tabs[ins].group, groupAfterDrop(di, before: ins) !== g,
-           let chip = chips.first(where: { $0.group === g })?.rect, c.tabs.firstIndex(where: { $0.group === g }) == ins {
-            return chip.minX - 3
-        }
-        return r.minX - 2
     }
 
     // MARK: Inline rename
@@ -3423,36 +3355,48 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             dragX = p.x
             dropTab = nil
             dropChip = nil
-            insertBefore = nil
             needsDisplay = true
             return
         }
         c.owner?.clearTabDrop()
-        dragTab(di, to: p, in: c)
+        dragTab(di, to: p, in: c, grouping: e.modifierFlags.contains(.option))
     }
 
-    /// The tab follows the pointer and nothing moves until release. Over the middle of another tab (outside
-    /// the dragged tab's group) or a group's chip, the target is highlighted and releasing groups the tab;
-    /// anywhere else a line shows where it will land, in front of the first tab whose middle is past the pointer.
-    private func dragTab(_ di: Int, to p: NSPoint, in c: TabColumn) {
+    /// The tab follows the pointer, and the tabs it passes slide aside: once it's halfway over a neighbor the two
+    /// trade places (joining or leaving groups by where it lands, as `moveTab` decides). Over another group's
+    /// chip, releasing adds it to that group; with ⌥ held, over another tab, releasing groups the two.
+    private func dragTab(_ di: Int, to p: NSPoint, in c: TabColumn, grouping: Bool) {
         dragX = p.x
-        var overTab: Int?, overChip: TabGroup?, insert: Int?
-        let visible = c.tabs.indices.filter { $0 != di && !tabRects[$0].isNull }
-        if let t = visible.first(where: { p.x >= tabRects[$0].minX && p.x <= tabRects[$0].maxX }) {
-            let r = tabRects[t], edge = r.width / 4
-            if p.x > r.minX + edge && p.x < r.maxX - edge, c.tabs[t].group == nil || c.tabs[t].group !== c.tabs[di].group {
-                overTab = t
-            }
-        } else if let g = chips.first(where: { p.x >= $0.rect.minX && p.x <= $0.rect.maxX })?.group, g !== c.tabs[di].group {
-            overChip = g
-        }
-        if overTab == nil && overChip == nil {
-            insert = visible.first { tabRects[$0].midX > p.x } ?? c.tabs.count
-        }
-        dropTab = overTab
-        dropChip = overChip
-        insertBefore = insert
+        dropTab = nil
+        dropChip = nil
         needsDisplay = true
+        if grouping {
+            dropTab = c.tabs.indices.first {
+                $0 != di && tabRects[$0].contains(NSPoint(x: p.x, y: tabRects[$0].midY))
+                    && (c.tabs[$0].group == nil || c.tabs[$0].group !== c.tabs[di].group)
+            }
+            return
+        }
+        if let g = chips.first(where: { p.x >= $0.rect.minX && p.x <= $0.rect.maxX })?.group, g !== c.tabs[di].group {
+            dropChip = g
+            return
+        }
+        var di = di
+        for _ in 0..<c.tabs.count {
+            let r = floatingRect(di)
+            let visible = c.tabs.indices.filter { $0 != di && !tabRects[$0].isNull }
+            if let right = visible.first(where: { $0 > di }), r.maxX > tabRects[right].midX {
+                c.moveTab(from: di, to: right)
+                di = right
+            } else if let left = visible.last(where: { $0 < di }), r.minX < tabRects[left].midX {
+                c.moveTab(from: di, to: left)
+                di = left
+            } else {
+                break
+            }
+            dragIndex = di
+            computeRects()
+        }
     }
 
     /// Dragging a chip lifts its whole group, which follows the pointer while nothing else moves (as with a
@@ -3482,15 +3426,12 @@ final class TabBarView: NSView, NSTextFieldDelegate {
                 c.groupTab(c.tabs[di], with: c.tabs[t])
             } else if let g = dropChip {
                 c.addTab(c.tabs[di], to: g)
-            } else if let ins = insertBefore, insertionX(ins, dragged: di) != nil {
-                c.moveTab(from: di, to: ins > di ? ins - 1 : ins)
             }
         }
         controller?.owner?.clearTabDrop()
         if dragging { NSCursor.pop() }
         needsDisplay = true
         dragging = false
-        insertBefore = nil
         dropTab = nil
         dropChip = nil
         dragGroup = nil
