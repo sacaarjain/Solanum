@@ -45,6 +45,8 @@ final class Line {
     var wrapped = false
     /// Combining characters attached to a base cell, keyed by column.
     var extras: [Int: String]?
+    /// OSC 8 hyperlinks: the URL each linked cell points to, keyed by column.
+    var links: [Int: String]?
 
     init(cols: Int, fill: Cell = Cell()) {
         cells = Array(repeating: fill, count: cols)
@@ -59,6 +61,7 @@ final class Line {
         let l = Line(cells: cells)
         l.wrapped = wrapped
         l.extras = extras
+        l.links = links
         return l
     }
 
@@ -81,6 +84,7 @@ final class Line {
             n -= 1
         }
         if let e = extras, let last = e.keys.max() { n = max(n, last + 1) }
+        if let k = links, let last = k.keys.max() { n = max(n, last + 1) }
         // A new array, not removeLast: that keeps the full capacity allocated.
         if n < cells.count { cells = n == 0 ? [] : Array(cells[..<n]) }
     }
@@ -89,6 +93,7 @@ final class Line {
         for i in cells.indices { cells[i] = fill }
         wrapped = false
         extras = nil
+        links = nil
     }
 
     func resize(cols: Int) {
@@ -96,6 +101,7 @@ final class Line {
             cells.removeLast(cells.count - cols)
             if let last = cells.last, last.width == 2 { cells[cols - 1] = Cell() }
             extras = extras?.filter { $0.key < cols }
+            links = links?.filter { $0.key < cols }
         } else if cells.count < cols {
             cells.append(contentsOf: repeatElement(Cell(), count: cols - cells.count))
         }

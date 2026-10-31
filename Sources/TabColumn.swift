@@ -62,6 +62,7 @@ final class TabColumn: NSObject, TabOwner {
         content.subviews.forEach { $0.removeFromSuperview() }
         activeIndex = index
         let tab = tabs[index]
+        tab.rang = false
         tab.view.frame = content.bounds
         tab.view.autoresizingMask = [.width, .height]
         content.addSubview(tab.view)

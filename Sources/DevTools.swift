@@ -298,6 +298,24 @@ enum SelfTest {
         }
         do {
             let (t, _) = make(20, 8)
+            feed(t, "see \u{1b}]8;id=1;https://example.com/a\u{1b}\\docs\u{1b}]8;;\u{1b}\\ now")
+            let l = t.screen[0]
+            check("OSC 8 links", (4...7).allSatisfy { l.links?[$0] == "https://example.com/a" } && l.links?[3] == nil && l.links?[8] == nil)
+            feed(t, "\r\u{1b}[K")
+            check("OSC 8 erased", t.screen[0].links?.isEmpty ?? true)
+            feed(t, String(repeating: "x", count: 18) + "\u{1b}]8;;file:///tmp/f\u{7}abcd\u{1b}]8;;\u{7}")
+            t.resize(cols: 10, rows: 8)
+            let linked = (0..<4).flatMap { a in (0..<10).filter { t.screen[a].links?[$0] == "file:///tmp/f" }.map { "\(a):\($0)" } }
+            check("OSC 8 links reflow", linked == ["1:8", "1:9", "2:0", "2:1"], linked.joined(separator: " "))
+        }
+        do {
+            check("OSC 8 link schemes", TerminalView.hyperlinkURL("https://a.com/x")?.absoluteString == "https://a.com/x"
+                  && TerminalView.hyperlinkURL("file://localhost/tmp/a%20b")?.path == "/tmp/a b"
+                  && TerminalView.hyperlinkURL("file://some-other-host.example/tmp/a") == nil
+                  && TerminalView.hyperlinkURL("x-apple.systempreferences:foo") == nil)
+        }
+        do {
+            let (t, _) = make(20, 8)
             feed(t, "\u{1b}[1;31mred\u{1b}[0m plain\r\n" + String(repeating: "x", count: 25) + "\r\n\u{1b}[48;2;10;20;30mshaded\u{1b}[0m")
             let (u, _) = make(20, 8)
             feed(u, t.restorableText(maxLines: 100))
@@ -697,6 +715,24 @@ enum SnapshotHelper {
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1 * Double(k)) {
                                     event(.leftMouseDragged, p1).map(pane.mouseDragged)
                                     if k == steps { event(.leftMouseUp, p1).map(pane.mouseUp) }
+                                }
+                            }
+                        }
+                    }
+                    if action.hasPrefix("opt-drag:"), let w = pane.window {
+                        // opt-drag:<col0>:<row0>:<col1>:<row1> — an ⌥-drag between two screen cells (a rectangular selection).
+                        let n = action.dropFirst(9).split(separator: ":").compactMap { Double($0) }
+                        if n.count == 4 {
+                            func at(_ col: Double, _ row: Double) -> NSPoint {
+                                pane.convert(NSPoint(x: pane.padX + (col + 0.5) * pane.fonts.cellW, y: pane.padTop + (row + 0.5) * pane.fonts.cellH), to: nil)
+                            }
+                            for (t, p) in [(NSEvent.EventType.leftMouseDown, at(n[0], n[1])), (.leftMouseDragged, at(n[2], n[3])), (.leftMouseUp, at(n[2], n[3]))] {
+                                guard let e = NSEvent.mouseEvent(with: t, location: p, modifierFlags: [.option], timestamp: 0, windowNumber: w.windowNumber,
+                                                                 context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { continue }
+                                switch t {
+                                case .leftMouseDown: pane.mouseDown(with: e)
+                                case .leftMouseDragged: pane.mouseDragged(with: e)
+                                default: pane.mouseUp(with: e)
                                 }
                             }
                         }

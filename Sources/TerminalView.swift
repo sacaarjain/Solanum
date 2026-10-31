@@ -17,6 +17,10 @@ struct Selection {
     /// Top rule of Claude Code's input box, when the selection lies inside it: the box is redrawn lower down
     /// whenever Claude prints above it, and the selection moves with it (see `followInputBox`).
     var inputBoxTop: Int?
+    /// ⌥-drag: the columns between the two ends on every line between them, not running text.
+    var rect = false
+    /// A rectangular selection's columns.
+    var cols: ClosedRange<Int> { min(aStart.col, hStart.col)...max(aEnd.col, hEnd.col) }
 }
 
 struct SearchMatch {
@@ -248,6 +252,11 @@ final class TerminalView: NSView, TerminalDelegate {
     var awaitingCursorEcho = false
     /// While a selection in Claude Code's box is being removed: what follows it, keys typed meanwhile included.
     var afterSelectionDeleted: [() -> Void]?
+    /// Text the input method is still composing (Chinese, Japanese, Korean, a dead key), drawn at the cursor.
+    var markedText = ""
+    var markedSelection = NSRange(location: 0, length: 0)
+    /// The key being handed to the input method, for what it passes back (see `doCommand(by:)`).
+    var keyEventForInput: NSEvent?
     var selectionDeleteGeneration = 0
     /// Output from a previous session, replayed above the new shell's first prompt.
     var restoredText: String?
@@ -816,8 +825,19 @@ final class TerminalView: NSView, TerminalDelegate {
     func terminalBell(_ t: Terminal) {
         bellFlash = 1
         animateBell()
+        // At most a few a second: a program ringing in a loop shouldn't ring on and on.
+        if Config.shared.audibleBell, Date().timeIntervalSince(Self.lastBellSound) > 0.25 {
+            Self.lastBellSound = Date()
+            NSSound.beep()
+        }
+        if let tab, !tab.isShown, !tab.rang {
+            tab.rang = true
+            tab.owner?.tabDidUpdate(tab)
+        }
         if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
     }
+
+    private static var lastBellSound = Date.distantPast
 
     private func animateBell() {
         Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
@@ -1104,6 +1124,7 @@ final class TerminalView: NSView, TerminalDelegate {
         drawCells(ctx)
         drawImageChips(ctx)
         drawCursor(ctx)
+        drawMarkedText(ctx)
         drawBlockChrome(ctx, spans)
         drawCopyButtons(ctx)
         drawTurnChrome(ctx)
@@ -1185,7 +1206,15 @@ final class TerminalView: NSView, TerminalDelegate {
         let th = palette.theme
         for b in codeBoxes where b.kind == .code {
             guard let (r0, r1) = visibleRows(b) else { continue }
-            let x = max(2, padX + CGFloat(b.indent) * fonts.cellW - 9)
+            var x = max(2, padX + CGFloat(b.indent) * fonts.cellW - 9)
+            // Keep the edge clear of anything left of the code, such as the "⏺" before a reply's first line.
+            var left = -1
+            for r in r0...r1 {
+                guard let l = terminal.line(abs: rowMap[r]) else { continue }
+                for c in stride(from: min(b.indent, l.cells.count) - 1, to: left, by: -1)
+                where l.cells[c].ch != 0 && l.cells[c].ch != 0x20 { left = c; break }
+            }
+            if left >= 0 { x = max(x, min(padX + CGFloat(left + 1) * fonts.cellW + 3, padX + CGFloat(b.indent) * fonts.cellW - 3)) }
             let rect = CGRect(x: x, y: rowY(r0) - 1, width: bounds.width - padX + 6 - x, height: CGFloat(r1 - r0 + 1) * fonts.cellH + 2)
             let path = CGPath(roundedRect: rect, cornerWidth: 6, cornerHeight: 6, transform: nil)
             ctx.setFillColor(th.foreground.withAlphaComponent(0.045).cgColor)
@@ -1304,6 +1333,7 @@ final class TerminalView: NSView, TerminalDelegate {
         guard let s = selection else { return nil }
         let st = s.start, en = s.end
         guard a >= st.line && a <= en.line else { return nil }
+        if s.rect { return s.cols }
         let lo = a == st.line ? st.col : 0
         let hi = a == en.line ? en.col : terminal.cols - 1
         return lo <= hi ? lo...hi : nil
@@ -1529,6 +1559,49 @@ final class TerminalView: NSView, TerminalDelegate {
             ctx.setFillColor(color)
             ctx.fill(CGRect(x: x, y: y + fonts.baseline + fonts.underlineOffset, width: w, height: 2))
         }
+    }
+
+    /// Text being composed, over the cells from the cursor on: underlined, with the part being converted thicker.
+    private func drawMarkedText(_ ctx: CGContext) {
+        guard !markedText.isEmpty, let r = rowMap.firstIndex(of: terminal.cursorAbs) else { return }
+        let x0 = padX + CGFloat(terminal.cursorX) * fonts.cellW, y = rowY(r)
+        let widths = markedText.unicodeScalars.map { CGFloat(CharWidth.of($0.value)) }
+        let w = widths.reduce(0, +) * fonts.cellW
+        ctx.setFillColor(palette.bg)
+        ctx.fill(CGRect(x: x0, y: y, width: w, height: fonts.cellH))
+        drawString(markedText, style: 0, color: palette.fg, x: x0, baseline: y + fonts.baseline, ctx)
+        let uy = y + fonts.baseline + fonts.underlineOffset
+        ctx.setFillColor(palette.fg)
+        ctx.fill(CGRect(x: x0, y: uy, width: w, height: fonts.lineWidth))
+        // The clause the input method has selected, in UTF-16 offsets.
+        let sel = markedSelection
+        if sel.length > 0 {
+            var offset = 0, start: CGFloat?, end = x0
+            var x = x0
+            for (i, sc) in markedText.unicodeScalars.enumerated() {
+                if offset >= sel.location && offset < sel.location + sel.length {
+                    if start == nil { start = x }
+                    end = x + widths[i] * fonts.cellW
+                }
+                offset += sc.utf16.count
+                x += widths[i] * fonts.cellW
+            }
+            if let start { ctx.fill(CGRect(x: start, y: uy, width: end - start, height: fonts.lineWidth * 2)) }
+        }
+        // Where the next character goes.
+        let caretX = x0 + widths.prefix(caretScalarIndex()).reduce(0, +) * fonts.cellW
+        ctx.setFillColor(palette.cursor)
+        ctx.fill(CGRect(x: caretX, y: y + fonts.baseline - fonts.ascent - 1, width: 2, height: ceil(fonts.ascent + fonts.descent) + 2))
+    }
+
+    /// The scalar the input method's caret sits before (its selection's start, in UTF-16 offsets).
+    private func caretScalarIndex() -> Int {
+        var offset = 0
+        for (i, sc) in markedText.unicodeScalars.enumerated() {
+            if offset >= markedSelection.location { return i }
+            offset += sc.utf16.count
+        }
+        return markedText.unicodeScalars.count
     }
 
     private func drawBlockChrome(_ ctx: CGContext, _ spans: [(block: Block, first: Int, last: Int)]) {

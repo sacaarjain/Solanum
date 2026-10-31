@@ -128,7 +128,8 @@ extension TerminalView {
         h.combine(scrollOffset); h.combine(totalDisplayLines)
         for r in hiddenRanges { h.combine(r.lowerBound); h.combine(r.upperBound) }
         h.combine(dimmed); h.combine(bellFlash)
-        h.combine(selection?.start); h.combine(selection?.end)
+        h.combine(selection?.start); h.combine(selection?.end); h.combine(selection?.rect)
+        h.combine(markedText); h.combine(markedSelection.location); h.combine(markedSelection.length)
         h.combine(searchMatches.count); h.combine(currentMatch)
         h.combine(hoverURL?.line); h.combine(hoverURL?.start); h.combine(hoverURL?.end); h.combine(hoverLinkCard)
         for b in [selectedBlock, hoverBlock, copiedBlock] { h.combine(b?.id) }

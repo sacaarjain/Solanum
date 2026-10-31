@@ -247,6 +247,10 @@ final class TabSession: NSObject {
     var lastCommandFailed: Bool { focusedPane.terminal.blocks.last(where: { $0.state == .finished })?.failed ?? false }
     var hasRunningJobs: Bool { panes.contains { $0.hasRunningJob } }
     var isActive: Bool { owner?.isActiveTab(self) ?? false }
+    /// Showing in its column (whether or not its window is in front).
+    var isShown: Bool { (owner as? TabColumn).map { $0.activeTab === self } ?? true }
+    /// A program rang the bell while the tab was in the background: a bell in the tab until it's next shown.
+    var rang = false
 
     func focus() {
         if !showsTerminal, let ed = editor { return ed.focus() }
@@ -2869,8 +2873,9 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         // An agent's mark and status, or a dot for a running (accent) / failed (red) command, at the tab's left edge
         // with the title right after it. A tab without one centers its title. Either way the title stays clear of
         // the close button's room and is laid out the same whether the tab is active, hovered or neither.
-        let dot = tab.agent == nil && (tab.isRunningCommand || tab.lastCommandFailed)
-        let iconW: CGFloat = tab.agent != nil ? 13 + 3 + 6 : dot ? 6 : 0
+        let bell = tab.agent == nil && tab.rang
+        let dot = tab.agent == nil && !bell && (tab.isRunningCommand || tab.lastCommandFailed)
+        let iconW: CGFloat = tab.agent != nil ? 13 + 3 + 6 : bell ? 11 : dot ? 6 : 0
         let iconGap: CGFloat = iconW > 0 ? 7 : 0
         let pad: CGFloat = 12, closeRoom: CGFloat = 28
         let showClose = (hovered || active) && !dragging && !dragGroupMoved && r.width >= 60
@@ -2888,6 +2893,12 @@ final class TabBarView: NSView, NSTextFieldDelegate {
 
         if let agent = tab.agent {
             agent.draw(at: r.minX + pad, midY: r.midY)
+        } else if bell {
+            let config = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold).applying(.init(paletteColors: [th.yellow]))
+            if let img = NSImage(systemSymbolName: "bell.fill", accessibilityDescription: "Bell")?.withSymbolConfiguration(config) {
+                img.draw(in: NSRect(x: r.minX + pad + (11 - img.size.width) / 2, y: r.midY - img.size.height / 2,
+                                    width: img.size.width, height: img.size.height))
+            }
         } else if dot {
             (tab.isRunningCommand ? th.accent : th.red).setFill()
             NSBezierPath(ovalIn: NSRect(x: r.minX + pad, y: r.midY - 3, width: 6, height: 6)).fill()

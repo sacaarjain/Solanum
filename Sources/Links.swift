@@ -40,9 +40,18 @@ extension TerminalView {
         }
     }
 
-    /// Finds a link under the given point, searching the whole wrapped logical line.
+    /// Finds a link under the given point: one a program printed (OSC 8), or a URL in the text, searching the whole
+    /// wrapped logical line.
     func urlAt(_ p: NSPoint) -> (url: URL, line: Int, start: Int, end: Int)? {
         let pos = gridPos(at: p)
+        if let l = terminal.line(abs: pos.line), let target = l.links?[pos.col] {
+            guard let url = Self.hyperlinkURL(target) else { return nil }
+            // The hovered row's run of cells linking there.
+            var s = pos.col, e = pos.col
+            while s > 0, l.links?[s - 1] == target { s -= 1 }
+            while l.links?[e + 1] == target { e += 1 }
+            return (url, pos.line, s, e)
+        }
         let (a, b) = lineRange(at: pos)
         var text = ""
         var map: [GridPos] = []
@@ -67,6 +76,27 @@ extension TerminalView {
         }
         return nil
     }
+
+    /// Where an OSC 8 link goes: web, mail and file links only. ls --hyperlink and the like name the host in file
+    /// links; one on this Mac opens, one on another host (from an ssh session) isn't a link here.
+    static func hyperlinkURL(_ s: String) -> URL? {
+        guard var c = URLComponents(string: s), let scheme = c.scheme?.lowercased(),
+              ["http", "https", "file", "ftp", "mailto"].contains(scheme) else { return nil }
+        if scheme == "file" {
+            if let h = c.host?.lowercased(), !h.isEmpty, h != "localhost", !localHostNames.contains(h) { return nil }
+            c.host = ""
+        }
+        return c.url
+    }
+
+    /// This Mac's host name, with and without ".local".
+    private static let localHostNames: Set<String> = {
+        var buf = [CChar](repeating: 0, count: 256)
+        guard gethostname(&buf, buf.count) == 0 else { return [] }
+        let name = String(cString: buf).lowercased()
+        let short = name.hasSuffix(".local") ? String(name.dropLast(6)) : name
+        return [name, short, short + ".local"]
+    }()
 
     /// Whether a plain click on a link in this line opens it: not in the line being typed (where a click places
     /// the text cursor) and not while a program reads the mouse.

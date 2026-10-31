@@ -17,7 +17,10 @@ final class Config {
     var cursorStyle = "bar"
     var cursorBlink = true
     var ligatures = true
-    var optionAsMeta = true
+    /// Which ⌥ keys act as Meta: both, left, right or off.
+    var optionAsMeta = "both"
+    /// A ring of the bell plays the system alert sound too (it always flashes the pane).
+    var audibleBell = false
     var boldIsBright = false
     /// On light themes, darken text too faint to read (colors programs chose for dark backgrounds).
     var minimumContrast = true
@@ -86,7 +89,13 @@ final class Config {
         case "cursor-style": cursorStyle = value.lowercased()
         case "cursor-blink": cursorBlink = bool()
         case "font-ligatures": ligatures = bool()
-        case "option-as-meta": optionAsMeta = bool()
+        case "option-as-meta":
+            switch value.lowercased() {
+            case "left", "right": optionAsMeta = value.lowercased()
+            case "false", "no", "off", "none": optionAsMeta = "off"
+            default: optionAsMeta = "both"
+            }
+        case "audible-bell": audibleBell = bool()
         case "bold-is-bright": boldIsBright = bool()
         case "minimum-contrast": minimumContrast = bool()
         case "scrollback-lines": if let n = Int(value) { scrollback = min(max(n, 100), 200_000) }
@@ -137,7 +146,11 @@ final class Config {
         cursor-style = \(cursorStyle)
         cursor-blink = \(cursorBlink)
 
+        # Which Option keys act as Meta: both | left | right | off. Either way Option types the characters a
+        # keyboard layout puts on it that are plain ASCII, such as @ [ ] { } | ~ on German and French layouts.
         option-as-meta = \(optionAsMeta)
+        # Play the alert sound when a program rings the bell (it always flashes the pane).
+        audible-bell = \(audibleBell)
         bold-is-bright = \(boldIsBright)
 
         # On light themes, darken text too faint to read, such as colors a program chose for dark backgrounds.

@@ -128,6 +128,8 @@ final class Terminal {
     private var g0: Charset = .ascii, g1: Charset = .ascii, gl = 0
     private var savedCursors = [SavedCursor(), SavedCursor()]
     private var lastPrinted: UInt32 = 0
+    /// The OSC 8 link being printed, if any: cells written now link to it.
+    private var hyperlink: String?
 
     var title: String?
     var cwd: String?
@@ -385,6 +387,13 @@ final class Terminal {
         if w == 2 {
             line.cells[cursorX + 1] = Cell(ch: 0, fg: attr.fg, bg: attr.bg, flags: attr.flags, width: 0)
         }
+        if let h = hyperlink {
+            if line.links == nil { line.links = [:] }
+            for x in cursorX..<(cursorX + w) { line.links![x] = h }
+        } else if line.links != nil {
+            for x in cursorX..<(cursorX + w) { line.links![x] = nil }
+            if line.links!.isEmpty { line.links = nil }
+        }
         lastPrinted = v
         if cursorX + w >= cols {
             cursorX = cols - 1
@@ -511,6 +520,7 @@ final class Terminal {
         line.cells.insert(contentsOf: repeatElement(blankCell(), count: n), at: x)
         line.cells.removeLast(n)
         line.extras = nil
+        line.links = nil
     }
 
     private func deleteChars(_ count: Int) {
@@ -520,6 +530,7 @@ final class Terminal {
         line.cells.removeSubrange(cursorX..<(cursorX + n))
         line.cells.append(contentsOf: repeatElement(blankCell(), count: n))
         line.extras = nil
+        line.links = nil
         pendingWrap = false
     }
 
@@ -530,6 +541,7 @@ final class Terminal {
         for x in cursorX..<end {
             line.cells[x] = b
             line.extras?[x] = nil
+            line.links?[x] = nil
         }
         pendingWrap = false
     }
@@ -562,12 +574,12 @@ final class Terminal {
         switch mode {
         case 0:
             if line.cells[cursorX].width == 0 && cursorX > 0 { line.cells[cursorX - 1] = b }
-            for x in cursorX..<cols { line.cells[x] = b; line.extras?[x] = nil }
+            for x in cursorX..<cols { line.cells[x] = b; line.extras?[x] = nil; line.links?[x] = nil }
             line.wrapped = false
         case 1:
             let end = min(cursorX, cols - 1)
             if end + 1 < cols && line.cells[end].width == 2 { line.cells[end + 1] = b }
-            for x in 0...end { line.cells[x] = b; line.extras?[x] = nil }
+            for x in 0...end { line.cells[x] = b; line.extras?[x] = nil; line.links?[x] = nil }
         case 2:
             line.clear(b)
         default: break
@@ -870,6 +882,7 @@ final class Terminal {
         cursorY = 0
         tabStops = Terminal.defaultTabs(cols)
         title = nil
+        hyperlink = nil
         delegate?.terminalTitleChanged(self)
     }
 
@@ -984,6 +997,11 @@ final class Terminal {
             if rest == "?", let c = delegate?.terminalColor(self, code: code) {
                 send("\u{1b}]\(code);\(Terminal.rgbSpec(c))\u{1b}\\")
             }
+        case 8:
+            // OSC 8 ; params ; URI starts a link (params, such as id=, aren't needed); an empty URI ends it.
+            let sub = rest.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+            let uri = sub.count == 2 ? String(sub[1]) : ""
+            hyperlink = uri.isEmpty || uri.count > 2048 ? nil : uri
         case 52:
             let sub = rest.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
             if sub.count == 2, sub[1] != "?", let data = Data(base64Encoded: String(sub[1])),
@@ -1076,6 +1094,7 @@ final class Terminal {
         b.state = .running
         b.startTime = Date()
         title = nil
+        hyperlink = nil
     }
 
     private func extractCommand(_ b: Block) -> String {
@@ -1099,6 +1118,7 @@ final class Terminal {
         b.endLine = max(end, (b.outputLine ?? b.promptLine + 1) - 1, b.promptLine)
         b.state = .finished
         title = nil
+        hyperlink = nil  // a program that quit mid-link doesn't link the shell's output
         delegate?.terminalBlockFinished(self, block: b)
     }
 
@@ -1213,6 +1233,7 @@ final class Terminal {
 
             var cells: [Cell] = []
             var extras: [Int: String] = [:]
+            var links: [Int: String] = [:]
             var starts: [Int] = []
             var cursorOff: Int?
             for k in i...j {
@@ -1222,6 +1243,7 @@ final class Terminal {
                 if k == cursorIdx { take = max(take, min(cx, l.cells.count)); cursorOff = cells.count + cx }
                 take = min(take, l.cells.count)
                 if let e = l.extras { for (col, s) in e where col < take { extras[cells.count + col] = s } }
+                if let k = l.links { for (col, s) in k where col < take { links[cells.count + col] = s } }
                 cells.append(contentsOf: l.cells[0..<take])
             }
 
@@ -1244,6 +1266,11 @@ final class Terminal {
                 if let e = extras[p] {
                     if cur.extras == nil { cur.extras = [:] }
                     cur.extras![x] = e
+                }
+                if let u = links[p] {
+                    if cur.links == nil { cur.links = [:] }
+                    cur.links![x] = u
+                    if c.width == 2 { cur.links![x + 1] = u }
                 }
                 if c.width == 2 {
                     cur.cells[x] = c
