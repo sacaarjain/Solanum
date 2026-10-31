@@ -70,27 +70,49 @@ final class Line {
         x < cells.count ? cells[x] : Cell()
     }
 
+    /// A blank line made from the full-width cells a line going into scrollback let go of (`trimForScrollback`),
+    /// refilled in place: no allocation unless something else (a row the view last drew) still shares them, and only
+    /// up to `clean` for a plain blank fill, since the cells from there on already are plain blanks.
+    init(reusing cells: [Cell], clean: Int, fill: Cell) {
+        self.cells = cells
+        let end = fill == Cell() ? clean : cells.count
+        self.cells.withUnsafeMutableBufferPointer { UnsafeMutableBufferPointer(rebasing: $0[..<end]).update(repeating: fill) }
+    }
+
     /// Drops the trailing blank cells of a line going into scrollback, where it's never written again: most lines
     /// are far shorter than the window, and a full row of cells for each adds up over thousands of lines. So a
     /// scrollback line can have fewer cells than there are columns; past its end it's blank (`cell(_:)`).
     /// Soft-wrapped lines keep every cell, since reflow joins them to the next line column for column.
-    func trimForScrollback() {
-        guard !wrapped else { return }
-        var n = cells.count
-        while n > 0 {
-            let c = cells[n - 1]
-            guard c.width != 0, c.ch == 0 || c.ch == 32, c.bg == 0,
-                  c.flags.isDisjoint(with: [.inverse, .strike, .underline, .doubleUnderline, .curlyUnderline]) else { break }
-            n -= 1
+    /// Returns the full-width cells it replaced, for the new line scrolling in at the bottom, and where the plain
+    /// blanks (`Cell()`) at their end begin (`init(reusing:clean:fill:)`).
+    @discardableResult
+    func trimForScrollback() -> (cells: [Cell], clean: Int)? {
+        guard !wrapped else { return nil }
+        var clean = cells.count
+        var n = cells.withUnsafeBufferPointer { b in
+            // Most of a short line's tail is plain blanks, skipped with one comparison each.
+            let plain = Cell()
+            while clean > 0 && b[clean - 1] == plain { clean -= 1 }
+            var n = clean
+            while n > 0 {
+                let c = b[n - 1]
+                guard c.width != 0, c.ch == 0 || c.ch == 32, c.bg == 0,
+                      c.flags.isDisjoint(with: [.inverse, .strike, .underline, .doubleUnderline, .curlyUnderline]) else { break }
+                n -= 1
+            }
+            return n
         }
         if let e = extras, let last = e.keys.max() { n = max(n, last + 1) }
         if let k = links, let last = k.keys.max() { n = max(n, last + 1) }
+        guard n < cells.count else { return nil }
         // A new array, not removeLast: that keeps the full capacity allocated.
-        if n < cells.count { cells = n == 0 ? [] : Array(cells[..<n]) }
+        let full = cells
+        cells = n == 0 ? [] : Array(full[..<n])
+        return (full, clean)
     }
 
     func clear(_ fill: Cell) {
-        for i in cells.indices { cells[i] = fill }
+        cells.withUnsafeMutableBufferPointer { $0.update(repeating: fill) }
         wrapped = false
         extras = nil
         links = nil
@@ -147,9 +169,10 @@ final class Line {
     }
 }
 
-/// Fixed-capacity ring buffer used for scrollback.
-struct Ring<T> {
-    private var buf: [T?]
+/// Fixed-capacity ring buffer of scrollback lines. Not generic: without whole-module optimization a generic one isn't
+/// specialized for code in other files, and every scrolled line paid for looking up its type at run time.
+struct Ring {
+    private var buf: [Line?]
     private var head = 0
     private(set) var count = 0
     private(set) var capacity: Int
@@ -161,7 +184,7 @@ struct Ring<T> {
 
     /// Appends an element; returns true if the oldest element was evicted.
     @discardableResult
-    mutating func append(_ x: T) -> Bool {
+    mutating func append(_ x: Line) -> Bool {
         if count < capacity {
             buf[(head + count) % capacity] = x
             count += 1
@@ -172,7 +195,7 @@ struct Ring<T> {
         return true
     }
 
-    subscript(i: Int) -> T {
+    subscript(i: Int) -> Line {
         buf[(head + i) % capacity]!
     }
 
@@ -182,13 +205,13 @@ struct Ring<T> {
         count = 0
     }
 
-    func toArray() -> [T] {
+    func toArray() -> [Line] {
         (0..<count).map { self[$0] }
     }
 
     /// Replaces contents (keeping only the newest `capacity` items). Returns number of items discarded.
     @discardableResult
-    mutating func reset(with items: [T], capacity newCap: Int? = nil) -> Int {
+    mutating func reset(with items: [Line], capacity newCap: Int? = nil) -> Int {
         if let c = newCap { capacity = max(1, c) }
         let excess = max(0, items.count - capacity)
         buf = Array(repeating: nil, count: capacity)
