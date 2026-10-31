@@ -95,7 +95,7 @@ final class Terminal {
     var screen: [Line]
     private(set) var primaryScreen: [Line] = []
     private(set) var usingAlt = false
-    private(set) var scrollback: Ring<Line>
+    private(set) var scrollback: Ring
     /// Number of lines ever evicted from scrollback; makes absolute line numbers stable.
     private(set) var dropped = 0
     /// Lines pushed into scrollback since the view last checked (for scroll anchoring).
@@ -494,23 +494,33 @@ final class Terminal {
     func scrollUp(_ n: Int) {
         let count = min(n, scrollBottom - scrollTop + 1)
         guard count > 0 else { return }
+        let fill = blankCell()
         for _ in 0..<count {
             let removed = screen.remove(at: scrollTop)
+            let blank: Line
             if scrollTop == 0 && !usingAlt {
-                removed.trimForScrollback()
+                // Into scrollback, trimmed; the full-width cells it lets go of become the new line's.
+                let full = removed.trimForScrollback()
                 if scrollback.append(removed) { dropped += 1 }
                 scrollbackPushes += 1
+                if let full, full.cells.count == cols { blank = Line(reusing: full.cells, clean: full.clean, fill: fill) } else { blank = Line(cols: cols, fill: fill) }
+            } else {
+                // Gone for good (a scroll region, or the alternate screen): the same line comes back in blank.
+                removed.clear(fill)
+                blank = removed
             }
-            screen.insert(Line(cols: cols, fill: blankCell()), at: scrollBottom)
+            screen.insert(blank, at: scrollBottom)
         }
     }
 
     private func scrollDown(_ n: Int) {
         let count = min(n, scrollBottom - scrollTop + 1)
         guard count > 0 else { return }
+        let fill = blankCell()
         for _ in 0..<count {
-            screen.remove(at: scrollBottom)
-            screen.insert(Line(cols: cols, fill: blankCell()), at: scrollTop)
+            let removed = screen.remove(at: scrollBottom)
+            removed.clear(fill)
+            screen.insert(removed, at: scrollTop)
         }
     }
 

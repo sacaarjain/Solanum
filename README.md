@@ -134,7 +134,8 @@ read, keeping its hue. Turn it off with `minimum-contrast = false`, or in Settin
 - **Snapshots:** `SOLANUM_SNAPSHOT=/tmp/shot.png` renders the first window to a PNG after a few seconds and quits.
   `SOLANUM_SNAPSHOT_ACTIONS` scripts what happens first (splits, tabs, typing, clicks…). The full list is at the top of
   `SnapshotHelper` in `Sources/DevTools.swift`. Set `SOLANUM_SESSION_FILE` to a scratch file so test runs never touch
-  your real session.
+  your real session. Snapshot runs are headless: no Dock icon, no focus taken, and windows stay invisible while they
+  draw, so tests can run while you work. `SOLANUM_SNAPSHOT_VISIBLE=1` shows them.
 
 ## Code map
 

@@ -7,5 +7,6 @@ if CommandLine.arguments.contains("--selftest") {
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.regular)
+app.setActivationPolicy(Headless.active ? .accessory : .regular)
+Headless.install()
 app.run()

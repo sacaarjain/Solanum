@@ -399,8 +399,84 @@ enum SelfTest {
             check("links: local or not", TerminalView.isLocal(URL(string: "http://localhost:3000")!)
                   && !TerminalView.isLocal(URL(string: "https://github.com")!))
         }
+        do {
+            // Scrolling reuses lines and their cells: what comes back in must be blank, all the way across.
+            let t = Terminal(cols: 20, rows: 3, scrollbackLimit: 100)
+            feed(t, "long line here!!\r\na\r\nbb\r\nccc\r\n")
+            check("scroll: scrollback keeps text", t.scrollback.count == 2 && t.scrollback[0].text() == "long line here!!"
+                  && t.scrollback[1].text() == "a", t.scrollback.toArray().map { $0.text() }.description)
+            check("scroll: scrollback lines trimmed", t.scrollback[1].cells.count == 1)
+            check("scroll: new lines blank and full width", (0..<3).map { row(t, $0) } == ["bb", "ccc", ""]
+                  && t.screen.allSatisfy { $0.cells.count == 20 } && t.screen[2].cells.allSatisfy { $0 == Cell() })
+            feed(t, "\u{1b}[44m\r\n\r\n")
+            check("scroll: erase color fills reused lines", t.screen[2].cells.allSatisfy { $0.bg == TermColor.indexed(4) })
+            feed(t, "\u{1b}[0mx\r\n\r\n\r\n")
+            check("scroll: plain lines after colored ones", t.screen.allSatisfy { $0.cells.allSatisfy { $0 == Cell() } || $0.text() == "x" })
+            let r = Terminal(cols: 10, rows: 4, scrollbackLimit: 100)
+            feed(r, "top\r\n\u{1b}[2;4r\u{1b}[2;1Hone\r\ntwo\r\nthree\r\nfour")
+            check("scroll: region reuses its line blank", (0..<4).map { row(r, $0) } == ["top", "two", "three", "four"]
+                  && r.scrollback.count == 0, (0..<4).map { row(r, $0) }.description)
+            feed(r, "\u{1b}[2;1H\u{1b}M")
+            check("scroll: reverse index in a region", (0..<4).map { row(r, $0) } == ["top", "", "two", "three"]
+                  && r.screen[1].cells.count == 10, (0..<4).map { row(r, $0) }.description)
+        }
         print(failures == 0 ? "All \(count) checks passed." : "\(failures) of \(count) checks FAILED.")
         return failures == 0
+    }
+}
+
+/// Development aid: snapshot runs (SOLANUM_SNAPSHOT) are headless, so a test never shows up over someone's work or
+/// takes their keyboard. There's no Dock icon or menu bar, the app never activates (nor hands activation to another
+/// app), and every window (sheets, panels, tooltips, the quick terminal) is fully transparent and click-through while
+/// still laying out and drawing as usual: the snapshot is drawn from the views, not read off the screen. Opening a
+/// link or file in another app only prints "headless: open <url>".
+/// SOLANUM_SNAPSHOT_VISIBLE=1 shows the windows, to watch a run.
+enum Headless {
+    static let active: Bool = {
+        let env = ProcessInfo.processInfo.environment
+        return env["SOLANUM_SNAPSHOT"] != nil && env["SOLANUM_SNAPSHOT_VISIBLE"] == nil
+    }()
+
+    static func install() {
+        guard active else { return }
+        swap(NSWindow.self, #selector(NSWindow.order(_:relativeTo:)), #selector(NSWindow.headlessOrder(_:relativeTo:)))
+        swap(NSWindow.self, #selector(setter: NSWindow.alphaValue), #selector(NSWindow.headlessSetAlphaValue(_:)))
+        swap(NSApplication.self, #selector(NSApplication.activate(ignoringOtherApps:)), #selector(NSApplication.headlessActivate(ignoringOtherApps:)))
+        swap(NSApplication.self, #selector(NSApplication.activate as (NSApplication) -> () -> Void),
+             #selector(NSApplication.headlessActivate as (NSApplication) -> () -> Void))
+        swap(NSRunningApplication.self, #selector(NSRunningApplication.activate(options:)), #selector(NSRunningApplication.headlessActivate(options:)))
+        swap(NSWorkspace.self, #selector(NSWorkspace.open(_:)), #selector(NSWorkspace.headlessOpen(_:)))
+    }
+
+    private static func swap(_ cls: AnyClass, _ a: Selector, _ b: Selector) {
+        guard let m = class_getInstanceMethod(cls, a), let n = class_getInstanceMethod(cls, b) else { return }
+        method_exchangeImplementations(m, n)
+    }
+}
+
+// Swapped in by Headless.install, so each calls the original under its own name.
+extension NSWindow {
+    @objc fileprivate func headlessOrder(_ place: NSWindow.OrderingMode, relativeTo other: Int) {
+        if place != .out { alphaValue = 0; hasShadow = false; ignoresMouseEvents = true }
+        headlessOrder(place, relativeTo: other)
+    }
+
+    @objc fileprivate func headlessSetAlphaValue(_ value: CGFloat) { headlessSetAlphaValue(0) }
+}
+
+extension NSApplication {
+    @objc fileprivate func headlessActivate(ignoringOtherApps flag: Bool) {}
+    @objc fileprivate func headlessActivate() {}
+}
+
+extension NSRunningApplication {
+    @objc fileprivate func headlessActivate(options: NSApplication.ActivationOptions) -> Bool { false }
+}
+
+extension NSWorkspace {
+    @objc fileprivate func headlessOpen(_ url: URL) -> Bool {
+        FileHandle.standardError.write("headless: open \(url.absoluteString)\n".data(using: .utf8)!)
+        return true
     }
 }
 
@@ -1223,7 +1299,10 @@ enum SnapshotHelper {
             img.lockFocus()
             Config.shared.theme.background.setFill()
             NSRect(origin: .zero, size: v.bounds.size).fill()
-            rep.draw(in: NSRect(origin: .zero, size: v.bounds.size))
+            // Blended over it: a plain draw copies the capture's alpha, leaving see-through holes where the background is
+            // translucent (background-opacity) or a view clears behind its text.
+            rep.draw(in: NSRect(origin: .zero, size: v.bounds.size), from: .zero, operation: .sourceOver, fraction: 1,
+                     respectFlipped: false, hints: nil)
             img.unlockFocus()
             if let tiff = img.tiffRepresentation, let bmp = NSBitmapImageRep(data: tiff),
                let png = bmp.representation(using: .png, properties: [:]) {
