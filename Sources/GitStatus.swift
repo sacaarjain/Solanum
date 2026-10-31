@@ -177,15 +177,21 @@ struct GitRunner {
         do { try p.run() } catch { return (127, Data(), error.localizedDescription) }
         let kill = DispatchWorkItem { if p.isRunning { p.terminate() } }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: kill)
-        var errData = Data()
+        var errData = Data(), outData = Data()
         let group = DispatchGroup()
-        group.enter()
-        DispatchQueue.global().async {
-            errData = err.fileHandleForReading.readDataToEndOfFile()
-            group.leave()
+        for (pipe, isOut) in [(out, true), (err, false)] {
+            group.enter()
+            DispatchQueue.global().async {
+                let d = pipe.fileHandleForReading.readDataToEndOfFile()
+                if isOut { outData = d } else { errData = d }
+                group.leave()
+            }
         }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        group.wait()
+        // Past the limit, whatever is still holding the pipes open is given up on rather than waited for.
+        guard group.wait(timeout: .now() + timeout + 2) == .success else {
+            if p.isRunning { p.terminate() }
+            return (124, Data(), "Timed out.")
+        }
         p.waitUntilExit()
         kill.cancel()
         return (p.terminationStatus, outData, String(decoding: errData, as: UTF8.self))
@@ -200,21 +206,27 @@ final class GitController {
     private let openFile: (FileSystem, String) -> Void
     /// Opens the history graph of the repository whose top folder is given.
     private let openGraph: (FileSystem, String) -> Void
+    /// Opens the status page of the repository whose top folder is given.
+    private let openStatus: (FileSystem, String) -> Void
     /// Opens a tab (in a local folder, if given) and returns its pane, for commands the focused pane can't take.
     private let newTab: (String?) -> TerminalView?
     private var runner: GitRunner?
     private var refreshing = false
     private var refreshAgain = false
+    /// The refresh that counts: one for a folder no longer shown, or stuck, is let go rather than waited on.
+    private var refreshID = 0
+    private var refreshStarted = Date.distantPast
     private var lastRefresh = Date.distantPast
     private var trailingRefresh: DispatchWorkItem?
     private var timer: Timer?
 
     init(bar: StatusBarView, pane: @escaping () -> TerminalView?, openFile: @escaping (FileSystem, String) -> Void,
-         openGraph: @escaping (FileSystem, String) -> Void, newTab: @escaping (String?) -> TerminalView?) {
+         openGraph: @escaping (FileSystem, String) -> Void, openStatus: @escaping (FileSystem, String) -> Void, newTab: @escaping (String?) -> TerminalView?) {
         self.bar = bar
         self.pane = pane
         self.openFile = openFile
         self.openGraph = openGraph
+        self.openStatus = openStatus
         self.newTab = newTab
         // Picks up commits, edits and checkouts made outside Solanum.
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -236,6 +248,12 @@ final class GitController {
             bar?.git = nil
             bar?.gitBusy = nil
             lastRefresh = .distantPast
+            // Another folder: don't wait behind a refresh of the last one (a slow ssh host's, say).
+            refreshID += 1
+            refreshing = false
+            refreshAgain = false
+            trailingRefresh?.cancel()
+            trailingRefresh = nil
         }
         refresh()
     }
@@ -244,7 +262,8 @@ final class GitController {
     func refresh(now: Bool = false) {
         guard let runner else { return }
         if now { lastRefresh = .distantPast }
-        if refreshing { refreshAgain = true; return }
+        // One at a time, unless the one going has been at it far longer than it's allowed.
+        if refreshing, Date().timeIntervalSince(refreshStarted) < 20 { refreshAgain = true; return }
         let wait = 1.5 - Date().timeIntervalSince(lastRefresh)
         if wait > 0 {
             if trailingRefresh == nil {
@@ -259,9 +278,12 @@ final class GitController {
         }
         refreshing = true
         lastRefresh = Date()
+        refreshStarted = Date()
+        refreshID += 1
+        let id = refreshID
         let key = runner.key
         runner.run(GitInfo.statusScript, timeout: 15) { [weak self] status, out, _ in
-            guard let self else { return }
+            guard let self, id == self.refreshID else { return }
             self.refreshing = false
             if self.runner?.key == key {
                 let info = status == 0 ? GitInfo(statusOutput: out) : nil
@@ -300,6 +322,7 @@ final class GitController {
             typealias Item = CommandPalette.Item
             var items: [Item] = [
                 Item(title: "Show Git Graph", path: "every branch's history", shortcut: "") { [weak self] in _ = self?.showGraph() },
+                Item(title: "Show Git Changes", path: "what's changed", shortcut: "") { [weak self] in _ = self?.showStatus() },
                 Item(title: "Create New Branch…", path: "from \(info.branch)", shortcut: "") { [weak self] in
                     self?.promptNewBranch()
                 },
@@ -326,6 +349,14 @@ final class GitController {
     func showGraph() -> Bool {
         guard let runner, let info = bar?.git else { return false }
         openGraph(runner.fileSystem, info.root)
+        return true
+    }
+
+    /// Opens the repository's status page; false outside a repository.
+    @discardableResult
+    func showStatus() -> Bool {
+        guard let runner, let info = bar?.git else { return false }
+        openStatus(runner.fileSystem, info.root)
         return true
     }
 
@@ -424,7 +455,10 @@ final class GitController {
             menu.addItem(more)
         }
         menu.addItem(.separator())
-        menu.addItem(ActionMenuItem("Show git status in Solanum") { [weak self] in self?.type("git status") })
+        let show = ActionMenuItem("Show Git Changes") { [weak self] in _ = self?.showStatus() }
+        show.keyEquivalent = "s"
+        show.keyEquivalentModifierMask = [.command, .control]
+        menu.addItem(show)
         menu.autoenablesItems = false
         menu.popUpAbove(point, in: view)
     }

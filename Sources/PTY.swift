@@ -161,7 +161,10 @@ final class PTYProcess {
     func terminate() {
         if !finished {
             finished = true
+            // Listed first: once the shell and its jobs are gone, what they started no longer traces back to this pane.
+            let nested = nestedJobGroups()
             kill(pid, SIGHUP)
+            nested.forEach { killpg($0, SIGHUP) }
         }
         guard !closed else { return }
         closed = true
@@ -179,6 +182,29 @@ final class PTYProcess {
             kill(pid, SIGKILL)
             waitpid(pid, &status, 0)
         }
+    }
+
+    /// Process groups started by the shell's jobs rather than by the shell (a script with `set -m` gives each of its
+    /// background jobs one). The shell hangs up its own jobs, unless they were disowned, but knows nothing of these, so
+    /// they'd outlive the pane. What left the session (a daemon) or outlived its parent (already detached) isn't included.
+    private func nestedJobGroups() -> Set<pid_t> {
+        var pids = [pid_t](repeating: 0, count: Int(proc_listallpids(nil, 0)) + 64)
+        let count = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
+        var children: [pid_t: [(pid: pid_t, group: pid_t)]] = [:]
+        for p in pids.prefix(Int(max(count, 0))) where p != pid && getsid(p) == pid {
+            var info = proc_bsdinfo()
+            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+            guard proc_pidinfo(p, PROC_PIDTBSDINFO, 0, &info, size) == size else { continue }
+            children[pid_t(info.pbi_ppid), default: []].append((p, pid_t(info.pbi_pgid)))
+        }
+        var stack = children[pid] ?? []
+        var groups = Set<pid_t>()
+        let shellGroups = Set(stack.map(\.group)).union([pid])
+        while let p = stack.popLast() {
+            groups.insert(p.group)
+            stack += children[p.pid] ?? []
+        }
+        return groups.subtracting(shellGroups)
     }
 
     /// Name of the process currently in the foreground of this terminal (e.g. "vim").

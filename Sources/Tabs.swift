@@ -266,7 +266,16 @@ final class TabSession: NSObject {
 
     /// The title only shows the last path component, so a cwd change needs its own nudge for the status bar.
     func paneCwdChanged(_ p: TerminalView) {
+        repinAfterReconnect(to: p.remote)
         owner?.tabDidUpdate(self)
+    }
+
+    /// A folder pinned on an ssh host stays pinned through a lost connection: once logged back in to that host, the
+    /// pin moves to the new session, or the sidebar would keep asking the one that ended.
+    private func repinAfterReconnect(to session: RemoteSession?) {
+        guard let pinned = pinnedFolder, let old = pinned.fs as? RemoteSession, let session, session !== old,
+              session.isReady, !old.isConnected, session.hostLabel == old.hostLabel else { return }
+        pinnedFolder = (session, pinned.path)
     }
 
     func updateDimming() {
@@ -392,6 +401,20 @@ final class TabSession: NSObject {
     func adoptEditor(_ ed: FileEditorView, focus: Bool = true) {
         ed.onClose = { [weak self, weak ed] in
             if let self, let ed { self.closeEditor(ed) }
+        }
+        ed.onOpenAs = { [weak self, weak ed] mode in
+            guard let self, let ed else { return }
+            self.openFile(ed.fs, ed.path, mode: mode)
+        }
+        ed.onOpenOther = { [weak self, weak ed] path, mode in
+            guard let self, let ed else { return }
+            self.openFile(ed.fs, path, mode: mode)
+        }
+        ed.onPathChanged = { [weak self, weak ed] in
+            guard let self, let ed else { return }
+            if let o = self.fileOrigin, !self.showsTerminal { self.fileOrigin = (o.fs, FilePaths.parent(ed.path)) }
+            self.editorArea.strip.needsDisplay = true
+            self.owner?.tabDidUpdate(self)
         }
         editors.append(ed)
         activateEditor(editors.count - 1, focus: focus)
@@ -989,28 +1012,61 @@ final class StatusBarView: NSView {
         let crumb = crumbs[i]
         // ⌃-click: the context menu (Copy Path), as a right-click shows it.
         if e.modifierFlags.contains(.control) { return super.mouseDown(with: e) }
-        let current = path
         listFolders?(crumb.path) { [weak self] names in
             guard let self, self.window != nil else { return }
-            let menu = NSMenu()
-            if crumb.path != current {
-                menu.addItem(ActionMenuItem("Go to \(crumb.label)") { [weak self] in self?.onNavigate?(crumb.path) })
-                menu.addItem(.separator())
-            }
-            let folderIcon = self.symbol("folder.fill", Config.shared.theme.accent.withAlphaComponent(0.85))
-            for name in names.prefix(400) {
-                let full = FilePaths.join(crumb.path, name)
-                let onPath = current.map { $0 == full || $0.hasPrefix(full + "/") } ?? false
-                let item = ActionMenuItem(name, checked: onPath) { [weak self] in self?.onNavigate?(full) }
-                item.image = folderIcon
-                menu.addItem(item)
-            }
-            if names.isEmpty {
-                let none = NSMenuItem(title: "No folders inside", action: nil, keyEquivalent: "")
-                none.isEnabled = false
-                menu.addItem(none)
-            }
-            menu.popUpAbove(NSPoint(x: crumb.rect.minX, y: crumb.rect.minY - 2), in: self)
+            self.folderMenu(crumb.path, label: crumb.label, names: names)
+                .popUpAbove(NSPoint(x: crumb.rect.minX, y: crumb.rect.minY - 2), in: self)
+        }
+    }
+
+    /// Clicking a folder in the path: opening another folder and copying this one's path, then going there or to
+    /// a folder inside it.
+    private func folderMenu(_ folder: String, label: String, names: [String]) -> NSMenu {
+        let menu = NSMenu()
+        if let controller = window?.windowController as? TerminalWindowController {
+            let open = ActionMenuItem("Open Folder…") { [weak controller] in controller?.openFolder(nil) }
+            open.keyEquivalent = "o"
+            open.keyEquivalentModifierMask = [.command]
+            menu.addItem(open)
+            menu.addItem(ActionMenuItem("Go to Folder…") { [weak controller] in controller?.goToFolder(nil) })
+        }
+        menu.addItem(copyPathItem(folder))
+        menu.addItem(.separator())
+        if folder != path {
+            menu.addItem(ActionMenuItem("Go to \(label)") { [weak self] in self?.onNavigate?(folder) })
+            menu.addItem(.separator())
+        }
+        let folderIcon = symbol("folder.fill", Config.shared.theme.accent.withAlphaComponent(0.85))
+        for name in names.prefix(400) {
+            let full = FilePaths.join(folder, name)
+            let onPath = path.map { $0 == full || $0.hasPrefix(full + "/") } ?? false
+            let item = ActionMenuItem(name, checked: onPath) { [weak self] in self?.onNavigate?(full) }
+            item.image = folderIcon
+            menu.addItem(item)
+        }
+        if names.isEmpty {
+            let none = NSMenuItem(title: "No folders inside", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            menu.addItem(none)
+        }
+        return menu
+    }
+
+    private func copyPathItem(_ folder: String) -> NSMenuItem {
+        ActionMenuItem("Copy Path") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(folder, forType: .string)
+        }
+    }
+
+    /// Dev aid (DevTools crumb-menu): the last folder's menu, printed, and the item called `run` chosen.
+    func devFolderMenu(run: String?) {
+        guard let crumb = crumbs.last else { return }
+        listFolders?(crumb.path) { [weak self] names in
+            guard let self else { return }
+            let menu = self.folderMenu(crumb.path, label: crumb.label, names: names)
+            FileHandle.standardError.write("menu: \(menu.items.map { $0.isSeparatorItem ? "---" : $0.title })\n".data(using: .utf8)!)
+            if let run, let i = menu.items.firstIndex(where: { $0.title == run }) { menu.performActionForItem(at: i) }
         }
     }
 
@@ -1019,10 +1075,7 @@ final class StatusBarView: NSView {
         let p = convert(event.locationInWindow, from: nil)
         guard let crumb = crumbs.first(where: { $0.rect.contains(p) }) else { return nil }
         let menu = NSMenu()
-        menu.addItem(ActionMenuItem("Copy Path") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(crumb.path, forType: .string)
-        })
+        menu.addItem(copyPathItem(crumb.path))
         return menu
     }
 }
@@ -1513,8 +1566,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
                 return self.columns[i]
             }
             sidebar.onOpenFile = { fs, path in column()?.activeTab?.openFile(fs, path) }
+            sidebar.onShowFile = { fs, path in column()?.activeTab?.openFile(fs, path, focus: false) }
             sidebar.onOpenDiff = { fs, path in column()?.activeTab?.openFile(fs, path, mode: .diff) }
             sidebar.onOpenPreview = { fs, path in column()?.activeTab?.openFile(fs, path, mode: .preview) }
+            sidebar.onSearchFolder = { [weak self] fs, path in self?.searchFolder(fs: fs, path, in: column()) }
             sidebar.onOpenFileInTab = { fs, path in
                 guard let c = column() else { return }
                 c.activeTab?.closeEditorJustOpened(path)
@@ -1558,6 +1613,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         let git = GitController(bar: bar, pane: { column()?.activeTab?.focusedPane },
                                 openFile: { fs, path in column()?.activeTab?.openFile(fs, path) },
                                 openGraph: { fs, root in column()?.activeTab?.openFile(fs, root, mode: .graph) },
+                                openStatus: { fs, root in column()?.activeTab?.openFile(fs, root, mode: .status) },
                                 newTab: { cwd in column()?.addTab(cwd: cwd).focusedPane })
         bar.onBranch = { [weak git] in git?.showBranches() }
         bar.onSync = { [weak git, weak bar] at in if let bar { git?.showSyncMenu(at: at, in: bar) } }
@@ -1709,9 +1765,72 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     /// ⌥⌘T: a new tab in the current tab's group (or a new group with the current tab).
     @objc func newTabInGroup(_ sender: Any?) { focused.newTabInGroup() }
 
+    /// ⌘O: picks folders in the open panel, starting from the terminal's folder; each opens in a new tab. On an ssh
+    /// tab, browses that host's folders instead.
+    @objc func openFolder(_ sender: Any?) {
+        guard let w = window else { return }
+        // An ssh tab: the host's folders, browsed in the palette (Finder can't see them), from the terminal's folder.
+        if let tab = activeTab, let remote = tab.browseRemote, remote.isReady {
+            let dir = tab.browseDirectory ?? remote.home ?? "/"
+            let shown = FilePaths.abbreviate(dir, home: remote.home)
+            CommandPalette.showGoTo(in: w, path: shown + (shown.hasSuffix("/") ? "" : "/"))
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Open"
+        panel.message = "Open folders in new tabs"
+        if let dir = focused.currentLocalFolder { panel.directoryURL = URL(fileURLWithPath: dir) }
+        panel.beginSheetModal(for: w) { [weak self] resp in
+            guard let self, resp == .OK else { return }
+            panel.urls.forEach { self.addTab(cwd: $0.path) }
+        }
+    }
+
+    /// ⌥⌘F: on the window rather than the editor, so it works (and the palette lists it) wherever the focus is,
+    /// such as on the sidebar after clicking a file.
+    @objc func beautifyDocument(_ sender: Any?) { activeTab?.editor?.formatDocument(sender) }
+
+    /// ⇧⌘F, Search in Project Folder: searches the text of the files in the folder the sidebar is on (the focused column's, if it's open), else
+    /// the pinned or current folder. Choosing a result opens the file there.
+    @objc func findInFolder(_ sender: Any?) { findInFolder(query: "") }
+
+    func findInFolder(query: String) {
+        guard let w = window, let tab = activeTab else { return }
+        let left = focusedIndex == 0
+        let sidebar = left ? rootView.sidebar : rootView.rightSidebar
+        let open = left ? rootView.sidebarVisible : rootView.rightSidebarVisible
+        let scope = (open ? sidebar.shownFolder : nil) ?? tab.pinnedFolder ?? tab.browseDirectory.map { (tab.browseFS, $0) }
+        guard let (fs, folder) = scope else { return NSSound.beep() }
+        searchFolder(fs: fs, folder, in: focused, query: query, window: w)
+    }
+
+    /// Choosing a result opens the file in `column`'s active tab.
+    private func searchFolder(fs: FileSystem, _ folder: String, in column: TabColumn?, query: String = "", window: NSWindow? = nil) {
+        guard let w = window ?? self.window else { return }
+        CommandPalette.findInFolder(in: w, fs: fs, folder: folder, query: query) { [weak column] path, line, text in
+            guard let tab = column?.activeTab else { return }
+            tab.openFile(fs, path)
+            tab.editor?.reveal(line: line, text: text)
+        }
+    }
+
+    /// Go to Folder's palette, for a folder whose path you know (see `CommandPalette.goToItems`).
+    @objc func goToFolder(_ sender: Any?) {
+        guard let w = window else { return }
+        CommandPalette.showGoTo(in: w)
+    }
+
     /// The focused column's repository history, as a graph above its terminal.
     @objc func showGitGraph(_ sender: Any?) {
         guard let controller = focusedIndex == 0 ? git : rightGit, controller.showGraph() else { return NSSound.beep() }
+    }
+
+    /// The focused column's repository status, as a page above its terminal.
+    @objc func showGitStatus(_ sender: Any?) {
+        guard let controller = focusedIndex == 0 ? git : rightGit, controller.showStatus() else { return NSSound.beep() }
     }
 
     // MARK: Reopening closed tabs
@@ -1991,6 +2110,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             return true
         case #selector(reopenClosedTab(_:)):
             return !closedTabs.isEmpty
+        case #selector(beautifyDocument(_:)):
+            return activeTab?.editor?.mode == .file
         case #selector(closeSplit(_:)), #selector(focusOtherColumn(_:)), #selector(toggleRightSidebar(_:)):
             return columns.count > 1
         case #selector(moveTabToOtherColumn(_:)):
@@ -2069,6 +2190,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
 final class CenteredTextFieldCell: NSTextFieldCell {
     /// Padding left and right of the text.
     var horizontalInset: CGFloat = 0
+    /// Called with the editor AppKit puts in the field, whenever it does.
+    var onEditorSetUp: ((NSTextView) -> Void)?
 
     // The editor AppKit puts in the field while typing paints its own background over just the text's rect,
     // which showed as a second, darker box inside the field. The field's own background is enough.
@@ -2076,6 +2199,7 @@ final class CenteredTextFieldCell: NSTextFieldCell {
         let t = super.setUpFieldEditorAttributes(textObj)
         t.drawsBackground = false
         (t as? NSTextView)?.backgroundColor = .clear
+        if let view = t as? NSTextView { onEditorSetUp?(view) }
         return t
     }
 
@@ -2102,8 +2226,30 @@ final class CenteredTextFieldCell: NSTextFieldCell {
 extension NSMenu {
     /// Pops up with its bottom-left corner at `point` (menus from the status bar, at the window's bottom edge),
     /// where `popUp(positioning:at:in:)` would hang it down from there and squeeze it against the screen's edge.
+    /// It's hung from its last row: then a menu taller than the room above (a long ssh host list) fills that
+    /// room and scrolls, its bottom still at `point`, instead of being pushed down over it.
     func popUpAbove(_ point: NSPoint, in view: NSView) {
-        popUp(positioning: nil, at: NSPoint(x: point.x, y: point.y + (view.isFlipped ? -size.height : size.height)), in: view)
+        guard let last = items.last(where: { !$0.isHidden && !$0.isAlternate }) else { return }
+        let up = rowAndPadding(below: last)
+        popUp(positioning: last, at: NSPoint(x: point.x, y: point.y + (view.isFlipped ? -up : up)), in: view)
+    }
+
+    /// How far the menu reaches below the top of `item`'s row when it's the last one: its height plus the menu's
+    /// bottom padding, measured on menus of one and two copies of it.
+    private func rowAndPadding(below item: NSMenuItem) -> CGFloat {
+        func height(_ n: Int) -> CGFloat {
+            let m = NSMenu()
+            m.font = font
+            for _ in 0..<n {
+                let copy = item.isSeparatorItem ? NSMenuItem.separator() : NSMenuItem(title: item.title, action: nil, keyEquivalent: "")
+                copy.image = item.image
+                if let t = item.attributedTitle { copy.attributedTitle = t }
+                m.addItem(copy)
+            }
+            return m.size.height
+        }
+        let one = height(1), row = height(2) - one
+        return row + (one - row) / 2
     }
 }
 
@@ -2173,6 +2319,8 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     private var viewport: CGRect = .zero
     private var scrollX: CGFloat = 0
     private var maxScrollX: CGFloat = 0
+    private var tabSlide: (from: CGFloat, to: CGFloat, start: CFTimeInterval)?
+    private var tabSlideLink: CADisplayLink?
     private var leftArrowRect: CGRect = .null
     private var rightArrowRect: CGRect = .null
     private var hoverArrow: Int?                 // -1 left, 1 right
@@ -2246,6 +2394,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     /// Returns how far the tabs actually moved.
     @discardableResult
     private func scrollTabs(by dx: CGFloat) -> CGFloat {
+        stopTabSlide()
         let next = min(max(scrollX + dx, 0), maxScrollX)
         let moved = next - scrollX
         guard moved != 0 else { return 0 }
@@ -2254,6 +2403,43 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         needsDisplay = true
         return moved
     }
+
+    /// The ‹ › buttons: the tabs slide there rather than jump. Pressing again on the way carries on from where it was
+    /// heading.
+    private func slideTabs(by dx: CGFloat) {
+        let to = min(max((tabSlide?.to ?? scrollX) + dx, 0), maxScrollX)
+        guard to != scrollX else { return }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            scrollTabs(by: to - scrollX)
+            return
+        }
+        tabSlide = (scrollX, to, CACurrentMediaTime())
+        if tabSlideLink == nil {
+            let link = displayLink(target: self, selector: #selector(tabSlideStep))
+            link.add(to: .main, forMode: .common)
+            tabSlideLink = link
+        }
+    }
+
+    @objc private func tabSlideStep() {
+        guard let s = tabSlide, window != nil else { return stopTabSlide() }
+        let t = min(1, (CACurrentMediaTime() - s.start) / 0.24)
+        let eased = 1 - pow(1 - t, 3)
+        scrollX = s.from + (s.to - s.from) * CGFloat(eased)
+        computeRects()
+        needsDisplay = true
+        if t >= 1 { stopTabSlide() }
+    }
+
+    private func stopTabSlide() {
+        tabSlideLink?.invalidate()
+        tabSlideLink = nil
+        tabSlide = nil
+    }
+
+    /// Dev aids (DevTools tab-arrow, print-tab-scroll).
+    func devPressArrow(_ dir: Int) { slideTabs(by: CGFloat(dir) * viewport.width * 0.75) }
+    var devScrollState: String { "scroll=\(Int(scrollX)) of \(Int(maxScrollX)) sliding=\(tabSlide != nil)" }
 
     /// Dragging a tab or group near either end of a scrolling strip scrolls it, to carry it past tabs out of view.
     private func autoScrollWhileDragging(_ p: NSPoint) {
@@ -2365,6 +2551,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             if r.minX < viewport.minX { shift = r.minX - viewport.minX - 8 }
             else if r.maxX > viewport.maxX { shift = r.maxX - viewport.maxX + 8 }
             if shift != 0, maxScrollX > 0 {
+                stopTabSlide()
                 scrollX = min(max(scrollX + shift, 0), maxScrollX)
                 return computeRects()
             }
@@ -3286,8 +3473,8 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         if plusRect.contains(p) { c.newTab(); return }
         if closeSplitRect.contains(p) { c.owner?.closeSplit(nil); return }
         if flowerRect.contains(p) { SettingsWindowController.shared.present(Updater.shared.needsAttention ? .system : nil); return }
-        if leftArrowRect.contains(p) { scrollTabs(by: -viewport.width * 0.75); return }
-        if rightArrowRect.contains(p) { scrollTabs(by: viewport.width * 0.75); return }
+        if leftArrowRect.contains(p) { slideTabs(by: -viewport.width * 0.75); return }
+        if rightArrowRect.contains(p) { slideTabs(by: viewport.width * 0.75); return }
         if let g = chipIndex(at: p).map({ chips[$0].group }) {
             // A click toggles collapse on mouse-up unless the chip was dragged; renaming is in the chip's right-click menu.
             clearTabSelection()

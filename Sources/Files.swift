@@ -189,6 +189,56 @@ private extension Result {
 
 // MARK: - Remote (ssh)
 
+/// How many background commands run at once over one ssh connection. They share the user's own login as channels,
+/// and sshd allows only so many per connection (MaxSessions, 10 by default, the login included). Past that it refuses
+/// them, and the user's ssh prints "channel N: open failed: connect failed: open failed" into their terminal. The rest
+/// wait in line, so leaving room for the login and any tabs sharing it.
+final class ChannelGate {
+    private static let lock = NSLock()
+    private static var gates: [String: ChannelGate] = [:]
+
+    static func shared(for controlPath: String) -> ChannelGate {
+        lock.lock()
+        defer { lock.unlock() }
+        if let g = gates[controlPath] { return g }
+        let g = ChannelGate()
+        gates[controlPath] = g
+        return g
+    }
+
+    private let lock = NSLock()
+    private let limit: Int
+    private var active = 0
+    private var waiting: [() -> Void] = []
+
+    init(limit: Int = 4) { self.limit = limit }
+
+    /// Runs `work` now or when there's room. It must call `leave` once it's done with its channel.
+    func enter(_ work: @escaping () -> Void) {
+        lock.lock()
+        guard active < limit else {
+            waiting.append(work)
+            lock.unlock()
+            return
+        }
+        active += 1
+        lock.unlock()
+        work()
+    }
+
+    func leave() {
+        lock.lock()
+        guard !waiting.isEmpty else {
+            active -= 1
+            lock.unlock()
+            return
+        }
+        let next = waiting.removeFirst()
+        lock.unlock()
+        next()
+    }
+}
+
 /// The remote end of an ssh session running in a pane. Created as soon as the wrapper announces the
 /// control socket; the socket only appears once ssh has authenticated, so `start` waits for it.
 final class RemoteSession: FileSystem {
@@ -217,10 +267,70 @@ final class RemoteSession: FileSystem {
     /// A command that opens another shell on the same host, in `dir` (running `command` there first): the
     /// original ssh arguments again, or, if those weren't reported, a session over the original connection
     /// while it's still open.
+    /// Just how to reach the host from a session's `ssh` arguments (as the shell quoted them): its options and
+    /// destination, without a command to run there or a `-t`/`-T`. The session may itself have been a reconnect,
+    /// whose command would otherwise be run again ahead of the new one. Nil without a destination.
+    static func connectionArgs(_ args: String) -> String? {
+        // Words as the shell splits them, each as written (to put back as is) and as it reads (to look at).
+        var words: [(raw: Substring, value: String)] = []
+        var i = args.startIndex
+        while i < args.endIndex {
+            while i < args.endIndex, args[i] == " " || args[i] == "\t" { i = args.index(after: i) }
+            guard i < args.endIndex else { break }
+            let start = i
+            var value = ""
+            var quote: Character?
+            while i < args.endIndex {
+                let c = args[i]
+                if quote == nil, c == " " || c == "\t" { break }
+                if c == "\\", quote != "'", args.index(after: i) < args.endIndex {
+                    i = args.index(after: i)
+                    value.append(args[i])
+                } else if quote == nil, c == "'" || c == "\"" {
+                    quote = c
+                } else if c == quote {
+                    quote = nil
+                } else {
+                    value.append(c)
+                }
+                i = args.index(after: i)
+            }
+            words.append((args[start..<i], value))
+        }
+        // Options of ssh's that take a value (as the next word, or joined on: -p22).
+        let valued = Set("BbcDEeFIiJLlmOoPpQRSWw")
+        var kept: [Substring] = []
+        var k = 0
+        while k < words.count {
+            let w = words[k].value
+            guard w.hasPrefix("-"), w.count > 1 else {
+                // The destination; anything after it is a command for the host.
+                kept.append(words[k].raw)
+                return kept.joined(separator: " ")
+            }
+            if w == "--" { k += 1; continue }
+            let flags = w.dropFirst()
+            if let at = flags.firstIndex(where: { valued.contains($0) }) {
+                let joined = flags[flags.index(after: at)...]
+                kept.append(words[k].raw)
+                if joined.isEmpty, k + 1 < words.count {
+                    k += 1
+                    kept.append(words[k].raw)
+                }
+            } else if !flags.allSatisfy({ $0 == "t" || $0 == "T" }) {
+                // Other flags (-A, -v, -4…) stay; -t and -T are the reconnect's own business.
+                kept.append(words[k].raw)
+            }
+            k += 1
+        }
+        return nil
+    }
+
     func reconnectCommand(in dir: String?, then command: String? = nil) -> String? {
         let first = command.map { $0 + "; " } ?? ""
-        let remote = dir.map { " " + shellQuote("cd " + shellQuote($0) + " && " + first + "exec \"$SHELL\" -l") } ?? ""
-        if let sshArgs, !sshArgs.isEmpty { return "ssh -t " + sshArgs + remote }
+        // A folder that's gone (since a session was saved, say) leaves the login in the home folder rather than ending it.
+        let remote = dir.map { " " + shellQuote("cd " + shellQuote($0) + " 2>/dev/null; " + first + "exec \"$SHELL\" -l") } ?? ""
+        if let sshArgs, let connect = Self.connectionArgs(sshArgs) { return "ssh -t " + connect + remote }
         guard isConnected else { return nil }
         return "ssh -t -S " + shellQuote(controlPath) + " -o ControlMaster=no solanum-remote" + remote
     }
@@ -302,30 +412,42 @@ final class RemoteSession: FileSystem {
             done(255, Data(), "The ssh session has ended.")
             return
         }
-        let p = sshProcess(script)
-        let outPipe = Pipe(), errPipe = Pipe(), inPipe = Pipe()
-        p.standardOutput = outPipe
-        p.standardError = errPipe
-        p.standardInput = inPipe
-        DispatchQueue.global(qos: .userInitiated).async {
-            do { try p.run() } catch {
-                DispatchQueue.main.async { done(255, Data(), error.localizedDescription) }
-                return
+        // Waits its turn: each of these is a channel on the user's own ssh connection (see `ChannelGate`).
+        let gate = ChannelGate.shared(for: controlPath)
+        gate.enter { [self] in
+            let p = sshProcess(script)
+            let outPipe = Pipe(), errPipe = Pipe(), inPipe = Pipe()
+            p.standardOutput = outPipe
+            p.standardError = errPipe
+            p.standardInput = inPipe
+            DispatchQueue.global(qos: .userInitiated).async {
+                do { try p.run() } catch {
+                    gate.leave()
+                    DispatchQueue.main.async { done(255, Data(), error.localizedDescription) }
+                    return
+                }
+                DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { if p.isRunning { p.terminate() } }
+                let group = DispatchGroup()
+                var out = Data(), err = Data()
+                group.enter()
+                DispatchQueue.global().async { out = outPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+                group.enter()
+                DispatchQueue.global().async { err = errPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+                if let input { try? inPipe.fileHandleForWriting.write(contentsOf: input) }
+                try? inPipe.fileHandleForWriting.close()
+                // Past the limit, given up on rather than waited for (something on the host can hold the pipes open).
+                guard group.wait(timeout: .now() + timeout + 3) == .success else {
+                    if p.isRunning { p.terminate() }
+                    gate.leave()
+                    DispatchQueue.main.async { done(124, Data(), "Timed out.") }
+                    return
+                }
+                p.waitUntilExit()
+                gate.leave()
+                let status = p.terminationStatus
+                let errText = String(decoding: err, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                DispatchQueue.main.async { done(status, out, errText) }
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { if p.isRunning { p.terminate() } }
-            let group = DispatchGroup()
-            var out = Data(), err = Data()
-            group.enter()
-            DispatchQueue.global().async { out = outPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
-            group.enter()
-            DispatchQueue.global().async { err = errPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
-            if let input { try? inPipe.fileHandleForWriting.write(contentsOf: input) }
-            try? inPipe.fileHandleForWriting.close()
-            group.wait()
-            p.waitUntilExit()
-            let status = p.terminationStatus
-            let errText = String(decoding: err, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            DispatchQueue.main.async { done(status, out, errText) }
         }
     }
 
@@ -539,6 +661,11 @@ extension Notification.Name {
     /// Posted with a `FileSystem` as the object after items were added to or removed from it outside the
     /// sidebar doing the work; sidebars showing that file system refresh.
     static let solanumFilesChanged = Notification.Name("SolanumFilesChanged")
+    /// A file or folder was renamed in place: `object` is its file system, `userInfo["old"]` and `["new"]` its paths.
+    /// Open editors of it, or of anything inside it, move along.
+    static let solanumFileRenamed = Notification.Name("SolanumFileRenamed")
+    /// A sidebar saw `git status` change: `object` is its file system. Open editors check their own file again.
+    static let solanumGitStatusChanged = Notification.Name("SolanumGitStatusChanged")
     /// An editor saved a file: `object` is its file system, `userInfo["path"]` its path.
     static let solanumFileSaved = Notification.Name("SolanumFileSaved")
 }

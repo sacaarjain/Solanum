@@ -3,7 +3,8 @@ import AppKit
 // "Show Git Graph" (top of the status bar's branch picker, or the command palette): the repository's history as
 // a graph, as VS Code's Git Graph draws it. Each line of development gets a lane in its own color, with curves
 // where branches split off and merge back, and branch and tag labels beside the commits. Clicking a commit shows
-// a card with its author, date, full message and size, and buttons to copy its hash or message.
+// a card with its author, date, full message and size, and buttons to see its changes or copy its hash or message.
+// Double-clicking a commit goes straight to its changes.
 
 struct GraphCommit {
     let hash: String
@@ -127,6 +128,8 @@ final class GitGraphView: NSView {
     private var details: [String: CommitCard.Details] = [:]
     private var cardRow: Int?
     private var scrollObserver: NSObjectProtocol?
+    /// A commit's "View Changes", or a double-click on it.
+    var onViewChanges: ((String) -> Void)?
 
     init(runner: GitRunner) {
         self.runner = runner
@@ -146,6 +149,15 @@ final class GitGraphView: NSView {
             // Focus here, so Escape reaches keyDown and closes the card.
             self.window?.makeFirstResponder(self)
             if let row, row != self.cardRow { self.showCard(row) } else { self.hideCard() }
+        }
+        rowsView.onDoubleClick = { [weak self] row in
+            guard let self, self.rowsView.rows.indices.contains(row) else { return }
+            self.hideCard()
+            self.onViewChanges?(self.rowsView.rows[row].commit.hash)
+        }
+        card.onViewChanges = { [weak self] hash in
+            self?.hideCard()
+            self?.onViewChanges?(hash)
         }
         // The card stays by the row it was opened for, so scrolling puts it away.
         scroll.contentView.postsBoundsChangedNotifications = true
@@ -188,6 +200,7 @@ final class GitGraphView: NSView {
     // MARK: Commit card
 
     func devHover(_ row: Int) { showCard(row) }
+    func devViewChanges(_ row: Int) { rowsView.onDoubleClick?(row) }
 
     private func hideCard() {
         card.isHidden = true
@@ -237,6 +250,7 @@ final class GraphRowsView: NSView {
     private var hovered: Int? { didSet { if hovered != oldValue { redraw(oldValue, hovered) } } }
     var selected: Int? { didSet { if selected != oldValue { redraw(oldValue, selected) } } }
     var onClick: ((Int?) -> Void)?
+    var onDoubleClick: ((Int) -> Void)?
 
     static let rowHeight: CGFloat = 24
     private static let laneWidth: CGFloat = 14
@@ -280,7 +294,9 @@ final class GraphRowsView: NSView {
 
     override func mouseMoved(with e: NSEvent) { hovered = row(at: e) }
     override func mouseExited(with e: NSEvent) { hovered = nil }
-    override func mouseDown(with e: NSEvent) { onClick?(row(at: e)) }
+    override func mouseDown(with e: NSEvent) {
+        if e.clickCount == 2, let r = row(at: e) { onDoubleClick?(r) } else { onClick?(row(at: e)) }
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         guard !rows.isEmpty else { return }
@@ -487,10 +503,13 @@ final class CommitCard: NSView {
     private let byline = NSTextField(labelWithString: "")
     private let message = NSTextField(wrappingLabelWithString: "")
     private let stats = NSTextField(labelWithString: "")
+    private let viewChanges = CardButton()
     private let copyHash = CardButton()
     private let copyMessage = CardButton()
     private var commit: GraphCommit?
     private var details: Details?
+    /// The commit's files and their changes (see GitStatusView.swift).
+    var onViewChanges: ((String) -> Void)?
     private static let pad: CGFloat = 12
 
     override init(frame: NSRect) {
@@ -505,7 +524,11 @@ final class CommitCard: NSView {
         message.maximumNumberOfLines = 12
         message.lineBreakMode = .byWordWrapping
         message.isSelectable = true
-        for v in [byline, message, stats, copyHash, copyMessage] as [NSView] { addSubview(v) }
+        for v in [byline, message, stats, viewChanges, copyHash, copyMessage] as [NSView] { addSubview(v) }
+        viewChanges.action = { [weak self] in
+            guard let self, let c = self.commit else { return }
+            self.onViewChanges?(c.hash)
+        }
         copyHash.action = { [weak self] in
             guard let self, let c = self.commit else { return }
             self.copy(c.hash, button: self.copyHash)
@@ -552,6 +575,7 @@ final class CommitCard: NSView {
         byline.attributedStringValue = line
         message.stringValue = d?.message ?? c.subject
         stats.attributedStringValue = Self.styledStats(d.map { $0.stats.isEmpty ? "No changes" : $0.stats } ?? "Loading…", th)
+        viewChanges.set(symbol: "plusminus", title: "View Changes")
         copyHash.set(symbol: "doc.on.doc", title: String(c.hash.prefix(8)))
         copyMessage.set(symbol: "doc.on.doc", title: "Message")
         needsLayout = true
@@ -598,7 +622,8 @@ final class CommitCard: NSView {
         y += messageH + 12
         stats.frame = NSRect(x: Self.pad, y: y, width: inner, height: 18)
         y += 18 + 10
-        copyHash.frame = NSRect(x: Self.pad - 4, y: y, width: copyHash.fittingWidth, height: 24)
+        viewChanges.frame = NSRect(x: Self.pad - 4, y: y, width: viewChanges.fittingWidth, height: 24)
+        copyHash.frame = NSRect(x: viewChanges.frame.maxX + 10, y: y, width: copyHash.fittingWidth, height: 24)
         copyMessage.frame = NSRect(x: copyHash.frame.maxX + 10, y: y, width: copyMessage.fittingWidth, height: 24)
     }
 
@@ -636,7 +661,10 @@ final class CardButton: NSView {
         needsDisplay = true
     }
 
-    var fittingWidth: CGFloat { ceil((max(title, "Copied") as NSString).size(withAttributes: [.font: font]).width) + 30 }
+    /// Room for the title or "Copied", whichever is wider.
+    var fittingWidth: CGFloat {
+        ceil(max((title as NSString).size(withAttributes: [.font: font]).width, ("Copied" as NSString).size(withAttributes: [.font: font]).width)) + 30
+    }
 
     func flash(_ text: String) {
         shown = text

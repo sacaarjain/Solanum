@@ -32,6 +32,161 @@ enum SelfTest {
             count += 1
             if cond { print("  ✓ \(name)") } else { failures += 1; print("  ✗ \(name) \(detail())") }
         }
+        do {
+            // Readable text: enough contrast afterwards, the hue kept, and what's already fine or hidden left alone.
+            let light = CGColor(srgbRed: 0.78, green: 0.79, blue: 0.81, alpha: 1), yellow = CGColor(srgbRed: 0.82, green: 0.76, blue: 0.25, alpha: 1)
+            let dark = CGColor(srgbRed: 0.14, green: 0.15, blue: 0.17, alpha: 1)
+            let fixed = RenderPalette.adjusted(yellow, over: light, minimum: 4.5, dim: false)
+            check("faint text gains contrast", RenderPalette.contrast(fixed, light) >= 4.5 && RenderPalette.contrast(fixed, light) < 4.7)
+            if let f = RenderPalette.rgb(fixed) { check("its hue stays", f.r > f.b && f.g > f.b) }
+            check("readable text is left alone", RenderPalette.adjusted(dark, over: light, minimum: 4.5, dim: false) === dark)
+            check("hidden text stays hidden", RenderPalette.adjusted(light, over: light, minimum: 4.5, dim: false) === light)
+            let lifted = RenderPalette.adjusted(dark, over: dark.copy(alpha: 1)!.converted(to: CGColorSpace(name: CGColorSpace.sRGB)!, intent: .defaultIntent, options: nil)!, minimum: 4.5, dim: false)
+            check("same color is hidden on dark too", lifted === dark)
+            let onDark = RenderPalette.adjusted(CGColor(srgbRed: 0.25, green: 0.25, blue: 0.3, alpha: 1), over: dark, minimum: 4.5, dim: false)
+            check("over a dark cell it lightens", RenderPalette.contrast(onDark, dark) >= 4.5)
+        }
+        do {
+            // Git Status: a file both staged and changed again is in both groups, renames keep their old name.
+            let out = "/repo\n# branch.oid abcdef1234\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +2 -1\0"
+                + "1 MM N... 100644 100644 100644 a b both.txt\0"
+                + "2 R. N... 100644 100644 100644 a b R100 new name.txt\0old name.txt\0"
+                + "1 .D N... 100644 100644 100644 a b gone.txt\0"
+                + "u UU N... 100644 100644 100644 100644 a b c fight.txt\0"
+                + "? fresh.txt\0\u{1E}"
+                + "3\t1\tboth.txt\00\t0\t\0old name.txt\0new name.txt\0\u{1E}"
+                + "2\t0\tboth.txt\00\t4\tgone.txt\0-\t-\tpic.png\0\u{1E}"
+                + "Fix it\0" + "2 hours ago\n"
+            if let r = GitStatusReport(output: Data(out.utf8)) {
+                check("status: branch and upstream", r.branch == "main" && r.upstream == "origin/main" && r.ahead == 2 && r.behind == 1)
+                check("status: a file in both groups", r.staged.first?.path == "both.txt" && r.staged.first?.added == 3 && r.changed.first?.path == "both.txt" && r.changed.first?.added == 2)
+                check("status: rename", r.staged.last?.path == "new name.txt" && r.staged.last?.oldPath == "old name.txt" && r.staged.last?.code == "R")
+                check("status: deleted, conflict, untracked", r.changed.last?.code == "D" && r.changed.last?.removed == 4 && r.conflicts.first?.path == "fight.txt" && r.untracked.first?.path == "fresh.txt")
+                check("status: last commit", r.lastCommit == "Fix it" && r.lastCommitDate == "2 hours ago")
+            } else {
+                check("status: parses", false)
+            }
+            check("status: not a repository", GitStatusReport(output: Data()) == nil)
+            let diff = "diff --git a/x b/x\nindex 1..2 100644\n--- a/x\n+++ b/x\n@@ -3,3 +3,3 @@ func\n keep\n-old\n+new\n\\ No newline at end of file\n"
+            let lines = GitDiffLine.parse(Data(diff.utf8))
+            check("diff: hunk and numbers", lines.map(\.kind) == [.hunk, .context, .removed, .added] && lines[1].old == 3 && lines[1].new == 3 && lines[2].old == 4 && lines[3].new == 4 && lines[3].text == "new")
+            check("diff: binary", GitDiffLine.parse(Data("Binary files a/x and b/x differ\n".utf8)).first?.kind == .note)
+            let conflict = GitDiffLine.parse(Data("diff --cc x\n@@@ -1,1 -1,1 +1,5 @@@\n++<<<<<<< HEAD\n +ours\n- theirs\n".utf8))
+            check("diff: conflict", conflict.map(\.kind) == [.hunk, .added, .added, .removed] && conflict[1].new == nil)
+            check("diff: nothing", GitDiffLine.parse(Data()).isEmpty)
+            let commit = "/repo\nabc123\u{1F}abc\u{1F}Ada\u{1F}2 days ago\u{1F}Fix: it, really\nparent1\u{1E}"
+                + "M\0a.txt\0R100\0old.txt\0new.txt\0A\0b c.txt\0\u{1E}"
+                + "3\t1\ta.txt\00\t0\t\0old.txt\0new.txt\0-\t-\tb c.txt\0"
+            if let r = GitStatusReport(commitOutput: Data(commit.utf8)), let c = r.commit {
+                check("commit: header", c.short == "abc" && c.author == "Ada" && c.subject == "Fix: it, really" && c.base == "parent1")
+                check("commit: files", r.changed.map(\.path) == ["a.txt", "new.txt", "b c.txt"] && r.changed[0].added == 3 && r.changed[1].oldPath == "old.txt" && r.changed[1].code == "R" && r.changed[2].added == nil)
+            } else {
+                check("commit: parses", false)
+            }
+        }
+        do {
+            // Search in Project Folder: all three tools' output, odd names, and long lines.
+            let rg = WorkspaceMatch.parse(Data("./src/a b.txt\u{0}12:  hello: world\nc.txt\u{0}3:hello\n".utf8))
+            check("find: ripgrep and grep", rg == [WorkspaceMatch(path: "src/a b.txt", line: 12, text: "  hello: world"), WorkspaceMatch(path: "c.txt", line: 3, text: "hello")])
+            let gitGrep = WorkspaceMatch.parse(Data("src/x:y.txt\u{0}7\u{0}hello\nz.txt\u{0}8:hello\n".utf8))
+            check("find: git grep", gitGrep.map(\.path) == ["src/x:y.txt", "z.txt"] && gitGrep[0].line == 7 && gitGrep[0].text == "hello")
+            check("find: not a match line", WorkspaceMatch.parse(Data("Binary file x matches\n".utf8)).isEmpty)
+            let long = String(repeating: "x", count: 100) + "needle"
+            check("find: long line starts near the match", WorkspaceMatch.excerpt(long, query: "NEEDLE").hasPrefix("…") && WorkspaceMatch.excerpt(long, query: "NEEDLE").contains("needle"))
+            check("find: trims indentation", WorkspaceMatch.excerpt("    let a = 1", query: "a") == "let a = 1")
+        }
+        do {
+            // Find in a file: the three toggles, separately and together.
+            let text = "Cat cat concat\ncat.dog (cat)\nline three\n" as NSString
+            func count(_ q: String, _ o: EditorFindOptions) -> Int? {
+                (try? EditorFind.expression(q, o)).map { EditorFind.matches(of: $0, in: text).ranges.count }
+            }
+            check("find in file: ignores case by default", count("cat", EditorFindOptions()) == 5)
+            check("find in file: match case", count("Cat", EditorFindOptions(matchCase: true)) == 1)
+            check("find in file: whole word", count("cat", EditorFindOptions(wholeWord: true)) == 4)
+            check("find in file: both", count("cat", EditorFindOptions(matchCase: true, wholeWord: true)) == 3)
+            check("find in file: text isn't a pattern", count("cat.dog", EditorFindOptions()) == 1 && count(".", EditorFindOptions()) == 1 && count("(cat)", EditorFindOptions()) == 1)
+            check("find in file: regex", count("c.t", EditorFindOptions(regex: true)) == 5 && count("^cat", EditorFindOptions(regex: true)) == 2)
+            check("find in file: bad regex", count("(", EditorFindOptions(regex: true)) == nil)
+            check("find in file: empty matches don't count", count("x*", EditorFindOptions(regex: true)) == 0)
+            // Plain search has to find exactly what the regex engine does, on awkward text and on random text.
+            func same(_ q: String, _ t: String, _ o: EditorFindOptions) -> Bool {
+                guard let e = try? EditorFind.expression(q, o) else { return false }
+                return FindBuffer(t as NSString).matches(of: q, o).ranges == EditorFind.matches(of: e, in: t as NSString).ranges
+            }
+            let combos = [EditorFindOptions(), EditorFindOptions(matchCase: true), EditorFindOptions(wholeWord: true), EditorFindOptions(matchCase: true, wholeWord: true)]
+            let awkward = [("aa", "aaaaa"), ("cat", "cat"), ("cat", "ca"), ("a", "a a_a a-a 1a"), ("ab", "abab ab"), (".", "a.b."), ("(x", "(x (x)"), ("-a", "b-a -a"), ("é", "é cé é"), ("x", "😀x😀 x"), ("cat", "“cat” cat’s")]
+            check("find in file: plain matches regex on awkward text", awkward.allSatisfy { q, t in combos.allSatisfy { same(q, t, $0) } })
+            var seed: UInt64 = 42
+            func next(_ n: Int) -> Int { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Int((seed >> 33) % UInt64(n)) }
+            let alphabet = Array("abAB_ 1.-\n")
+            var agree = true
+            for _ in 0..<400 {
+                let t = String((0..<next(60)).map { _ in alphabet[next(alphabet.count)] })
+                let q = String((0..<(1 + next(4))).map { _ in alphabet[next(alphabet.count)] })
+                if !combos.allSatisfy({ same(q, t, $0) }) { agree = false }
+            }
+            check("find in file: plain matches regex on random text", agree)
+            check("find in file: plain search used when it can be", FindBuffer.canSearch("cat", EditorFindOptions()) && !FindBuffer.canSearch("cat", EditorFindOptions(regex: true)) && !FindBuffer.canSearch("é", EditorFindOptions()) && FindBuffer.canSearch("é", EditorFindOptions(matchCase: true)))
+            let ranges = [NSRange(location: 5, length: 1), NSRange(location: 10, length: 1)]
+            check("find in file: starts at or after the caret, then wraps", EditorFind.index(of: ranges, from: 0) == 0 && EditorFind.index(of: ranges, from: 6) == 1 && EditorFind.index(of: ranges, from: 11) == 0 && EditorFind.index(of: [], from: 0) == nil)
+        }
+        do {
+            // Reconnecting keeps just how to reach the host, whatever the session ran there.
+            let c = RemoteSession.connectionArgs
+            check("ssh args: plain", c("myhost") == "myhost" && c("-p 2222 me@host") == "-p 2222 me@host" && c("-p2222 -i ~/k host") == "-p2222 -i ~/k host")
+            check("ssh args: a reconnect's command dropped", c("-t mb1.example.com cd\\ \\'/mnt\\'\\ 2\\>/dev/null\\;\\ exec\\ \\\"\\$SHELL\\\"\\ -l") == "mb1.example.com")
+            check("ssh args: quoted command dropped", c("-t -o 'ProxyJump bastion' host 'cd /x; exec $SHELL -l'") == "-o 'ProxyJump bastion' host")
+            check("ssh args: flags kept, -t dropped", c("-A -tt -v host ls") == "-A -v host" && c("-o") == nil && c("") == nil)
+        }
+        do {
+            // Background commands over ssh wait their turn rather than go past the server's limit.
+            let gate = ChannelGate(limit: 2)
+            var started: [Int] = []
+            for i in 0..<5 { gate.enter { started.append(i) } }
+            check("channels: only so many at once", started == [0, 1])
+            gate.leave()
+            check("channels: the next goes as one ends", started == [0, 1, 2])
+            gate.leave(); gate.leave(); gate.leave(); gate.leave()
+            check("channels: all get their turn, in order", started == [0, 1, 2, 3, 4])
+            gate.enter { started.append(5) }
+            check("channels: room again once they've ended", started.last == 5)
+        }
+        do {
+            // Closing a pane stops what's running in it, also jobs a script put in process groups of their own (`set -m`),
+            // which the shell doesn't know about. Jobs the user kept (nohup, disown) keep running.
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("solanum-hangup-\(getpid())").path
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let script = """
+            #!/bin/bash
+            set -m
+            echo $$ > '\(dir)/script'
+            sleep 300 & echo $! > '\(dir)/nested'
+            nohup sleep 300 >/dev/null 2>&1 & echo $! > '\(dir)/nohup'
+            wait
+            """
+            try? script.write(toFile: dir + "/run.sh", atomically: true, encoding: .utf8)
+            func pid(_ name: String) -> pid_t? {
+                (try? String(contentsOfFile: dir + "/" + name, encoding: .utf8)).flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            }
+            func alive(_ p: pid_t?) -> Bool { p.map { kill($0, 0) == 0 } ?? false }
+            func waitUntil(_ cond: () -> Bool) { for _ in 0..<100 where !cond() { RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05)) } }
+            let pty = PTYProcess(executable: "/bin/bash", args: ["bash", "--noprofile", "--norc", "-i"], env: ["TERM": "dumb", "PATH": "/usr/bin:/bin"], cwd: dir, cols: 80, rows: 24)
+            pty?.start()
+            pty?.write(Array("sleep 300 & echo $! > disowned; disown; /bin/bash run.sh\n".utf8))
+            waitUntil { pid("disowned") != nil && pid("script") != nil && pid("nested") != nil && pid("nohup") != nil }
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+            check("hangup: all started", alive(pid("disowned")) && alive(pid("script")) && alive(pid("nested")) && alive(pid("nohup")))
+            pty?.terminate()
+            waitUntil { !alive(pid("script")) && !alive(pid("nested")) }
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+            check("hangup: the script stops", !alive(pid("script")))
+            check("hangup: its job in a process group of its own stops too", !alive(pid("nested")))
+            check("hangup: nohup keeps running", alive(pid("nohup")))
+            check("hangup: disowned keeps running", alive(pid("disowned")))
+            for name in ["script", "nested", "nohup", "disowned"] { if let p = pid(name) { kill(p, SIGKILL) } }
+        }
         func make(_ c: Int = 20, _ r: Int = 5) -> (Terminal, Sink) {
             let t = Terminal(cols: c, rows: r, scrollbackLimit: 1000)
             let s = Sink()
@@ -185,7 +340,7 @@ enum SelfTest {
 /// Development aid: SOLANUM_SNAPSHOT=/path.png renders the first window to a PNG after a delay.
 /// SOLANUM_SNAPSHOT_INPUT types text first; SOLANUM_SNAPSHOT_ACTIONS=split,palette,select-block,collapse,jump-prompt,find,find-commands,find-output,click:<col>:<row>,keys:<text>,theme:<name>,
 /// newtab,rename-tab,new-group,edit:<text>,select-tab:<i>,collapse-group:<i>,split-down,save-session,
-/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,hover-link:<col>:<row>
+/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,crumb-menu[:<item>],press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>
 /// (with SOLANUM_SESSION_FILE set, which also makes the run restore from that file).
 enum SnapshotHelper {
     static func runIfRequested() {
@@ -498,6 +653,11 @@ enum SnapshotHelper {
                     if action.hasPrefix("open-diff:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(10)), mode: .diff) }
                     if action.hasPrefix("open-preview:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(13)), mode: .preview) }
                     if action == "format-file" { c.activeTab?.editor?.formatDocument(nil) }
+                    if action.hasPrefix("open-status:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(12)), mode: .status) }
+                    if action.hasPrefix("status-click:") { c.activeTab?.editor?.devStatusView?.devClick(String(action.dropFirst(13))) }
+                    if action.hasPrefix("graph-changes:"), let r = Int(action.dropFirst(14)) { c.activeTab?.editor?.devGraphView?.devViewChanges(r) }
+                    if action.hasPrefix("status-open:") { c.activeTab?.editor?.devStatusView?.devOpen(String(action.dropFirst(12))) }
+                    if action == "status-all" { c.activeTab?.editor?.devStatusView?.devToggleAll() }
                     if action.hasPrefix("open-graph:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(11)), mode: .graph) }
                     if action.hasPrefix("hover-graph:"), let row = Int(action.dropFirst(12)) { c.activeTab?.editor?.devHoverGraph(row) }
                     if action == "toggle-terminal" { c.activeTab?.toggleTerminal() }
@@ -555,6 +715,133 @@ enum SnapshotHelper {
                     if action == "close-file" { c.activeTab?.editor?.requestClose() }
                     if action == "hover-title" { c.rootView.sidebar.devHoverTitle() }
                     if action == "print-sidebar" { let r = c.rootView.sidebar.frame; FileHandle.standardError.write("sidebar x=\(Int(r.minX)) w=\(Int(r.width)) hidden=\(c.rootView.sidebar.isHidden) terminals.x=\(Int(c.rootView.columnArea.minX))\n".data(using: .utf8)!) }
+                    if action.hasPrefix("sidebar-rename:") { c.rootView.sidebar.devBeginRename(String(action.dropFirst(15))) }
+                    if action.hasPrefix("sidebar-rename-to:") { c.rootView.sidebar.devFinishRename(String(action.dropFirst(18))) }
+                    if action.hasPrefix("sidebar-click:") { c.rootView.sidebar.devClick(String(action.dropFirst(14))) }
+                    if action == "press-cmd-return", let w = c.window,
+                       let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                windowNumber: w.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+                                                isARepeat: false, keyCode: 36) { NSApp.sendEvent(e) }
+                    if action == "press-return", let w = c.window,
+                       let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                windowNumber: w.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+                                                isARepeat: false, keyCode: 36) { w.sendEvent(e) }
+                    if action == "print-editors" {
+                        let eds = c.allTabs.flatMap { $0.editors.map { "\($0.displayName) @ \($0.path)" } }
+                        FileHandle.standardError.write("editors: \(eds)\n".data(using: .utf8)!)
+                    }
+                    if action == "press-beautify", let w = c.window,
+                       let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .option], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                windowNumber: w.windowNumber, context: nil, characters: "ƒ", charactersIgnoringModifiers: "f",
+                                                isARepeat: false, keyCode: 3) { _ = NSApp.mainMenu?.performKeyEquivalent(with: e) }
+                    if action == "print-header" {
+                        FileHandle.standardError.write("header: \(c.activeTab?.editor?.displayName ?? "-") \(c.activeTab?.editor?.devHeader.devButtons ?? [])\n".data(using: .utf8)!)
+                    }
+                    if action.hasPrefix("header-press:") { c.activeTab?.editor?.devHeader.devPress(String(action.dropFirst(13))) }
+                    if action.hasPrefix("editor-scroll-x:"), let x = Double(action.dropFirst(16)) { c.activeTab?.editor?.devScroll(x: CGFloat(x)) }
+                    if action.hasPrefix("minimum-contrast:") {
+                        Config.shared.minimumContrast = action.hasSuffix("true")
+                        NotificationCenter.default.post(name: .solanumConfigChanged, object: nil)
+                    }
+                    if action.hasPrefix("file-icons:") {
+                        Config.shared.fileIcons = String(action.dropFirst(11))
+                        NotificationCenter.default.post(name: .solanumConfigChanged, object: nil)
+                    }
+                    if action.hasPrefix("settings-size:") {
+                        // A Settings window of any size, past the screen's if need be, to see a whole page at once.
+                        let n = action.dropFirst(14).split(separator: ":").compactMap { Double($0) }
+                        if n.count == 2, let w = SettingsWindowController.shared.window { w.setFrame(NSRect(x: 0, y: 0, width: n[0], height: n[1]), display: true) }
+                    }
+                    if action.hasPrefix("folder-icon:") {
+                        // The Icon pack row's folder, to a PNG; nil (Solanum's own icons) writes nothing.
+                        let img = IconPacks.current?.icon(forName: "folder", directory: true, light: !Config.shared.theme.isDark)
+                        FileHandle.standardError.write("folder: \(Config.shared.fileIcons) on \(Config.shared.theme.name) -> \(IconPacks.shownID): \(img == nil ? "none" : "image")\n".data(using: .utf8)!)
+                        if let img, let t = img.tiffRepresentation, let png = NSBitmapImageRep(data: t)?.representation(using: .png, properties: [:]) {
+                            try? png.write(to: URL(fileURLWithPath: String(action.dropFirst(12))))
+                        }
+                    }
+                    if action == "settings-bottom" {
+                        // Settings scrolled to the file icons, which sit under the theme cards.
+                        func scrolls(_ v: NSView) -> [NSScrollView] { ((v as? NSScrollView).map { [$0] } ?? []) + v.subviews.flatMap(scrolls) }
+                        func popups(_ v: NSView) -> [ChoicePopup] { ((v as? ChoicePopup).map { [$0] } ?? []) + v.subviews.flatMap(popups) }
+                        let root = SettingsWindowController.shared.window?.contentView
+                        if let p = root.map(popups)?.first(where: { $0.itemTitles.contains("Solanum") }) { p.scrollToVisible(p.bounds.insetBy(dx: 0, dy: -120)) }
+                        _ = root.map(scrolls)
+                    }
+                    if action.hasPrefix("icon-popup") {
+                        // The Settings icon pack menu: optionally choosing an item, then what it shows.
+                        func popups(_ v: NSView) -> [ChoicePopup] { ((v as? ChoicePopup).map { [$0] } ?? []) + v.subviews.flatMap(popups) }
+                        let p = SettingsWindowController.shared.window?.contentView.map(popups)?.first { $0.itemTitles.contains("Solanum") }
+                        if action.hasPrefix("icon-popup:"), let p {
+                            p.selectItem(withTitle: String(action.dropFirst(11)))
+                            p.sendAction(p.action, to: p.target)
+                        }
+                        let q = SettingsWindowController.shared.window?.contentView.map(popups)?.first { $0.itemTitles.contains("Solanum") }
+                        FileHandle.standardError.write("popup: checked=\(q?.titleOfSelectedItem ?? "-") note=\(IconPacks.flavorNote ?? "-") setting=\(Config.shared.fileIcons) on \(Config.shared.theme.name)\n".data(using: .utf8)!)
+                    }
+                    if action == "print-icons" { FileHandle.standardError.write("icons: \(Config.shared.fileIcons) -> \(IconPacks.shownID) on \(Config.shared.theme.name)\n".data(using: .utf8)!) }
+                    if action == "sidebar-search" { c.rootView.sidebar.devPressSearch() }
+                    if action.hasPrefix("find-in-folder:") { c.findInFolder(query: String(action.dropFirst(15))) }
+                    if action == "print-editor-place", let ed = c.activeTab?.editor {
+                        FileHandle.standardError.write("place: \(ed.displayName) line \(ed.devCaretLine) selected '\(ed.devSelection)' focus \(c.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "-")\n".data(using: .utf8)!)
+                    }
+                    if action.hasPrefix("find-bar:"), let ed = c.activeTab?.editor {
+                        ed.showFind(nil)
+                        ed.devFindBar?.field.stringValue = String(action.dropFirst(9))
+                        ed.devFindBar?.onQueryChange?()
+                    }
+                    if action == "find-close" { c.activeTab?.editor?.devCloseFind() }
+                    if action == "find-case" { c.activeTab?.editor?.devFindBar?.flip(\.matchCase) }
+                    if action == "find-word" { c.activeTab?.editor?.devFindBar?.flip(\.wholeWord) }
+                    if action == "find-regex" { c.activeTab?.editor?.devFindBar?.flip(\.regex) }
+                    if action == "find-step" { c.activeTab?.editor?.devStepFind(1) }
+                    if action.hasPrefix("find-replace:"), let ed = c.activeTab?.editor {
+                        ed.devFindBar?.devShowReplace()
+                        ed.devFindBar?.replaceField.stringValue = String(action.dropFirst(13))
+                    }
+                    if action == "find-replace-one" { c.activeTab?.editor?.devReplace(all: false) }
+                    if action == "find-replace-all" { c.activeTab?.editor?.devReplace(all: true) }
+                    if action.hasPrefix("tab-arrow:"), let d = Int(action.dropFirst(10)) { c.tabBar.devPressArrow(d) }
+                    if action == "print-tab-scroll" { FileHandle.standardError.write("tabs: \(c.tabBar.devScrollState)\n".data(using: .utf8)!) }
+                    if action.hasPrefix("press-key:"), let w = c.window {
+                        // A real key event for each character, sent to the focused pane.
+                        for ch in action.dropFirst(10) {
+                            if let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
+                                                        context: nil, characters: String(ch), charactersIgnoringModifiers: String(ch), isARepeat: false, keyCode: 0) { w.sendEvent(e) }
+                        }
+                    }
+                    if action == "editor-wrap" { c.activeTab?.editor?.toggleWrap(nil) }
+                    if action.hasPrefix("find-type:"), let w = c.window, let ed = c.activeTab?.editor {
+                        // Real key events, one at a time: how long each holds up the main thread, drawing included.
+                        ed.showFind(nil)
+                        for (i, ch) in String(action.dropFirst(10)).enumerated() {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3 * Double(i + 1)) {
+                                let t0 = CACurrentMediaTime()
+                                if let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
+                                                            context: nil, characters: String(ch), charactersIgnoringModifiers: String(ch), isARepeat: false, keyCode: 0) { w.sendEvent(e) }
+                                let t1 = CACurrentMediaTime()
+                                w.layoutIfNeeded()
+                                let t2 = CACurrentMediaTime()
+                                w.displayIfNeeded()
+                                let t3 = CACurrentMediaTime()
+                                FileHandle.standardError.write(String(format: "key '%@': event=%.1fms layout=%.1fms draw=%.1fms total=%.1fms state: %@\n", String(ch), (t1 - t0) * 1000, (t2 - t1) * 1000, (t3 - t2) * 1000, (t3 - t0) * 1000, ed.devFindState).data(using: .utf8)!)
+                            }
+                        }
+                    }
+                    if action.hasPrefix("find-latency:"), let ed = c.activeTab?.editor {
+                        FileHandle.standardError.write("latency: \(ed.devFindLatency(String(action.dropFirst(13))))\n".data(using: .utf8)!)
+                    }
+                    if action.hasPrefix("find-speed:"), let ed = c.activeTab?.editor {
+                        FileHandle.standardError.write("speed: \(ed.devFindMillis(String(action.dropFirst(11)), EditorFindOptions()))\n".data(using: .utf8)!)
+                    }
+                    if action == "print-find", let ed = c.activeTab?.editor {
+                        FileHandle.standardError.write("find: \(ed.devFindBar?.field.stringValue ?? "-") \(ed.devFindState)\n".data(using: .utf8)!)
+                    }
+                    if action == "print-focus" {
+                        let sheet = c.window?.attachedSheet.map { String(describing: type(of: $0)) } ?? "none"
+                        FileHandle.standardError.write("focus: \(c.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "none") sheet: \(sheet)\n".data(using: .utf8)!)
+                    }
+                    if action.hasPrefix("crumb-menu") { c.rootView.statusBar.devFolderMenu(run: action.hasPrefix("crumb-menu:") ? String(action.dropFirst(11)) : nil) }
                     if action.hasPrefix("sidebar-expand:") { c.rootView.sidebar.devExpand(String(action.dropFirst(15))) }
                     if action.hasPrefix("sidebar-import:") { c.rootView.sidebar.devImport(String(action.dropFirst(15))) }
                     if action.hasPrefix("status-transfer:") { c.rootView.statusBar.setTransfer(String(action.dropFirst(16)), from: c) }
@@ -565,6 +852,13 @@ enum SnapshotHelper {
                         let tabs = c.allTabs.map { $0.pinnedFolder?.path ?? "-" }.joined(separator: ", ")
                         FileHandle.standardError.write("pins tabs=[\(tabs)] active=\(c.activeIndex) sidebarPinned=\(c.rootView.sidebar.isPinned)\n".data(using: .utf8)!)
                     }
+                    if action.hasPrefix("pane-send:") { pane.send(action.dropFirst(10).replacingOccurrences(of: "\\r", with: "\r")) }
+                    if action.hasPrefix("lost-bar:") { c.activeTab?.panes.compactMap(\.devLostBar).first?.devPress(String(action.dropFirst(9))) }
+                    if action == "print-lost-bar" {
+                        let frames = c.activeTab?.panes.map { p in p.devLostBar.map { "\(Int($0.frame.minX)),\(Int($0.frame.minY)) \(Int($0.frame.width))x\(Int($0.frame.height)) of \(Int(p.bounds.width))x\(Int(p.bounds.height))" } ?? "none" } ?? []
+                        FileHandle.standardError.write("lost-bar panes=\(frames)\n".data(using: .utf8)!)
+                    }
+                    if action == "refresh-sidebar" { c.rootView.sidebar.refresh(nil) }
                     if action == "refresh-tab" { c.refreshTab(nil) }
                     if action == "glide-bottom" { pane.smoothScroll(to: 0) }
                     if action == "print-scroll" { FileHandle.standardError.write("scroll offset=\(pane.scrollOffset) shift=\(String(format: "%.1f", pane.scrollPixelShift))\n".data(using: .utf8)!) }
@@ -586,6 +880,15 @@ enum SnapshotHelper {
                     }
                     if action == "print-anim" { FileHandle.standardError.write("\(c.tabBar.animSummary)\n".data(using: .utf8)!) }
                     if action.hasPrefix("close-tab:"), let i = Int(action.dropFirst(10)) { c.closeTab(at: i) }
+                    if action.hasPrefix("palette-query:"), let w = c.window {
+                        CommandPalette.show(in: w, items: CommandPalette.collectItems(), tracksRecents: true, query: String(action.dropFirst(14)))
+                    }
+                    if action.hasPrefix("goto-folder") { c.goToFolder(nil) }
+                    if action == "palette-run" { CommandPalette.devRunSelected() }
+                    if action == "print-cwds" {
+                        let cwds = c.allTabs.map { $0.focusedPane.currentDirectory ?? "-" }
+                        FileHandle.standardError.write("cwds: \(cwds) active=\(c.activeIndex)\n".data(using: .utf8)!)
+                    }
                     if action == "print-tabs" { FileHandle.standardError.write("--\n\(c.tabBar.layoutSummary)\n".data(using: .utf8)!) }
                     if action == "group-picked" { c.focused.addToNewGroup(c.tabBar.selectedTabs) }
                     if action == "name-tabs" { for (ci, col) in c.columns.enumerated() { for (i, t) in col.tabs.enumerated() { col.renameTab(t, to: "\(ci == 0 ? "T" : "R")\(i)") } } }

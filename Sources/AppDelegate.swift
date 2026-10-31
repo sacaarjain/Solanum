@@ -48,7 +48,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         autosaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             SessionStore.save(self?.windows ?? [])
         }
-        NSApp.activate(ignoringOtherApps: true)
+        // A snapshot run (DevTools) stays behind, so it doesn't take the keyboard from whoever's typing.
+        if ProcessInfo.processInfo.environment["SOLANUM_SNAPSHOT"] == nil { NSApp.activate(ignoringOtherApps: true) }
         let opens = pendingOpens ?? []
         pendingOpens = nil
         opens.forEach { openInEditor($0.path) }
@@ -60,7 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let files = urls.filter(\.isFileURL)
         if pendingOpens != nil { pendingOpens? += files; return }
         files.forEach { openInEditor($0.path) }
-        NSApp.activate(ignoringOtherApps: true)
+        // A snapshot run (DevTools) stays behind, so it doesn't take the keyboard from whoever's typing.
+        if ProcessInfo.processInfo.environment["SOLANUM_SNAPSHOT"] == nil { NSApp.activate(ignoringOtherApps: true) }
     }
 
     /// Opens a local file in the editor beside the front window's panes (opening a window if there is none).
@@ -370,6 +372,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         _ = add(shell, "New Tab", #selector(TerminalWindowController.newTab(_:)), "t")
         _ = add(shell, "New Tab in Group", #selector(TerminalWindowController.newTabInGroup(_:)), "t", [.command, .option])
         _ = add(shell, "Reopen Closed Tab", #selector(TerminalWindowController.reopenClosedTab(_:)), "t", [.command, .shift])
+        _ = add(shell, "Open Folder…", #selector(TerminalWindowController.openFolder(_:)), "o")
+        _ = add(shell, "Go to Folder…", #selector(TerminalWindowController.goToFolder(_:)), "")
         _ = add(shell, "Rename Tab…", #selector(TerminalWindowController.renameCurrentTab(_:)), "i", [.command, .shift])
         shell.addItem(.separator())
         _ = add(shell, "Add Tab to New Group", #selector(TerminalWindowController.addCurrentTabToNewGroup(_:)), "g", [.command, .option])
@@ -378,7 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         _ = add(shell, "Collapse Tab Group", #selector(TerminalWindowController.collapseCurrentGroup(_:)), "")
         shell.addItem(.separator())
         _ = add(shell, "Save File", #selector(FileEditorView.saveDocument(_:)), "s")
-        _ = add(shell, "Format Document", #selector(FileEditorView.formatDocument(_:)), "f", [.shift, .option])
+        _ = add(shell, "Beautify / Format Document", #selector(TerminalWindowController.beautifyDocument(_:)), "f", [.command, .option])
         shell.addItem(.separator())
         // Two columns, each with its own tabs (like VS Code's editor groups).
         _ = add(shell, "Split Right", #selector(TerminalWindowController.splitIntoColumns(_:)), "d")
@@ -391,6 +395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         shell.addItem(.separator())
         _ = add(shell, "Keep Awake (caffeinate 8h)", #selector(TerminalView.keepAwake(_:)), "a", [.command, .shift])
         _ = add(shell, "Show Git Graph", #selector(TerminalWindowController.showGitGraph(_:)), "g", [.command, .control])
+        _ = add(shell, "Show Git Changes", #selector(TerminalWindowController.showGitStatus(_:)), "s", [.command, .control])
 
         // Edit
         let edit = top("Edit")
@@ -403,6 +408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         _ = add(edit, "Select All", #selector(NSResponder.selectAll(_:)), "a")
         edit.addItem(.separator())
         _ = add(edit, "Find…", #selector(TerminalView.showFind(_:)), "f")
+        _ = add(edit, "Search in Project Folder…", #selector(TerminalWindowController.findInFolder(_:)), "f", [.command, .shift])
         _ = add(edit, "Find Next", #selector(TerminalView.findNext(_:)), "g")
         _ = add(edit, "Find Previous", #selector(TerminalView.findPrevious(_:)), "g", [.command, .shift])
         edit.addItem(.separator())

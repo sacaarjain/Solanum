@@ -9,6 +9,10 @@ struct PaneState: Codable {
     var text: String?
     /// Claude Code was running here (on this Mac); restoring continues its conversation (`claude -c`).
     var claude: Bool?
+    /// An ssh session was running here: how it was started (`ssh`'s arguments) and the folder it was in on the host.
+    /// Restoring logs in again and goes back there, once the tab is first shown.
+    var ssh: String?
+    var remoteCwd: String?
 }
 
 indirect enum PaneNode: Codable {
@@ -146,8 +150,10 @@ extension TabSession {
     fileprivate static func node(_ v: NSView) -> PaneNode? {
         if let t = v as? TerminalView {
             let text = Config.shared.restoreScrollback ? t.terminal.restorableText(maxLines: SessionStore.maxLines) : nil
+            let ssh = t.remote != nil ? t.terminal.sshArgs.flatMap { $0.isEmpty ? nil : $0 } : nil
             return .pane(PaneState(cwd: t.currentDirectory, text: text?.isEmpty == false ? text : nil,
-                                   claude: t.pty?.foregroundIsClaudeCode == true ? true : nil))
+                                   claude: t.pty?.foregroundIsClaudeCode == true ? true : nil,
+                                   ssh: ssh, remoteCwd: ssh == nil ? nil : t.browseDirectory))
         }
         if let s = v as? PaneSplitView {
             let children = s.arrangedSubviews.compactMap(node)
@@ -166,6 +172,9 @@ extension TabSession {
                 let v = TerminalView(cwd: p.cwd.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil })
                 if let text = p.text { v.restoredText = text + TabSession.restoredBanner }
                 if p.claude == true { v.pendingCommand = TabSession.claudeContinueCommand }
+                if let ssh = p.ssh, let login = RemoteSession(controlPath: "", sshArgs: ssh).reconnectCommand(in: p.remoteCwd) {
+                    v.pendingCommand = "\u{15}" + login
+                }
                 panes.append(v)
                 return v
             case .split(let vertical, let fractions, let children):

@@ -111,7 +111,7 @@ enum SyntaxHighlighter {
     }
 }
 
-/// Format Document (⇧⌥F) for the same languages: consistent indentation, one property or item per line.
+/// Beautify (⌥⌘F) for the same languages: consistent indentation, one property or item per line.
 enum Prettifier {
     struct Failure: LocalizedError {
         let message: String

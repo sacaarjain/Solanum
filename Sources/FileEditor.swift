@@ -6,18 +6,28 @@ import AppKit
 final class FileEditorView: NSView, NSTextViewDelegate {
     let fs: FileSystem
     /// The file, or for a graph the repository's top folder.
-    let path: String
+    private(set) var path: String
     let mode: EditorMode
     /// What the sub-tab says.
     var displayName: String {
         switch mode {
         case .file: return (path as NSString).lastPathComponent
         case .diff: return (path as NSString).lastPathComponent + " (Working Tree)"
+        case .stagedDiff: return (path as NSString).lastPathComponent + " (Staged)"
+        case .status: return "Git Changes"
+        case .commit(let hash): return "Commit \(hash.prefix(8))"
+        case .commitDiff(let hash): return (path as NSString).lastPathComponent + " (\(hash.prefix(8)))"
         case .graph: return "Git Graph"
         case .preview: return "Preview " + (path as NSString).lastPathComponent
         }
     }
     var onClose: (() -> Void)?
+    /// The file was renamed, so what the sub-tab says and where it lives changed.
+    var onPathChanged: (() -> Void)?
+    /// The header's Preview and Working Tree buttons: this file, shown another way in another sub-tab.
+    var onOpenAs: ((EditorMode) -> Void)?
+    /// Git Status: another file, in a sub-tab of its own.
+    var onOpenOther: ((String, EditorMode) -> Void)?
 
     private let header = EditorHeaderView()
     private let scroll = NSScrollView()
@@ -26,6 +36,10 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private let message = NSTextField(labelWithString: "")
     private var usesCRLF = false
     private var loaded = false
+    /// `focus()` was called before the text arrived (its view is hidden until then), so it takes the focus then.
+    private var focusWhenLoaded = false
+    /// `reveal` was called before the text arrived.
+    private var revealWhenLoaded: (line: Int, text: String)?
     private var saving = false
     private(set) var isDirty = false { didSet { header.dirty = isDirty } }
     /// Too big to edit (past `maxEditableFileSize`): shown read-only, in full or (past `maxReadableFileSize`) its end.
@@ -42,12 +56,14 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private var refreshing = false
     private var wraps = false
     /// Colored as JSON, YAML or XML (see Syntax.swift); other files stay plain.
-    private let language: SyntaxLanguage?
+    private var language: SyntaxLanguage?
     private var pendingHighlight: DispatchWorkItem?
     private var observers: [NSObjectProtocol] = []
     private var media: MediaPreviewView?
     private var diffView: DiffView?
     private var graphView: GitGraphView?
+    private var statusView: GitStatusView?
+    private var statusLoading = false
     private var previewView: MarkdownPreviewView?
     /// A remote file's local copy for the preview; removed with the editor.
     private var mediaCopy: URL?
@@ -71,16 +87,23 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         header.toolTip = path
         header.onClose = { [weak self] in self?.requestClose() }
         header.onSave = { [weak self] in self?.saveDocument(nil) }
+        header.onFormat = { [weak self] in self?.formatDocument(nil) }
+        header.canFormat = language != nil
+        header.canPreview = MarkdownHTML.isMarkdown(path: path)
+        header.onPreview = { [weak self] in self?.onOpenAs?(.preview) }
+        header.onShowChanges = { [weak self] in self?.onOpenAs?(.diff) }
         header.onToggleWrap = { [weak self] in self?.toggleWrap(nil) }
         header.onCopyPath = { [weak self] in self?.copyPath() }
         header.onToggleWatch = { [weak self] in self?.watching.toggle() }
         addSubview(header)
 
+        textView.coveredBy = { [weak self] p in
+            guard let self, let bar = self.findBar else { return false }
+            return bar.bounds.contains(bar.convert(p, from: nil))
+        }
         textView.isRichText = false
         textView.importsGraphics = false
         textView.allowsUndo = true
-        textView.usesFindBar = true
-        textView.isIncrementalSearchingEnabled = true
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
@@ -121,13 +144,27 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         scroll.contentView.postsBoundsChangedNotifications = true
         observers.append(NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak self] _ in
             self?.ruler.needsDisplay = true
+            self?.refreshFindHighlights()
         })
+        observers.append(NotificationCenter.default.addObserver(forName: .solanumFileRenamed, object: fs, queue: .main) { [weak self] note in
+            guard let old = note.userInfo?["old"] as? String, let new = note.userInfo?["new"] as? String else { return }
+            self?.followRename(from: old, to: new)
+        })
+        if mode == .file {
+            for name in [NSApplication.didBecomeActiveNotification, .solanumFileSaved, .solanumGitStatusChanged] {
+                observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                    guard let self, note.name == NSApplication.didBecomeActiveNotification || note.object as AnyObject? === self.fs else { return }
+                    self.refreshGitChanges()
+                })
+            }
+            refreshGitChanges()
+        }
         if mode != .file {
             // Keep a diff or graph current: files change and commits land in other apps (or, for a diff, in this
             // file's own editor tab).
-            for name in [NSApplication.didBecomeActiveNotification, .solanumFileSaved] {
+            for name in [NSApplication.didBecomeActiveNotification, .solanumFileSaved] + (mode == .status ? [.solanumGitStatusChanged] : []) {
                 observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                    guard let self, note.name != .solanumFileSaved || note.userInfo?["path"] as? String == self.path else { return }
+                    guard let self, self.mode == .status || note.name != .solanumFileSaved || note.userInfo?["path"] as? String == self.path else { return }
                     self.load()
                 })
             }
@@ -150,6 +187,41 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         if let dir = mediaCopy?.deletingLastPathComponent() { try? FileManager.default.removeItem(at: dir) }
     }
 
+    /// Whether git has changes for this file on disk, for the header's Working Tree button. Off outside a repository.
+    private func refreshGitChanges() {
+        guard mode == .file else { return }
+        let checked = path
+        let name = (checked as NSString).lastPathComponent
+        GitRunner(dir: (checked as NSString).deletingLastPathComponent, remote: fs as? RemoteSession)
+            .run("git status --porcelain -- \(shellQuote(":(literal)" + name))", timeout: 15) { [weak self] status, out, _ in
+                guard let self, self.path == checked else { return }
+                self.header.hasGitChanges = status == 0 && !out.isEmpty
+            }
+    }
+
+    /// Its file (or a folder it's in) was renamed: saves go to the new name from now on, and unsaved text stays.
+    private func followRename(from old: String, to new: String) {
+        guard path == old || path.hasPrefix(old + "/") else { return }
+        path = new + path.dropFirst(old.count)
+        language = SyntaxLanguage(path: path)
+        header.canFormat = language != nil
+        header.canPreview = MarkdownHTML.isMarkdown(path: path)
+        refreshGitChanges()
+        header.subtitle = location
+        header.toolTip = path
+        if mode != .file {
+            load()
+        } else if loaded, let storage = textView.textStorage, storage.length <= SyntaxHighlighter.maxLength {
+            // The new extension may mean another language, or none.
+            if language != nil {
+                highlightSyntax()
+            } else {
+                storage.addAttribute(.foregroundColor, value: Config.shared.theme.foreground, range: NSRange(location: 0, length: storage.length))
+            }
+        }
+        onPathChanged?()
+    }
+
     private var location: String {
         [fs.hostLabel, FilePaths.abbreviate(path, home: fs.home)].compactMap { $0 }.joined(separator: ":")
     }
@@ -165,14 +237,55 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         media?.frame = scroll.frame
         diffView?.frame = scroll.frame
         graphView?.frame = scroll.frame
+        statusView?.frame = scroll.frame
+        if let bar = findBar {
+            let w = min(420, bounds.width - 24)
+            bar.frame = NSRect(x: bounds.width - w - 12, y: scroll.frame.minY + 6, width: w, height: bar.preferredHeight)
+        }
         previewView?.frame = scroll.frame
     }
 
+    /// Search in Project Folder: a line (from 1) in view, with `text` on it selected.
+    func reveal(line: Int, text: String) {
+        guard mode == .file, media == nil else { return }
+        guard loaded else {
+            revealWhenLoaded = (line, text)
+            return
+        }
+        let s = textView.string as NSString
+        var start = 0, n = 1
+        while n < line, start < s.length {
+            start = NSMaxRange(s.lineRange(for: NSRange(location: start, length: 0)))
+            n += 1
+        }
+        let lineRange = s.lineRange(for: NSRange(location: min(start, s.length), length: 0))
+        let found = s.range(of: text, options: .caseInsensitive, range: lineRange)
+        let target = found.location == NSNotFound ? NSRange(location: lineRange.location, length: 0) : found
+        textView.setSelectedRange(target)
+        textView.scrollRangeToVisible(target)
+        if target.length > 0 { textView.showFindIndicator(for: target) }
+    }
+
+    var devHeader: EditorHeaderView { header }
+    var devSelection: String { (textView.string as NSString).substring(with: textView.selectedRange()) }
+    var devCaretLine: Int {
+        let s = textView.string as NSString
+        return s.substring(to: textView.selectedRange().location).components(separatedBy: "\n").count
+    }
+    /// Dev aid (DevTools editor-scroll-x): scrolls the text sideways.
+    func devScroll(x: CGFloat) {
+        scroll.contentView.scroll(to: NSPoint(x: x, y: scroll.contentView.bounds.minY))
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+
     func focus() {
-        window?.makeFirstResponder(media?.focusView ?? diffView ?? graphView ?? previewView ?? textView)
+        if !loaded { focusWhenLoaded = true }
+        window?.makeFirstResponder(media?.focusView ?? diffView ?? graphView ?? statusView ?? previewView ?? textView)
     }
 
     private func applyTheme() {
+        findBar?.applyTheme()
+        refreshFindHighlights()
         let th = Config.shared.theme
         let font = FontSet.current.regular as NSFont
         textView.font = font
@@ -197,6 +310,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         media?.applyTheme()
         diffView?.applyTheme()
         graphView?.applyTheme()
+        statusView?.applyTheme()
         if mode == .preview, previewView != nil { loadPreview() }
         header.needsDisplay = true
         needsDisplay = true
@@ -217,8 +331,13 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     }
 
     private func load() {
-        if mode == .diff { return loadDiff() }
+        switch mode {
+        case .diff, .stagedDiff, .commitDiff: return loadDiff()
+        case .commit: return loadStatus()
+        default: break
+        }
         if mode == .graph { return loadGraph() }
+        if mode == .status { return loadStatus() }
         if mode == .preview { return loadPreview() }
         if let kind = MediaKind(path: path) { return loadMedia(kind) }
         showMessage("Loading…")
@@ -251,8 +370,9 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 let caret = self.textView.selectedRange()
                 let origin = self.scroll.contentView.bounds.origin
                 // Long texts lay out only what's on screen.
-                self.textView.layoutManager?.allowsNonContiguousLayout = text.utf16.count > 2_000_000
+                self.textView.layoutManager?.allowsNonContiguousLayout = text.utf16.count > 100_000
                 self.textView.string = text
+                self.findTextChanged()
                 self.applyTheme()
                 self.partial = partial
                 self.textView.isEditable = !partial
@@ -277,7 +397,13 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 self.message.isHidden = true
                 self.scroll.isHidden = false
                 self.ruler.invalidateLines()
-                if !keepPlace { self.focus() }
+                // Only if asked for: a file shown by clicking it in the sidebar leaves the focus on the sidebar.
+                if self.focusWhenLoaded { self.focus() }
+                self.focusWhenLoaded = false
+                if let r = self.revealWhenLoaded {
+                    self.revealWhenLoaded = nil
+                    self.reveal(line: r.line, text: r.text)
+                }
             }
         }
     }
@@ -371,6 +497,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             storage.append(NSAttributedString(string: text, attributes: self.textView.typingAttributes))
             if self.language != nil, storage.length <= SyntaxHighlighter.maxLength { self.highlightSyntax() }
             self.ruler.linesAppended(from: end)
+            self.findTextChanged()
             if atEnd { self.textView.scrollToEndOfDocument(nil) }
         }
     }
@@ -404,19 +531,32 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     }
 
     /// The left side is the index (`git show :file`: what's staged, else the last commit); a file git doesn't
-    /// have yet diffs against nothing, and one deleted from disk against an empty right side.
+    /// have yet diffs against nothing, and one deleted from disk against an empty right side. For staged changes
+    /// (`.stagedDiff`) it's the last commit against the index: what committing would change.
     private func loadDiff() {
+        let staged = mode == .stagedDiff
+        var inCommit: String?
+        if case .commitDiff(let hash) = mode { inCommit = hash }
         header.editable = false
         header.textTools = false
         if diffView == nil { showMessage("Loading…") }
         let name = (path as NSString).lastPathComponent
         let git = GitRunner(dir: (path as NSString).deletingLastPathComponent, remote: fs as? RemoteSession)
-        git.run("git show \(shellQuote(":./" + name)) 2>/dev/null") { [weak self] _, out, _ in
+        let left = inCommit.map { "\($0)^:./" } ?? (staged ? "HEAD:./" : ":./")
+        git.run("git show \(shellQuote(left + name)) 2>/dev/null") { [weak self] _, out, _ in
             guard let self else { return }
             let old = String(decoding: out, as: UTF8.self)
-            self.fs.read(self.path) { [weak self] result in
+            func read(_ done: @escaping (Data?) -> Void) {
+                if staged || inCommit != nil {
+                    let right = inCommit.map { "\($0):./" } ?? ":./"
+                    git.run("git show \(shellQuote(right + name)) 2>/dev/null") { status, data, _ in done(status == 0 ? data : nil) }
+                } else {
+                    self.fs.read(self.path) { done(try? $0.get()) }
+                }
+            }
+            read { [weak self] data in
                 guard let self else { return }
-                let new = (try? result.get()).map { String(decoding: $0, as: UTF8.self) } ?? ""
+                let new = data.map { String(decoding: $0, as: UTF8.self) } ?? ""
                 let view = self.diffView ?? DiffView()
                 if self.diffView == nil {
                     self.diffView = view
@@ -425,7 +565,8 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                     self.layoutSubtreeIfNeeded()
                 }
                 view.show(old: old, new: new, language: self.language)
-                self.header.subtitle = "\(self.location) · Index ↔ Working Tree · \(view.summary)"
+                let sides = inCommit.map { "Parent ↔ \($0.prefix(8))" } ?? (staged ? "Last Commit ↔ Index" : "Index ↔ Working Tree")
+                self.header.subtitle = "\(self.location) · \(sides) · \(view.summary)"
                 self.message.isHidden = true
                 self.scroll.isHidden = true
                 if self.window?.firstResponder === self.window { self.focus() }
@@ -460,13 +601,13 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         }
     }
 
-    // MARK: Format Document
+    // MARK: Beautify
 
-    /// ⇧⌥F: JSON, YAML or XML re-indented (see `Prettifier`), as one step ⌘Z undoes.
+    /// ⌥⌘F or the header's button: JSON, YAML or XML re-indented (see `Prettifier`), as one step ⌘Z undoes.
     @objc func formatDocument(_ sender: Any?) {
         guard mode == .file, loaded, media == nil else { return NSSound.beep() }
         guard let language else {
-            header.status = "No formatter for this kind of file"
+            header.status = "Can't beautify this kind of file"
             return clearStatus(after: 2.5)
         }
         let text = textView.string
@@ -476,10 +617,10 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             // .jsonc / .json5 allow comments and other relaxations, so they skip the strict check.
             formatted = try Prettifier.format(text, as: language, strictJSON: ext == "json" || ext == "geojson" || ext == "webmanifest")
         } catch {
-            return presentAlert("Couldn't format “\((path as NSString).lastPathComponent)”", error.localizedDescription)
+            return presentAlert("Couldn't beautify “\((path as NSString).lastPathComponent)”", error.localizedDescription)
         }
         guard formatted != text else {
-            header.status = "Already formatted"
+            header.status = "Already beautified"
             return clearStatus(after: 1.5)
         }
         let caret = textView.selectedRange().location
@@ -487,7 +628,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         textView.insertText(formatted, replacementRange: all)
         textView.setSelectedRange(NSRange(location: min(caret, (formatted as NSString).length), length: 0))
         textView.scrollRangeToVisible(textView.selectedRange())
-        header.status = "Formatted"
+        header.status = "Beautified"
         clearStatus(after: 1.5)
     }
 
@@ -515,6 +656,10 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             let view = self.graphView ?? GitGraphView(runner: git)
             if self.graphView == nil {
                 self.graphView = view
+                view.onViewChanges = { [weak self] hash in
+                    guard let self else { return }
+                    self.onOpenOther?(self.path, .commit(hash))
+                }
                 self.addSubview(view)
                 self.needsLayout = true
                 self.layoutSubtreeIfNeeded()
@@ -527,6 +672,43 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             if self.window?.firstResponder === self.window { self.focus() }
         }
     }
+
+    /// The repository's state as a page (GitStatusView.swift).
+    private func loadStatus() {
+        guard !statusLoading else { return }
+        statusLoading = true
+        header.editable = false
+        header.textTools = false
+        if statusView == nil { showMessage("Loading…") }
+        let git = GitRunner(dir: path, remote: fs as? RemoteSession)
+        var hash: String?
+        if case .commit(let h) = mode { hash = h }
+        git.run(hash.map(GitStatusReport.script(commit:)) ?? GitStatusReport.script, timeout: 30) { [weak self] status, out, err in
+            guard let self else { return }
+            self.statusLoading = false
+            guard status == 0, let report = hash == nil ? GitStatusReport(output: out) : GitStatusReport(commitOutput: out) else {
+                return self.showMessage(err.isEmpty ? "Couldn't read the repository's status." : err)
+            }
+            let view = self.statusView ?? GitStatusView(runner: git)
+            if self.statusView == nil {
+                self.statusView = view
+                // A commit doesn't change.
+                if hash == nil { view.onRefresh = { [weak self] in self?.load() } }
+                view.onOpen = { [weak self] path, mode in self?.onOpenOther?(path, mode) }
+                self.addSubview(view)
+                self.needsLayout = true
+                self.layoutSubtreeIfNeeded()
+            }
+            view.show(report)
+            self.header.subtitle = self.location
+            self.message.isHidden = true
+            self.scroll.isHidden = true
+            if self.window?.firstResponder === self.window { self.focus() }
+        }
+    }
+
+    var devStatusView: GitStatusView? { statusView }
+    var devGraphView: GitGraphView? { graphView }
 
     private func showMedia(_ kind: MediaKind, _ url: URL) {
         let view = MediaPreviewView(kind: kind, url: url)
@@ -547,6 +729,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     func textDidChange(_ notification: Notification) {
         if loaded { isDirty = true }
         ruler.invalidateLines()
+        findTextChanged()
         guard language != nil else { return }
         // Re-color once typing pauses rather than on every keystroke.
         pendingHighlight?.cancel()
@@ -647,16 +830,268 @@ final class FileEditorView: NSView, NSTextViewDelegate {
 
     // MARK: Find and wrap
 
-    private func finderAction(_ action: NSTextFinder.Action) {
-        guard media == nil else { return }
-        let item = NSMenuItem()
-        item.tag = action.rawValue
-        textView.performTextFinderAction(item)
+    private var findBar: EditorFindBar?
+    private var findMatches: [NSRange] = []
+    private var findCapped = false
+    /// Which match is current; nil with none.
+    private var findIndex: Int?
+    /// Where the search started, so typing more refines it from there rather than wandering down the file.
+    private var findAnchor = 0
+    private var findGeneration = 0
+    private var pendingFind: DispatchWorkItem?
+    /// What the highlights were last put on, to take them off again.
+    private var highlightedRange = NSRange(location: 0, length: 0)
+
+    /// ⌘F: the bar, with what's selected to search for, as in VS Code. Again: back to its field.
+    @objc func showFind(_ sender: Any?) {
+        guard mode == .file, media == nil, loaded else { return }
+        let selection = textView.selectedRange()
+        findAnchor = selection.location
+        if findBar == nil {
+            let bar = EditorFindBar()
+            bar.canReplace = textView.isEditable
+            bar.onQueryChange = { [weak self] in self?.scheduleFind(select: true) }
+            bar.onStep = { [weak self] d in self?.stepFind(d) }
+            bar.onClose = { [weak self] in self?.closeFind() }
+            bar.onReplace = { [weak self] in self?.replaceCurrent() }
+            bar.onReplaceAll = { [weak self] in self?.replaceAll() }
+            addSubview(bar)
+            findBar = bar
+            needsLayout = true
+            layoutSubtreeIfNeeded()
+        }
+        guard let bar = findBar else { return }
+        if selection.length > 0, selection.length < 200 {
+            let picked = (textView.string as NSString).substring(with: selection)
+            if !picked.contains("\n") { bar.field.stringValue = picked }
+        }
+        bar.focus()
+        scheduleFind(select: true, after: 0)
     }
 
-    @objc func showFind(_ sender: Any?) { finderAction(.showFindInterface) }
-    @objc func findNext(_ sender: Any?) { finderAction(.nextMatch) }
-    @objc func findPrevious(_ sender: Any?) { finderAction(.previousMatch) }
+    @objc func findNext(_ sender: Any?) { stepFromMenu(1) }
+    @objc func findPrevious(_ sender: Any?) { stepFromMenu(-1) }
+
+    /// ⌘G with the bar closed opens it first.
+    private func stepFromMenu(_ d: Int) {
+        guard mode == .file, media == nil else { return }
+        if findBar == nil { return showFind(nil) }
+        stepFind(d)
+    }
+
+    private func closeFind() {
+        pendingFind?.cancel()
+        findGeneration += 1
+        if let i = findIndex, findMatches.indices.contains(i), NSMaxRange(findMatches[i]) <= (textView.string as NSString).length {
+            textView.setSelectedRange(findMatches[i])
+        }
+        findBar?.removeFromSuperview()
+        findBar = nil
+        findMatches = []
+        findIndex = nil
+        refreshFindHighlights()
+        window?.makeFirstResponder(textView)
+    }
+
+    /// The text to search, made once and kept until the text changes.
+    private var findBuffer: FindBuffer?
+    /// Below this a plain search runs as the key is typed; it takes less than a frame.
+    private static let instantFindLength = 2_000_000
+
+    private func currentFindBuffer() -> FindBuffer {
+        let text = textView.string as NSString
+        if let b = findBuffer, b.chars.count == text.length { return b }
+        let b = FindBuffer(text)
+        findBuffer = b
+        return b
+    }
+
+    /// The file's text changed; a search that's showing follows it.
+    private func findTextChanged() {
+        findBuffer = nil
+        if findBar != nil { scheduleFind(select: false) }
+    }
+
+    /// A plain search on an ordinary file happens right here, so there's nothing to wait for. A big file or a regular
+    /// expression (which can take any amount of time) goes off the main queue, and only the latest search counts.
+    private func scheduleFind(select: Bool, after delay: TimeInterval? = nil) {
+        pendingFind?.cancel()
+        findGeneration += 1
+        let generation = findGeneration
+        guard let bar = findBar else { return }
+        let query = bar.field.stringValue, options = bar.options
+        guard !query.isEmpty else {
+            findMatches = []
+            findIndex = nil
+            bar.setCount(nil)
+            return refreshFindHighlights()
+        }
+        let plain = FindBuffer.canSearch(query, options)
+        let finish: ([NSRange], Bool) -> Void = { [weak self] ranges, capped in
+            guard let self, self.findGeneration == generation else { return }
+            self.findMatches = ranges
+            self.findCapped = capped
+            // Typing: the first match from where it started. An edit in the file: the one the caret's at.
+            let from = select ? self.findAnchor : self.textView.selectedRange().location
+            self.findIndex = EditorFind.index(of: ranges, from: from)
+            if select { self.showCurrentMatch() }
+            self.updateFindCount()
+            self.refreshFindHighlights()
+        }
+        let buffer = currentFindBuffer()
+        if plain, buffer.chars.count < Self.instantFindLength {
+            let (ranges, capped) = buffer.matches(of: query, options)
+            return finish(ranges, capped)
+        }
+        let expression: NSRegularExpression?
+        if plain {
+            expression = nil
+        } else {
+            do {
+                expression = try EditorFind.expression(query, options)
+            } catch {
+                findMatches = []
+                findIndex = nil
+                bar.setCount("Invalid regex", problem: true)
+                return refreshFindHighlights()
+            }
+        }
+        buffer.prepare(matchCase: options.matchCase)
+        // A copy for the regex engine, which needs a string: the text view's own changes as it's edited.
+        let text = expression == nil ? nil : (textView.string as NSString).copy() as? NSString
+        let work = DispatchWorkItem {
+            DispatchQueue.global(qos: .userInitiated).async {
+                let (ranges, capped) = expression.flatMap { e in text.map { EditorFind.matches(of: e, in: $0) } } ?? buffer.matches(of: query, options)
+                DispatchQueue.main.async { finish(ranges, capped) }
+            }
+        }
+        pendingFind = work
+        let wait = delay ?? (plain ? 0.03 : 0.08)
+        if wait == 0 { work.perform() } else { DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: work) }
+    }
+
+    private func updateFindCount() {
+        guard let bar = findBar else { return }
+        if bar.field.stringValue.isEmpty { return bar.setCount(nil) }
+        guard let i = findIndex else { return bar.setCount("No results", problem: true) }
+        bar.setCount("\(i + 1) of \(findMatches.count)\(findCapped ? "+" : "")")
+    }
+
+    private func stepFind(_ d: Int) {
+        guard !findMatches.isEmpty else { return }
+        let i = findIndex ?? 0
+        findIndex = (i + d + findMatches.count) % findMatches.count
+        findAnchor = findMatches[findIndex ?? 0].location
+        showCurrentMatch()
+        updateFindCount()
+        refreshFindHighlights()
+    }
+
+    /// In view, and selected if the focus is in the text. From the bar its highlight shows it: a selection would be
+    /// drawn over that, grey in a text view without the focus. Closing the bar selects it.
+    private func showCurrentMatch() {
+        guard let i = findIndex, findMatches.indices.contains(i) else { return }
+        if window?.firstResponder === textView { textView.setSelectedRange(findMatches[i]) }
+        textView.scrollRangeToVisible(findMatches[i])
+    }
+
+    /// Every match on screen shaded, the current one brighter. Only what's on screen, which a file of very long lines
+    /// can still make thousands, so only so many of those.
+    private func refreshFindHighlights() {
+        guard let lm = textView.layoutManager, let tc = textView.textContainer else { return }
+        if highlightedRange.length > 0, NSMaxRange(highlightedRange) <= (textView.string as NSString).length {
+            lm.removeTemporaryAttribute(.backgroundColor, forCharacterRange: highlightedRange)
+            lm.removeTemporaryAttribute(.foregroundColor, forCharacterRange: highlightedRange)
+        }
+        highlightedRange = NSRange(location: 0, length: 0)
+        guard findBar != nil, !findMatches.isEmpty else { return }
+        let th = Config.shared.theme
+        let glyphs = lm.glyphRange(forBoundingRect: textView.visibleRect, in: tc)
+        let visible = lm.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        highlightedRange = visible
+        guard let first = EditorFind.index(of: findMatches, from: visible.location) else { return }
+        var i = first
+        // The search wraps to the start when nothing's at or past the screen's top; so must this.
+        guard findMatches[i].location >= visible.location else { return }
+        let stop = i + 1000
+        while i < findMatches.count, i < stop, findMatches[i].location < NSMaxRange(visible) {
+            let r = findMatches[i]
+            let current = i == findIndex
+            lm.addTemporaryAttribute(.backgroundColor, value: current ? th.accent : th.accent.withAlphaComponent(th.isDark ? 0.28 : 0.24), forCharacterRange: r)
+            // On the solid accent, whichever of black and white reads.
+            if current { lm.addTemporaryAttribute(.foregroundColor, value: th.accent.luminance > 0.55 ? NSColor.black : NSColor.white, forCharacterRange: r) }
+            i += 1
+        }
+    }
+
+    private func replaceCurrent() {
+        guard let bar = findBar, textView.isEditable, let i = findIndex, findMatches.indices.contains(i),
+              let e = try? EditorFind.expression(bar.field.stringValue, bar.options) else { return }
+        let range = findMatches[i]
+        let text = textView.string
+        guard let m = e.firstMatch(in: text, range: range), m.range == range else { return scheduleFind(select: false, after: 0) }
+        let new = EditorFind.replacement(bar.replaceField.stringValue, for: m, in: text, e, regex: bar.options.regex)
+        textView.insertText(new, replacementRange: range)
+        // On to the next match, past what was just put in.
+        findAnchor = range.location + (new as NSString).length
+        scheduleFind(select: true, after: 0)
+        window?.makeFirstResponder(bar.replaceField)
+    }
+
+    private func replaceAll() {
+        guard let bar = findBar, textView.isEditable, !findMatches.isEmpty,
+              let e = try? EditorFind.expression(bar.field.stringValue, bar.options) else { return }
+        let text = textView.string
+        let all = NSRange(location: 0, length: (text as NSString).length)
+        let template = bar.options.regex ? bar.replaceField.stringValue : NSRegularExpression.escapedTemplate(for: bar.replaceField.stringValue)
+        let count = e.numberOfMatches(in: text, range: all)
+        let caret = textView.selectedRange().location
+        // As one step that ⌘Z undoes.
+        textView.insertText(e.stringByReplacingMatches(in: text, range: all, withTemplate: template), replacementRange: all)
+        textView.setSelectedRange(NSRange(location: min(caret, (textView.string as NSString).length), length: 0))
+        findAnchor = textView.selectedRange().location
+        header.status = "Replaced \(count)"
+        clearStatus(after: 2)
+        scheduleFind(select: false, after: 0)
+    }
+
+    var devFindBar: EditorFindBar? { findBar }
+    var devFindState: String {
+        let current = findIndex.map { (textView.string as NSString).substring(with: findMatches[$0]) } ?? ""
+        return "count=\(findIndex.map { "\($0 + 1)" } ?? "-") of \(findMatches.count) current='\(current)'"
+    }
+    func devCloseFind() { closeFind() }
+    /// The whole of a keystroke: search, jump, highlights and the redraw.
+    func devFindLatency(_ q: String) -> String {
+        guard let bar = findBar else { return "no bar" }
+        bar.field.stringValue = q
+        let t0 = CACurrentMediaTime()
+        bar.onQueryChange?()
+        let t1 = CACurrentMediaTime()
+        window?.displayIfNeeded()
+        let t2 = CACurrentMediaTime()
+        stepFind(1)
+        let t3 = CACurrentMediaTime()
+        window?.displayIfNeeded()
+        let t4 = CACurrentMediaTime()
+        func ms(_ a: Double, _ b: Double) -> String { String(format: "%.1fms", (b - a) * 1000) }
+        return "'\(q)' \(findMatches.count) matches, wraps=\(wraps): find+jump+highlight=\(ms(t0, t1)) draw=\(ms(t1, t2)) | step=\(ms(t2, t3)) draw=\(ms(t3, t4))"
+    }
+    func devFindMillis(_ q: String, _ o: EditorFindOptions) -> String {
+        let t0 = CACurrentMediaTime()
+        let b = FindBuffer((textView.string as NSString).copy() as! NSString)
+        let t1 = CACurrentMediaTime()
+        let plain = b.matches(of: q, o)
+        let t2 = CACurrentMediaTime()
+        let again = b.matches(of: q, o)
+        let t3 = CACurrentMediaTime()
+        let regex = (try? EditorFind.expression(q, o)).map { EditorFind.matches(of: $0, in: textView.string as NSString) }
+        let t4 = CACurrentMediaTime()
+        func ms(_ a: Double, _ b: Double) -> String { String(format: "%.2fms", (b - a) * 1000) }
+        return "chars=\(b.chars.count) copy=\(ms(t0, t1)) plain=\(ms(t1, t2)) again=\(ms(t2, t3)) (\(again.ranges.count)) regex=\(ms(t3, t4)) (\(regex?.ranges.count ?? -1)) plainCount=\(plain.ranges.count)"
+    }
+    func devStepFind(_ d: Int) { stepFind(d) }
+    func devReplace(all: Bool) { all ? replaceAll() : replaceCurrent() }
 
     @objc func toggleWrap(_ sender: Any?) {
         guard media == nil, mode == .file else { return }
@@ -682,10 +1117,27 @@ final class FileEditorView: NSView, NSTextViewDelegate {
 
 /// What an editor shows: a file to edit, a file's uncommitted changes (Diff.swift), a repository's history
 /// (GitGraph.swift), or a Markdown file rendered (Markdown.swift).
-enum EditorMode { case file, diff, graph, preview }
+enum EditorMode: Equatable { case file, diff, stagedDiff, graph, status, preview
+    /// One commit's files (GitStatusView.swift), and one of its files side by side.
+    case commit(String), commitDiff(String)
+}
 
 /// ⌥Z toggles wrapping, as in VS Code.
 final class EditorTextView: NSTextView {
+    /// Something floats over the text here (the find bar), which picks the cursor: a text view that has the focus sets
+    /// its I-beam on every mouse move, wherever the mouse is.
+    var coveredBy: ((NSPoint) -> Bool)?
+
+    override func mouseMoved(with e: NSEvent) {
+        if coveredBy?(e.locationInWindow) == true { return NSCursor.pointingHand.set() }
+        super.mouseMoved(with: e)
+    }
+
+    override func cursorUpdate(with e: NSEvent) {
+        if coveredBy?(e.locationInWindow) == true { return NSCursor.pointingHand.set() }
+        super.cursorUpdate(with: e)
+    }
+
     override func keyDown(with e: NSEvent) {
         if e.modifierFlags.intersection([.command, .control, .option, .shift]) == .option, e.keyCode == 6 {
             NSApp.sendAction(#selector(FileEditorView.toggleWrap(_:)), to: nil, from: self)
@@ -716,11 +1168,20 @@ final class EditorHeaderView: NSView {
     var editable = true { didSet { needsDisplay = true } }
     /// Off for previews, diffs and graphs: only the close button shows.
     var textTools = true { didSet { needsDisplay = true } }
+    /// A format with a formatter (JSON, YAML, XML) and not read-only: the format button shows.
+    var canFormat = false { didSet { needsDisplay = true } }
+    /// A Markdown file: the preview button shows.
+    var canPreview = false { didSet { needsDisplay = true } }
+    /// Git has changes for this file: the working tree button shows.
+    var hasGitChanges = false { didSet { needsDisplay = true } }
     /// The eye is on: the file is re-read every few seconds.
     var watching = false { didSet { needsDisplay = true } }
     var onToggleWatch: (() -> Void)?
     var onClose: (() -> Void)?
     var onSave: (() -> Void)?
+    var onFormat: (() -> Void)?
+    var onPreview: (() -> Void)?
+    var onShowChanges: (() -> Void)?
     var onToggleWrap: (() -> Void)?
     var onCopyPath: (() -> Void)?
     private var hover: Int?
@@ -731,19 +1192,60 @@ final class EditorHeaderView: NSView {
     override var isFlipped: Bool { true }
 
     private func symbol(_ name: String, _ color: NSColor) -> NSImage? {
+        if name == Self.saveIcon { return Self.floppyDisk(color) }
         let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium).applying(.init(paletteColors: [color]))
         return NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(cfg)
     }
 
-    /// Right to left: close, save, wrap, watch.
+    private static let saveIcon = "save"
+
+    /// SF Symbols has no floppy disk (the nearest, square.and.arrow.down, reads as a download), so it's drawn here,
+    /// its lines the weight of the symbols beside it.
+    private static func floppyDisk(_ color: NSColor) -> NSImage {
+        NSImage(size: NSSize(width: 13, height: 13), flipped: true) { _ in
+            color.setStroke()
+            let body = NSBezierPath()
+            body.move(to: NSPoint(x: 1.5, y: 2.7))
+            body.appendArc(from: NSPoint(x: 1.5, y: 1.5), to: NSPoint(x: 2.7, y: 1.5), radius: 1.2)
+            body.line(to: NSPoint(x: 9.3, y: 1.5))
+            body.line(to: NSPoint(x: 11.5, y: 3.7))
+            body.line(to: NSPoint(x: 11.5, y: 10.3))
+            body.appendArc(from: NSPoint(x: 11.5, y: 11.5), to: NSPoint(x: 10.3, y: 11.5), radius: 1.2)
+            body.line(to: NSPoint(x: 2.7, y: 11.5))
+            body.appendArc(from: NSPoint(x: 1.5, y: 11.5), to: NSPoint(x: 1.5, y: 10.3), radius: 1.2)
+            body.close()
+            // The metal shutter at the top, and the label at the bottom.
+            body.move(to: NSPoint(x: 4, y: 1.5))
+            body.line(to: NSPoint(x: 4, y: 4.5))
+            body.line(to: NSPoint(x: 8.5, y: 4.5))
+            body.line(to: NSPoint(x: 8.5, y: 1.5))
+            body.move(to: NSPoint(x: 3.8, y: 11.5))
+            body.line(to: NSPoint(x: 3.8, y: 7.5))
+            body.line(to: NSPoint(x: 9.2, y: 7.5))
+            body.line(to: NSPoint(x: 9.2, y: 11.5))
+            body.lineWidth = 1.1
+            body.lineJoinStyle = .round
+            body.stroke()
+            return true
+        }
+    }
+
+    /// Dev aid (DevTools header-press, print-header): the buttons showing, and pressing one by its tooltip's start.
+    var devButtons: [String] { buttons.map(\.tip) }
+    func devPress(_ tip: String) { buttons.first { $0.tip.hasPrefix(tip) }?.action?() }
+
+    /// Right to left: close, save, format, wrap, watch, working tree, preview. No action: greyed out (save, with nothing to save).
     private var buttons: [(symbol: String, tip: String, active: Bool, action: (() -> Void)?)] {
         var b: [(symbol: String, tip: String, active: Bool, action: (() -> Void)?)] = [("xmark", "Close (⌘W)", false, onClose)]
         guard textTools else { return b }
-        if editable { b.append(("square.and.arrow.down", "Save (⌘S)", dirty, onSave)) }
+        if editable { b.append((Self.saveIcon, dirty ? "Save (⌘S)" : "No Changes to Save", dirty, dirty ? onSave : nil)) }
+        if editable, canFormat { b.append(("list.bullet.indent", "Beautify / Format Document (⌥⌘F)", false, onFormat)) }
         b.append(("text.word.spacing", wraps ? "Don't Wrap Lines (⌥Z)" : "Wrap Lines (⌥Z)", wraps, onToggleWrap))
         b.append((watching ? "eye.fill" : "eye",
                   watching ? "Stop Watching for Changes" : "Watch for Changes (re-reads the file every 5 seconds while it's showing)",
                   watching, onToggleWatch))
+        if hasGitChanges { b.append(("plusminus", "Open Working Tree (this file's uncommitted changes)", false, onShowChanges)) }
+        if canPreview { b.append(("doc.richtext", "Open Preview", false, onPreview)) }
         return b
     }
 
@@ -760,12 +1262,14 @@ final class EditorHeaderView: NSView {
             let r = NSRect(x: right - 22, y: (bounds.height - 22) / 2, width: 22, height: 22)
             buttonRects.append(r)
             right = r.minX - 2
-            let active = b.active
-            if hover == i {
+            let active = b.active, enabled = b.action != nil
+            if hover == i, enabled {
                 th.foreground.withAlphaComponent(0.1).setFill()
                 NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5).fill()
             }
-            if let img = symbol(b.symbol, active ? th.accent : th.foreground.withAlphaComponent(hover == i ? 0.9 : 0.6)) {
+            let color = !enabled ? th.foreground.withAlphaComponent(0.25)
+                : active ? th.accent : th.foreground.withAlphaComponent(hover == i ? 0.9 : 0.6)
+            if let img = symbol(b.symbol, color) {
                 img.draw(in: NSRect(x: r.midX - img.size.width / 2, y: r.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
             }
         }
@@ -939,6 +1443,14 @@ final class LineNumberRuler: NSRulerView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        // Scrolled sideways, the text passes under the bar: a solid, darker background keeps the numbers readable.
+        if let tv = textView, tv.visibleRect.minX > 0 {
+            let th = Config.shared.theme
+            (th.background.usingColorSpace(.sRGB)?.blended(withFraction: 0.25, of: .black) ?? th.background).withAlphaComponent(1).setFill()
+            bounds.fill()
+            th.border.setFill()
+            NSRect(x: bounds.maxX - 1, y: 0, width: 1, height: bounds.height).fill()
+        }
         drawHashMarksAndLabels(in: dirtyRect)
     }
 }

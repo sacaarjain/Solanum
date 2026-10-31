@@ -7,6 +7,11 @@ import WebKit
 // has scripts turned off, and links open in the browser.
 
 enum MarkdownHTML {
+    /// A file Open Preview can show.
+    static func isMarkdown(path: String) -> Bool {
+        ["md", "markdown", "mdown", "mkd"].contains((path as NSString).pathExtension.lowercased())
+    }
+
     /// The body HTML for `markdown`.
     static func render(_ markdown: String) -> String {
         let lines = markdown.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\t", with: "    ")
