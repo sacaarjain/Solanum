@@ -60,11 +60,12 @@ extension TerminalView {
             if drawnCursor.row >= 0 { dirty.insert(drawnCursor.row) }
             if cursor.row >= 0 { dirty.insert(cursor.row) }
         }
-        // Code boxes (with a Copy button in the row above) and thumbnails are drawn across several rows.
+        // Code boxes (with a Copy button in the row above), thumbnails and a link's card are drawn across several rows.
         for r in dirty {
             let near = rowMap[max(0, r - 1)...min(rowMap.count - 1, r + 1)]
             if codeBoxes.contains(where: { b in near.contains { $0 >= b.first - 1 && $0 <= b.last } })
-                || imageChipState.strips.contains(where: { $0.area.insetBy(dx: 0, dy: -4).intersects(rowBand(r)) }) {
+                || imageChipState.strips.contains(where: { $0.area.insetBy(dx: 0, dy: -4).intersects(rowBand(r)) })
+                || linkCardRect.insetBy(dx: 0, dy: -8).intersects(rowBand(r)) {
                 return nil
             }
         }
@@ -129,7 +130,7 @@ extension TerminalView {
         h.combine(dimmed); h.combine(bellFlash)
         h.combine(selection?.start); h.combine(selection?.end)
         h.combine(searchMatches.count); h.combine(currentMatch)
-        h.combine(hoverURL?.line); h.combine(hoverURL?.start); h.combine(hoverURL?.end)
+        h.combine(hoverURL?.line); h.combine(hoverURL?.start); h.combine(hoverURL?.end); h.combine(hoverLinkCard)
         for b in [selectedBlock, hoverBlock, copiedBlock] { h.combine(b?.id) }
         h.combine(hoverBlockCopy)
         h.combine(agent != nil)

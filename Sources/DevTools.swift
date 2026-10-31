@@ -167,6 +167,16 @@ enum SelfTest {
                              chrome: j["chrome"] as? String, ansi: j["ansi"] as! [String])
             check("theme JSON round-trip", back.json as NSDictionary == j as NSDictionary)
         }
+        do {
+            func urls(_ s: String) -> [String] { TerminalView.links(in: s).map(\.url.absoluteString) }
+            check("links: trailing punctuation", urls("It's up at http://127.0.0.1:3007.") == ["http://127.0.0.1:3007"])
+            check("links: bare localhost gets http", urls("ready on localhost:5173/app, go") == ["http://localhost:5173/app"])
+            check("links: 0.0.0.0 opens as localhost", urls("listening on http://0.0.0.0:8000") == ["http://localhost:8000"])
+            check("links: no port, no link", urls("ssh localhost and 127.0.0.1") == [])
+            check("links: inside a scheme link once", urls("(see https://localhost:3000/x)") == ["https://localhost:3000/x"])
+            check("links: local or not", TerminalView.isLocal(URL(string: "http://localhost:3000")!)
+                  && !TerminalView.isLocal(URL(string: "https://github.com")!))
+        }
         print(failures == 0 ? "All \(count) checks passed." : "\(failures) of \(count) checks FAILED.")
         return failures == 0
     }
@@ -175,7 +185,7 @@ enum SelfTest {
 /// Development aid: SOLANUM_SNAPSHOT=/path.png renders the first window to a PNG after a delay.
 /// SOLANUM_SNAPSHOT_INPUT types text first; SOLANUM_SNAPSHOT_ACTIONS=split,palette,select-block,collapse,jump-prompt,find,find-commands,find-output,click:<col>:<row>,keys:<text>,theme:<name>,
 /// newtab,rename-tab,new-group,edit:<text>,select-tab:<i>,collapse-group:<i>,split-down,save-session,
-/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read
+/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,hover-link:<col>:<row>
 /// (with SOLANUM_SESSION_FILE set, which also makes the run restore from that file).
 enum SnapshotHelper {
     static func runIfRequested() {
@@ -378,6 +388,15 @@ enum SnapshotHelper {
                                                     windowNumber: w.windowNumber, context: nil, characters: k,
                                                     charactersIgnoringModifiers: k, isARepeat: false, keyCode: 2) {
                             NSApp.sendEvent(e)
+                        }
+                    }
+                    if action.hasPrefix("hover-link:") {
+                        // hover-link:<col>:<row> — the pointer moves onto a screen cell; prints the link found there.
+                        let n = action.dropFirst(11).split(separator: ":").compactMap { Double($0) }
+                        if n.count == 2 {
+                            pane.updateLinkHover(NSPoint(x: pane.padX + (n[0] + 0.5) * pane.fonts.cellW,
+                                                         y: pane.padTop + (n[1] + 0.5) * pane.fonts.cellH), cmd: false)
+                            print("link: \(pane.hoverURL.map { "\($0.url.absoluteString) cols \($0.start)-\($0.end) · \($0.opener)" } ?? "none")")
                         }
                     }
                     if action.hasPrefix("click:") || action.hasPrefix("click-input:"), let w = c.window {

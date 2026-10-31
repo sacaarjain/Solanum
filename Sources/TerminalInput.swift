@@ -354,6 +354,10 @@ extension TerminalView {
             return
         }
         if handleImageClick(at: p) { return }
+        if let h = hoverURL, linkCardRect.contains(p) {
+            openLink(h.url)
+            return
+        }
         if let button = blockCopyButton, button.rect.contains(p) {
             copyOutput(of: button.block)
             return
@@ -450,6 +454,11 @@ extension TerminalView {
         if !didDrag && e.clickCount == 1 {
             let pos = gridPos(at: p)
             let plain = e.modifierFlags.intersection([.command, .shift, .option, .control]).isEmpty
+            if plain, let u = urlAt(p), plainClickOpensLinks(on: u.line) {
+                mouseAnchor = nil
+                openLink(u.url)
+                return
+            }
             whenCursorSettled { [weak self] in self?.handleClick(at: pos, plain: plain) }
         } else if Config.shared.copyOnSelect, let s = selection {
             let t = textForSelection(s)
@@ -753,25 +762,14 @@ extension TerminalView {
         updateLinkHover(p, cmd: e.modifierFlags.contains(.command))
     }
 
-    private func updateLinkHover(_ p: NSPoint, cmd: Bool) {
-        var newHover: (line: Int, start: Int, end: Int)?
-        if cmd, bounds.contains(p), let u = urlAt(p) { newHover = (u.line, u.start, u.end) }
-        let changed = newHover?.line != hoverURL?.line || newHover?.start != hoverURL?.start
-        if changed {
-            hoverURL = newHover
-            updateCursor()
-            needsDisplay = true
-        }
-    }
-
-    /// Pointing hand over things you click (Copy buttons, ⌘-hovered links), I-beam over text.
+    /// Pointing hand over things you click (Copy buttons, links), I-beam over text.
     func updateCursor() {
         // Over something drawn on top of the terminal (the find bar, a corner notice), that view picks the cursor.
         if let w = window, let content = w.contentView,
            let hit = content.hitTest(content.superview?.convert(w.mouseLocationOutsideOfEventStream, from: nil) ?? .zero), hit !== self {
             return
         }
-        // Normal arrow over the scrollbar and the jump-to-bottom button; a hand over copy buttons and ⌘-links.
+        // Normal arrow over the scrollbar and the jump-to-bottom button; a hand over copy buttons and links.
         if scrollbarHover || scrollbarGrab != nil || hoverJumpPill { return NSCursor.arrow.set() }
         let overPopup = window.map { imageChipState.popupRect.contains(convert($0.mouseLocationOutsideOfEventStream, from: nil)) } ?? false
         (hoverCopyButton != nil || hoverBlockCopy || hoverURL != nil || imageChipState.hover != nil || overPopup
@@ -786,6 +784,7 @@ extension TerminalView {
         if hoverBlock != nil || hoverURL != nil || hoverCopyButton != nil || hoverBlockCopy || hoverJumpPill || scrollbarHover {
             hoverBlock = nil
             hoverURL = nil
+            hoverLinkCard = false
             hoverCopyButton = nil
             hoverBlockCopy = false
             hoverJumpPill = false
@@ -833,47 +832,6 @@ extension TerminalView {
         lastScrollTime = Date()
         if scrollOffset != before || lines != 0 { needsDisplay = true }
     }
-
-    // MARK: - Links
-
-    /// Finds an http(s)/file URL under the given point, searching the whole wrapped logical line.
-    func urlAt(_ p: NSPoint) -> (url: URL, line: Int, start: Int, end: Int)? {
-        let pos = gridPos(at: p)
-        let (a, b) = lineRange(at: pos)
-        var text = ""
-        var map: [GridPos] = []
-        for ln in a.line...b.line {
-            guard let l = terminal.line(abs: ln) else { continue }
-            for x in 0..<l.cells.count {
-                let c = l.cells[x]
-                if c.width == 0 { continue }
-                let s = c.ch == 0 ? " " : String(Character(Unicode.Scalar(c.ch) ?? " "))
-                for _ in s.utf16 { map.append(GridPos(line: ln, col: x)) }
-                text += s
-            }
-        }
-        guard let re = TerminalView.urlRegex else { return nil }
-        let ns = text as NSString
-        for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            var r = m.range
-            while r.length > 0, let last = ns.substring(with: NSRange(location: r.location + r.length - 1, length: 1)).first,
-                  ".,;:!?)]}'\"".contains(last) {
-                r.length -= 1
-            }
-            guard r.length > 0 else { continue }
-            let first = map[r.location], last = map[r.location + r.length - 1]
-            guard pos >= first && pos <= last else { continue }
-            guard let url = URL(string: ns.substring(with: r)) else { continue }
-            if first.line == last.line { return (url, first.line, first.col, last.col) }
-            // Multi-line links: underline only the hovered row's portion.
-            let s = pos.line == first.line ? first.col : 0
-            let en = pos.line == last.line ? last.col : terminal.cols - 1
-            return (url, pos.line, s, en)
-        }
-        return nil
-    }
-
-    static let urlRegex = try? NSRegularExpression(pattern: #"(?:https?|file|ftp)://[^\s<>"'`]+"#)
 
     // MARK: - Drag & drop files
 
@@ -949,17 +907,6 @@ extension TerminalView {
 
     @objc func openLinkFromMenu(_ sender: NSMenuItem) {
         if let u = sender.representedObject as? URL { openLink(u) }
-    }
-
-    /// file:// links to files open in Solanum's editor; folders and web links go to their usual app.
-    private func openLink(_ url: URL) {
-        var isDir: ObjCBool = false
-        if url.isFileURL, FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue,
-           let app = NSApp.delegate as? AppDelegate {
-            app.openInEditor(url.path)
-        } else {
-            NSWorkspace.shared.open(url)
-        }
     }
 
     @objc func copyLinkFromMenu(_ sender: NSMenuItem) {

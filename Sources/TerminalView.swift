@@ -153,7 +153,10 @@ final class TerminalView: NSView, TerminalDelegate {
     var bellFlash: CGFloat = 0
     var jumpPillRect: CGRect = .zero
     var collapseChips: [(CGRect, () -> Void)] = []
-    var hoverURL: (line: Int, start: Int, end: Int)?
+    /// The link under the pointer, its card (see Links.swift), and whether the pointer is on the card.
+    var hoverURL: LinkHover?
+    var linkCardRect: CGRect = .null
+    var hoverLinkCard = false
     private(set) var remote: RemoteSession?
     private var remoteSyncWork: DispatchWorkItem?
     private var lastTitle = ""
@@ -982,6 +985,7 @@ final class TerminalView: NSView, TerminalDelegate {
         drawCopyButtons(ctx)
         drawTurnChrome(ctx)
         ctx.restoreGState()
+        drawLinkCard(ctx)
         drawOverlays(ctx)
         drawImagePreview(ctx)
         recordDrawn(rects, full: full)
@@ -1325,7 +1329,7 @@ final class TerminalView: NSView, TerminalDelegate {
                 }
             }
 
-            // ⌘-hover link underline
+            // Hovered link underline
             if let hu = hoverURL, hu.line == a {
                 ctx.setFillColor(palette.accent)
                 ctx.fill(CGRect(x: padX + CGFloat(hu.start) * cw, y: baseY + fonts.underlineOffset,
