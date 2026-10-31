@@ -25,7 +25,8 @@ purple, and each planet theme is colored like its planet, with that planet besid
   when it finishes or needs input in a background tab.
 - Code blocks and tables in Claude's replies get a Copy button.
 - Session restore relaunches Claude Code where it was running, continuing the conversation (your alias for
-  `claude`, if you have one, with `-c`).
+  `claude`, if you have one, with `-c`). Other agents continue too (`codex resume --last`, `gemini --resume latest`, …);
+  each one's command, or none, is set in Settings › Preferences › Continue Agents.
 - Selecting text in Claude's input box stays on that text while Claude prints above it; ⌫ / ⌘⌫ delete the selection.
 
 **Files**
@@ -41,6 +42,8 @@ purple, and each planet theme is colored like its planet, with that planet besid
   (logs, on ssh hosts too) open read-only, in full up to 512 MB and past that their last 10 MB. The eye in the editor's header follows a file as it changes,
   re-reading it every 5 seconds while it's showing, like tail -f for a growing log.
 - Right-click a Markdown file › Open Preview to see it rendered as on GitHub.
+- ⌘-click a file named in the terminal (`Sources/Links.swift:52`, `~/notes.md`, `"My Notes/plan.md"`) to open it at that line.
+  A file under the pane's folder or the tab's pinned folder opens above the terminal; anything else opens in its own tab.
 - Drag and drop or copy/paste between this Mac and ssh hosts (or between two hosts). Transfers stream over the existing
   ssh connection, so there's no second login, and they never overwrite: a taken name gets " copy".
 - The status bar shows each column's folder as clickable breadcrumbs and its git branch, sync state and changes.
@@ -79,7 +82,8 @@ folder access) each time. To keep them, create a self-signed code-signing certif
 | ⇧⌘] ⇧⌘[ · ⇧⌘← ⇧⌘→ · ⌃Tab · ⌘1…9 | Switch tabs |
 | ⌘↑ / ⌘↓ | Previous / next command block (or Claude prompt) |
 | ⌘J | Jump to a Claude prompt |
-| ⇧⌘C / ⌥⌘C / ⌥⌘R | Copy command / copy output / re-run |
+| ⇧⌘C / ⌥⌘C / ⌥⌘R | Copy command / copy command and output / re-run |
+| ⌥⌘S | Send the selected command and its output to an agent's chat |
 | ⇧⌘E | Collapse or expand a block's output |
 | ⌘F, ⌘G, ⇧⌘G | Find in scrollback |
 | ⌘K | Clear the buffer (keeps the prompt) |

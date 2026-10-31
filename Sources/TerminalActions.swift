@@ -15,6 +15,8 @@ extension TerminalView: NSMenuItemValidation {
             return !terminal.usingAlt && terminal.blocks.contains { $0.state == .finished }
         case #selector(copyBlockCommand(_:)), #selector(copyBlockOutput(_:)), #selector(toggleBlockCollapse(_:)):
             return !terminal.usingAlt && (targetTurn != nil || targetBlock != nil)
+        case #selector(sendToChat(_:)):
+            return !terminal.usingAlt && selectedTurnLine == nil && targetBlock != nil
         case #selector(rerunBlockCommand(_:)), #selector(saveCommandAsSnippet(_:)):
             return !terminal.usingAlt && targetTurn == nil && targetBlock != nil
         case #selector(jumpToPrompt(_:)):
@@ -168,6 +170,10 @@ extension TerminalView: NSMenuItemValidation {
             flashTurn(t)
             return
         }
+        if selectedBlocks.count > 1 {
+            AgentChats.putOnClipboard(chronological(selectedBlocks).map(\.command).joined(separator: "\n"))
+            return
+        }
         guard let b = targetBlock else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(b.command, forType: .string)
@@ -181,9 +187,9 @@ extension TerminalView: NSMenuItemValidation {
             flashTurn(t)
             return
         }
+        if selectedBlocks.count > 1 { return copySelectedBlocks() }
         guard let b = targetBlock else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(blockText(b, includeCommand: false), forType: .string)
+        AgentChats.putOnClipboard(blockText(b, includeCommand: true))
         flashBlock(b)
     }
 

@@ -131,15 +131,16 @@ extension TerminalView {
         h.combine(selection?.start); h.combine(selection?.end)
         h.combine(searchMatches.count); h.combine(currentMatch)
         h.combine(hoverURL?.line); h.combine(hoverURL?.start); h.combine(hoverURL?.end); h.combine(hoverLinkCard)
-        for b in [selectedBlock, hoverBlock, copiedBlock] { h.combine(b?.id) }
-        h.combine(hoverBlockCopy)
+        for b in selectedBlocks { h.combine(b.id) }
+        for b in [hoverBlock, copiedBlock] { h.combine(b?.id) }
+        h.combine(hoverBlockCopy); h.combine(hoverBlockSend)
         h.combine(agent != nil)
         for s in visibleBlockSpans() {
             let b = s.block
             h.combine(b.id); h.combine(b.state); h.combine(b.failed); h.combine(b.collapsed)
             h.combine(s.first); h.combine(spanStartsHere(s))
             // How far down it goes only shows when something is drawn down its side.
-            if b === selectedBlock || b.failed || showsRunningBar(b) { h.combine(s.last) }
+            if isSelected(b) || b.failed || showsRunningBar(b) { h.combine(s.last) }
         }
         for b in codeBoxes { h.combine(b.first); h.combine(b.last); h.combine(b.indent); h.combine(b.kind == .table) }
         h.combine(copiedBox); h.combine(hoverCopyButton)

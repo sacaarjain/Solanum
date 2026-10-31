@@ -36,6 +36,18 @@ final class Config {
     /// File and folder icons: "solanum", or the id of an installed VS Code icon theme (see IconPacks).
     var fileIcons = IconPacks.solanumID
     var restoreSession = true
+    /// Restoring a session continues the agents that were running in it.
+    var continueAgents = true
+    /// By an agent's command, what continues it where that's not the default; empty for not at all.
+    var continueCommands: [String: String] = [:]
+
+    func continueCommand(for kind: AgentKind) -> String { continueCommands[kind.command] ?? kind.defaultContinueCommand }
+
+    func setContinueCommand(_ command: String, for kind: AgentKind) {
+        let text = command.trimmingCharacters(in: .whitespaces)
+        continueCommands[kind.command] = text == kind.defaultContinueCommand ? nil : text
+    }
+
     var restoreScrollback = true
     /// Where ⌘T opens a tab: "current" (the focused terminal's folder, as Terminal does) or "home".
     var newTabFolder = "current"
@@ -63,6 +75,7 @@ final class Config {
             save()
             return
         }
+        continueCommands = [:]
         for raw in text.split(whereSeparator: \.isNewline) {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.isEmpty || line.hasPrefix("#") { continue }
@@ -76,6 +89,10 @@ final class Config {
     private func apply(key: String, value: String) {
         func bool() -> Bool { ["true", "yes", "on", "1"].contains(value.lowercased()) }
         func num() -> CGFloat? { Double(value).map { CGFloat($0) } }
+        if key.hasPrefix("continue-command-") {
+            continueCommands[String(key.dropFirst("continue-command-".count))] = value
+            return
+        }
         switch key {
         case "theme": themeName = ThemeLibrary.all.contains { $0.name.caseInsensitiveCompare(value) == .orderedSame } ? value : ThemeLibrary.defaultName
         case "font-family": fontFamily = value.isEmpty ? "System Mono" : value
@@ -102,6 +119,7 @@ final class Config {
         case "file-icons": fileIcons = value.isEmpty ? IconPacks.solanumID : value
         case "restore-session": restoreSession = bool()
         case "restore-scrollback": restoreScrollback = bool()
+        case "continue-agents": continueAgents = bool()
         case "new-tab-folder": newTabFolder = value.lowercased() == "home" ? "home" : "current"
         case "check-for-updates": checkForUpdates = bool()
         case "transfer-folder": transferFolder = value
@@ -161,6 +179,11 @@ final class Config {
         # Reopen windows, tabs, splits, tab names and groups on launch; optionally with recent output.
         restore-session = \(restoreSession)
         restore-scrollback = \(restoreScrollback)
+
+        # Restoring a session continues the coding agents that were running in it. Solanum knows each one's command;
+        # continue-command-<agent> = <command> replaces it, and left empty skips that agent.
+        continue-agents = \(continueAgents)
+        \(continueCommands.sorted { $0.key < $1.key }.map { "continue-command-\($0.key) = \($0.value)" }.joined(separator: "\n"))
 
         # Where ⌘T opens a new tab: current (the focused terminal's folder) | home
         new-tab-folder = \(newTabFolder)

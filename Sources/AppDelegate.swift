@@ -2,7 +2,7 @@ import AppKit
 import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
-    private var windows: [TerminalWindowController] = []
+    private(set) var windows: [TerminalWindowController] = []
     private var hotKey: HotKey?
     private let themeMenu = NSMenu(title: "Theme")
     private let snippetsMenu = NSMenu(title: "Snippets")
@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         // Writes to a pipe whose reader died (e.g. an ssh helper for the file sidebar) must fail, not kill the app.
         signal(SIGPIPE, SIG_IGN)
         ShellIntegration.install()
+        InstalledAgents.shared.refresh()
         Config.shared.load()
         Config.shared.startWatching()
         Tooltips.shared.start()
@@ -447,6 +448,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         blocks.addItem(.separator())
         _ = add(blocks, "Copy Command", #selector(TerminalView.copyBlockCommand(_:)), "c", [.command, .shift])
         _ = add(blocks, "Copy Output", #selector(TerminalView.copyBlockOutput(_:)), "c", [.command, .option])
+        _ = add(blocks, "Send to Chat…", #selector(TerminalView.sendToChat(_:)), "s", [.command, .option])
         _ = add(blocks, "Re-run Command", #selector(TerminalView.rerunBlockCommand(_:)), "r", [.command, .option])
         blocks.addItem(.separator())
         _ = add(blocks, "Collapse / Expand Output", #selector(TerminalView.toggleBlockCollapse(_:)), "e", [.command, .shift])

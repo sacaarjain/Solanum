@@ -11,7 +11,7 @@ enum AgentKind: Equatable {
     case other(String)
 
     /// Command names of other terminal agents, as they appear in argv.
-    private static let others = ["aider", "opencode", "cursor-agent", "amp", "goose", "crush", "qwen", "copilot", "droid", "kiro-cli", "auggie"]
+    private static let others = ["astra", "aider", "opencode", "cursor-agent", "amp", "goose", "crush", "qwen", "copilot", "droid", "kiro-cli", "auggie"]
 
     var name: String {
         switch self {
@@ -20,6 +20,51 @@ enum AgentKind: Equatable {
         case .gemini: return "Gemini"
         case .other(let n): return n.prefix(1).uppercased() + n.dropFirst()
         }
+    }
+
+    /// What starts it, and every agent Solanum knows how to start.
+    var command: String {
+        switch self {
+        case .claude: return "claude"
+        case .codex: return "codex"
+        case .gemini: return "gemini"
+        case .other(let n): return n
+        }
+    }
+
+    static var known: [AgentKind] { [.claude, .codex, .gemini] + others.map { .other($0) } }
+
+    static func named(_ command: String) -> AgentKind? { known.first { $0.command == command } }
+
+    /// What continues its latest session in this folder, by default. Empty for an agent with no such command, or none
+    /// known (Amp's docs only show continuing a thread by its ID).
+    var defaultContinueCommand: String {
+        switch self {
+        case .claude: return "claude -c"
+        case .codex: return "codex resume --last"
+        case .gemini: return "gemini --resume latest"
+        case .other(let n):
+            let commands = ["aider": "aider --restore-chat-history", "opencode": "opencode --continue", "cursor-agent": "cursor-agent --continue",
+                            "goose": "goose session --resume", "crush": "crush --continue", "qwen": "qwen --continue", "copilot": "copilot --continue",
+                            "droid": "droid resume --last", "kiro-cli": "kiro-cli chat --resume", "auggie": "auggie --continue"]
+            return commands[n] ?? ""
+        }
+    }
+
+    /// `command` through the user's alias for the agent's program, when it starts with that program.
+    func throughAlias(_ command: String, alias: String?) -> String {
+        guard let alias, command == self.command || command.hasPrefix(self.command + " ") else { return command }
+        return alias + command.dropFirst(self.command.count)
+    }
+
+    /// The mark as an image, for menus and Settings.
+    var markImage: NSImage {
+        let image = NSImage(size: NSSize(width: 14, height: 14), flipped: false) { r in
+            drawMark(in: r)
+            return true
+        }
+        image.accessibilityDescription = name
+        return image
     }
 
     /// Identifies an agent from the foreground process: its name, executable path and arguments. Native
@@ -41,29 +86,39 @@ enum AgentKind: Equatable {
         return first == "✳" || (0x2800...0x28FF).contains(first.value) ? .claude : nil
     }
 
-    /// The agent's mark, drawn centered in `r`.
+    /// The agent's mark, filling `r`.
     func drawMark(in r: NSRect, alpha: CGFloat = 1) {
-        let color: NSColor
-        let glyph: String?
-        let symbol: String?
+        func place(_ img: NSImage?, _ box: NSRect) {
+            img?.draw(in: box, from: .zero, operation: .sourceOver, fraction: alpha, respectFlipped: true, hints: nil)
+        }
         switch self {
-        case .claude: color = NSColor(srgbRed: 0.85, green: 0.47, blue: 0.34, alpha: 1); glyph = "✳"; symbol = nil
-        case .gemini: color = NSColor(srgbRed: 0.30, green: 0.55, blue: 0.97, alpha: 1); glyph = "✦"; symbol = nil
-        case .codex: color = Config.shared.theme.foreground; glyph = nil; symbol = "hexagon"
-        case .other: color = Config.shared.theme.accent; glyph = nil; symbol = "sparkles"
+        case .claude:
+            Self.drawGlyph("✳", color: NSColor(srgbRed: 0.85, green: 0.47, blue: 0.34, alpha: alpha), in: r)
+        case .gemini:
+            place(AgentLogos.gemini, r)
+        case .codex, .other("astra"):
+            place(AgentLogos.openAI(Config.shared.theme.foreground), r)
+        case .other:
+            let config = NSImage.SymbolConfiguration(pointSize: r.height, weight: .semibold).applying(.init(paletteColors: [Config.shared.theme.accent]))
+            guard let img = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)?.withSymbolConfiguration(config) else { return }
+            let scale = min(r.width / img.size.width, r.height / img.size.height)
+            let w = img.size.width * scale, h = img.size.height * scale
+            place(img, NSRect(x: r.midX - w / 2, y: r.midY - h / 2, width: w, height: h))
         }
-        if let glyph {
-            let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: r.height * 0.95, weight: .bold),
-                                                        .foregroundColor: color.withAlphaComponent(alpha)]
-            let s = (glyph as NSString).size(withAttributes: attrs)
-            (glyph as NSString).draw(at: NSPoint(x: r.midX - s.width / 2, y: r.midY - s.height / 2), withAttributes: attrs)
-        } else if let symbol {
-            let config = NSImage.SymbolConfiguration(pointSize: r.height * 0.72, weight: .semibold)
-                .applying(.init(paletteColors: [color.withAlphaComponent(alpha)]))
-            if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(config) {
-                img.draw(in: NSRect(x: r.midX - img.size.width / 2, y: r.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
-            }
+    }
+
+    /// A character sized and centered by its ink, not its line (which would leave it small and high).
+    private static func drawGlyph(_ glyph: String, color: NSColor, in r: NSRect) {
+        func text(_ size: CGFloat) -> NSAttributedString {
+            NSAttributedString(string: glyph, attributes: [.font: NSFont.systemFont(ofSize: size, weight: .bold), .foregroundColor: color])
         }
+        func ink(_ t: NSAttributedString) -> NSRect { t.boundingRect(with: NSSize(width: 200, height: 200), options: .usesDeviceMetrics) }
+        let probe = ink(text(r.height))
+        let fitted = text(r.height * min(r.width / max(probe.width, 1), r.height / max(probe.height, 1)))
+        let box = ink(fitted)
+        // Without a line fragment, y is the baseline.
+        let flipped = NSGraphicsContext.current?.isFlipped == true
+        fitted.draw(with: NSRect(x: r.midX - box.midX, y: flipped ? r.midY + box.midY : r.midY - box.midY, width: 200, height: 200), options: [])
     }
 }
 
@@ -105,9 +160,12 @@ struct AgentInfo: Equatable {
 
     var summary: String { "\(kind.name) — \(status.label)" }
 
+    /// The mark's size, as with a tab's file icon.
+    static let markSide: CGFloat = 14
+
     /// Mark plus a status dot, `height` tall, starting at `x`; returns the width used.
     @discardableResult
-    func draw(at x: CGFloat, midY: CGFloat, height: CGFloat = 13) -> CGFloat {
+    func draw(at x: CGFloat, midY: CGFloat, height: CGFloat = markSide) -> CGFloat {
         kind.drawMark(in: NSRect(x: x, y: midY - height / 2, width: height, height: height))
         let d: CGFloat = 6
         status.color.setFill()
@@ -126,12 +184,15 @@ extension Terminal {
     private static let selectedOption = try? NSRegularExpression(pattern: #"^\s*[❯›●▶>]\s*\d+[.)]\s+\S"#)
     private static let option = try? NSRegularExpression(pattern: #"^\s*([❯›●▶>]\s*)?\d+[.)]\s+\S"#)
 
-    /// What the agent drawing this screen is doing. Only its live UI at the bottom of the screen is read:
+    /// What the agent drawing this screen is doing. Only its live UI at the bottom of what's drawn is read:
     /// words like "Enter to select" also turn up in transcripts, so the checks look for the UI's shapes
     /// (a menu with a highlighted numbered option, a spinner line with a timer) rather than phrases.
     func agentScreenStatus() -> AgentStatus {
         var lines: [String] = []
-        for a in max(screenTopAbs, firstAbs, lastAbs - 24)...lastAbs {
+        // The bottom of what's drawn, which in a tall window can be well above the bottom of the screen.
+        var bottom = lastAbs
+        while bottom > screenTopAbs, line(abs: bottom)?.isBlank != false { bottom -= 1 }
+        for a in max(screenTopAbs, firstAbs, bottom - 24)...bottom {
             guard let l = line(abs: a) else { continue }
             var s = ""
             for c in l.cells.prefix(l.trimmedLength) where c.width != 0 {

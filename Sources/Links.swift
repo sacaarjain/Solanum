@@ -4,6 +4,9 @@ import AppKit
 // Under the pointer a link is underlined and a small card above it says where it goes and what opens it (the
 // default browser, with its icon), and for a local server whether anything is answering there. In the line being
 // typed, or while a program reads the mouse itself, a plain click keeps its usual meaning and links take ⌘-click.
+// Files named in the text (Sources/Links.swift:52, ~/notes.md, "My Notes/plan.md", My\ Notes/plan.md) take ⌘-click
+// always, and open in the editor on the machine the pane is on. A path with spaces needs its quotes or backslashes:
+// nothing else says where it starts and ends.
 
 /// The link under the pointer, and what it opens with.
 struct LinkHover {
@@ -14,6 +17,82 @@ struct LinkHover {
     var end: Int
     var opener: String
     var icon: NSImage?
+    /// Set when this is a file named in the text rather than a URL.
+    var file: FileLink?
+}
+
+/// A file named in the terminal's text: where it may be (nearest folder first; just one on this Mac, where it was
+/// looked for already) and the line to go to.
+struct FileLink: Equatable {
+    var paths: [String]
+    var line: Int?
+}
+
+enum FileLinks {
+    /// A run of path characters, where a backslash lets any character in (My\ Notes/plan.md).
+    private static let wordRegex = try? NSRegularExpression(
+        pattern: #"(?<![\p{L}\p{N}_.~/@+\\-])((?:\\.|[\p{L}\p{N}_.~/@+-])*(?:\\.|[\p{L}\p{N}_/@+-]))(?::(\d+)(?::\d+)?)?"#)
+    /// Anything between a pair of quotes or backticks, with the line number inside or just after them. A quote with a
+    /// letter or digit on its outer side is an apostrophe (it's, dogs').
+    private static let quotedRegex = try? NSRegularExpression(
+        pattern: #"(?<![\p{L}\p{N}])(["'`])((?:(?!\1).)+?)(?::(\d+)(?::\d+)?)?\1(?::(\d+)(?::\d+)?)?(?![\p{L}\p{N}])"#)
+
+    /// Everything in a piece of text that could name a file, with the line number after it if any: quoted text first,
+    /// then single words (which may overlap it). Whether one does name a file is up to `locations` and a look on disk.
+    static func mentions(in text: String) -> [(range: NSRange, path: String, line: Int?)] {
+        let ns = text as NSString
+        let all = NSRange(location: 0, length: ns.length)
+        func number(_ r: NSRange) -> Int? { Int(ns.substring(with: r)).flatMap { $0 > 0 ? $0 : nil } }
+        var found: [(range: NSRange, path: String, line: Int?)] = (quotedRegex?.matches(in: text, range: all) ?? []).map { m in
+            let inner = m.range(at: 2)
+            let line = [4, 3].map { m.range(at: $0) }.first { $0.location != NSNotFound }
+            let end = line.map(NSMaxRange) ?? NSMaxRange(inner)
+            return (NSRange(location: inner.location, length: end - inner.location), ns.substring(with: inner), line.flatMap(number))
+        }
+        let quoted = Set(found.map(\.range))
+        for m in wordRegex?.matches(in: text, range: all) ?? [] where !quoted.contains(m.range) {
+            let path = ns.substring(with: m.range(at: 1)).replacingOccurrences(of: #"\\(.)"#, with: "$1", options: .regularExpression)
+            found.append((m.range, path, m.range(at: 2).location == NSNotFound ? nil : number(m.range(at: 2))))
+        }
+        return found
+    }
+
+    /// The full paths `path` could mean: itself, under `home`, or under each of `folders` in turn.
+    static func locations(of path: String, in folders: [String], home: String?) -> [String] {
+        let full: [String]
+        if path.hasPrefix("/") {
+            full = [path]
+        } else if path.hasPrefix("~/") {
+            full = home.map { [$0 + path.dropFirst()] } ?? []
+        } else {
+            full = folders.map { FilePaths.join($0, path) }
+        }
+        var seen = Set<String>()
+        return full.map { URL(fileURLWithPath: $0).standardized.path }.filter { seen.insert($0).inserted }
+    }
+
+    /// Where looking is slow (an ssh host), what's worth offering a click on before looking.
+    static func looksLikePath(_ s: String) -> Bool {
+        guard !s.hasSuffix("/"), s.contains(where: { $0.isLetter || $0.isNumber }) else { return false }
+        return s.contains("/") || !(s as NSString).pathExtension.isEmpty
+    }
+
+    static func isInside(_ path: String, _ folder: String) -> Bool {
+        let f = folder.count > 1 && folder.hasSuffix("/") ? String(folder.dropLast()) : folder
+        return f == "/" || path == f || path.hasPrefix(f + "/")
+    }
+
+    /// The first of `paths` that's a file on `fs`, asking the host about one folder at a time.
+    static func firstFile(_ paths: [String], on fs: FileSystem, _ done: @escaping (String?) -> Void) {
+        guard let path = paths.first else { return done(nil) }
+        fs.list(FilePaths.parent(path)) { result in
+            if case .success(let items) = result, items.contains(where: { $0.path == path && !$0.isDirectory && !$0.isDeleted }) {
+                done(path)
+            } else {
+                firstFile(Array(paths.dropFirst()), on: fs, done)
+            }
+        }
+    }
 }
 
 extension TerminalView {
@@ -40,9 +119,8 @@ extension TerminalView {
         }
     }
 
-    /// Finds a link under the given point, searching the whole wrapped logical line.
-    func urlAt(_ p: NSPoint) -> (url: URL, line: Int, start: Int, end: Int)? {
-        let pos = gridPos(at: p)
+    /// The whole wrapped logical line around `pos`, and the cell each UTF-16 unit of it came from.
+    private func logicalLine(at pos: GridPos) -> (text: String, map: [GridPos]) {
         let (a, b) = lineRange(at: pos)
         var text = ""
         var map: [GridPos] = []
@@ -56,16 +134,62 @@ extension TerminalView {
                 text += s
             }
         }
+        return (text, map)
+    }
+
+    /// The part to underline of a link from `first` to `last`: for one that wraps, the hovered row's portion.
+    private func underlined(_ pos: GridPos, _ first: GridPos, _ last: GridPos) -> (line: Int, start: Int, end: Int) {
+        if first.line == last.line { return (first.line, first.col, last.col) }
+        return (pos.line, pos.line == first.line ? first.col : 0, pos.line == last.line ? last.col : terminal.cols - 1)
+    }
+
+    /// Finds a link under the given point, searching the whole wrapped logical line.
+    func urlAt(_ p: NSPoint) -> (url: URL, line: Int, start: Int, end: Int)? {
+        let pos = gridPos(at: p)
+        let (text, map) = logicalLine(at: pos)
         for (r, url) in Self.links(in: text) {
             let first = map[r.location], last = map[r.location + r.length - 1]
             guard pos >= first && pos <= last else { continue }
-            if first.line == last.line { return (url, first.line, first.col, last.col) }
-            // Multi-line links: underline only the hovered row's portion.
-            let s = pos.line == first.line ? first.col : 0
-            let en = pos.line == last.line ? last.col : terminal.cols - 1
-            return (url, pos.line, s, en)
+            let u = underlined(pos, first, last)
+            return (url, u.line, u.start, u.end)
         }
         return nil
+    }
+
+    /// The folders that count as this pane's: its shell's folder and, on the same machine, the tab's pinned folder.
+    /// Relative paths are looked for in them, and a file in either opens above the terminal.
+    var fileLinkFolders: [String] {
+        var folders = browseDirectory.map { [$0] } ?? []
+        if let pin = tab?.pinnedFolder, pin.fs === fileSystem, !folders.contains(pin.path) { folders.append(pin.path) }
+        return folders
+    }
+
+    /// The file named under the given point: on this Mac one that exists, on an ssh host one that may (checked on click).
+    func fileLinkAt(_ p: NSPoint) -> (link: FileLink, line: Int, start: Int, end: Int)? {
+        let pos = gridPos(at: p)
+        let (text, map) = logicalLine(at: pos)
+        let fs = fileSystem, folders = fileLinkFolders
+        let here = FileLinks.mentions(in: text).filter { pos >= map[$0.range.location] && pos <= map[NSMaxRange($0.range) - 1] }
+        func link(_ paths: [String], _ line: Int?, _ range: NSRange) -> (link: FileLink, line: Int, start: Int, end: Int) {
+            let u = underlined(pos, map[range.location], map[NSMaxRange(range) - 1])
+            return (FileLink(paths: paths, line: line), u.line, u.start, u.end)
+        }
+        guard fs.isRemote else {
+            for m in here {
+                if let path = FileLinks.locations(of: m.path, in: folders, home: fs.home).first(where: Self.isLocalFile) { return link([path], m.line, m.range) }
+            }
+            return nil
+        }
+        // Quoted words that aren't a path can't be told apart without asking the host, so the click tries each in turn.
+        let worthTrying = here.filter { FileLinks.looksLikePath($0.path) }
+        guard let widest = worthTrying.first else { return nil }
+        return link(worthTrying.flatMap { FileLinks.locations(of: $0.path, in: folders, home: fs.home) },
+                    worthTrying.lazy.compactMap(\.line).first, widest.range)
+    }
+
+    private static func isLocalFile(_ path: String) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && !isDir.boolValue
     }
 
     /// Whether a plain click on a link in this line opens it: not in the line being typed (where a click places
@@ -95,6 +219,15 @@ extension TerminalView {
                 let opener = Self.opener(for: u.url)
                 newHover = LinkHover(url: u.url, line: u.line, start: u.start, end: u.end, opener: opener.name, icon: opener.icon)
             }
+        } else if cmd, bounds.contains(p), let f = fileLinkAt(p) {
+            let url = URL(fileURLWithPath: f.link.paths[0])
+            if let h = hoverURL, h.url == url, h.line == f.line, h.start == f.start, h.file == f.link {
+                newHover = h
+            } else {
+                let above = (tab?.owner as? TabColumn) == nil || fileLinkFolders.contains { FileLinks.isInside(f.link.paths[0], $0) }
+                newHover = LinkHover(url: url, line: f.line, start: f.start, end: f.end, opener: above ? "Open in Editor" : "Open in New Tab",
+                                     icon: NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil), file: f.link)
+            }
         }
         let changed = newHover?.line != hoverURL?.line || newHover?.start != hoverURL?.start || newHover?.url != hoverURL?.url
         if changed || hoverLinkCard {
@@ -114,6 +247,23 @@ extension TerminalView {
         } else {
             NSWorkspace.shared.open(url)
         }
+        clearLinkHover()
+    }
+
+    /// A file named in the text opens above this terminal when it's in one of the pane's folders, else in its own tab.
+    func openFileLink(_ link: FileLink) {
+        clearLinkHover()
+        let fs = fileSystem, folders = fileLinkFolders
+        let open: (String) -> Void = { [weak self] path in
+            self?.tab?.openLinkedFile(fs, path, line: link.line, folders: folders)
+        }
+        guard fs.isRemote else { return link.paths.first.map(open) ?? () }
+        FileLinks.firstFile(link.paths, on: fs) { path in
+            if let path { open(path) } else { NSSound.beep() }
+        }
+    }
+
+    private func clearLinkHover() {
         hoverURL = nil
         hoverLinkCard = false
         updateCursor()
@@ -174,7 +324,7 @@ extension TerminalView {
         let font = NSFont.systemFont(ofSize: max(10, fonts.size - 2.5), weight: .medium)
         let gap: CGFloat = 8
 
-        var address = h.url.isFileURL ? h.url.path : h.url.absoluteString
+        var address = h.url.isFileURL ? h.url.path + (h.file?.line.map { ":\($0)" } ?? "") : h.url.absoluteString
         if let range = address.range(of: "://") { address.removeSubrange(address.startIndex..<range.upperBound) }
         if address.hasSuffix("/") { address.removeLast() }
         if address.count > 56 { address = address.prefix(36) + "…" + String(address.suffix(19)) }

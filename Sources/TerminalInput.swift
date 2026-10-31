@@ -161,7 +161,7 @@ extension TerminalView {
         var text: String?
         if let s = selection { text = textForSelection(s) }
         else if let t = selectedTurn { text = "❯ \(terminal.agentPromptText(t))\n\n\(agentResponseText(t))" }
-        else if let b = selectedBlock { text = blockText(b, includeCommand: true) }
+        else if !selectedBlocks.isEmpty { text = selectedTranscript }
         guard let t = text, !t.isEmpty else { NSSound.beep(); return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(t, forType: .string)
@@ -354,6 +354,7 @@ extension TerminalView {
     override func mouseDown(with e: NSEvent) {
         window?.makeFirstResponder(self)
         let p = convert(e.locationInWindow, from: nil)
+        pressTaken = false
         if jumpPillRect.contains(p) {
             smoothScroll(to: 0)
             hoverJumpPill = false
@@ -370,11 +371,18 @@ extension TerminalView {
         }
         if handleImageClick(at: p) { return }
         if let h = hoverURL, linkCardRect.contains(p) {
-            openLink(h.url)
+            pressTaken = true
+            if let file = h.file { openFileLink(file) } else { openLink(h.url) }
             return
         }
         if let button = blockCopyButton, button.rect.contains(p) {
+            pressTaken = true
             copyOutput(of: button.block)
+            return
+        }
+        if let button = blockSendButton, button.rect.contains(p) {
+            pressTaken = true
+            showSendMenu(for: [button.block], at: NSPoint(x: button.rect.minX, y: button.rect.maxY + 2))
             return
         }
         if let button = codeCopyButtons.first(where: { $0.0.contains(p) }) {
@@ -386,7 +394,13 @@ extension TerminalView {
             return
         }
         if e.modifierFlags.contains(.command), let url = urlAt(p)?.url {
+            pressTaken = true
             openLink(url)
+            return
+        }
+        if e.modifierFlags.contains(.command), let file = fileLinkAt(p)?.link {
+            pressTaken = true
+            openFileLink(file)
             return
         }
         if shouldReportMouse(e) {
@@ -453,6 +467,10 @@ extension TerminalView {
 
     override func mouseUp(with e: NSEvent) {
         mouseAnchorBoxTop = nil
+        if pressTaken {
+            pressTaken = false
+            return
+        }
         if scrollbarGrab != nil {
             scrollbarGrab = nil
             scrollbarHover = inScrollbarZone(convert(e.locationInWindow, from: nil))
@@ -474,7 +492,8 @@ extension TerminalView {
                 openLink(u.url)
                 return
             }
-            whenCursorSettled { [weak self] in self?.handleClick(at: pos, plain: plain) }
+            let cmd = e.modifierFlags.contains(.command)
+            whenCursorSettled { [weak self] in self?.handleClick(at: pos, plain: plain, cmd: cmd) }
         } else if Config.shared.copyOnSelect, let s = selection {
             let t = textForSelection(s)
             if !t.isEmpty {
@@ -485,7 +504,7 @@ extension TerminalView {
         mouseAnchor = nil
     }
 
-    private func handleClick(at pos: GridPos, plain: Bool) {
+    private func handleClick(at pos: GridPos, plain: Bool, cmd: Bool) {
         // A plain click inside the line being edited moves the text cursor there.
         if plain, placeCursor(at: pos) {
             selectedBlock = nil
@@ -498,8 +517,13 @@ extension TerminalView {
             selectTurn(selectedTurnLine == t.promptLine ? nil : t)
         } else if let b = blockAt(abs: pos.line), b.state == .finished, !terminal.usingAlt {
             selectedTurnLine = nil
-            selectedBlock = selectedBlock === b ? nil : b
-        } else {
+            // ⌘-click adds to the selection or takes out of it; a plain click selects just this one.
+            if cmd {
+                if isSelected(b) { selectedBlocks.removeAll { $0 === b } } else { selectedBlocks.append(b) }
+            } else {
+                selectedBlock = selectedBlock === b ? nil : b
+            }
+        } else if !cmd {
             selectedBlock = nil
             selectedTurnLine = nil
         }
@@ -802,9 +826,11 @@ extension TerminalView {
         let blockHover = blockCopyButton?.rect.contains(p) ?? false
         let pillHover = jumpPillRect.contains(p)
         let barHover = inScrollbarZone(p)
-        if copyHover != hoverCopyButton || blockHover != hoverBlockCopy || pillHover != hoverJumpPill || barHover != scrollbarHover {
+        let sendHover = blockSendButton?.rect.contains(p) ?? false
+        if copyHover != hoverCopyButton || blockHover != hoverBlockCopy || sendHover != hoverBlockSend || pillHover != hoverJumpPill || barHover != scrollbarHover {
             hoverCopyButton = copyHover
             hoverBlockCopy = blockHover
+            hoverBlockSend = sendHover
             hoverJumpPill = pillHover
             scrollbarHover = barHover
             needsDisplay = true
@@ -830,7 +856,7 @@ extension TerminalView {
         // Normal arrow over the scrollbar and the jump-to-bottom button; a hand over copy buttons and links.
         if scrollbarHover || scrollbarGrab != nil || hoverJumpPill { return NSCursor.arrow.set() }
         let overPopup = window.map { imageChipState.popupRect.contains(convert($0.mouseLocationOutsideOfEventStream, from: nil)) } ?? false
-        (hoverCopyButton != nil || hoverBlockCopy || hoverURL != nil || imageChipState.hover != nil || overPopup
+        (hoverCopyButton != nil || hoverBlockCopy || hoverBlockSend || hoverURL != nil || imageChipState.hover != nil || overPopup
             ? NSCursor.pointingHand : NSCursor.iBeam).set()
     }
 
@@ -839,12 +865,13 @@ extension TerminalView {
             imageChipState.hover = nil
             needsDisplay = true
         }
-        if hoverBlock != nil || hoverURL != nil || hoverCopyButton != nil || hoverBlockCopy || hoverJumpPill || scrollbarHover {
+        if hoverBlock != nil || hoverURL != nil || hoverCopyButton != nil || hoverBlockCopy || hoverBlockSend || hoverJumpPill || scrollbarHover {
             hoverBlock = nil
             hoverURL = nil
             hoverLinkCard = false
             hoverCopyButton = nil
             hoverBlockCopy = false
+            hoverBlockSend = false
             hoverJumpPill = false
             scrollbarHover = scrollbarGrab != nil
             needsDisplay = true
@@ -945,10 +972,25 @@ extension TerminalView {
             menu.addItem(.separator())
         } else if let b = blockAt(abs: pos.line), b.state == .finished {
             selectedTurnLine = nil
+            // Right-clicking one of several selected commands acts on them all.
+            if selectedBlocks.count > 1, isSelected(b) {
+                let n = selectedBlocks.count
+                menu.addItem(ActionMenuItem("Copy \(n) Commands and Outputs") { [weak self] in self?.copySelectedBlocks() })
+                let send = NSMenuItem(title: "Send \(n) to Chat", action: nil, keyEquivalent: "")
+                send.submenu = AgentChats.menu(sending: selectedTranscript, from: self)
+                menu.addItem(send)
+                menu.addItem(.separator())
+                menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+                menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
+                return menu
+            }
             selectedBlock = b
             needsDisplay = true
             menu.addItem(withTitle: "Copy Command", action: #selector(copyBlockCommand(_:)), keyEquivalent: "")
             menu.addItem(withTitle: "Copy Output", action: #selector(copyBlockOutput(_:)), keyEquivalent: "")
+            let send = NSMenuItem(title: "Send to Chat", action: nil, keyEquivalent: "")
+            send.submenu = AgentChats.menu(sending: blockText(b, includeCommand: true), from: self)
+            menu.addItem(send)
             menu.addItem(withTitle: "Re-run Command", action: #selector(rerunBlockCommand(_:)), keyEquivalent: "")
             menu.addItem(withTitle: b.collapsed ? "Expand Output" : "Collapse Output", action: #selector(toggleBlockCollapse(_:)), keyEquivalent: "")
             menu.addItem(withTitle: "Save Command as Snippet…", action: #selector(saveCommandAsSnippet(_:)), keyEquivalent: "")

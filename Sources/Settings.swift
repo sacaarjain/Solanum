@@ -349,6 +349,36 @@ func sectionHeader(_ text: String) -> NSTextField {
     return l
 }
 
+/// A card's last row when it holds more than it first shows: "More" opens the rest, and "Less" folds it away again.
+final class SettingsMoreRow: SettingRow {
+    private let onPress: () -> Void
+
+    init(expanded: Bool, onPress: @escaping () -> Void) {
+        self.onPress = onPress
+        super.init(icon: expanded ? "chevron.up" : "chevron.down", title: expanded ? "Less" : "More")
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func resetCursorRects() { if !isDimmed { addCursorRect(bounds, cursor: .pointingHand) } }
+
+    override func mouseDown(with e: NSEvent) {
+        // An edit in progress commits first; then the page is rebuilt, once this click is done with the row.
+        window?.makeFirstResponder(nil)
+        DispatchQueue.main.async(execute: onPress)
+    }
+
+    /// A real click, through the window, at this row's center.
+    override func devPress() {
+        guard let w = window else { return }
+        let at = convert(NSPoint(x: bounds.midX, y: bounds.midY), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            if let e = NSEvent.mouseEvent(with: type, location: at, modifierFlags: [], timestamp: 0, windowNumber: w.windowNumber,
+                                          context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { w.sendEvent(e) }
+        }
+    }
+}
+
 /// Rounded card holding setting rows separated by hairlines.
 final class SettingsCard: NSView {
     private(set) var rows: [SettingRow] = []
@@ -398,6 +428,25 @@ class SettingRow: NSView {
     private let detailLabel: NSTextField?
     private let accessory: NSView?
     private let accessoryWidth: CGFloat
+    /// Greyed out and out of reach, for a setting that depends on another that's off.
+    var isDimmed = false {
+        didSet {
+            alphaValue = isDimmed ? 0.4 : 1
+            (accessory as? NSTextField)?.isEnabled = !isDimmed
+            accessory.map { window?.invalidateCursorRects(for: $0) }
+        }
+    }
+
+    /// Dev aid (DevTools settings-press): a real press on this row's toggle.
+    func devPress() {
+        guard let toggle = accessory as? ThemedToggle, let w = window else { return }
+        if let e = NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: w.windowNumber,
+                                      context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { toggle.mouseDown(with: e) }
+    }
+
+    var devTitle: String { titleLabel.stringValue }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { isDimmed ? nil : super.hitTest(point) }
 
     init(icon: String? = nil, title: String, detail: String? = nil, accessory: NSView? = nil, width: CGFloat? = nil, mono: Bool = false) {
         self.icon = icon
@@ -486,9 +535,11 @@ final class ThemedToggle: NSControl {
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
-    override func mouseEntered(with e: NSEvent) { hovering = true }
+    private var isDimmed: Bool { (superview as? SettingRow)?.isDimmed == true }
+
+    override func mouseEntered(with e: NSEvent) { hovering = !isDimmed }
     override func mouseExited(with e: NSEvent) { hovering = false }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+    override func resetCursorRects() { if !isDimmed { addCursorRect(bounds, cursor: .pointingHand) } }
 
     override var intrinsicContentSize: NSSize { NSSize(width: 38, height: 22) }
     override var fittingSize: NSSize { intrinsicContentSize }
@@ -625,7 +676,9 @@ final class ThemedField: NSTextField, NSTextFieldDelegate {
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
-    override func mouseEntered(with e: NSEvent) { hovering = true }
+    override var isEnabled: Bool { didSet { if !isEnabled { hovering = false } } }
+
+    override func mouseEntered(with e: NSEvent) { hovering = isEnabled }
     override func mouseExited(with e: NSEvent) { hovering = false }
 
     /// What the field held when editing began; Esc puts it back.
@@ -1427,17 +1480,71 @@ enum SettingsPages {
         if let w = ctl?.window { a.beginSheetModal(for: w) } else { a.runModal() }
     }
 
+    /// Whether Continue Agents lists every agent; until Solanum quits.
+    private static var agentsExpanded = false
+
     // Preferences: startup, window size, tabs and file transfers.
     private static func preferences(_ v: SettingsPageView, _ ctl: SettingsWindowController) {
         let c = Config.shared
+        // Coding agents only continue when the workspace is reloaded, so all of this waits on that setting.
+        let agentsHeader = sectionHeader("Continue Agents")
+        var agentRows: [SettingRow] = []
+        var refreshAgents: () -> Void = {}
+        let agentsRow = SettingRow(icon: "arrow.clockwise", title: "Continue coding agents",
+                                   detail: "Agents running when Solanum quit pick up their last session, using the command below. Needs Reload workspace every time.",
+                                   accessory: toggle(c.continueAgents) { [weak ctl] on in
+            Config.shared.continueAgents = on
+            ctl?.commit()
+            refreshAgents()
+        })
+        let agentsReset = linkButton("Reset to Default") {
+            Config.shared.continueCommands = [:]
+            Config.shared.commit()
+        }
+        refreshAgents = {
+            let restoring = Config.shared.restoreSession
+            agentsHeader.alphaValue = restoring ? 1 : 0.4
+            agentsRow.isDimmed = !restoring
+            let on = restoring && Config.shared.continueAgents
+            agentRows.forEach { $0.isDimmed = !on }
+            agentsReset.isEnabled = on
+            agentsReset.alphaValue = on ? 1 : 0.4
+        }
         v.add(sectionHeader("Startup"), height: 16, gap: 10)
         card(v, [
             SettingRow(icon: "macwindow.on.rectangle", title: "Reload workspace every time",
                        detail: "Off: Solanum starts fresh, and offers the last session for a minute.",
-                       accessory: toggle(c.restoreSession) { [weak ctl] on in Config.shared.restoreSession = on; ctl?.commit() }),
+                       accessory: toggle(c.restoreSession) { [weak ctl] on in
+                Config.shared.restoreSession = on
+                ctl?.commit()
+                refreshAgents()
+            }),
             SettingRow(icon: "text.alignleft", title: "Include recent output", detail: "Bring back each tab's last few thousand lines.",
                        accessory: toggle(c.restoreScrollback) { [weak ctl] on in Config.shared.restoreScrollback = on; ctl?.commit() }),
         ])
+
+        v.add(agentsHeader, height: 16, gap: 10)
+        // The best-known agents, then the rest behind More.
+        let shownAgents = agentsExpanded ? AgentKind.known : Array(AgentKind.known.prefix(4))
+        agentRows = shownAgents.map { kind in
+            let field = ThemedField(c.continueCommand(for: kind), placeholder: "Not continued")
+            field.onCommit = { [weak ctl] text in Config.shared.setContinueCommand(text, for: kind); ctl?.commit() }
+            let row = SettingRow(icon: "sparkles", title: kind.name, accessory: field, width: 280)
+            row.iconImage = kind.markImage
+            return row
+        }
+        let more = SettingsMoreRow(expanded: agentsExpanded) { [weak ctl] in
+            agentsExpanded.toggle()
+            ctl?.rebuild()
+        }
+        agentRows.append(more)
+        card(v, [agentsRow] + agentRows, gap: 12)
+        let agentsButtons = NSStackView(views: [agentsReset])
+        agentsButtons.orientation = .horizontal
+        agentsButtons.alignment = .centerY
+        agentsButtons.distribution = .gravityAreas
+        v.add(agentsButtons, height: 20, gap: 30)
+        refreshAgents()
 
         v.add(sectionHeader("Window Size"), height: 16, gap: 10)
         let picker = WindowSizePicker(columns: c.windowColumns, rows: c.windowRows)

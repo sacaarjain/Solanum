@@ -175,6 +175,58 @@ enum SolanumArt {
         }
     }
 
+    /// The mark of a tab with no status, a shell prompt in the flower's terms: ">" made of two slim petals with the
+    /// corolla's shading and drawn-out tips, and "_". `style` is the petals' colors (the pale ones wash out on a light theme).
+    static let promptSize = NSSize(width: 15, height: 13)
+
+    static func promptImage(style: Style, underscore: NSColor, petalAlpha: CGFloat) -> NSImage {
+        NSImage(size: promptSize, flipped: false) { _ in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            let p = palette(style)
+            let point = CGPoint(x: 7.8, y: 7.2)
+            let length: CGFloat = 9, width: CGFloat = 1.9, spread = 37.6 * CGFloat.pi / 180
+            let wash = CGGradient(colorsSpace: nil, colors: [rgb(p.center), rgb(p.mid), rgb(p.edge)] as CFArray, locations: [0.05, 0.5, 1])!
+            ctx.saveGState()
+            ctx.setAlpha(petalAlpha)
+            ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+            for angle in [CGFloat.pi - spread, .pi + spread] {
+                var place = CGAffineTransform(translationX: point.x, y: point.y).rotated(by: angle)
+                guard let petal = slimPetal(length: length, width: width).copy(using: &place) else { continue }
+                ctx.saveGState()
+                ctx.addPath(petal)
+                ctx.clip()
+                ctx.drawRadialGradient(wash, startCenter: point, startRadius: 0, endCenter: point, endRadius: length, options: [.drawsAfterEndLocation])
+                // Darker rim, as on the flower.
+                ctx.addPath(petal)
+                ctx.setStrokeColor(rgb(p.streak, 0.6))
+                ctx.setLineWidth(0.5)
+                ctx.strokePath()
+                ctx.restoreGState()
+            }
+            ctx.endTransparencyLayer()
+            ctx.restoreGState()
+            ctx.setStrokeColor(underscore.cgColor)
+            ctx.setLineWidth(1.5)
+            ctx.setLineCap(.round)
+            ctx.move(to: CGPoint(x: 9.4, y: 1.6))
+            ctx.addLine(to: CGPoint(x: 14.2, y: 1.6))
+            ctx.strokePath()
+            return true
+        }
+    }
+
+    /// A petal from the origin along +x: broad low down, then narrowing with a slight inward curve to a long point.
+    private static func slimPetal(length L: CGFloat, width w: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        path.move(to: .zero)
+        path.addCurve(to: CGPoint(x: L * 0.70, y: w * 0.50), control1: CGPoint(x: L * 0.14, y: w * 1.05), control2: CGPoint(x: L * 0.46, y: w * 1.15))
+        path.addQuadCurve(to: CGPoint(x: L, y: 0), control: CGPoint(x: L * 0.86, y: w * 0.16))
+        path.addQuadCurve(to: CGPoint(x: L * 0.70, y: -w * 0.50), control: CGPoint(x: L * 0.86, y: -w * 0.16))
+        path.addCurve(to: .zero, control1: CGPoint(x: L * 0.46, y: -w * 1.15), control2: CGPoint(x: L * 0.14, y: -w * 1.05))
+        path.closeSubpath()
+        return path
+    }
+
     /// The app icon in a 1024×1024 space (y up): two flowers, deep violet behind pale lavender, on a night-violet squircle.
     static func drawIcon(in ctx: CGContext) {
         let body = CGRect(x: 100, y: 100, width: 824, height: 824)

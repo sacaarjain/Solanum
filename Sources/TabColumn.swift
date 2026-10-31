@@ -271,6 +271,23 @@ final class TabColumn: NSObject, TabOwner {
         select(index: tabs.firstIndex(of: tab) ?? tabs.count - 1)
     }
 
+    /// Goes to the tab in this window that has the file open, or opens it in a new file tab.
+    @discardableResult
+    func showInOwnTab(_ fs: FileSystem, _ path: String) -> FileEditorView {
+        for c in owner?.columns ?? [self] {
+            for (t, tab) in c.tabs.enumerated() {
+                guard let i = tab.editors.firstIndex(where: { $0.fs === fs && $0.path == path && $0.mode == .file }) else { continue }
+                c.select(index: t)
+                tab.activateEditor(i)
+                owner?.columnDidFocus(c)
+                return tab.editors[i]
+            }
+        }
+        let ed = FileEditorView(fs: fs, path: path, mode: .file)
+        addFileTab(ed)
+        return ed
+    }
+
     func tabDidClose(_ tab: TabSession) {
         guard let idx = tabs.firstIndex(of: tab) else { return }
         owner?.rememberClosed(tab, from: self, at: idx)

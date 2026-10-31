@@ -397,6 +397,18 @@ final class TabSession: NSObject {
         if mode == .file { lastOpened = (path, Date()) }
     }
 
+    /// A file named in a terminal's text: above the terminal when it's in one of `folders`, else in a tab of its own.
+    func openLinkedFile(_ fs: FileSystem, _ path: String, line: Int?, folders: [String]) {
+        let ed: FileEditorView?
+        if let column = owner as? TabColumn, !folders.contains(where: { FileLinks.isInside(path, $0) }) {
+            ed = column.showInOwnTab(fs, path)
+        } else {
+            openFile(fs, path)
+            ed = editor
+        }
+        if let line { ed?.reveal(line: line, text: "") }
+    }
+
     /// Takes in an editor (a newly opened file, or one moving here from another tab) and shows it.
     func adoptEditor(_ ed: FileEditorView, focus: Bool = true) {
         ed.onClose = { [weak self, weak ed] in
@@ -2367,6 +2379,24 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     private(set) var selectedTabs: [TabSession] = []
     private var dropTab: Int?                    // tab under a dragged tab that it would group with
     private var dropChip: TabGroup?              // group chip under a dragged tab that it would join
+    /// The tab the send menu's highlighted chat is in: marked as a drop target is (its chip, in a collapsed group) and
+    /// scrolled into view, with the scroll put back when the menu moves off it.
+    weak var sendTarget: TabSession? {
+        didSet {
+            needsDisplay = true
+            if let r = sendTarget.flatMap(markedRect) {
+                let shift = shiftToShow(r)
+                if shift != 0, maxScrollX > 0 {
+                    scrollBeforeSendTarget = scrollBeforeSendTarget ?? scrollX
+                    scrollTabs(by: shift)
+                }
+            } else if let x = scrollBeforeSendTarget {
+                scrollBeforeSendTarget = nil
+                scrollTabs(by: x - scrollX)
+            }
+        }
+    }
+    private var scrollBeforeSendTarget: CGFloat?
 
     private enum EditTarget { case tab(TabSession), group(TabGroup) }
     private var editing: EditTarget?
@@ -2389,6 +2419,19 @@ final class TabBarView: NSView, NSTextFieldDelegate {
 
     private func chipIndex(at p: NSPoint) -> Int? {
         viewport.contains(p) ? chips.firstIndex { $0.rect.contains(p) } : nil
+    }
+
+    /// Where `tab` shows in the strip: its own rect, or its group's chip when the group is collapsed.
+    private func markedRect(_ tab: TabSession) -> CGRect? {
+        guard let i = controller?.tabs.firstIndex(of: tab), tabRects.indices.contains(i) else { return nil }
+        return tabRects[i].isNull ? chips.first { $0.group === tab.group }?.rect : tabRects[i]
+    }
+
+    /// How far to scroll for `r` to be in view.
+    private func shiftToShow(_ r: CGRect) -> CGFloat {
+        if r.minX < viewport.minX { return r.minX - viewport.minX - 8 }
+        if r.maxX > viewport.maxX { return r.maxX - viewport.maxX + 8 }
+        return 0
     }
 
     /// Returns how far the tabs actually moved.
@@ -2546,10 +2589,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         // Bring a newly active tab into view (switching tabs, opening one); otherwise leave the scroll alone.
         if let active = c.activeTab, active !== revealedTab, let i = c.tabs.firstIndex(of: active), !tabRects[i].isNull {
             revealedTab = active
-            let r = tabRects[i]
-            var shift: CGFloat = 0
-            if r.minX < viewport.minX { shift = r.minX - viewport.minX - 8 }
-            else if r.maxX > viewport.maxX { shift = r.maxX - viewport.maxX + 8 }
+            let shift = shiftToShow(tabRects[i])
             if shift != 0, maxScrollX > 0 {
                 stopTabSlide()
                 scrollX = min(max(scrollX + shift, 0), maxScrollX)
@@ -2708,12 +2748,6 @@ final class TabBarView: NSView, NSTextFieldDelegate {
                 drawGroupLine(g, from: r.minX, to: end, y: groupLineY)
             }
             drawChip(g, in: r, hovered: hoverChip == ci)
-            if dropChip === g {
-                th.foreground.withAlphaComponent(0.85).setStroke()
-                let ring = NSBezierPath(roundedRect: r.insetBy(dx: -2.5, dy: -2.5), xRadius: 8, yRadius: 8)
-                ring.lineWidth = 1.5
-                ring.stroke()
-            }
         }
 
         selectedTabs.removeAll { !c.tabs.contains($0) }
@@ -2739,6 +2773,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         }
 
         NSGraphicsContext.restoreGraphicsState()
+        drawMarkOutlines(c, lifted: liftedGroup)
         drawScrollArrows()
 
         // "+" new tab button (slides along after the last tab)
@@ -2857,43 +2892,44 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             th.surface.withAlphaComponent(0.55).setFill()
             path.fill()
         }
-        if dropTab == i {
+        if dropTab == i || tab === sendTarget {
             let dc = groupColor ?? th.accent
             dc.withAlphaComponent(0.18).setFill()
             path.fill()
-            dc.setStroke()
-            path.lineWidth = 1.5
-            path.stroke()
         }
 
-        // An agent's mark and status, or a dot for a running (accent) / failed (red) command, at the tab's left edge
-        // with the title right after it. A tab without one centers its title. Either way the title stays clear of
-        // the close button's room and is laid out the same whether the tab is active, hovered or neither.
+        // An agent's mark and status, a dot for a running (accent) / failed (red) command, or else what the tab holds
+        // (its file's icon, or the petal prompt for a terminal), at the tab's left edge with the title right after it. The title stays clear of the close button's room and
+        // is laid out the same whether the tab is active, hovered or neither.
         let dot = tab.agent == nil && (tab.isRunningCommand || tab.lastCommandFailed)
-        let iconW: CGFloat = tab.agent != nil ? 13 + 3 + 6 : dot ? 6 : 0
-        let iconGap: CGFloat = iconW > 0 ? 7 : 0
-        let pad: CGFloat = 12, closeRoom: CGFloat = 28
+        let pad = Self.tabPad, closeRoom: CGFloat = 28
         let showClose = (hovered || active) && !dragging && !dragGroupMoved && r.width >= 60
         let titleColor = active ? th.foreground : th.foreground.withAlphaComponent(0.55)
         let font = NSFont.systemFont(ofSize: 12, weight: .medium)
         let para = NSMutableParagraphStyle()
         para.lineBreakMode = .byTruncatingMiddle
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: titleColor, .paragraphStyle: para]
-        let titleX = r.minX + pad + iconW + iconGap
+        let titleX = r.minX + Self.titleInset(tab)
         let room = max(0, r.maxX - closeRoom - titleX)
         // Cut at a whole word where it can be; a path or a single word keeps its end instead (middle truncation).
         let title = Self.fitTitle(tab.title, full: room, width: room, attrs: attrs) ?? tab.title
         let titleW = min(room, ceil((title as NSString).size(withAttributes: attrs).width))
-        let x = iconW > 0 ? titleX : max(titleX, min(r.midX - titleW / 2, r.maxX - closeRoom - titleW))
 
         if let agent = tab.agent {
             agent.draw(at: r.minX + pad, midY: r.midY)
         } else if dot {
             (tab.isRunningCommand ? th.accent : th.red).setFill()
-            NSBezierPath(ovalIn: NSRect(x: r.minX + pad, y: r.midY - 3, width: 6, height: 6)).fill()
+            // In the prompt's place, so the title doesn't move when a command starts or ends.
+            NSBezierPath(ovalIn: NSRect(x: r.minX + pad + (SolanumArt.promptSize.width - 6) / 2, y: r.midY - 3, width: 6, height: 6)).fill()
+        } else if tab.showsTerminal == false, let ed = tab.editor {
+            drawEditorIcon(ed, r, color: titleColor, fraction: active ? 1 : 0.65)
+        } else {
+            let size = SolanumArt.promptSize
+            Self.tabPrompt(titleColor, active: active).draw(in: NSRect(x: r.minX + pad, y: r.midY - size.height / 2, width: size.width, height: size.height), from: .zero,
+                                                            operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         }
         if !isEditing(tab) {
-            (title as NSString).draw(in: NSRect(x: x, y: r.midY - 8, width: titleW, height: 16), withAttributes: attrs)
+            (title as NSString).draw(in: NSRect(x: titleX, y: r.midY - 8, width: titleW, height: 16), withAttributes: attrs)
         }
 
         if showClose {
@@ -2912,6 +2948,64 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             x.move(to: NSPoint(x: cr.maxX - inset, y: cr.minY + inset)); x.line(to: NSPoint(x: cr.minX + inset, y: cr.maxY - inset))
             x.stroke()
         }
+    }
+
+    /// A file tab's icon, in the prompt's place: the icon pack's for its file, as in the sidebar, else Solanum's own.
+    private func drawEditorIcon(_ ed: FileEditorView, _ r: CGRect, color: NSColor, fraction: CGFloat) {
+        let isFile = ed.mode == .file || ed.mode == .preview
+        let slot = SolanumArt.promptSize.width
+        func place(_ img: NSImage, _ size: NSSize, fraction: CGFloat) {
+            img.draw(in: NSRect(x: r.minX + Self.tabPad + (slot - size.width) / 2, y: r.midY - size.height / 2, width: size.width, height: size.height),
+                     from: .zero, operation: .sourceOver, fraction: fraction, respectFlipped: true, hints: nil)
+        }
+        let name = (ed.path as NSString).lastPathComponent
+        if isFile, let img = IconPacks.current?.icon(forName: name, directory: false, light: !Config.shared.theme.isDark) {
+            place(img, NSSize(width: 14, height: 14), fraction: fraction)
+            return
+        }
+        let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular).applying(.init(paletteColors: [color]))
+        if let img = NSImage(systemSymbolName: FileTabStrip.symbol(ed.mode, name), accessibilityDescription: nil)?.withSymbolConfiguration(config) {
+            place(img, img.size, fraction: 1)
+        }
+    }
+
+    private static let tabPad: CGFloat = 12
+    private static var tabPrompts: [NSColor: NSImage] = [:]
+
+    /// The prompt a tab with no status shows, its "_" in the title's color (which also tells active from not, and one
+    /// theme from another).
+    private static func tabPrompt(_ color: NSColor, active: Bool) -> NSImage {
+        if let image = tabPrompts[color] { return image }
+        let image = SolanumArt.promptImage(style: Config.shared.theme.isDark ? .pale : .deep, underscore: color, petalAlpha: active ? 1 : 0.65)
+        tabPrompts[color] = image
+        return image
+    }
+
+    /// Where a tab's title starts: past its icon, whichever that is (an agent's has its status beside it).
+    private static func titleInset(_ tab: TabSession) -> CGFloat {
+        tabPad + (tab.agent != nil ? AgentInfo.markSide + 3 + 6 : SolanumArt.promptSize.width) + 7
+    }
+
+    /// The outlines of a drop target or the send menu's tab, a little past the viewport: what's first in the strip
+    /// starts right on its edge, which would cut off their left side.
+    private func drawMarkOutlines(_ c: TabColumn, lifted: TabGroup?) {
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: viewport.insetBy(dx: -4, dy: 0)).addClip()
+        for chip in chips where chip.group !== lifted && (dropChip === chip.group || (chip.group.collapsed && sendTarget?.group === chip.group)) {
+            let r = shownRect(ObjectIdentifier(chip.group)) ?? chip.rect
+            Config.shared.theme.foreground.withAlphaComponent(0.85).setStroke()
+            let ring = NSBezierPath(roundedRect: r.insetBy(dx: -2.5, dy: -2.5), xRadius: 8, yRadius: 8)
+            ring.lineWidth = 1.5
+            ring.stroke()
+        }
+        for i in c.tabs.indices where dropTab == i || c.tabs[i] === sendTarget {
+            guard let r = shownRect(ObjectIdentifier(c.tabs[i])) ?? (tabRects[i].isNull ? nil : tabRects[i]), r.width > 2 else { continue }
+            (c.tabs[i].group?.color.color ?? Config.shared.theme.accent).setStroke()
+            let outline = NSBezierPath(roundedRect: r, xRadius: 7, yRadius: 7)
+            outline.lineWidth = 1.5
+            outline.stroke()
+        }
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     /// ‹ and ›, when the tabs scroll: bright when there's more that way, faint at the end.
@@ -2941,7 +3035,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             return (i, r)
         }
         func quiet(_ i: Int) -> Bool {
-            i == c.activeIndex || (!dragging && hoverIndex == i) || selectedTabs.contains(c.tabs[i]) || dropTab == i
+            i == c.activeIndex || (!dragging && hoverIndex == i) || selectedTabs.contains(c.tabs[i]) || dropTab == i || c.tabs[i] === sendTarget
         }
         Config.shared.theme.foreground.withAlphaComponent(0.18).setFill()
         // One before the first tab, too, unless it starts on the sidebar's border line.
@@ -3152,7 +3246,8 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         f.drawsBackground = false
         f.textColor = th.foreground
         f.font = .systemFont(ofSize: 12, weight: .medium)
-        f.alignment = .center
+        f.alignment = .left
+        (f.cell as? CenteredTextFieldCell)?.horizontalInset = 3
         f.focusRingType = .none
         f.usesSingleLineMode = true
         f.cell?.isScrollable = true
@@ -3198,7 +3293,9 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         switch target {
         case .tab(let t):
             guard let i = c.tabs.firstIndex(of: t), !tabRects[i].isNull else { return endEditing(commit: false) }
-            f.frame = tabRects[i].insetBy(dx: 10, dy: 5)
+            // Over the title, with the text where the title's is; the tab's icon stays in view.
+            let r = tabRects[i], inset = Self.titleInset(t) - 5
+            f.frame = CGRect(x: r.minX + inset, y: r.minY + 5, width: max(40, r.width - inset - 10), height: r.height - 10)
         case .group(let g):
             guard let r = chips.first(where: { $0.group === g })?.rect else { return endEditing(commit: false) }
             f.frame = r.insetBy(dx: 0, dy: -1)

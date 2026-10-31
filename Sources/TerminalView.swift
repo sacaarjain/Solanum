@@ -193,7 +193,14 @@ final class TerminalView: NSView, TerminalDelegate {
         }
     }
     private var followingInputBox = false
-    var selectedBlock: Block?
+    /// The selected commands, in the order they were picked: one from a click, more with ⌘-click.
+    var selectedBlocks: [Block] = [] { didSet { updateSelectionBar() } }
+    /// The one a single selection is on (for several, the last picked).
+    var selectedBlock: Block? {
+        get { selectedBlocks.last }
+        set { selectedBlocks = newValue.map { [$0] } ?? [] }
+    }
+    func isSelected(_ b: Block) -> Bool { selectedBlocks.contains { $0 === b } }
     /// Prompt line of the selected agent turn (see AgentTurns.swift).
     var selectedTurnLine: Int?
     /// Prompt lines of agent turns whose responses are collapsed.
@@ -238,6 +245,8 @@ final class TerminalView: NSView, TerminalDelegate {
     /// moves to another cell, not when the text moves under a still pointer.
     var lastDragCell: (col: Int, row: Int)?
     var didDrag = false
+    /// This press went to a link or a button, so its release isn't a click on the terminal (which would select the block).
+    var pressTaken = false
     var reportingMouse = false
     var lastReportedCell: (Int, Int)?
     /// A click waiting for the screen to settle before it's interpreted (see `whenCursorSettled`).
@@ -273,6 +282,15 @@ final class TerminalView: NSView, TerminalDelegate {
     /// "Copy output" on the hovered command's first line, and the block it just copied.
     var blockCopyButton: (rect: CGRect, block: Block)?
     var hoverBlockCopy = false
+    /// "Send to chat" beside it (see AgentChats.swift).
+    var blockSendButton: (rect: CGRect, block: Block)?
+    var hoverBlockSend = false
+    /// The bar offering Copy All and Send to Chat while several commands are selected.
+    var selectionBar: BlockSelectionBar?
+    /// Text waiting for an agent starting in this pane to be ready for it, until when, and what checks.
+    var chatPaste: (text: String, deadline: Date, timer: Timer)?
+    /// The send menu last shown, for DevTools.
+    var devSendMenu: NSMenu?
     var copiedBlock: Block?
     /// Transcript sizes + screen extent at the last scan; a scan only runs when this changes.
     private var boxScanKey = ""
@@ -715,6 +733,11 @@ final class TerminalView: NSView, TerminalDelegate {
             let w = min(bar.preferredWidth, bounds.width - 16)
             bar.frame = NSRect(x: max(8, bounds.width - w - 12), y: bounds.height - ConnectionLostBar.height - 10, width: w, height: ConnectionLostBar.height)
         }
+        if let bar = selectionBar {
+            let w = min(bar.preferredWidth, bounds.width - 16)
+            let bottom = lostBar.map { $0.frame.minY - 6 } ?? bounds.height - 10
+            bar.frame = NSRect(x: max(8, bounds.width - w - 12), y: bottom - BlockSelectionBar.height, width: w, height: BlockSelectionBar.height)
+        }
     }
 
     /// Repaints this pane, and gets whatever runs in it to repaint too: the size is reported one column narrower
@@ -855,7 +878,7 @@ final class TerminalView: NSView, TerminalDelegate {
     /// A card in the top-right corner of the window being looked at (else the tab's own), for 30 seconds unless
     /// said otherwise. Clicking it goes to the tab.
     @discardableResult
-    private func showCornerNotice(title: String, symbol: (name: String, color: NSColor), lines: [String], in tab: TabSession,
+    func showCornerNotice(title: String, symbol: (name: String, color: NSColor), lines: [String], in tab: TabSession,
                                   button: (title: String, action: () -> Void)? = nil, lifetime: TimeInterval = 30) -> CornerNoticeView? {
         guard let wc = (NSApp.keyWindow?.windowController as? TerminalWindowController) ?? tab.windowController else { return nil }
         let notice = CornerNoticeView(title: title, symbol: symbol, lines: lines, button: button, lifetime: lifetime)
@@ -1217,13 +1240,13 @@ final class TerminalView: NSView, TerminalDelegate {
     }
 
     /// A small "⧉ Copy…" button ending at `rightX`; `top` gives its top edge from its height. Returns its rect.
-    private func drawCopyPill(_ text: String, copied: Bool, hover: Bool, rightX: CGFloat, top: (CGFloat) -> CGFloat,
+    private func drawCopyPill(_ text: String, symbol: String = "doc.on.doc", copied: Bool, hover: Bool, rightX: CGFloat, top: (CGFloat) -> CGFloat,
                               _ ctx: CGContext) -> CGRect {
         let th = palette.theme
         let font = NSFont.systemFont(ofSize: max(10, fonts.size - 2.5), weight: .medium)
         let color = copied ? th.green : hover ? th.foreground : th.dimText
         let label = NSAttributedString(string: copied ? "✓ " + text : text, attributes: [.font: font, .foregroundColor: color])
-        let icon = copied ? nil : NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)?
+        let icon = copied ? nil : NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: font.pointSize - 1, weight: .medium).applying(.init(paletteColors: [color])))
         let size = label.size()
         let w = size.width + 16 + (icon.map { $0.size.width + 4 } ?? 0)
@@ -1254,10 +1277,9 @@ final class TerminalView: NSView, TerminalDelegate {
         return rect
     }
 
-    /// Copies a command's output (as ⌘⌥C does) and shows "Copied" on its button for a moment.
+    /// Copies a command and its output (as ⌘⌥C does) and shows "Copied" on its button for a moment.
     func copyOutput(of b: Block) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(blockText(b, includeCommand: false), forType: .string)
+        AgentChats.putOnClipboard(blockText(b, includeCommand: true))
         copiedBlock = b
         needsDisplay = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
@@ -1288,7 +1310,7 @@ final class TerminalView: NSView, TerminalDelegate {
         let th = palette.theme
         for s in spans {
             let top = rowY(s.first) - 2, height = CGFloat(s.last - s.first + 1) * fonts.cellH + 4
-            if s.block === selectedBlock {
+            if isSelected(s.block) {
                 // Inside its outline (drawn with the block's chrome), not past it.
                 ctx.setFillColor(th.accent.withAlphaComponent(0.11).cgColor)
                 ctx.addPath(selectionOutline(top: top, height: height))
@@ -1535,6 +1557,7 @@ final class TerminalView: NSView, TerminalDelegate {
         let th = palette.theme
         collapseChips = []
         blockCopyButton = nil
+        blockSendButton = nil
         for s in spans {
             let b = s.block
             let top = rowY(s.first) - 2
@@ -1545,7 +1568,7 @@ final class TerminalView: NSView, TerminalDelegate {
                 ctx.setFillColor(th.border.cgColor)
                 ctx.fill(CGRect(x: 0, y: top - 0.5, width: bounds.width, height: 1))
             }
-            if b === selectedBlock {
+            if isSelected(b) {
                 ctx.setStrokeColor(th.accent.withAlphaComponent(0.85).cgColor)
                 ctx.setLineWidth(1.5)
                 ctx.addPath(selectionOutline(top: top, height: height))
@@ -1573,6 +1596,9 @@ final class TerminalView: NSView, TerminalDelegate {
                 let rect = drawCopyPill(b === copiedBlock ? "Copied" : "Copy output", copied: b === copiedBlock, hover: hoverBlockCopy,
                                         rightX: right, top: { self.rowY(s.first) + (self.fonts.cellH - $0) / 2 }, ctx)
                 blockCopyButton = (rect, b)
+                let send = drawCopyPill("Send to chat", symbol: "arrowshape.turn.up.right", copied: false, hover: hoverBlockSend, rightX: rect.minX - 6,
+                                        top: { self.rowY(s.first) + (self.fonts.cellH - $0) / 2 }, ctx)
+                blockSendButton = (send, b)
             }
 
             // "⋯ N lines" chip for collapsed blocks, after the command text.
@@ -1604,7 +1630,7 @@ final class TerminalView: NSView, TerminalDelegate {
 
     /// The status badge on a block's first line, if it shows one.
     func blockBadge(_ b: Block) -> (text: String, color: NSColor)? {
-        guard let d = b.duration, b === selectedBlock || b === hoverBlock || b.failed || b.state == .running else { return nil }
+        guard let d = b.duration, isSelected(b) || b === hoverBlock || b.failed || b.state == .running else { return nil }
         let th = palette.theme
         switch b.state {
         case .running:

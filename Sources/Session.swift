@@ -7,7 +7,9 @@ import AppKit
 struct PaneState: Codable {
     var cwd: String?
     var text: String?
-    /// Claude Code was running here (on this Mac); restoring continues its conversation (`claude -c`).
+    /// The coding agent running here (on this Mac), by its command; restoring continues its session (Settings › Preferences).
+    var agent: String?
+    /// From sessions saved before `agent`: Claude Code was running here.
     var claude: Bool?
     /// An ssh session was running here: how it was started (`ssh`'s arguments) and the folder it was in on the host.
     /// Restoring logs in again and goes back there, once the tab is first shown.
@@ -152,7 +154,7 @@ extension TabSession {
             let text = Config.shared.restoreScrollback ? t.terminal.restorableText(maxLines: SessionStore.maxLines) : nil
             let ssh = t.remote != nil ? t.terminal.sshArgs.flatMap { $0.isEmpty ? nil : $0 } : nil
             return .pane(PaneState(cwd: t.currentDirectory, text: text?.isEmpty == false ? text : nil,
-                                   claude: t.pty?.foregroundIsClaudeCode == true ? true : nil,
+                                   agent: t.pty?.foregroundAgent?.command,
                                    ssh: ssh, remoteCwd: ssh == nil ? nil : t.browseDirectory))
         }
         if let s = v as? PaneSplitView {
@@ -171,7 +173,7 @@ extension TabSession {
             case .pane(let p):
                 let v = TerminalView(cwd: p.cwd.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil })
                 if let text = p.text { v.restoredText = text + TabSession.restoredBanner }
-                if p.claude == true { v.pendingCommand = TabSession.claudeContinueCommand }
+                if let command = TabSession.continueCommand(agent: p.agent ?? (p.claude == true ? "claude" : nil)) { v.pendingCommand = command }
                 if let ssh = p.ssh, let login = RemoteSession(controlPath: "", sshArgs: ssh).reconnectCommand(in: p.remoteCwd) {
                     v.pendingCommand = "\u{15}" + login
                 }
@@ -191,11 +193,15 @@ extension TabSession {
         self.init(content: content, focus: focus)
     }
 
-    /// The user's alias for Claude Code when they have one (aliases need shell integration), else `claude`.
-    private static var claudeContinueCommand: String {
-        let alias = Config.shared.shellIntegration ? AliasStore.shared.alias(running: "claude") : nil
+    /// What continues an agent's session, through the user's alias for it when they have one (aliases need shell
+    /// integration); nil when it's not to be continued.
+    private static func continueCommand(agent: String?) -> String? {
+        guard Config.shared.continueAgents, let kind = agent.flatMap(AgentKind.named) else { return nil }
+        let command = Config.shared.continueCommand(for: kind)
+        guard !command.isEmpty else { return nil }
+        let alias = Config.shared.shellIntegration ? AliasStore.shared.alias(running: kind.command) : nil
         // ⌃U first clears anything already sitting on the new shell's prompt line.
-        return "\u{15}" + (alias ?? "claude") + " -c"
+        return "\u{15}" + kind.throughAlias(command, alias: alias)
     }
 
     private static let restoredBanner: String = {
