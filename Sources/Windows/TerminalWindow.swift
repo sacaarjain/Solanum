@@ -59,6 +59,10 @@ final class TerminalWindow: TerminalDelegate {
     private var lastMouseCell: (Int, Int)?
     private(set) var paints = 0
     private var lastResize: Date?
+    private var pendingClick: (() -> Void)?
+    private var pendingClickDeadline = Date.distantPast
+    private var awaitingCursorEcho = false
+    private static let clickTimer: UINT_PTR = 2
     private(set) var exitCode: Int32?
 
     /// Output waiting for the message loop.
@@ -179,6 +183,8 @@ final class TerminalWindow: TerminalDelegate {
         outputPosted = false
         inboxLock.unlock()
         bytes.withUnsafeBufferPointer { terminal.feed($0) }
+        awaitingCursorEcho = false
+        runPendingClick()
         if scrollOffset > 0 { scrollOffset += terminal.scrollbackPushes }
         terminal.scrollbackPushes = 0
         scrollOffset = min(scrollOffset, terminal.scrollback.count)
@@ -236,6 +242,10 @@ final class TerminalWindow: TerminalDelegate {
             PostMessageW(hwnd, Win.WM_CLOSE, 0, 0)
             return 0
         case Win.WM_TIMER:
+            if wParam == WPARAM(Self.clickTimer) {
+                runPendingClick()
+                return 0
+            }
             reanchorIfSettled()
             onTick?()
             return 0
@@ -430,7 +440,10 @@ final class TerminalWindow: TerminalDelegate {
             guard selecting else { return }
             selecting = false
             ReleaseCapture()
-            if selection?.isEmpty == true { selection = nil }
+            if selection?.isEmpty == true {
+                selection = nil
+                whenCursorSettled { [weak self] in self?.placeCursor(line: abs, col: col) }
+            }
         case Win.WM_RBUTTONUP:
             // As in Windows consoles: right-click copies a selection, and pastes when there isn't one.
             if selection != nil { copySelection() } else { paste() }
@@ -488,6 +501,72 @@ final class TerminalWindow: TerminalDelegate {
         invalidate()
     }
 
+    // MARK: - Click to place the cursor
+
+    /// Runs `work` once the screen has settled: the program has finished redrawing (Claude Code hides the cursor and
+    /// parks it below its interface mid-frame) and has echoed arrow keys sent for an earlier click. Reading the cursor
+    /// before that is what makes clicks miss. Waits a short while at most; a newer request replaces an older one.
+    private func whenCursorSettled(timeout: TimeInterval = 0.3, _ work: @escaping () -> Void) {
+        pendingClick = work
+        pendingClickDeadline = Date().addingTimeInterval(timeout)
+        runPendingClick()
+        if pendingClick != nil { _ = SetTimer(hwnd, Self.clickTimer, 20, nil) }
+    }
+
+    private func runPendingClick() {
+        guard let work = pendingClick else { return }
+        let settled = terminal.usingAlt || terminal.mouseMode != .none || (terminal.cursorVisible && !awaitingCursorEcho)
+        guard settled || Date() >= pendingClickDeadline else { return }
+        pendingClick = nil
+        KillTimer(hwnd, Self.clickTimer)
+        awaitingCursorEcho = false
+        work()
+    }
+
+    private func sendArrows(_ count: Int, back: String, forward: String) {
+        guard count != 0 else { return }
+        let key = (terminal.appCursorKeys ? "\u{1b}O" : "\u{1b}[") + (count < 0 ? back : forward)
+        send(String(repeating: key, count: abs(count)))
+        awaitingCursorEcho = true
+    }
+
+    private func placeCursor(line: Int, col: Int) {
+        guard !terminal.usingAlt, terminal.mouseMode == .none, let block = terminal.currentBlock else { return }
+        let col = min(col, terminal.cols - 1)
+        if block.state == .running {
+            guard let rows = terminal.agentInputRows(block), rows.contains(line), rows.contains(terminal.cursorAbs) else { return }
+            placeAgentCursor(row: line - rows.lowerBound, col: col, sentVertical: false)
+        } else if let arrows = terminal.shellCursorArrows(block, line: line, col: col) {
+            sendArrows(arrows, back: "D", forward: "C")
+        }
+    }
+
+    /// Claude Code word-wraps its input box itself, so cells don't map linearly to text. Up or down to the row first
+    /// (it moves by visual row), wait for the redraw, then fix the column.
+    private func placeAgentCursor(row: Int, col: Int, sentVertical: Bool, giveUpAt: Date = .distantFuture) {
+        guard let block = terminal.currentBlock, block.state == .running else { return }
+        func again(_ deadline: Date) {
+            awaitingCursorEcho = true
+            whenCursorSettled { [weak self] in self?.placeAgentCursor(row: row, col: col, sentVertical: true, giveUpAt: deadline) }
+        }
+        guard let rows = terminal.agentInputRows(block), rows.contains(terminal.cursorAbs) else {
+            // Caught partway through a redraw after our arrows, with the box not all there: look again in a moment.
+            if sentVertical, Date() < giveUpAt { again(giveUpAt) }
+            return
+        }
+        let target = rows.lowerBound + row
+        guard rows.contains(target) else { return }
+        if terminal.cursorAbs == target {
+            sendArrows(terminal.agentCursorArrows(toCol: col), back: "D", forward: "C")
+        } else if sentVertical {
+            // An unrelated redraw (the spinner, say) can land before the echo of our arrows: wait for the next one.
+            if Date() < giveUpAt { again(giveUpAt) }
+        } else {
+            sendArrows(target - terminal.cursorAbs, back: "A", forward: "B")
+            again(Date().addingTimeInterval(0.5))
+        }
+    }
+
     private func wordSelection(line: Int, col: Int) -> TerminalSelection? {
         guard let l = terminal.line(abs: line) else { return nil }
         func isWord(_ x: Int) -> Bool {
@@ -543,6 +622,15 @@ final class TerminalWindow: TerminalDelegate {
 
     func type(_ text: String) {
         for unit in text.utf16 { PostMessageW(hwnd, Win.WM_CHAR, WPARAM(unit), 0) }
+    }
+
+    /// A plain click on a cell of the screen.
+    func click(col: Int, row: Int) {
+        let m = canvas.metrics
+        let x = Int(canvas.padding + (Float(col) + 0.1) * m.cellWidth), y = Int(canvas.padding + (Float(row) + 0.5) * m.cellHeight)
+        let position = LPARAM(x & 0xFFFF) | (LPARAM(y & 0xFFFF) << 16)
+        PostMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, position)
+        PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, position)
     }
 
     func pressEnter() { PostMessageW(hwnd, Win.WM_KEYDOWN, WPARAM(Win.VK_RETURN), 0) }

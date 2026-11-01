@@ -130,6 +130,17 @@ enum WindowSelfTest {
                  done: { window.visibleText.contains("\nline 1\n") }),
             Step(name: "window: clears the line", action: { window.type("\u{1b}") },
                  done: { !window.cursorRowText.contains("claud") }),
+            Step(name: "window: a command to click into", action: { window.type("echo abcdef") },
+                 done: { window.cursorRowText.contains("echo abcdef") }),
+            Step(name: "window: clicking moves the cursor there", action: {
+                let promptEnd = window.cursorRowText.range(of: "echo abcdef")!.lowerBound
+                let col = window.cursorRowText.distance(from: window.cursorRowText.startIndex, to: promptEnd) + "echo ab".count
+                window.click(col: col, row: window.terminal.cursorY)
+            }, done: { window.terminal.cursorX == window.cursorRowText.distance(from: window.cursorRowText.startIndex, to: window.cursorRowText.range(of: "echo abcdef")!.lowerBound) + "echo ab".count }),
+            Step(name: "window: typing goes in at the click", action: {
+                window.type("X")
+                window.pressEnter()
+            }, done: { hasLine("abXcdef") }),
             Step(name: "window: colors from a real program", action: {
                 window.type("Write-Host hello -ForegroundColor Green; Write-Host '✦ unicode typed'")
                 window.pressEnter()

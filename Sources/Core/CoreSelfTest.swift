@@ -73,6 +73,38 @@ enum CoreSelfTest {
             check("console resize: width fits every row", t.screen.allSatisfy { $0.cells.count == 10 } && t.scrollback.count == 4)
         }
         do {
+            let (t, _) = make(40, 30)
+            let shade = "\u{1b}[48;2;55;55;55m", plain = "\u{1b}[49m", rule = String(repeating: "─", count: 40)
+            feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}claude\r\n\u{1b}]133;C\u{07}")
+            feed(t, "\(shade)❯ first question\u{1b}[K\(plain)\r\n\(shade)  second line\u{1b}[K\(plain)\r\n\r\n⏺ answer one\r\n  more\r\n\r\n")
+            feed(t, "\(shade)❯ next\(plain)\r\n\r\n⏺ answer two\r\n\r\n\(rule)❯ typing\r\n\(rule)")
+            let turns = t.blocks.last.map { t.agentTurns(in: $0) } ?? []
+            check("agent turns", turns.count == 2 && turns[0].promptLine == 1 && turns[0].promptEnd == 2 && turns[0].end == 5
+                  && t.agentPromptText(turns[0]) == "first question\nsecond line" && turns[1].end == 9,
+                  turns.map { "\($0.promptLine)-\($0.promptEnd)-\($0.end)" }.joined(separator: " "))
+            feed(t, "\u{1b}[2J\u{1b}[H")
+            check("ED 2 keeps running block", t.currentBlock?.state == .running && t.currentBlock?.command == "claude")
+        }
+        do {
+            // Clicks in the line being typed.
+            let (t, _) = make(20, 6)
+            feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}hello world and more")
+            let b = t.currentBlock!
+            check("click: in the command", t.shellCursorArrows(b, line: t.cursorAbs - 1, col: 3) == -19,
+                  "\(String(describing: t.shellCursorArrows(b, line: t.cursorAbs - 1, col: 3)))")
+            check("click: past its end stays at the end", t.shellCursorArrows(b, line: t.cursorAbs, col: 15) == 0)
+            check("click: above the command is no place", t.shellCursorArrows(b, line: t.cursorAbs + 3, col: 1) == nil)
+            let (a, _) = make(30, 8)
+            feed(a, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}claude\r\n\u{1b}]133;C\u{07}")
+            let rule = String(repeating: "─", count: 30)
+            feed(a, "\(rule)❯ typing here\r\n\(rule)\u{1b}[3;14H")
+            let rows = a.agentInputRows(a.currentBlock!)
+            check("click: finds Claude Code's input box", rows == (a.screenTopAbs + 2)...(a.screenTopAbs + 2), "\(String(describing: rows)) \(a.cursorAbs)")
+            check("click: left in the input box", a.agentCursorArrows(toCol: 4) == -9, "\(a.agentCursorArrows(toCol: 4)) \(a.cursorX)")
+            check("click: not past its text", a.agentCursorArrows(toCol: 25) == 0)
+            check("click: not into the gutter", a.agentCursorArrows(toCol: 0) == -11)
+        }
+        do {
             check("agent session: by name, also a path or an .exe", Block.namesAgentSession("claude --resume")
                   && Block.namesAgentSession("/opt/bin/claude") && Block.namesAgentSession(#"C:\tools\claude.exe -c"#)
                   && !Block.namesAgentSession("claudette") && !Block.namesAgentSession("cat claude.txt"))
