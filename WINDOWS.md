@@ -55,5 +55,5 @@ Then, in a new terminal:
 git clone -b windows-compat https://github.com/sacaarjain/Solanum.git
 cd Solanum
 .\build.ps1
-.\build\windows\Solanum.exe --selftest
+.\build\windows\Solanum-test.exe --selftest
 ```

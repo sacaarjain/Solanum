@@ -1,7 +1,7 @@
 import Foundation
 import WinSDK
 
-/// Real programs through a real pseudoconsole into the emulator: `Solanum --selftest`.
+/// Real programs through a real pseudoconsole into the emulator: `Solanum-test --selftest`.
 enum ConPTYSelfTest {
     /// A terminal joined to a running program, as a pane will be. The emulator isn't thread-safe, so a lock guards it.
     private final class Session: TerminalDelegate {

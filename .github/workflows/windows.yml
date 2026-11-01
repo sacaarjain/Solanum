@@ -11,6 +11,8 @@ permissions:
 jobs:
   build-and-test:
     runs-on: windows-latest
+    env:
+      SOLANUM_SNAPSHOT_DIR: ${{ github.workspace }}\snapshots
     steps:
       - uses: actions/checkout@v5
       - uses: compnerd/gha-setup-swift@v0.5.1
@@ -21,4 +23,14 @@ jobs:
         run: .\build.ps1
       - name: Self-tests
         timeout-minutes: 10
-        run: .\build\windows\Solanum.exe --selftest
+        run: .\build\windows\Solanum-test.exe --selftest
+      - name: Window test
+        timeout-minutes: 10
+        run: .\build\windows\Solanum-test.exe --window-test
+      - name: Upload snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshots
+          path: snapshots
+          if-no-files-found: ignore

@@ -1,0 +1,288 @@
+import CCanvas
+import Foundation
+
+/// Solanum Default's terminal colors, until themes move into the shared core. All 0xRRGGBB.
+enum TerminalPalette {
+    static let background: UInt32 = 0x111312
+    static let foreground: UInt32 = 0xD7D3C7
+    static let cursor: UInt32 = 0xD7D3C7
+    static let selection: UInt32 = 0x3A3550
+    static let ansi: [UInt32] = [0x272B28, 0xE3573F, 0x8BA47B, 0xE9B54D, 0x6F90A9, 0xA98CC1, 0x8FB9B1, 0xBCB7A9,
+                                 0x5A5F5A, 0xF47A63, 0xA4BC95, 0xF5C86F, 0x8DA8BE, 0xC0A6D4, 0xA9CEC7, 0xECE8DC]
+
+    static func indexed(_ i: Int) -> UInt32 {
+        if i < 16 { return ansi[i] }
+        if i < 232 {
+            let n = i - 16
+            let levels: [UInt32] = [0, 95, 135, 175, 215, 255]
+            return levels[n / 36] << 16 | levels[(n / 6) % 6] << 8 | levels[n % 6]
+        }
+        let g = UInt32(8 + (i - 232) * 10)
+        return g << 16 | g << 8 | g
+    }
+
+    /// A cell's packed color (`TermColor`), or `fallback` for the default.
+    @inline(__always) static func resolve(_ packed: UInt32, default fallback: UInt32) -> UInt32 {
+        switch packed >> 24 {
+        case 1: return indexed(Int(packed & 0xFF))
+        case 2: return packed & 0xFF_FFFF
+        default: return fallback
+        }
+    }
+
+    /// `amount` of `a`, the rest `b`.
+    static func mix(_ a: UInt32, _ b: UInt32, _ amount: Float) -> UInt32 {
+        func channel(_ shift: UInt32) -> UInt32 {
+            let x = Float((a >> shift) & 0xFF), y = Float((b >> shift) & 0xFF)
+            return UInt32(x * amount + y * (1 - amount)) << shift
+        }
+        return channel(16) | channel(8) | channel(0)
+    }
+
+    static func tuple(_ rgb: UInt32) -> (UInt8, UInt8, UInt8) {
+        (UInt8((rgb >> 16) & 0xFF), UInt8((rgb >> 8) & 0xFF), UInt8(rgb & 0xFF))
+    }
+}
+
+/// Owns a canvas: a window's, or a bitmap for snapshots.
+final class Canvas {
+    let raw: OpaquePointer
+    private(set) var metrics: SolMetrics
+
+    private init(raw: OpaquePointer) {
+        self.raw = raw
+        metrics = sol_canvas_metrics(raw)
+    }
+
+    convenience init?(window: UnsafeMutableRawPointer, fontPixels: Float) {
+        var hr: Int32 = 0
+        guard let raw = sol_canvas_create_window(window, fontPixels, &hr) else {
+            Canvas.lastError = hr
+            return nil
+        }
+        self.init(raw: raw)
+    }
+
+    convenience init?(width: Int, height: Int, fontPixels: Float) {
+        var hr: Int32 = 0
+        guard let raw = sol_canvas_create_bitmap(Int32(width), Int32(height), fontPixels, &hr) else {
+            Canvas.lastError = hr
+            return nil
+        }
+        self.init(raw: raw)
+    }
+
+    deinit { sol_canvas_destroy(raw) }
+
+    /// The HRESULT of the last failed creation.
+    static var lastError: Int32 = 0
+
+    func setFontPixels(_ pixels: Float) {
+        if sol_canvas_set_font_pixels(raw, pixels) >= 0 { metrics = sol_canvas_metrics(raw) }
+    }
+
+    func savePNG(to path: String) -> Bool {
+        let wide = Array(path.utf16) + [0]
+        return sol_canvas_save_png(raw, wide) >= 0
+    }
+}
+
+/// A selection in absolute lines, so it stays on the same text as the terminal scrolls.
+struct TerminalSelection: Equatable {
+    var anchor: (line: Int, col: Int)
+    var head: (line: Int, col: Int)
+
+    static func == (a: TerminalSelection, b: TerminalSelection) -> Bool {
+        a.anchor == b.anchor && a.head == b.head
+    }
+
+    var ordered: (start: (line: Int, col: Int), end: (line: Int, col: Int)) {
+        if anchor.line < head.line || (anchor.line == head.line && anchor.col <= head.col) { return (anchor, head) }
+        return (head, anchor)
+    }
+
+    var isEmpty: Bool { anchor == head }
+
+    @inline(__always) func contains(line: Int, col: Int) -> Bool {
+        let (s, e) = ordered
+        if line < s.line || line > e.line { return false }
+        if line == s.line && col < s.col { return false }
+        if line == e.line && col >= e.col { return false }
+        return true
+    }
+
+    func text(in terminal: Terminal) -> String {
+        let (s, e) = ordered
+        var out = ""
+        for a in s.line...e.line {
+            guard let l = terminal.line(abs: a) else { continue }
+            let from = a == s.line ? s.col : 0
+            if a == e.line && e.col == 0 { break }
+            let to = a == e.line ? e.col - 1 : terminal.cols - 1
+            out += l.text(from: from, to: to, trim: !l.wrapped)
+            if !l.wrapped && a != e.line { out += "\r\n" }
+        }
+        return out
+    }
+}
+
+/// Draws a terminal. One function for the window and for snapshots, so a snapshot shows what the window would.
+struct TerminalRenderer {
+    static let padding: Float = 6
+
+    let canvas: Canvas
+    let terminal: Terminal
+    var scrollOffset = 0
+    var selection: TerminalSelection?
+    var focused = true
+
+    /// Grid size for a client area of this many pixels.
+    static func grid(width: Int, height: Int, metrics: SolMetrics) -> (cols: Int, rows: Int) {
+        let w = max(Float(width) - padding * 2, 0), h = max(Float(height) - padding * 2, 0)
+        return (max(Int(w / metrics.cellWidth), 2), max(Int(h / metrics.cellHeight), 1))
+    }
+
+    /// Returns a negative HRESULT if the frame couldn't be drawn.
+    @discardableResult
+    func draw() -> Int32 {
+        let begun = sol_canvas_begin(canvas.raw, TerminalPalette.background)
+        guard begun >= 0 else { return begun }
+        let top = terminal.screenTopAbs - scrollOffset
+        for row in 0..<terminal.rows {
+            if let line = terminal.line(abs: top + row) { draw(line, abs: top + row, row: row) }
+        }
+        drawCursor(top: top)
+        drawScrollPosition()
+        return sol_canvas_end(canvas.raw)
+    }
+
+    private func colors(_ cell: Cell, selected: Bool) -> (fg: UInt32, bg: UInt32) {
+        var fg = TerminalPalette.resolve(cell.fg, default: TerminalPalette.foreground)
+        var bg = TerminalPalette.resolve(cell.bg, default: TerminalPalette.background)
+        if cell.flags.contains(.inverse) != terminal.reverseVideo { swap(&fg, &bg) }
+        if selected { bg = TerminalPalette.selection }
+        if cell.flags.contains(.invisible) { fg = bg }
+        else if cell.flags.contains(.dim) { fg = TerminalPalette.mix(fg, bg, 0.6) }
+        return (fg, bg)
+    }
+
+    private func style(_ flags: CellFlags) -> Int32 {
+        (flags.contains(.bold) ? Int32(SOL_STYLE_BOLD.rawValue) : 0) | (flags.contains(.italic) ? Int32(SOL_STYLE_ITALIC.rawValue) : 0)
+    }
+
+    private func draw(_ line: Line, abs: Int, row: Int) {
+        let m = canvas.metrics
+        let y = Self.padding + Float(row) * m.cellHeight
+        let cols = terminal.cols
+
+        // Backgrounds first, in runs, so that a glyph overhanging its cell isn't cut off by its neighbor's.
+        var col = 0
+        while col < cols {
+            let start = col
+            let bg = colors(line.cell(col), selected: selection?.contains(line: abs, col: col) ?? false).bg
+            col += 1
+            while col < cols, colors(line.cell(col), selected: selection?.contains(line: abs, col: col) ?? false).bg == bg { col += 1 }
+            if bg != TerminalPalette.background {
+                sol_canvas_fill_rect(canvas.raw, Self.padding + Float(start) * m.cellWidth, y,
+                                     Float(col - start) * m.cellWidth, m.cellHeight, bg, 1)
+            }
+        }
+
+        var scalars: [UInt32] = []
+        var widths: [UInt8] = []
+        var runStart = 0, runColor: UInt32 = 0, runStyle: Int32 = 0
+        func flush() {
+            guard !scalars.isEmpty else { return }
+            sol_canvas_draw_cells(canvas.raw, Self.padding + Float(runStart) * m.cellWidth, y, scalars, widths,
+                                  Int32(scalars.count), runColor, runStyle)
+            scalars.removeAll(keepingCapacity: true)
+            widths.removeAll(keepingCapacity: true)
+        }
+        col = 0
+        while col < cols {
+            let cell = line.cell(col)
+            defer { col += 1 }
+            if cell.width == 0 { continue }
+            let (fg, _) = colors(cell, selected: selection?.contains(line: abs, col: col) ?? false)
+            let cellStyle = style(cell.flags)
+            drawDecorations(cell, col: col, y: y, color: fg)
+            let extras = line.extras?[col]
+            if cell.ch == 0 || cell.ch == 32 || cell.flags.contains(.invisible) {
+                flush()
+                continue
+            }
+            if let extras, let base = Unicode.Scalar(cell.ch) {
+                flush()
+                let text = Array((String(Character(base)) + extras).utf16)
+                sol_canvas_draw_text(canvas.raw, Self.padding + Float(col) * m.cellWidth, y, Int32(cell.width), text,
+                                     Int32(text.count), fg, cellStyle)
+                continue
+            }
+            if !scalars.isEmpty, fg != runColor || cellStyle != runStyle { flush() }
+            if scalars.isEmpty {
+                runStart = col
+                runColor = fg
+                runStyle = cellStyle
+            }
+            scalars.append(cell.ch)
+            widths.append(max(cell.width, 1))
+        }
+        flush()
+    }
+
+    private func drawDecorations(_ cell: Cell, col: Int, y: Float, color: UInt32) {
+        guard !cell.flags.isDisjoint(with: [.underline, .doubleUnderline, .curlyUnderline, .strike]) else { return }
+        let m = canvas.metrics
+        let x = Self.padding + Float(col) * m.cellWidth
+        let width = m.cellWidth * Float(max(cell.width, 1))
+        if !cell.flags.isDisjoint(with: CellFlags.anyUnderline) {
+            sol_canvas_fill_rect(canvas.raw, x, y + m.underlineY, width, m.lineThickness, color, 1)
+        }
+        if cell.flags.contains(.doubleUnderline) {
+            sol_canvas_fill_rect(canvas.raw, x, y + m.underlineY + m.lineThickness * 2, width, m.lineThickness, color, 1)
+        }
+        if cell.flags.contains(.strike) {
+            sol_canvas_fill_rect(canvas.raw, x, y + m.strikeY, width, m.lineThickness, color, 1)
+        }
+    }
+
+    private func drawCursor(top: Int) {
+        guard terminal.cursorVisible, scrollOffset == 0 else { return }
+        let m = canvas.metrics
+        let col = min(terminal.cursorX, terminal.cols - 1)
+        let line = terminal.line(abs: top + terminal.cursorY)
+        let cell = line?.cell(col) ?? Cell()
+        let x = Self.padding + Float(col) * m.cellWidth
+        let y = Self.padding + Float(terminal.cursorY) * m.cellHeight
+        let width = m.cellWidth * Float(max(cell.width, 1))
+        guard focused else {
+            sol_canvas_stroke_rect(canvas.raw, x, y, width, m.cellHeight, TerminalPalette.cursor, m.lineThickness)
+            return
+        }
+        switch terminal.cursorShape ?? 5 {
+        case 1, 2:
+            sol_canvas_fill_rect(canvas.raw, x, y, width, m.cellHeight, TerminalPalette.cursor, 1)
+            if cell.ch != 0, cell.ch != 32 {
+                var scalar = cell.ch
+                var cells = max(cell.width, 1)
+                sol_canvas_draw_cells(canvas.raw, x, y, &scalar, &cells, 1, TerminalPalette.background, style(cell.flags))
+            }
+        case 3, 4:
+            sol_canvas_fill_rect(canvas.raw, x, y + m.cellHeight - m.lineThickness * 2, width, m.lineThickness * 2, TerminalPalette.cursor, 1)
+        default:
+            sol_canvas_fill_rect(canvas.raw, x, y, max(m.lineThickness * 2, 2), m.cellHeight, TerminalPalette.cursor, 1)
+        }
+    }
+
+    /// While scrolled back: how far, on the right edge.
+    private func drawScrollPosition() {
+        guard scrollOffset > 0 else { return }
+        let m = canvas.metrics
+        let height = Float(terminal.rows) * m.cellHeight
+        let total = Float(terminal.scrollback.count + terminal.rows)
+        let thumb = max(height * Float(terminal.rows) / total, 16)
+        let position = 1 - Float(scrollOffset) / Float(max(terminal.scrollback.count, 1))
+        let x = Self.padding + Float(terminal.cols) * m.cellWidth + 1
+        sol_canvas_fill_rect(canvas.raw, x, Self.padding + (height - thumb) * position, 3, thumb, TerminalPalette.foreground, 0.4)
+    }
+}
