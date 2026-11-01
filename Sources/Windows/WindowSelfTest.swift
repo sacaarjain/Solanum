@@ -98,13 +98,13 @@ enum WindowSelfTest {
                 window.paste()
                 window.pressEnter()
             }, done: { hasLine("paste-ok") }),
-            Step(name: "window: Ctrl+C stops a program", action: {
+            Step(name: "window: a long-running program starts", action: {
                 window.type("ping -t 127.0.0.1")
                 window.pressEnter()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {}
             }, done: { window.visibleText.contains("Reply from") || window.visibleText.contains("Pinging") }),
+            Step(name: "window: Ctrl+C reaches the program", action: { window.type("\u{03}") },
+                 done: { window.visibleText.contains("Control-C") }),
             Step(name: "window: the shell comes back after Ctrl+C", action: {
-                window.type("\u{03}")
                 window.type("echo after-ctrlc")
                 window.pressEnter()
             }, done: { hasLine("after-ctrlc") }),

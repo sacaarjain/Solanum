@@ -127,6 +127,12 @@ enum ConPTYSelfTest {
             check("conpty: terminate stops the program and reports it", done && Date().timeIntervalSince(started) < 15,
                   "\(Date().timeIntervalSince(started))s")
         }
+        do {
+            let s = Session("cmd.exe")
+            s?.send("chcp 65001\r\necho typed-é-✦\r\nexit\r\n")
+            let done = s.map { x in wait { x.code != nil } } ?? false
+            check("conpty: unicode input in cmd", done && s?.text.contains("\ntyped-é-✦") == true, s?.rawDescription ?? "didn't start")
+        }
         print("PowerShell hook")
         for executable in ["powershell.exe", "pwsh.exe"] {
             var path = [UInt16](repeating: 0, count: Int(MAX_PATH))
@@ -156,6 +162,9 @@ enum ConPTYSelfTest {
             s.send("[Console]::Out.WriteLine('mark-' + [char]0x2726)\r")
             let unicode = wait(15) { s.text.contains("mark-✦") }
             check("\(label): unicode output", unicode, s.rawDescription)
+            s.send("echo 'typed-é-✦'\r")
+            let typed = wait(15) { s.text.contains("\ntyped-é-✦") }
+            check("\(label): unicode input", typed, s.rawDescription)
             s.send("exit\r")
             let ended = wait(15) { s.code != nil }
             check("\(label): exits", ended, s.rawDescription)
