@@ -24,7 +24,7 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
 | 2 | ConPTY: a real shell's output reaches the emulator, including PowerShell's prompt hook | CI |
 | 3 | A window showing a working terminal: typing, colors, resize, copy and paste | Laptop |
 | 4 | A shared canvas, with the terminal view, tab bar and status bar drawn from one codebase | Mac snapshots, laptop |
-| 5 | Tabs, panes, sessions, shortcuts and the command palette | Laptop |
+| 5 | Tabs, panes, sessions, shortcuts, the command palette, and choosing a shell for each tab | Laptop |
 | 6 | Sidebar, git, Git Changes, Git Graph, project search and links | Laptop |
 | 7 | File editor, previews, settings and the theme editor | Laptop |
 | 8 | ssh browsing, agents, Quick Terminal, Keep Awake, and an installer with updates | Laptop |
@@ -35,6 +35,11 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
   flyouts are drawn by Solanum to match Windows 11, using the sizes and colors from the mock-ups.
 - **Local scripts:** Git for Windows' `sh.exe` runs the same git and search scripts the Mac uses.
 - **Closing the last window:** it saves the session and exits, and the next launch restores it.
+- **Shells:** Solanum finds PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and each WSL distribution, and
+  also takes a custom command. New Tab opens the default shell, a menu beside it opens any other, and Settings picks the
+  default. A restored tab comes back in the shell it was using. Blocks and folder tracking use each shell's own hook:
+  PowerShell's is done, Git Bash and WSL reuse the bash hook, and Command Prompt gets what its `PROMPT` can report (no
+  exit status or command start).
 
 ## Setting up the laptop (from milestone 3)
 
