@@ -103,7 +103,8 @@ enum WindowSelfTest {
                 window.pressEnter()
             }, done: { window.visibleText.contains("Reply from") || window.visibleText.contains("Pinging") }),
             Step(name: "window: Ctrl+C reaches the program", action: { window.type("\u{03}") },
-                 done: { window.visibleText.contains("Control-C") }),
+                 // Ctrl+C throws away input already waiting, so wait for the prompt, as someone at the keyboard would.
+                 done: { window.visibleText.contains("Control-C") && window.terminal.currentBlock?.state == .prompt }),
             Step(name: "window: the shell comes back after Ctrl+C", action: {
                 window.type("echo after-ctrlc")
                 window.pressEnter()
