@@ -20,14 +20,14 @@ enum ConPTYSelfTest {
             self.pty = pty
             pty.onData = { [weak self] bytes in
                 guard let self else { return }
-                locked {
-                    raw += bytes
-                    terminal.feed(bytes)
+                self.locked {
+                    self.raw += bytes
+                    self.terminal.feed(bytes)
                 }
             }
             pty.onExit = { [weak self] code in
                 guard let self else { return }
-                locked { exitCode = code }
+                self.locked { self.exitCode = code }
             }
         }
 
