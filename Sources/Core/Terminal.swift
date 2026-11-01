@@ -123,6 +123,8 @@ final class Terminal {
     private(set) var cursorVisible = true
     private(set) var bracketedPaste = false
     private(set) var focusEvents = false
+    /// ConPTY asks for the console's own key format (see `Win32Input`). Nothing else uses it.
+    private(set) var win32InputMode = false
     private(set) var mouseMode: MouseMode = .none
     private(set) var mouseSGR = false
     private(set) var altScroll = true
@@ -824,6 +826,7 @@ final class Terminal {
         case 5: reverseVideo = on
         case 6: originMode = on; setCursor(x: 0, y: 0)
         case 7: autowrap = on
+        case 9001: win32InputMode = on
         case 9: mouseMode = on ? .x10 : .none
         case 25: cursorVisible = on
         case 47, 1047:

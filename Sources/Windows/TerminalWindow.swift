@@ -355,7 +355,7 @@ final class TerminalWindow: TerminalDelegate {
     private func input(_ bytes: [UInt8]) {
         selection = nil
         scrollOffset = 0
-        pty?.write(bytes)
+        pty?.write(terminal.win32InputMode ? Win32Input.encode(bytes) : bytes)
         invalidate()
     }
 

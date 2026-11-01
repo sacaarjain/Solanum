@@ -51,7 +51,11 @@ enum ConPTYSelfTest {
             }
         }
 
-        func send(_ text: String) { pty?.write(Array(text.utf8)) }
+        /// As the window sends what's typed.
+        func send(_ text: String) {
+            let bytes = Array(text.utf8)
+            pty?.write(locked { terminal.win32InputMode } ? Win32Input.encode(bytes) : bytes)
+        }
 
         func terminalSend(_ bytes: [UInt8]) { pty?.write(bytes) }
         func terminalTitleChanged(_ t: Terminal) {}
