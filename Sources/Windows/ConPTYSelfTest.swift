@@ -70,6 +70,63 @@ enum ConPTYSelfTest {
         func terminalSSHExited(_ t: Terminal, status: Int) {}
     }
 
+    /// Tries each way of sending characters outside ASCII through each PowerShell installed here, and prints which
+    /// survive, since that depends on the Windows and PSReadLine versions: `Solanum-test --input-probe`.
+    static func probeInput() {
+        func key(_ vk: Int, _ unit: UInt16, down: Bool) -> String { "\u{1b}[\(vk);0;\(unit);\(down ? 1 : 0);0;1_" }
+        func keys(_ text: String, vk: Int, upToo: Bool) -> [UInt8] {
+            var out = ""
+            for unit in text.utf16 {
+                out += key(vk, unit, down: true)
+                if upToo { out += key(vk, unit, down: false) }
+            }
+            return Array(out.utf8)
+        }
+        let encodings: [(name: String, encode: (String) -> [UInt8])] = [
+            ("utf-8", { Array($0.utf8) }),
+            ("vk-packet", { keys($0, vk: 0xE7, upToo: true) }),
+            ("vk-packet, down only", { keys($0, vk: 0xE7, upToo: false) }),
+            ("vk-0", { keys($0, vk: 0, upToo: true) }),
+            ("vk-0, down only", { keys($0, vk: 0, upToo: false) }),
+        ]
+        let samples = ["é", "✦", "日", "🌱"]
+        for executable in ["powershell.exe", "pwsh.exe"] {
+            var path = [UInt16](repeating: 0, count: Int(MAX_PATH))
+            guard SearchPathW(nil, Array(executable.utf16) + [0], nil, DWORD(path.count), &path, nil) > 0 else {
+                print("\(executable): not installed")
+                continue
+            }
+            guard let s = Session(PowerShellIntegration.commandLine(executable: executable, loadProfile: false)),
+                  wait(until: { s.cwd != nil }) else {
+                print("\(executable): didn't reach a prompt")
+                continue
+            }
+            func line(after prefix: String) -> String? {
+                guard let found = s.text.range(of: "\n" + prefix, options: .backwards) else { return nil }
+                let rest = s.text[found.upperBound...]
+                return String(rest.prefix { $0 != "\n" })
+            }
+            s.send("echo (\"info=PS $($PSVersionTable.PSVersion) PSReadLine $((Get-Module PSReadLine).Version) Windows $([Environment]::OSVersion.Version) input-cp $([Console]::InputEncoding.CodePage)\")\r")
+            wait(15) { line(after: "info=") != nil }
+            print("\(executable): \(line(after: "info=") ?? "no version information")")
+            var number = 0
+            for encoding in encodings {
+                var results: [String] = []
+                for sample in samples {
+                    number += 1
+                    let prefix = "p\(number)-"
+                    s.pty?.write(Array("echo '\(prefix)".utf8) + encoding.encode(sample) + Array("-end'\r".utf8))
+                    wait(6) { line(after: prefix) != nil }
+                    let got = line(after: prefix)?.replacingOccurrences(of: "-end", with: "")
+                    results.append(got == sample ? "\(sample) ok" : "\(sample) LOST")
+                }
+                print("  \(encoding.name): \(results.joined(separator: "  "))")
+            }
+            s.pty?.terminate()
+            wait(10) { s.code != nil }
+        }
+    }
+
     /// Waits for `condition`, up to `seconds`.
     @discardableResult
     private static func wait(_ seconds: Double = 30, until condition: () -> Bool) -> Bool {

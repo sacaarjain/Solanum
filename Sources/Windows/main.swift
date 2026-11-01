@@ -13,6 +13,11 @@ if CommandLine.arguments.contains("--selftest") {
     exit(results.finish() ? 0 : 1)
 }
 
+if CommandLine.arguments.contains("--input-probe") {
+    ConPTYSelfTest.probeInput()
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--window-test") {
     exit(WindowSelfTest.runWindow())
 }

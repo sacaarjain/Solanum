@@ -28,6 +28,10 @@ jobs:
         if: success() || failure()
         timeout-minutes: 10
         run: .\build\windows\Solanum-test.exe --window-test
+      - name: Input probe
+        if: success() || failure()
+        timeout-minutes: 5
+        run: .\build\windows\Solanum-test.exe --input-probe
       - name: Upload snapshots
         if: always()
         uses: actions/upload-artifact@v4
