@@ -58,6 +58,7 @@ final class TerminalWindow: TerminalDelegate {
     private var lastDrawn = Date.distantPast
     private var lastMouseCell: (Int, Int)?
     private(set) var paints = 0
+    private var lastResize: Date?
     private(set) var exitCode: Int32?
 
     /// Output waiting for the message loop.
@@ -113,6 +114,7 @@ final class TerminalWindow: TerminalDelegate {
         canvas.padding = scaledPadding()
         terminal = Terminal(cols: cols, rows: rows, scrollbackLimit: 10000)
         terminal.delegate = self
+        terminal.repaintedByConsole = true
         Self.windows[created] = self
         sizeWindow(toCols: cols, rows: rows)
 
@@ -234,6 +236,7 @@ final class TerminalWindow: TerminalDelegate {
             PostMessageW(hwnd, Win.WM_CLOSE, 0, 0)
             return 0
         case Win.WM_TIMER:
+            reanchorIfSettled()
             onTick?()
             return 0
         case Win.WM_CHAR:
@@ -267,8 +270,16 @@ final class TerminalWindow: TerminalDelegate {
             terminal.resize(cols: grid.cols, rows: grid.rows)
             pty?.resize(cols: grid.cols, rows: grid.rows)
             scrollOffset = min(scrollOffset, terminal.scrollback.count)
+            lastResize = Date()
         }
         invalidate()
+    }
+
+    /// Once the window has stopped changing size and the console has redrawn (see `PowerShellIntegration.reanchorKey`).
+    private func reanchorIfSettled() {
+        guard let last = lastResize, Date().timeIntervalSince(last) > 0.25 else { return }
+        lastResize = nil
+        if terminal.currentBlock?.state == .prompt { pty?.write(PowerShellIntegration.reanchorKey) }
     }
 
     // MARK: - Keyboard
@@ -539,6 +550,11 @@ final class TerminalWindow: TerminalDelegate {
     func resizeWindow(toCols cols: Int, rows: Int) { sizeWindow(toCols: cols, rows: rows) }
 
     func close() { PostMessageW(hwnd, Win.WM_CLOSE, 0, 0) }
+
+    var isSettlingResize: Bool { lastResize != nil }
+
+    /// The row the cursor is on, as far as what's on screen goes.
+    var cursorRowText: String { terminal.screen[terminal.cursorY].text() }
 
     var visibleText: String {
         (terminal.scrollback.toArray().map { $0.text() } + terminal.screen.map { $0.text() }).joined(separator: "\n")

@@ -31,6 +31,12 @@ enum PowerShellIntegration {
             $global:LASTEXITCODE = $code
             $marks + (__solanum_osc '133;A') + $text + (__solanum_osc '133;B')
         }
+        # Sent after a resize (see reanchorKey).
+        if (Get-Command Set-PSReadLineKeyHandler -ErrorAction SilentlyContinue) {
+            Set-PSReadLineKeyHandler -Chord 'Ctrl+Alt+F12' -ScriptBlock {
+                [Microsoft.PowerShell.PSConsoleReadLine]::InvokePrompt($null, $Host.UI.RawUI.CursorPosition.Y)
+            }
+        }
         if (Test-Path Function:\PSConsoleHostReadLine) {
             $global:__solanum_readline = $function:PSConsoleHostReadLine
             function global:PSConsoleHostReadLine {
@@ -44,6 +50,11 @@ enum PowerShellIntegration {
         }
     }
     """#
+
+    /// Shrinking the window moves the console's rows up, and PSReadLine isn't told, so it goes on drawing the line being
+    /// typed on the row the prompt used to be on. This key, Ctrl+Alt+F12, makes it start again from where the cursor is.
+    /// It's only for a shell waiting at its prompt: another program would take it as a key press.
+    static let reanchorKey = Array("\u{1b}[24;7~".utf8)
 
     /// PowerShell 7 if it's installed, otherwise the Windows PowerShell every Windows has.
     static func executable() -> String {

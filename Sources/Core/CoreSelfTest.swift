@@ -56,6 +56,23 @@ enum CoreSelfTest {
             results.check(name, cond, detail())
         }
         do {
+            // Under ConPTY: nothing comes back from scrollback, rows move only to keep the cursor on screen.
+            let (t, _) = make(20, 5)
+            t.repaintedByConsole = true
+            feed(t, "1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7")
+            check("console resize: starts with scrollback", t.scrollback.count == 2 && t.cursorY == 4)
+            t.resize(cols: 20, rows: 8)
+            check("console resize: growing leaves scrollback and rows alone", t.scrollback.count == 2 && t.cursorY == 4
+                  && row(t, 0) == "3" && row(t, 4) == "7" && t.screen.count == 8 && row(t, 7) == "",
+                  "\(t.scrollback.count) \(t.cursorY)")
+            t.resize(cols: 20, rows: 3)
+            check("console resize: shrinking keeps the cursor on screen", t.scrollback.count == 4 && t.cursorY == 2
+                  && row(t, 2) == "7" && t.scrollback[3].text() == "4" && t.screen.count == 3,
+                  "\(t.scrollback.count) \(t.cursorY)")
+            t.resize(cols: 10, rows: 3)
+            check("console resize: width fits every row", t.screen.allSatisfy { $0.cells.count == 10 } && t.scrollback.count == 4)
+        }
+        do {
             check("agent session: by name, also a path or an .exe", Block.namesAgentSession("claude --resume")
                   && Block.namesAgentSession("/opt/bin/claude") && Block.namesAgentSession(#"C:\tools\claude.exe -c"#)
                   && !Block.namesAgentSession("claudette") && !Block.namesAgentSession("cat claude.txt"))

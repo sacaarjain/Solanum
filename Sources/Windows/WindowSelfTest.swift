@@ -115,6 +115,20 @@ enum WindowSelfTest {
                 window.type("echo ('width=' + $Host.UI.RawUI.WindowSize.Width)")
                 window.pressEnter()
             }, done: { window.terminal.cols == widthBefore - 20 && hasLine("width=\(widthBefore - 20)") }),
+            Step(name: "window: output fills the screen", action: {
+                window.type("1..60 | % { 'line ' + $_ }")
+                window.pressEnter()
+            }, done: { hasLine("line 60") && window.terminal.currentBlock?.state == .prompt }),
+            Step(name: "window: shrinks", action: { window.resizeWindow(toCols: 90, rows: 12) },
+                 done: { window.terminal.rows == 12 && !window.isSettlingResize }),
+            Step(name: "window: grows again", action: { window.resizeWindow(toCols: 90, rows: 40) },
+                 done: { window.terminal.rows == 40 && !window.isSettlingResize }),
+            Step(name: "window: typing after resizing stays on the prompt", action: { window.type("claud") },
+                 done: { window.cursorRowText.hasPrefix("PS ") && window.cursorRowText.hasSuffix("claud") }),
+            Step(name: "window: resizing keeps scrollback", action: {},
+                 done: { window.visibleText.contains("\nline 1\n") }),
+            Step(name: "window: clears the line", action: { window.type("\u{1b}") },
+                 done: { !window.cursorRowText.contains("claud") }),
             Step(name: "window: colors from a real program", action: {
                 window.type("Write-Host hello -ForegroundColor Green; Write-Host '✦ unicode typed'")
                 window.pressEnter()

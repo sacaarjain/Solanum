@@ -15,6 +15,7 @@ enum ConPTYSelfTest {
         init?(_ commandLine: String, cols: Int = 100, rows: Int = 30) {
             terminal = Terminal(cols: cols, rows: rows, scrollbackLimit: 1000)
             terminal.delegate = self
+            terminal.repaintedByConsole = true
             guard let pty = ConPTY(commandLine: commandLine, cols: cols, rows: rows) else { return nil }
             self.pty = pty
             pty.onData = { [unowned self] bytes in
@@ -74,6 +75,16 @@ enum ConPTYSelfTest {
                 for (i, line) in terminal.screen.enumerated().reversed() {
                     let text = line.text()
                     if text.hasPrefix(prefix) { return (i, text) }
+                }
+                return nil
+            }
+        }
+
+        func rowContaining(_ text: String) -> (row: Int, text: String)? {
+            locked {
+                for (i, line) in terminal.screen.enumerated().reversed() {
+                    let row = line.text()
+                    if row.contains(text) { return (i, row) }
                 }
                 return nil
             }
@@ -298,6 +309,24 @@ enum ConPTYSelfTest {
             s.send("echo 'typed-é-✦'\r")
             let typed = wait(15) { s.text.contains("\ntyped-é-✦") }
             check("\(label): unicode input", typed, s.rawDescription)
+            // Someone at a prompt shrinks the window and makes it bigger again, then types.
+            s.send("1..60 | % { \"line $_\" }\r")
+            wait(15) { s.screenRow(startingWith: "line 60") != nil }
+            Thread.sleep(forTimeInterval: 0.5)
+            for (cols, rows) in [(100, 45), (100, 15), (100, 45)] {
+                s.resize(cols: cols, rows: rows)
+                Thread.sleep(forTimeInterval: 0.6)
+                s.pty?.write(PowerShellIntegration.reanchorKey)
+                Thread.sleep(forTimeInterval: 0.6)
+            }
+            s.send("claud")
+            let drawn = wait(10) { s.rowContaining("claud") != nil }
+            let typedRow = s.rowContaining("claud")
+            check("\(label): typing after a resize stays on the prompt", drawn && typedRow?.text.hasPrefix("PS ") == true,
+                  "\(typedRow?.text ?? "not drawn") \(s.rawDescription)")
+            check("\(label): resizing keeps scrollback", s.text.contains("\nline 1\n"), s.gridDescription)
+            s.send("\u{1b}")
+            Thread.sleep(forTimeInterval: 0.3)
             s.send("exit\r")
             let ended = wait(15) { s.code != nil }
             check("\(label): exits", ended, s.rawDescription)

@@ -125,6 +125,8 @@ final class Terminal {
     private(set) var focusEvents = false
     /// ConPTY asks for the console's own key format (see `Win32Input`). Nothing else uses it.
     private(set) var win32InputMode = false
+    /// Set on Windows: see `resizeForConsole`.
+    var repaintedByConsole = false
     private(set) var mouseMode: MouseMode = .none
     private(set) var mouseSGR = false
     private(set) var altScroll = true
@@ -1188,6 +1190,10 @@ final class Terminal {
     func resize(cols newColsIn: Int, rows newRowsIn: Int) {
         let newCols = max(2, newColsIn), newRows = max(1, newRowsIn)
         guard newCols != cols || newRows != rows else { return }
+        if repaintedByConsole {
+            resizeForConsole(newCols, newRows)
+            return
+        }
         if usingAlt {
             let sc = savedCursors[0]
             let r = reflowPrimary(screenLines: primaryScreen, cursorY: sc.y, cursorX: sc.x, newCols: newCols, newRows: newRows)
@@ -1213,6 +1219,44 @@ final class Terminal {
             savedCursors[i].x = min(savedCursors[i].x, cols - 1)
             savedCursors[i].y = min(savedCursors[i].y, rows - 1)
         }
+    }
+
+    /// ConPTY redraws the whole screen after a resize, wrapping lines its own way, so anything rearranged here would be
+    /// overwritten: lines pulled back from scrollback would be lost for good. This only does what the console does to
+    /// the rows, which is to move them up as far as it takes to keep the cursor on screen.
+    private func resizeForConsole(_ newCols: Int, _ newRows: Int) {
+        func fit(_ lines: inout [Line], cursorY: inout Int, intoScrollback: Bool) {
+            let shift = max(0, cursorY - (newRows - 1))
+            for _ in 0..<shift {
+                let removed = lines.removeFirst()
+                guard intoScrollback else { continue }
+                removed.trimForScrollback()
+                if scrollback.append(removed) { dropped += 1 }
+                scrollbackPushes += 1
+            }
+            cursorY -= shift
+            if lines.count > newRows { lines.removeLast(lines.count - newRows) }
+            for line in lines { line.resize(cols: newCols) }
+            while lines.count < newRows { lines.append(Line(cols: newCols)) }
+        }
+        if usingAlt {
+            fit(&primaryScreen, cursorY: &savedCursors[0].y, intoScrollback: true)
+            fit(&screen, cursorY: &cursorY, intoScrollback: false)
+        } else {
+            fit(&screen, cursorY: &cursorY, intoScrollback: true)
+        }
+        cols = newCols
+        rows = newRows
+        scrollTop = 0
+        scrollBottom = rows - 1
+        tabStops = Terminal.defaultTabs(cols)
+        pendingWrap = false
+        cursorX = min(cursorX, cols - 1)
+        for i in 0..<2 {
+            savedCursors[i].x = min(savedCursors[i].x, cols - 1)
+            savedCursors[i].y = min(savedCursors[i].y, rows - 1)
+        }
+        pruneBlocks()
     }
 
     private func resizeAlt(_ newCols: Int, _ newRows: Int) {
