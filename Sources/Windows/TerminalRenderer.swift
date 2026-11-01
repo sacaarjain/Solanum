@@ -167,7 +167,7 @@ struct TerminalRenderer {
     }
 
     private func style(_ flags: CellFlags) -> Int32 {
-        (flags.contains(.bold) ? Int32(SOL_STYLE_BOLD.rawValue) : 0) | (flags.contains(.italic) ? Int32(SOL_STYLE_ITALIC.rawValue) : 0)
+        (flags.contains(.bold) ? Int32(SOL_STYLE_BOLD) : 0) | (flags.contains(.italic) ? Int32(SOL_STYLE_ITALIC) : 0)
     }
 
     private func draw(_ line: Line, abs: Int, row: Int) {

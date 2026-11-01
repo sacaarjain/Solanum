@@ -31,7 +31,7 @@ private enum Win {
     static let SW_SHOW: Int32 = 5, SW_SHOWNOACTIVATE: Int32 = 4
     static let SWP_NOZORDER: UINT = 0x0004, SWP_NOACTIVATE: UINT = 0x0010, SWP_NOMOVE: UINT = 0x0002
     static let MB_ICONERROR: UINT = 0x10
-    static let MK_LBUTTON: UInt = 0x0001, MK_RBUTTON: UInt = 0x0002, MK_MBUTTON: UInt = 0x0010
+    static let MK_LBUTTON: WPARAM = 0x0001, MK_RBUTTON: WPARAM = 0x0002, MK_MBUTTON: WPARAM = 0x0010
     static let WHEEL_DELTA: Int = 120
     static let ibeamCursor = UnsafePointer<WCHAR>(bitPattern: 32513)
 }
@@ -210,7 +210,7 @@ final class TerminalWindow: TerminalDelegate {
             return 0
         case Win.WM_DPICHANGED:
             canvas.setFontPixels(fontPixels())
-            let suggested = UnsafePointer<RECT>(bitPattern: lParam)!.pointee
+            let suggested = UnsafePointer<RECT>(bitPattern: Int(lParam))!.pointee
             SetWindowPos(hwnd, nil, suggested.left, suggested.top, suggested.right - suggested.left,
                          suggested.bottom - suggested.top, Win.SWP_NOZORDER | Win.SWP_NOACTIVATE)
             return 0
@@ -576,7 +576,7 @@ final class TerminalWindow: TerminalDelegate {
 
     static func runLoop() {
         var message = MSG()
-        while GetMessageW(&message, nil, 0, 0) > 0 {
+        while GetMessageW(&message, nil, 0, 0) {
             if preprocess(&message) { continue }
             TranslateMessage(&message)
             DispatchMessageW(&message)
