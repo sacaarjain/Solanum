@@ -12,12 +12,13 @@ jobs:
   build-and-test:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: compnerd/gha-setup-swift@v0.5.1
         with:
-          branch: swift-6.3.1-release
-          tag: 6.3.1-RELEASE
+          swift-version: swift-6.3.1-release
+          swift-build: 6.3.1-RELEASE
       - name: Build
         run: .\build.ps1
       - name: Self-tests
+        timeout-minutes: 10
         run: .\build\windows\Solanum.exe --selftest
