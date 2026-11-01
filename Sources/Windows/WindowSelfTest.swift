@@ -124,7 +124,8 @@ enum WindowSelfTest {
             Step(name: "window: grows again", action: { window.resizeWindow(toCols: 90, rows: 40) },
                  done: { window.terminal.rows == 40 && !window.isSettlingResize }),
             Step(name: "window: typing after resizing stays on the prompt", action: { window.type("claud") },
-                 done: { window.cursorRowText.hasPrefix("PS ") && window.cursorRowText.hasSuffix("claud") }),
+                 // Newer PSReadLine adds a suggestion from its history after what's typed.
+                 done: { window.cursorRowText.hasPrefix("PS ") && window.cursorRowText.contains("> claud") }),
             Step(name: "window: resizing keeps scrollback", action: {},
                  done: { window.visibleText.contains("\nline 1\n") }),
             Step(name: "window: clears the line", action: { window.type("\u{1b}") },

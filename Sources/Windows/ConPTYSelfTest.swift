@@ -18,13 +18,17 @@ enum ConPTYSelfTest {
             terminal.repaintedByConsole = true
             guard let pty = ConPTY(commandLine: commandLine, cols: cols, rows: rows) else { return nil }
             self.pty = pty
-            pty.onData = { [unowned self] bytes in
+            pty.onData = { [weak self] bytes in
+                guard let self else { return }
                 locked {
                     raw += bytes
                     terminal.feed(bytes)
                 }
             }
-            pty.onExit = { [unowned self] code in locked { exitCode = code } }
+            pty.onExit = { [weak self] code in
+                guard let self else { return }
+                locked { exitCode = code }
+            }
         }
 
         @discardableResult
@@ -326,11 +330,14 @@ enum ConPTYSelfTest {
                   "\(typedRow?.text ?? "not drawn") \(s.rawDescription)")
             check("\(label): resizing keeps scrollback", s.text.contains("\nline 1\n"), s.gridDescription)
             s.send("\u{1b}")
-            Thread.sleep(forTimeInterval: 0.3)
+            check("\(label): Esc clears the line", wait(10) { s.rowContaining("claud") == nil }, s.rawDescription)
             s.send("exit\r")
             let ended = wait(15) { s.code != nil }
             check("\(label): exits", ended, s.rawDescription)
-            if !ended { s.pty?.terminate() }
+            if !ended {
+                s.pty?.terminate()
+                wait(10) { s.code != nil }
+            }
         }
     }
 }

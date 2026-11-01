@@ -7,6 +7,8 @@ import Foundation
 enum Win32Input {
     /// ASCII stays as it is, so control keys and escape sequences mean what they always do.
     static func encode(_ bytes: [UInt8]) -> [UInt8] {
+        // A lone escape byte can't be told from the start of a sequence, and may wait for whatever's typed next.
+        if bytes == [0x1B] { return Array("\u{1b}[27;1;27;1;0;1_\u{1b}[27;1;27;0;0;1_".utf8) }
         guard bytes.contains(where: { $0 >= 0x80 }) else { return bytes }
         var out: [UInt8] = []
         for scalar in String(decoding: bytes, as: UTF8.self).unicodeScalars {

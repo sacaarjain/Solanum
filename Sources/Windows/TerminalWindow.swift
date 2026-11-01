@@ -129,7 +129,7 @@ final class TerminalWindow: TerminalDelegate {
         }
         self.pty = pty
         let target = UInt(bitPattern: created)
-        pty.onData = { [unowned self] bytes in receive(bytes, window: target) }
+        pty.onData = { [weak self] bytes in self?.receive(bytes, window: target) }
         pty.onExit = { code in
             PostMessageW(HWND(bitPattern: target), Win.WM_EXITED, WPARAM(UInt32(bitPattern: code)), 0)
         }
