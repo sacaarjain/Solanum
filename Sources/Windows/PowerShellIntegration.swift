@@ -12,6 +12,7 @@ enum PowerShellIntegration {
         $global:__solanum_hooked = $true
         # UTF-8 both ways, for this shell's own output and for what it exchanges with other programs.
         [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+        [Console]::InputEncoding = [Console]::OutputEncoding
         $global:OutputEncoding = [Console]::OutputEncoding
         $global:__solanum_running = $false
         $global:__solanum_prompt = $function:prompt

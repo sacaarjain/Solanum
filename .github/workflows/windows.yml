@@ -25,6 +25,7 @@ jobs:
         timeout-minutes: 10
         run: .\build\windows\Solanum-test.exe --selftest
       - name: Window test
+        if: success() || failure()
         timeout-minutes: 10
         run: .\build\windows\Solanum-test.exe --window-test
       - name: Upload snapshots
