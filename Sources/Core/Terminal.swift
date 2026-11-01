@@ -36,8 +36,13 @@ final class Block {
     var failed: Bool { state == .finished && (exitCode ?? 0) != 0 }
 
     /// True when the command launched an AI agent session (Claude Code), whose run time isn't meaningful.
-    var isAgentSession: Bool {
-        command.split(separator: " ").contains { ($0 as NSString).lastPathComponent == "claude" }
+    var isAgentSession: Bool { Block.namesAgentSession(command) }
+
+    static func namesAgentSession(_ command: String) -> Bool {
+        command.split(separator: " ").contains { word in
+            let name = word.split { $0 == "/" || $0 == "\\" }.last
+            return name == "claude" || name == "claude.exe"
+        }
     }
 
     var duration: TimeInterval? {

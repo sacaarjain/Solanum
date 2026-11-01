@@ -1,5 +1,10 @@
 # Notes for Claude
 
+## Windows
+
+`Sources/Core` is compiled on Mac and Windows, so it imports Foundation only: no AppKit, Darwin or `as NSString`
+bridging. Check it with `swiftc -typecheck -swift-version 5 -module-name Solanum Sources/Core/*.swift`. See `WINDOWS.md`.
+
 ## Testing and validation are headless
 
 The user works on this Mac while you test. A test must never put a window, Dock icon or menu bar in front of them,

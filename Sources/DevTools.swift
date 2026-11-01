@@ -2,35 +2,15 @@ import AppKit
 
 /// Emulator self-tests: `Solanum.app/Contents/MacOS/Solanum --selftest`
 enum SelfTest {
-    private final class Sink: TerminalDelegate {
-        var sent: [UInt8] = []
-        func terminalSend(_ bytes: [UInt8]) { sent += bytes }
-        func terminalTitleChanged(_ t: Terminal) {}
-        func terminalCwdChanged(_ t: Terminal) {}
-        func terminalBell(_ t: Terminal) {}
-        func terminalBlockFinished(_ t: Terminal, block: Block) {}
-        func terminalClipboardWrite(_ t: Terminal, text: String) {}
-        func terminalScreenSwitched(_ t: Terminal) {}
-        func terminalSyncEnded(_ t: Terminal) {}
-        func terminalColor(_ t: Terminal, code: Int) -> (UInt8, UInt8, UInt8) { (0, 0, 0) }
-        func terminalPixelSize(_ t: Terminal) -> (width: Int, height: Int) { (800, 600) }
-        /// What the terminal still knew when the ssh session ended: (status, control socket, remote folder).
-        var sshExit: (Int, String?, String?)?
-        func terminalSSHExited(_ t: Terminal, status: Int) { sshExit = (status, t.sshControlPath, t.remoteCwd) }
-    }
-
-    private static func feed(_ t: Terminal, _ s: String) {
-        Array(s.utf8).withUnsafeBufferPointer { t.feed($0) }
-    }
-
-    private static func row(_ t: Terminal, _ r: Int) -> String { t.screen[r].text() }
+    private typealias Sink = CoreSelfTest.Sink
+    private static func feed(_ t: Terminal, _ s: String) { CoreSelfTest.feed(t, s) }
+    private static func row(_ t: Terminal, _ r: Int) -> String { CoreSelfTest.row(t, r) }
+    private static func make(_ c: Int = 20, _ r: Int = 5) -> (Terminal, Sink) { CoreSelfTest.make(c, r) }
 
     static func run() -> Bool {
-        var failures = 0
-        var count = 0
+        let results = CoreSelfTest.Results()
         func check(_ name: String, _ cond: Bool, _ detail: @autoclosure () -> String = "") {
-            count += 1
-            if cond { print("  ✓ \(name)") } else { failures += 1; print("  ✗ \(name) \(detail())") }
+            results.check(name, cond, detail())
         }
         do {
             // Readable text: enough contrast afterwards, the hue kept, and what's already fine or hidden left alone.
@@ -140,19 +120,6 @@ enum SelfTest {
             check("ssh args: flags kept, -t dropped", c("-A -tt -v host ls") == "-A -v host" && c("-o") == nil && c("") == nil)
         }
         do {
-            // Background commands over ssh wait their turn rather than go past the server's limit.
-            let gate = ChannelGate(limit: 2)
-            var started: [Int] = []
-            for i in 0..<5 { gate.enter { started.append(i) } }
-            check("channels: only so many at once", started == [0, 1])
-            gate.leave()
-            check("channels: the next goes as one ends", started == [0, 1, 2])
-            gate.leave(); gate.leave(); gate.leave(); gate.leave()
-            check("channels: all get their turn, in order", started == [0, 1, 2, 3, 4])
-            gate.enter { started.append(5) }
-            check("channels: room again once they've ended", started.last == 5)
-        }
-        do {
             // Closing a pane stops what's running in it, also jobs a script put in process groups of their own (`set -m`),
             // which the shell doesn't know about. Jobs the user kept (nohup, disown) keep running.
             let dir = FileManager.default.temporaryDirectory.appendingPathComponent("solanum-hangup-\(getpid())").path
@@ -187,149 +154,12 @@ enum SelfTest {
             check("hangup: disowned keeps running", alive(pid("disowned")))
             for name in ["script", "nested", "nohup", "disowned"] { if let p = pid(name) { kill(p, SIGKILL) } }
         }
-        func make(_ c: Int = 20, _ r: Int = 5) -> (Terminal, Sink) {
-            let t = Terminal(cols: c, rows: r, scrollbackLimit: 1000)
-            let s = Sink()
-            t.delegate = s
-            return (t, s)
-        }
-
-        print("Solanum emulator self-test")
-        do {
-            let (t, _) = make()
-            feed(t, "hello\r\nworld")
-            check("print + CRLF", row(t, 0) == "hello" && row(t, 1) == "world" && t.cursorX == 5 && t.cursorY == 1)
-        }
-        do {
-            let (t, _) = make(10, 3)
-            feed(t, "0123456789AB")
-            check("autowrap", row(t, 0) == "0123456789" && row(t, 1) == "AB" && t.screen[0].wrapped)
-        }
-        do {
-            let (t, _) = make(10, 3)
-            feed(t, "a\r\nb\r\nc\r\nd")
-            check("scroll into scrollback", t.scrollback.count == 1 && t.scrollback[0].text() == "a" && row(t, 2) == "d")
-        }
-        do {
-            let (t, _) = make()
-            feed(t, "abcdef\u{1b}[1;3H\u{1b}[K")
-            check("CUP + EL", row(t, 0) == "ab")
-            feed(t, "\u{1b}[2J\u{1b}[H")
-            check("ED 2", row(t, 0) == "" && t.cursorX == 0)
-        }
-        do {
-            let (t, _) = make()
-            feed(t, "\u{1b}[1;31mR\u{1b}[38;5;200mP\u{1b}[38;2;1;2;3mT\u{1b}[0mN")
-            let c = t.screen[0].cells
-            check("SGR colors", c[0].fg == TermColor.indexed(1) && c[0].flags.contains(.bold)
-                  && c[1].fg == TermColor.indexed(200) && c[2].fg == TermColor.rgb(1, 2, 3) && c[3].fg == 0 && c[3].flags.isEmpty)
-            feed(t, "\u{1b}[38:2::9:8:7mX\u{1b}[4:3mY")
-            check("SGR colon forms", t.screen[0].cells[4].fg == TermColor.rgb(9, 8, 7) && t.screen[0].cells[5].flags.contains(.curlyUnderline))
-        }
-        do {
-            let (t, _) = make()
-            feed(t, "main\u{1b}[?1049h")
-            check("alt screen enter", t.usingAlt && row(t, 0) == "")
-            feed(t, "alt\u{1b}[?1049l")
-            check("alt screen exit restores", !t.usingAlt && row(t, 0) == "main" && t.cursorX == 4)
-        }
-        do {
-            let (t, _) = make(10, 5)
-            feed(t, "1\r\n2\r\n3\r\n4\r\n5\u{1b}[2;4r\u{1b}[4;1H\n")
-            check("scroll region", row(t, 0) == "1" && row(t, 1) == "3" && row(t, 2) == "4" && row(t, 3) == "" && row(t, 4) == "5")
-        }
-        do {
-            let (t, _) = make(10, 3)
-            feed(t, "日本x")
-            check("wide chars", t.screen[0].cells[0].width == 2 && t.screen[0].cells[1].width == 0 && t.screen[0].cells[4].ch == 0x78 && t.cursorX == 5)
-        }
-        do {
-            let (t, _) = make(10, 4)
-            feed(t, "abcdefghijklmno\r\nxyz")
-            t.resize(cols: 20, rows: 4)
-            check("reflow wider", row(t, 0) == "abcdefghijklmno" && row(t, 1) == "xyz" && t.cursorY == 1 && t.cursorX == 3)
-            t.resize(cols: 5, rows: 4)
-            let all = (0..<t.scrollback.count).map { t.scrollback[$0].text() } + (0..<4).map { row(t, $0) }
-            check("reflow narrower", all.joined(separator: "|").hasPrefix("abcde|fghij|klmno|xyz"), all.joined(separator: "|"))
-        }
-        do {
-            let (t, s) = make()
-            feed(t, "\u{1b}[6n\u{1b}[c")
-            check("DSR/DA responses", String(decoding: s.sent, as: UTF8.self) == "\u{1b}[1;1R\u{1b}[?62;22c")
-        }
-        do {
-            // The exit status comes while the session is still known, so a lost connection can be reopened where it was.
-            let (t, s) = make()
-            feed(t, "\u{1b}]1337;SolanumSSH=/tmp/sock\u{07}\u{1b}]7;file://host/srv/app\u{07}"
-                 + "\u{1b}]1337;SolanumSSHExit=255\u{07}\u{1b}]1337;SolanumSSH=\u{07}")
-            let e = s.sshExit
-            check("ssh exit reported before the session clears", e?.0 == 255 && e?.1 == "/tmp/sock" && e?.2 == "/srv/app"
-                  && t.sshControlPath == nil, "\(String(describing: e))")
-        }
-        do {
-            let (t, _) = make(30, 6)
-            feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}ls -la\r\n\u{1b}]133;C\u{07}file1\r\nfile2\r\n\u{1b}]133;D;0\u{07}\u{1b}]133;A\u{07}$ ")
-            let b = t.blocks.first
-            check("OSC 133 blocks", t.blocks.count == 2 && b?.command == "ls -la" && b?.outputLine == 1 && b?.endLine == 2 && b?.exitCode == 0,
-                  "\(t.blocks.count) \(b?.command ?? "") \(String(describing: b?.outputLine)) \(String(describing: b?.endLine))")
-        }
-        do {
-            let (t, _) = make(40, 30)
-            let shade = "\u{1b}[48;2;55;55;55m", plain = "\u{1b}[49m", rule = String(repeating: "─", count: 40)
-            feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}claude\r\n\u{1b}]133;C\u{07}")
-            feed(t, "\(shade)❯ first question\u{1b}[K\(plain)\r\n\(shade)  second line\u{1b}[K\(plain)\r\n\r\n⏺ answer one\r\n  more\r\n\r\n")
-            feed(t, "\(shade)❯ next\(plain)\r\n\r\n⏺ answer two\r\n\r\n\(rule)❯ typing\r\n\(rule)")
-            let turns = t.blocks.last.map { t.agentTurns(in: $0) } ?? []
-            check("agent turns", turns.count == 2 && turns[0].promptLine == 1 && turns[0].promptEnd == 2 && turns[0].end == 5
-                  && t.agentPromptText(turns[0]) == "first question\nsecond line" && turns[1].end == 9,
-                  turns.map { "\($0.promptLine)-\($0.promptEnd)-\($0.end)" }.joined(separator: " "))
-            feed(t, "\u{1b}[2J\u{1b}[H")
-            check("ED 2 keeps running block", t.currentBlock?.state == .running && t.currentBlock?.command == "claude")
-        }
-        do {
-            let (t, _) = make()
-            feed(t, "\u{1b}(0lqk\u{1b}(B")
-            check("DEC line drawing", t.screen[0].cells[0].ch == 0x250C && t.screen[0].cells[1].ch == 0x2500)
-        }
-        do {
-            let (t, _) = make()
-            feed(t, "e\u{301}x")
-            check("combining marks", t.screen[0].extras?[0] == "\u{301}" && t.screen[0].cells[1].ch == 0x78)
-        }
-        do {
-            let (t, _) = make(20, 8)
-            feed(t, "see \u{1b}]8;id=1;https://example.com/a\u{1b}\\docs\u{1b}]8;;\u{1b}\\ now")
-            let l = t.screen[0]
-            check("OSC 8 links", (4...7).allSatisfy { l.links?[$0] == "https://example.com/a" } && l.links?[3] == nil && l.links?[8] == nil)
-            feed(t, "\r\u{1b}[K")
-            check("OSC 8 erased", t.screen[0].links?.isEmpty ?? true)
-            feed(t, String(repeating: "x", count: 18) + "\u{1b}]8;;file:///tmp/f\u{7}abcd\u{1b}]8;;\u{7}")
-            t.resize(cols: 10, rows: 8)
-            let linked = (0..<4).flatMap { a in (0..<10).filter { t.screen[a].links?[$0] == "file:///tmp/f" }.map { "\(a):\($0)" } }
-            check("OSC 8 links reflow", linked == ["1:8", "1:9", "2:0", "2:1"], linked.joined(separator: " "))
-        }
+        CoreSelfTest.run(results)
         do {
             check("OSC 8 link schemes", TerminalView.hyperlinkURL("https://a.com/x")?.absoluteString == "https://a.com/x"
                   && TerminalView.hyperlinkURL("file://localhost/tmp/a%20b")?.path == "/tmp/a b"
                   && TerminalView.hyperlinkURL("file://some-other-host.example/tmp/a") == nil
                   && TerminalView.hyperlinkURL("x-apple.systempreferences:foo") == nil)
-        }
-        do {
-            let (t, _) = make(20, 8)
-            feed(t, "\u{1b}[1;31mred\u{1b}[0m plain\r\n" + String(repeating: "x", count: 25) + "\r\n\u{1b}[48;2;10;20;30mshaded\u{1b}[0m")
-            let (u, _) = make(20, 8)
-            feed(u, t.restorableText(maxLines: 100))
-            let same = (0..<4).allSatisfy { u.screen[$0].text() == t.screen[$0].text() }
-            check("session text round-trip", same && u.screen[0].cells[0].flags.contains(.bold) && u.screen[0].cells[0].fg == t.screen[0].cells[0].fg
-                  && u.screen[1].wrapped && u.screen[3].cells[0].bg == TermColor.rgb(10, 20, 30),
-                  (0..<4).map { u.screen[$0].text() }.joined(separator: "|"))
-        }
-        do {
-            let bash = CommandHistory.parse("ls\n#1700000000\ngit status\n\n  echo hi  \n")
-            check("history: bash + timestamps", bash == ["ls", "git status", "echo hi"], "\(bash)")
-            let zsh = CommandHistory.parse(": 1700000000:0;make\n: 1700000001:3;for x in a b; do\\\necho $x\\\ndone\n")
-            check("history: zsh extended + multi-line", zsh == ["make", "for x in a b; do\necho $x\ndone"], "\(zsh)")
-            check("history: newest first, unique", CommandHistory.newestFirst(["a", "b", "a", "c"]) == ["c", "a", "b"])
         }
         do {
             check("hex round-trip", NSColor(hex: "#1A2B3C").hexString == "#1A2B3C" && NSColor(hex: "#11223380").hexString == "#11223380")
@@ -404,28 +234,49 @@ enum SelfTest {
                   && !TerminalView.isLocal(URL(string: "https://github.com")!))
         }
         do {
-            // Scrolling reuses lines and their cells: what comes back in must be blank, all the way across.
-            let t = Terminal(cols: 20, rows: 3, scrollbackLimit: 100)
-            feed(t, "long line here!!\r\na\r\nbb\r\nccc\r\n")
-            check("scroll: scrollback keeps text", t.scrollback.count == 2 && t.scrollback[0].text() == "long line here!!"
-                  && t.scrollback[1].text() == "a", t.scrollback.toArray().map { $0.text() }.description)
-            check("scroll: scrollback lines trimmed", t.scrollback[1].cells.count == 1)
-            check("scroll: new lines blank and full width", (0..<3).map { row(t, $0) } == ["bb", "ccc", ""]
-                  && t.screen.allSatisfy { $0.cells.count == 20 } && t.screen[2].cells.allSatisfy { $0 == Cell() })
-            feed(t, "\u{1b}[44m\r\n\r\n")
-            check("scroll: erase color fills reused lines", t.screen[2].cells.allSatisfy { $0.bg == TermColor.indexed(4) })
-            feed(t, "\u{1b}[0mx\r\n\r\n\r\n")
-            check("scroll: plain lines after colored ones", t.screen.allSatisfy { $0.cells.allSatisfy { $0 == Cell() } || $0.text() == "x" })
-            let r = Terminal(cols: 10, rows: 4, scrollbackLimit: 100)
-            feed(r, "top\r\n\u{1b}[2;4r\u{1b}[2;1Hone\r\ntwo\r\nthree\r\nfour")
-            check("scroll: region reuses its line blank", (0..<4).map { row(r, $0) } == ["top", "two", "three", "four"]
-                  && r.scrollback.count == 0, (0..<4).map { row(r, $0) }.description)
-            feed(r, "\u{1b}[2;1H\u{1b}M")
-            check("scroll: reverse index in a region", (0..<4).map { row(r, $0) } == ["top", "", "two", "three"]
-                  && r.screen[1].cells.count == 10, (0..<4).map { row(r, $0) }.description)
+            // Background commands over ssh wait their turn rather than go past the server's limit.
+            let gate = ChannelGate(limit: 2)
+            var started: [Int] = []
+            for i in 0..<5 { gate.enter { started.append(i) } }
+            check("channels: only so many at once", started == [0, 1])
+            gate.leave()
+            check("channels: the next goes as one ends", started == [0, 1, 2])
+            gate.leave(); gate.leave(); gate.leave(); gate.leave()
+            check("channels: all get their turn, in order", started == [0, 1, 2, 3, 4])
+            gate.enter { started.append(5) }
+            check("channels: room again once they've ended", started.last == 5)
         }
-        print(failures == 0 ? "All \(count) checks passed." : "\(failures) of \(count) checks FAILED.")
-        return failures == 0
+        do {
+            let (t, _) = make(40, 30)
+            let shade = "\u{1b}[48;2;55;55;55m", plain = "\u{1b}[49m", rule = String(repeating: "─", count: 40)
+            feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}claude\r\n\u{1b}]133;C\u{07}")
+            feed(t, "\(shade)❯ first question\u{1b}[K\(plain)\r\n\(shade)  second line\u{1b}[K\(plain)\r\n\r\n⏺ answer one\r\n  more\r\n\r\n")
+            feed(t, "\(shade)❯ next\(plain)\r\n\r\n⏺ answer two\r\n\r\n\(rule)❯ typing\r\n\(rule)")
+            let turns = t.blocks.last.map { t.agentTurns(in: $0) } ?? []
+            check("agent turns", turns.count == 2 && turns[0].promptLine == 1 && turns[0].promptEnd == 2 && turns[0].end == 5
+                  && t.agentPromptText(turns[0]) == "first question\nsecond line" && turns[1].end == 9,
+                  turns.map { "\($0.promptLine)-\($0.promptEnd)-\($0.end)" }.joined(separator: " "))
+            feed(t, "\u{1b}[2J\u{1b}[H")
+            check("ED 2 keeps running block", t.currentBlock?.state == .running && t.currentBlock?.command == "claude")
+        }
+        do {
+            let (t, _) = make(20, 8)
+            feed(t, "\u{1b}[1;31mred\u{1b}[0m plain\r\n" + String(repeating: "x", count: 25) + "\r\n\u{1b}[48;2;10;20;30mshaded\u{1b}[0m")
+            let (u, _) = make(20, 8)
+            feed(u, t.restorableText(maxLines: 100))
+            let same = (0..<4).allSatisfy { u.screen[$0].text() == t.screen[$0].text() }
+            check("session text round-trip", same && u.screen[0].cells[0].flags.contains(.bold) && u.screen[0].cells[0].fg == t.screen[0].cells[0].fg
+                  && u.screen[1].wrapped && u.screen[3].cells[0].bg == TermColor.rgb(10, 20, 30),
+                  (0..<4).map { u.screen[$0].text() }.joined(separator: "|"))
+        }
+        do {
+            let bash = CommandHistory.parse("ls\n#1700000000\ngit status\n\n  echo hi  \n")
+            check("history: bash + timestamps", bash == ["ls", "git status", "echo hi"], "\(bash)")
+            let zsh = CommandHistory.parse(": 1700000000:0;make\n: 1700000001:3;for x in a b; do\\\necho $x\\\ndone\n")
+            check("history: zsh extended + multi-line", zsh == ["make", "for x in a b; do\necho $x\ndone"], "\(zsh)")
+            check("history: newest first, unique", CommandHistory.newestFirst(["a", "b", "a", "c"]) == ["c", "a", "b"])
+        }
+        return results.finish()
     }
 }
 

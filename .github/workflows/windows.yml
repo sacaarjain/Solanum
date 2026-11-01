@@ -1,0 +1,23 @@
+name: Windows
+
+on:
+  push:
+    branches: [windows-compat]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: compnerd/gha-setup-swift@v0.5.1
+        with:
+          branch: swift-6.3.1-release
+          tag: 6.3.1-RELEASE
+      - name: Build
+        run: .\build.ps1
+      - name: Self-tests
+        run: .\build\windows\Solanum.exe --selftest
