@@ -63,6 +63,9 @@ final class ConPTY {
         var info = STARTUPINFOEXW()
         info.StartupInfo.cb = DWORD(MemoryLayout<STARTUPINFOEXW>.size)
         info.lpAttributeList = list
+        // Otherwise a program inherits this process's standard handles when they're redirected, and never touches the
+        // console. Left empty, they're the console's.
+        info.StartupInfo.dwFlags = DWORD(STARTF_USESTDHANDLES)
         var created = PROCESS_INFORMATION()
         var command = Array(commandLine.utf16) + [0]
         var environment = Self.environmentBlock(extra)
