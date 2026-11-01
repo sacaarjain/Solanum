@@ -20,7 +20,7 @@ $canvasObject = "$out\canvas.obj"
 $swiftObject = "$out\solanum.obj"
 
 Write-Host '> Compiling the canvas...'
-$cOpt = if ($Debug) { '/Od', '/Zi' } else { '/O2' }
+$cOpt = if ($Debug) { @('/Od', '/Zi') } else { @('/O2') }
 & clang-cl /nologo /MD @cOpt /std:c++17 /EHs-c- /GR- /c 'Sources\Windows\CCanvas\canvas.cpp' "/Fo$canvasObject"
 if ($LASTEXITCODE -ne 0) { Write-Error 'The canvas failed to compile (the errors are above).' }
 
