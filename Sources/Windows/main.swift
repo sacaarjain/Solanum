@@ -18,6 +18,11 @@ if CommandLine.arguments.contains("--input-probe") {
     exit(0)
 }
 
+if CommandLine.arguments.contains("--resize-probe") {
+    ConPTYSelfTest.probeResize()
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--window-test") {
     exit(WindowSelfTest.runWindow())
 }

@@ -52,6 +52,37 @@ enum ConPTYSelfTest {
         }
 
         /// As the window sends what's typed.
+        var rawCount: Int { locked { raw.count } }
+
+        func rawDescription(from start: Int) -> String {
+            locked {
+                String(decoding: raw[min(start, raw.count)...], as: UTF8.self).unicodeScalars.map { s in
+                    s.value < 32 ? "<\(String(s.value, radix: 16))>" : String(s)
+                }.joined()
+            }
+        }
+
+        /// As the window does: the emulator first, then the console.
+        func resize(cols: Int, rows: Int) {
+            locked { terminal.resize(cols: cols, rows: rows) }
+            pty?.resize(cols: cols, rows: rows)
+        }
+
+        /// The last row on screen starting with `prefix`.
+        func screenRow(startingWith prefix: String) -> (row: Int, text: String)? {
+            locked {
+                for (i, line) in terminal.screen.enumerated().reversed() {
+                    let text = line.text()
+                    if text.hasPrefix(prefix) { return (i, text) }
+                }
+                return nil
+            }
+        }
+
+        var gridDescription: String {
+            locked { "\(terminal.cols)x\(terminal.rows) cursor row \(terminal.cursorY) scrollback \(terminal.scrollback.count)" }
+        }
+
         func send(_ text: String) {
             let bytes = Array(text.utf8)
             pty?.write(locked { terminal.win32InputMode } ? Win32Input.encode(bytes) : bytes)
@@ -125,6 +156,47 @@ enum ConPTYSelfTest {
             s.pty?.terminate()
             wait(10) { s.code != nil }
         }
+    }
+
+    /// Resizes a shell with a screenful of output, as dragging the window does, and after each size compares where the
+    /// console says the cursor is with where the emulator has it: `Solanum-test --resize-probe`.
+    static func probeResize() {
+        guard let s = Session(PowerShellIntegration.commandLine(executable: "powershell.exe", loadProfile: false), cols: 100, rows: 30),
+              wait(until: { s.cwd != nil }) else {
+            print("didn't reach a prompt")
+            return
+        }
+        var round = 0
+        /// Runs a command that prints the console's own view of the cursor, on the line it's printed from.
+        func compare(_ label: String) {
+            round += 1
+            let tag = "r\(round)="
+            s.send("echo ('\(tag)' + ($Host.UI.RawUI.CursorPosition.Y - $Host.UI.RawUI.WindowPosition.Y) + ' top=' + $Host.UI.RawUI.WindowPosition.Y + ' height=' + $Host.UI.RawUI.WindowSize.Height + ' width=' + $Host.UI.RawUI.WindowSize.Width)\r")
+            wait(10) { s.screenRow(startingWith: tag) != nil }
+            Thread.sleep(forTimeInterval: 0.3)
+            let row = s.screenRow(startingWith: tag)
+            print("\(label): emulator \(s.gridDescription), output on row \(row?.row.description ?? "?"), console says \(row?.text ?? "nothing")")
+        }
+        func resize(_ cols: Int, _ rows: Int, _ label: String) {
+            let mark = s.rawCount
+            s.resize(cols: cols, rows: rows)
+            Thread.sleep(forTimeInterval: 1)
+            print("\(label) \u{2192} \(cols)x\(rows); console sent: \(s.rawDescription(from: mark).prefix(500))")
+            compare(label)
+        }
+        compare("start")
+        s.send("1..60 | % { \"line $_\" }\r")
+        wait(10) { s.screenRow(startingWith: "line 60") != nil }
+        Thread.sleep(forTimeInterval: 0.5)
+        compare("after output")
+        resize(100, 45, "taller")
+        resize(100, 20, "shorter")
+        resize(100, 52, "much taller")
+        resize(140, 52, "wider")
+        resize(70, 52, "narrower")
+        resize(110, 32, "back")
+        s.pty?.terminate()
+        wait(10) { s.code != nil }
     }
 
     /// Waits for `condition`, up to `seconds`.

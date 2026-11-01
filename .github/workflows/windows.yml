@@ -32,6 +32,10 @@ jobs:
         if: success() || failure()
         timeout-minutes: 5
         run: .\build\windows\Solanum-test.exe --input-probe
+      - name: Resize probe
+        if: success() || failure()
+        timeout-minutes: 5
+        run: .\build\windows\Solanum-test.exe --resize-probe
       - name: Upload snapshots
         if: always()
         uses: actions/upload-artifact@v4
