@@ -1,0 +1,17 @@
+﻿  ✓ window: shell reaches its prompt
+  ✓ window: typing runs a command
+  ✓ window: paste
+  ✓ window: a long-running program starts
+  ✓ window: Ctrl+C reaches the program
+  ✓ window: the shell comes back after Ctrl+C
+  ✓ window: resize reaches the emulator and the program
+  ✓ window: output fills the screen
+  ✓ window: shrinks
+  ✓ window: grows again
+  ✓ window: typing after resizing stays on the prompt
+  ✓ window: resizing keeps scrollback
+  ✓ window: clears the line
+  ✓ window: colors from a real program
+  ✓ window: painted
+  ✓ window: snapshot
+All 16 checks passed.

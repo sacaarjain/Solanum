@@ -1,0 +1,64 @@
+﻿  ✓ console resize: starts with scrollback
+  ✓ console resize: growing leaves scrollback and rows alone
+  ✓ console resize: shrinking keeps the cursor on screen
+  ✓ console resize: width fits every row
+  ✓ agent session: by name, also a path or an .exe
+Solanum emulator self-test
+  ✓ print + CRLF
+  ✓ autowrap
+  ✓ scroll into scrollback
+  ✓ CUP + EL
+  ✓ ED 2
+  ✓ SGR colors
+  ✓ SGR colon forms
+  ✓ alt screen enter
+  ✓ alt screen exit restores
+  ✓ scroll region
+  ✓ wide chars
+  ✓ reflow wider
+  ✓ reflow narrower
+  ✓ DSR/DA responses
+  ✓ ssh exit reported before the session clears
+  ✓ OSC 133 blocks
+  ✓ DEC line drawing
+  ✓ combining marks
+  ✓ OSC 8 links
+  ✓ OSC 8 erased
+  ✓ OSC 8 links reflow
+  ✓ scroll: scrollback keeps text
+  ✓ scroll: scrollback lines trimmed
+  ✓ scroll: new lines blank and full width
+  ✓ scroll: erase color fills reused lines
+  ✓ scroll: plain lines after colored ones
+  ✓ scroll: region reuses its line blank
+  ✓ scroll: reverse index in a region
+Drawing
+  ✓ canvas: font metrics
+  ✓ canvas: grid from size
+  ✓ canvas: draws and saves
+  ✓ selection: backwards still orders
+  ✓ selection: text
+  ✓ selection: spans lines
+ConPTY
+  ✓ conpty: output reaches the emulator
+  ✓ conpty: exit code
+  ✓ conpty: failing exit code
+  ✓ conpty: input reaches the program
+  ✓ conpty: unicode output
+  ✓ conpty: program sees the size
+  ✓ conpty: program sees a resize
+  ✓ conpty: terminate stops the program and reports it
+  ✓ conpty: unicode input in cmd
+PowerShell hook
+  ✓ powershell: reports its folder
+  ✓ powershell: a block with its exit status
+  ✓ powershell: the block knows its command
+  ✓ powershell: follows cd
+  ✓ powershell: unicode output
+  ✓ powershell: unicode input
+  ✓ powershell: typing after a resize stays on the prompt
+  ✓ powershell: resizing keeps scrollback
+  ✓ powershell: Esc clears the line
+  ✓ powershell: exits
+  - pwsh.exe isn't installed
+All 58 checks passed.
