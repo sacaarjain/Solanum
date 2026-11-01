@@ -2,7 +2,7 @@ import Foundation
 import WinSDK
 
 /// What `ShellIntegration` does for bash and zsh on the Mac, for PowerShell: marks the prompt, the command and its exit
-/// status (OSC 133) and reports the folder (OSC 1337), so blocks and the sidebar can follow along.
+/// status (OSC 133) and reports the folder (OSC 1337), so blocks and the sidebar can follow along. Sets UTF-8 as well.
 enum PowerShellIntegration {
     /// Runs after the user's profile, so it wraps whatever prompt that set up. `PSConsoleHostReadLine` returns as a
     /// command is entered, the one moment PowerShell offers before the command runs. Without PSReadLine it doesn't
@@ -10,6 +10,9 @@ enum PowerShellIntegration {
     static let hook = #"""
     if (-not $global:__solanum_hooked) {
         $global:__solanum_hooked = $true
+        # UTF-8 both ways, for this shell's own output and for what it exchanges with other programs.
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+        $global:OutputEncoding = [Console]::OutputEncoding
         $global:__solanum_running = $false
         $global:__solanum_prompt = $function:prompt
         function global:__solanum_osc([string]$text) { [char]27 + ']' + $text + [char]7 }

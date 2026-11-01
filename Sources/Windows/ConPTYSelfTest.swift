@@ -94,14 +94,14 @@ enum ConPTYSelfTest {
             check("conpty: failing exit code", s?.code == 3, "\(String(describing: s?.code))")
         }
         do {
-            // Only running the line produces "typed-ok": the echoed input still has the empty variable in it.
+            // Only running the line produces "typed-ok": the echoed input still has the variable in it.
             let s = Session("cmd.exe")
-            s?.send("set EMPTY=\r\necho typed-%EMPTY%ok\r\nexit\r\n")
+            s?.send("set WORD=ok\r\necho typed-%WORD%\r\nexit\r\n")
             let done = s.map { x in wait { x.code != nil } } ?? false
             check("conpty: input reaches the program", done && s?.text.contains("\ntyped-ok") == true, s?.rawDescription ?? "didn't start")
         }
         do {
-            let s = Session(#"powershell.exe -NoLogo -NoProfile -Command "[Console]::Out.Write('h\u00e9llo \u2726'.Replace('\u00e9',[string][char]0xe9).Replace('\u2726',[string][char]0x2726))""#)
+            let s = Session(#"powershell.exe -NoLogo -NoProfile -Command "[Console]::OutputEncoding = [Text.Encoding]::UTF8; [Console]::Out.Write('h' + [char]0xe9 + 'llo ' + [char]0x2726)""#)
             let done = s.map { x in wait { x.code != nil } } ?? false
             check("conpty: unicode output", done && s?.text.contains("héllo ✦") == true, s?.rawDescription ?? "didn't start")
         }
@@ -152,6 +152,10 @@ enum ConPTYSelfTest {
             s.send("cd '\(folder)'\r")
             let moved = wait(15) { s.cwd?.lowercased() == folder.lowercased() }
             check("\(label): follows cd", moved, "\(s.cwd ?? "nil") \(s.rawDescription)")
+            // The Windows PowerShell default is the system's old code page, which turns this into "?".
+            s.send("[Console]::Out.WriteLine('mark-' + [char]0x2726)\r")
+            let unicode = wait(15) { s.text.contains("mark-✦") }
+            check("\(label): unicode output", unicode, s.rawDescription)
             s.send("exit\r")
             let ended = wait(15) { s.code != nil }
             check("\(label): exits", ended, s.rawDescription)
