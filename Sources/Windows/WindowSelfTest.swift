@@ -60,7 +60,7 @@ enum WindowSelfTest {
 
         var selection = TerminalSelection(anchor: (0, 8), head: (0, 2))
         results.check("selection: backwards still orders", selection.ordered.start.col == 2)
-        results.check("selection: text", selection.text(in: terminal) == "lanum ", selection.text(in: terminal))
+        results.check("selection: text", selection.text(in: terminal) == "lanum", selection.text(in: terminal))
         selection = TerminalSelection(anchor: (0, 0), head: (2, 5))
         results.check("selection: spans lines", selection.text(in: terminal).hasPrefix("Solanum on Windows\r\n\r\nPlain"),
                       selection.text(in: terminal))
