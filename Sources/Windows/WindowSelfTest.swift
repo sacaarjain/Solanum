@@ -52,7 +52,7 @@ enum WindowSelfTest {
         let m = canvas.metrics
         results.check("canvas: font metrics", m.cellWidth > 4 && m.cellHeight > m.cellWidth && m.baseline > 0 && m.baseline < m.cellHeight,
                       "\(m)")
-        let grid = TerminalRenderer.grid(width: 1000, height: 640, metrics: m)
+        let grid = TerminalRenderer.grid(width: 1000, height: 640, canvas: canvas)
         results.check("canvas: grid from size", grid.cols > 50 && grid.rows > 20, "\(grid)")
         let terminal = Terminal(cols: grid.cols, rows: grid.rows, scrollbackLimit: 100)
         Array(sampler.utf8).withUnsafeBufferPointer { terminal.feed($0) }

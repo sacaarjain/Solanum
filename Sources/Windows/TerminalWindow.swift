@@ -110,6 +110,7 @@ final class TerminalWindow: TerminalDelegate {
             return nil
         }
         self.canvas = canvas
+        canvas.padding = scaledPadding()
         terminal = Terminal(cols: cols, rows: rows, scrollbackLimit: 10000)
         terminal.delegate = self
         Self.windows[created] = self
@@ -138,11 +139,15 @@ final class TerminalWindow: TerminalDelegate {
         Self.fontPoints * Float(GetDpiForWindow(hwnd)) / 72
     }
 
+    private func scaledPadding() -> Float {
+        (6 * Float(GetDpiForWindow(hwnd)) / 96).rounded()
+    }
+
     private func sizeWindow(toCols cols: Int, rows: Int) {
         let m = canvas.metrics
         var rect = RECT(left: 0, top: 0,
-                        right: LONG(Float(cols) * m.cellWidth + TerminalRenderer.padding * 2 + 5),
-                        bottom: LONG(Float(rows) * m.cellHeight + TerminalRenderer.padding * 2))
+                        right: LONG(Float(cols) * m.cellWidth + canvas.padding * 2 + 5),
+                        bottom: LONG(Float(rows) * m.cellHeight + canvas.padding * 2))
         _ = AdjustWindowRectExForDpi(&rect, Win.WS_OVERLAPPEDWINDOW, false, 0, GetDpiForWindow(hwnd))
         SetWindowPos(hwnd, nil, 0, 0, rect.right - rect.left, rect.bottom - rect.top,
                      Win.SWP_NOMOVE | Win.SWP_NOZORDER | Win.SWP_NOACTIVATE)
@@ -210,6 +215,7 @@ final class TerminalWindow: TerminalDelegate {
             return 0
         case Win.WM_DPICHANGED:
             canvas.setFontPixels(fontPixels())
+            canvas.padding = scaledPadding()
             let suggested = UnsafePointer<RECT>(bitPattern: Int(lParam))!.pointee
             SetWindowPos(hwnd, nil, suggested.left, suggested.top, suggested.right - suggested.left,
                          suggested.bottom - suggested.top, Win.SWP_NOZORDER | Win.SWP_NOACTIVATE)
@@ -256,7 +262,7 @@ final class TerminalWindow: TerminalDelegate {
     private func resized(width: Int, height: Int) {
         guard width > 0, height > 0 else { return }
         sol_canvas_resize(canvas.raw, Int32(width), Int32(height))
-        let grid = TerminalRenderer.grid(width: width, height: height, metrics: canvas.metrics)
+        let grid = TerminalRenderer.grid(width: width, height: height, canvas: canvas)
         if grid.cols != terminal.cols || grid.rows != terminal.rows {
             terminal.resize(cols: grid.cols, rows: grid.rows)
             pty?.resize(cols: grid.cols, rows: grid.rows)
@@ -372,8 +378,8 @@ final class TerminalWindow: TerminalDelegate {
 
     private func cell(at lParam: LPARAM) -> (col: Int, row: Int) {
         let m = canvas.metrics
-        let x = Float(Int16(truncatingIfNeeded: lParam & 0xFFFF)) - TerminalRenderer.padding
-        let y = Float(Int16(truncatingIfNeeded: (lParam >> 16) & 0xFFFF)) - TerminalRenderer.padding
+        let x = Float(Int16(truncatingIfNeeded: lParam & 0xFFFF)) - canvas.padding
+        let y = Float(Int16(truncatingIfNeeded: (lParam >> 16) & 0xFFFF)) - canvas.padding
         return (min(max(Int(x / m.cellWidth + 0.5), 0), terminal.cols), min(max(Int(y / m.cellHeight), 0), terminal.rows - 1))
     }
 
