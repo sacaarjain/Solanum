@@ -4,14 +4,14 @@ import WinSDK
 
 /// The buttons along the top of a sidebar, in order. Each has its icon and what it says when hovered.
 enum SidebarButton: Int, CaseIterable {
-    case pin, parent, refresh, hidden
+    case pin, parent, refresh, more
 
     var glyph: UInt16 {
         switch self {
         case .pin: return 0xE718
         case .parent: return 0xE74A
         case .refresh: return 0xE72C
-        case .hidden: return 0xE7B3
+        case .more: return 0xE712
         }
     }
 }
@@ -23,6 +23,8 @@ final class FileSidebar {
     var width: Float
     /// The folder it stays on, instead of following the terminal.
     var pinned: String?
+    /// The terminal folder last followed. It only moves when that changes, so browsing elsewhere stays put until then.
+    var followed: String?
     var isFocused = false
     var hoveredRow: Int?
     var hoveredButton: SidebarButton?
@@ -77,7 +79,7 @@ struct SidebarView {
         label(crumbs.last ?? "Files", layout.title, pixels: 13.5 * scale, semibold: true, alpha: 0.95)
         for button in SidebarButton.allCases {
             let r = layout.button(button.rawValue)
-            let on = (button == .pin && sidebar.pinned != nil) || (button == .hidden && tree.showHidden)
+            let on = button == .pin && sidebar.pinned != nil
             if sidebar.hoveredButton == button { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 4 * scale, fg, 0.10) }
             icon(button.glyph, r, pixels: 12 * scale, color: on ? TerminalPalette.accent : nil, alpha: on ? 1 : 0.7)
         }

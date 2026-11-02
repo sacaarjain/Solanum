@@ -22,6 +22,10 @@ struct WindowChrome {
     var folder: String?
     var home: String?
     var themeName = "SOLANUM DEFAULT"
+    /// A tab being dragged, and where its left edge is.
+    var draggedTab: Int?
+    var draggedX: Float = 0
+    var hoveredCrumb: Int?
 
     private var scale: Float { layout.scale }
     private var fg: UInt32 { TerminalPalette.foreground }
@@ -53,8 +57,9 @@ struct WindowChrome {
         sol_canvas_fill_rect(canvas.raw, 0, bar.maxY - 1, bar.width, 1, fg, 0.10)
         let v = layout.tabViewport
         sol_canvas_push_clip(canvas.raw, v.x, v.y, v.width, v.height)
-        for i in tabs.indices where layout.tab(i).maxX > v.x && layout.tab(i).x < v.maxX { drawTab(i) }
+        for i in tabs.indices where i != draggedTab && layout.tab(i).maxX > v.x && layout.tab(i).x < v.maxX { drawTab(i) }
         drawSeparators()
+        if let draggedTab { drawTab(draggedTab) }
         sol_canvas_pop_clip(canvas.raw)
         drawScrollArrows()
         drawNewTabButton()
@@ -67,7 +72,7 @@ struct WindowChrome {
     /// Lines between tabs at rest, as on the Mac: one before the first, one between each two and one after the last, but
     /// none beside the active or hovered tab, which stand out by themselves.
     private func drawSeparators() {
-        func quiet(_ i: Int) -> Bool { i == activeTab || hovered == .tab(i) || hovered == .tabClose(i) }
+        func quiet(_ i: Int) -> Bool { i == activeTab || i == draggedTab || hovered == .tab(i) || hovered == .tabClose(i) }
         func line(atX x: Float, midY: Float) {
             let height = (16 * scale).rounded(), width = max(scale.rounded(), 1)
             sol_canvas_fill_rect(canvas.raw, x.rounded(), (midY - height / 2).rounded(), width, height, fg, 0.18)
@@ -84,8 +89,21 @@ struct WindowChrome {
         }
     }
 
+    /// Where a tab is drawn: its place, or under the pointer while it's being dragged.
+    private func tabRect(_ i: Int) -> UIRect {
+        var r = layout.tab(i)
+        if i == draggedTab { r.x = draggedX }
+        return r
+    }
+
+    private func closeRect(_ i: Int) -> UIRect {
+        var c = layout.tabClose(i)
+        if i == draggedTab { c.x += draggedX - layout.tab(i).x }
+        return c
+    }
+
     private func drawTab(_ i: Int) {
-        let r = layout.tab(i), active = i == activeTab
+        let r = tabRect(i), active = i == activeTab
         let hover = hovered == .tab(i) || hovered == .tabClose(i)
         let radius = 8 * scale
         if active {
@@ -105,11 +123,11 @@ struct WindowChrome {
         let promptX = r.x + 12 * scale
         drawPrompt(atX: promptX, midY: r.midY, active: active)
         let titleX = promptX + 22 * scale
-        let closes = (active || hover) && r.width >= 60 * scale
-        let room = layout.tabClose(i).x - titleX - 4 * scale
+        let closes = (active || hover) && r.width >= 60 * scale && draggedTab == nil
+        let room = closeRect(i).x - titleX - 4 * scale
         label(tabs[i], UIRect(x: titleX, y: r.y, width: max(room, 0), height: r.height), pixels: 12.5 * scale, color: fg, alpha: textAlpha)
         if closes {
-            let c = layout.tabClose(i)
+            let c = closeRect(i)
             if hovered == .tabClose(i) { sol_canvas_fill_rounded(canvas.raw, c.x, c.y, c.width, c.height, 4 * scale, fg, 0.12) }
             let inset = 5.5 * scale, thick = 1.3 * scale
             sol_canvas_line(canvas.raw, c.x + inset, c.y + inset, c.maxX - inset, c.maxY - inset, fg, 0.6, thick)
@@ -155,6 +173,26 @@ struct WindowChrome {
         }
     }
 
+    /// Where the folder's parts go in the status bar, and what each stands for. For drawing them and for clicks.
+    func crumbSpots() -> [(label: String, path: String, rect: UIRect)] {
+        let themeWidth = width(of: themeName, pixels: 10.5 * scale, semibold: true)
+        let themeX = (layout.showsRightToggle ? layout.toggleRight.x - 8 * scale : layout.statusBar.maxX - 10 * scale) - themeWidth
+        return crumbSpots(themeX: themeX)
+    }
+
+    private func crumbSpots(themeX: Float) -> [(label: String, path: String, rect: UIRect)] {
+        guard let folder else { return [] }
+        let bar = layout.statusBar, pixels = 12 * scale, limit = themeX - 34 * scale
+        var x = layout.toggleLeft.maxX + 8 * scale + 21 * scale
+        var out: [(label: String, path: String, rect: UIRect)] = []
+        for crumb in WindowText.crumbPaths(folder, home: home) {
+            let w = min(width(of: crumb.label, pixels: pixels), max(limit - x, 0))
+            out.append((crumb.label, crumb.path, UIRect(x: x, y: bar.y, width: w, height: bar.height)))
+            x += w + 13 * scale
+        }
+        return out
+    }
+
     private func drawStatusBar() {
         let bar = layout.statusBar
         sol_canvas_fill_rect(canvas.raw, bar.x, bar.y, bar.width, bar.height, TerminalPalette.chrome, 1)
@@ -164,34 +202,27 @@ struct WindowChrome {
         // The theme's name on the right, with its flower.
         let themePixels = 10.5 * scale
         let themeWidth = width(of: themeName, pixels: themePixels, semibold: true)
-        let themeX = layout.toggleRight.x - 8 * scale - themeWidth
+        let themeX = (layout.showsRightToggle ? layout.toggleRight.x - 8 * scale : bar.maxX - 10 * scale) - themeWidth
         label(themeName, UIRect(x: themeX, y: bar.y, width: themeWidth + 2, height: bar.height), pixels: themePixels, semibold: true, alpha: 0.55)
         let side = (16 * scale).rounded()
         canvas.drawArt("flowerOutline", UIRect(x: themeX - side - 5 * scale, y: (bar.midY - side / 2).rounded(), width: side, height: side), scale: scale)
 
         // The sidebars' switches, at either end.
-        for (part, r, glyph, on) in [(WindowPart.toggleLeft, layout.toggleLeft, Icon.dockLeft, layout.leftWidth > 0),
-                                     (.toggleRight, layout.toggleRight, Icon.dockRight, layout.rightWidth > 0)] {
+        var switches = [(WindowPart.toggleLeft, layout.toggleLeft, Icon.dockLeft, layout.leftWidth > 0)]
+        if layout.showsRightToggle { switches.append((.toggleRight, layout.toggleRight, Icon.dockRight, layout.rightWidth > 0)) }
+        for (part, r, glyph, on) in switches {
             if hovered == part { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 4 * scale, fg, 0.10) }
             icon(glyph, r, pixels: 12 * scale, color: on ? TerminalPalette.accent : nil, alpha: on ? 1 : 0.75)
         }
 
-        // The folder on the left.
-        var x = layout.toggleLeft.maxX + 8 * scale
-        icon(Icon.folder, UIRect(x: x, y: bar.y, width: 16 * scale, height: bar.height), pixels: 12 * scale, alpha: 0.75)
-        x += 21 * scale
-        guard let folder else { return }
-        let limit = themeX - 34 * scale
-        let crumbs = WindowText.crumbs(folder, home: home)
-        for (i, crumb) in crumbs.enumerated() {
-            let last = i == crumbs.count - 1
-            let w = min(width(of: crumb, pixels: pixels), max(limit - x, 0))
-            label(crumb, UIRect(x: x, y: bar.y, width: w + 1, height: bar.height), pixels: pixels, alpha: last ? 0.85 : 0.55)
-            x += w
-            if !last {
-                label("›", UIRect(x: x + 3 * scale, y: bar.y, width: 8 * scale, height: bar.height), pixels: pixels, alpha: 0.4)
-                x += 13 * scale
-            }
+        // The folder on the left: the icon, then each part, which opens a menu of what's in it.
+        let spots = crumbSpots(themeX: themeX)
+        icon(Icon.folder, UIRect(x: layout.toggleLeft.maxX + 8 * scale, y: bar.y, width: 16 * scale, height: bar.height), pixels: 12 * scale, alpha: 0.75)
+        for (i, spot) in spots.enumerated() {
+            let last = i == spots.count - 1
+            if hoveredCrumb == i { sol_canvas_fill_rounded(canvas.raw, spot.rect.x - 3 * scale, spot.rect.y + 3 * scale, spot.rect.width + 6 * scale, spot.rect.height - 6 * scale, 4 * scale, fg, 0.10) }
+            label(spot.label, UIRect(x: spot.rect.x, y: bar.y, width: spot.rect.width + 1, height: bar.height), pixels: pixels, alpha: last || hoveredCrumb == i ? 0.85 : 0.55)
+            if !last { label("›", UIRect(x: spot.rect.maxX + 3 * scale, y: bar.y, width: 8 * scale, height: bar.height), pixels: pixels, alpha: 0.4) }
         }
     }
 }

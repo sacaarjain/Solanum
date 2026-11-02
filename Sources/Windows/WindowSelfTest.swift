@@ -543,12 +543,60 @@ enum WindowSelfTest {
             window.doubleClick(window.leftRow(named: "alpha")!)
         }, done: { pane.terminal.cwd?.hasSuffix("alpha") == true && pane.atPrompt }))
         steps.append(Step(name: "sidebar: and it follows", action: {}, done: { window.leftTree.root?.hasSuffix("alpha") == true && window.leftRow(named: "inner.txt") != nil }))
-        steps.append(Step(name: "sidebar: the parent button goes up, and stays", action: { window.click(window.leftButton(.parent)) },
-                          done: { window.leftTree.root?.hasSuffix(WindowsPath.name(windowsFolder)) == true && window.leftPinned != nil }))
-        steps.append(Step(name: "sidebar: unpinning follows the terminal again", action: { window.click(window.leftButton(.pin)) },
-                          done: { window.leftPinned == nil && window.leftTree.root?.hasSuffix("alpha") == true }))
-        steps.append(Step(name: "sidebar: the right one shows too", action: { _ = window.keyDown(0x42, shift: false, ctrl: true, alt: true) },
-                          done: { window.rightIsVisible }))
+        func inSample(_ root: String?) -> Bool { root?.hasSuffix(WindowsPath.name(windowsFolder)) == true }
+        steps.append(Step(name: "sidebar: the parent button goes up without pinning", action: { window.click(window.leftButton(.parent)) },
+                          done: { inSample(window.leftTree.root) && window.leftPinned == nil }))
+        steps.append(Step(name: "sidebar: and it follows once the terminal moves", action: {
+            pane.type("cd ..")
+            pane.pressEnter()
+        }, done: { inSample(pane.terminal.cwd) && pane.atPrompt && inSample(window.leftTree.root) }))
+        steps.append(Step(name: "sidebar: back into the folder", action: {
+            pane.type("cd alpha")
+            pane.pressEnter()
+        }, done: { window.leftTree.root?.hasSuffix("alpha") == true && pane.atPrompt }))
+        steps.append(Step(name: "sidebar: the pin holds it", action: { window.click(window.leftButton(.pin)) }, done: { window.leftPinned != nil }))
+        steps.append(Step(name: "sidebar: while the terminal moves", action: {
+            pane.type("cd ..")
+            pane.pressEnter()
+        }, done: { inSample(pane.terminal.cwd) && pane.atPrompt && window.leftTree.root?.hasSuffix("alpha") == true }))
+        steps.append(Step(name: "sidebar: unpinning catches up", action: { window.click(window.leftButton(.pin)) },
+                          done: { window.leftPinned == nil && inSample(window.leftTree.root) }))
+        steps.append(Step(name: "sidebar: the ... button opens its menu", action: { window.click(window.leftButton(.more)) },
+                          done: { window.menuTitles == ["Show Hidden Files", "Collapse All"] }))
+        steps.append(Step(name: "sidebar: a menu row works", action: { window.click(window.menuRow("Show Hidden Files")!) },
+                          done: { !window.isMenuOpen && window.leftTree.showHidden }))
+        steps.append(Step(name: "sidebar: and off again", action: {
+            window.click(window.leftButton(.more))
+        }, done: {
+            guard let row = window.menuRow("Show Hidden Files") else { return false }
+            window.click(row)
+            return true
+        }))
+        steps.append(Step(name: "sidebar: hidden files are off", action: {}, done: { !window.isMenuOpen && !window.leftTree.showHidden }))
+        steps.append(Step(name: "sidebar: the right one stays away without a split", action: { _ = window.keyDown(0x42, shift: false, ctrl: true, alt: true) },
+                          done: { !window.rightIsVisible }))
+        // The status bar's path.
+        steps.append(Step(name: "path: clicking a part lists its folders", action: { window.click(window.crumbRect(WindowsPath.name(windowsFolder))!) },
+                          done: { window.menuTitles.contains("alpha") && window.menuTitles.contains("Copy Path") }))
+        steps.append(Step(name: "path: Esc closes the menu", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
+        steps.append(Step(name: "path: choosing a folder sends the terminal there", action: { window.click(window.crumbRect(WindowsPath.name(windowsFolder))!) }, done: {
+            guard let row = window.menuRow("alpha") else { return false }
+            window.click(row)
+            return true
+        }))
+        steps.append(Step(name: "path: it gets there", action: {}, done: { pane.terminal.cwd?.hasSuffix("alpha") == true && pane.atPrompt && window.leftTree.root?.hasSuffix("alpha") == true }))
+        // Dragging tabs.
+        steps.append(Step(name: "drag: a third tab to move", action: { window.newTab() }, done: { window.panes.count == 3 && pane.atPrompt }))
+        var movedPane: UInt = 0
+        steps.append(Step(name: "drag: past its neighbor, they trade places", action: {
+            movedPane = window.panes[0].id
+            window.dragTab(0, toX: window.currentLayout.tab(1).maxX + 30)
+        }, done: { window.panes[0].id != movedPane && window.panes.contains { $0.id == movedPane } && !window.isDraggingTab }))
+        steps.append(Step(name: "drag: a short drag is only a click", action: {
+            movedPane = window.panes[1].id
+            window.dragTab(1, toX: window.currentLayout.tab(1).x + 22)
+        }, done: { window.panes[1].id == movedPane && window.activeIndex == 1 && !window.isDraggingTab }))
+        steps.append(Step(name: "drag: closes the extra tab", action: { press(0x57) }, done: { window.panes.count == 2 }))
         if let dir = snapshotDirectory {
             steps.append(Step(name: "sidebar: snapshot", action: {}, done: {
                 try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -559,9 +607,8 @@ enum WindowSelfTest {
         func promptsIntact() -> Bool {
             !pane.terminal.screen.contains { $0.text().contains("PS ") && !$0.text().hasPrefix("PS ") }
         }
-        steps.append(Step(name: "wrapped prompt: a sidebar's width leaves it whole", action: {
-            _ = window.keyDown(0x42, shift: false, ctrl: true, alt: true)
-        }, done: { !window.rightIsVisible && !pane.isSettlingResize && promptsIntact() }))
+        steps.append(Step(name: "wrapped prompt: a sidebar's width leaves it whole", action: { press(0x42) },
+                          done: { !window.leftIsVisible && !pane.isSettlingResize && promptsIntact() }))
         steps.append(Step(name: "wrapped prompt: getting shorter leaves it whole", action: { window.resizeWindow(toCols: 40, rows: 8) },
                           done: { pane.terminal.rows == 8 && !pane.isSettlingResize && promptsIntact() }))
         steps.append(Step(name: "wrapped prompt: taller too", action: { window.resizeWindow(toCols: 40, rows: 24) },
@@ -572,9 +619,6 @@ enum WindowSelfTest {
         }))
         steps.append(Step(name: "wrapped prompt: clears", action: { pane.pressEscape() }, done: { !pane.cursorRowText.contains("claud") }))
         steps.append(Step(name: "wrapped prompt: back to size", action: { window.resizeWindow(toCols: 100, rows: 30) }, done: { pane.terminal.cols == 100 || window.leftIsVisible }))
-        steps.append(Step(name: "sidebar: both hide again", action: {
-            press(0x42)
-        }, done: { !window.rightIsVisible && !window.leftIsVisible && pane.terminal.cols >= colsWithoutSidebar }))
         steps.append(Step(name: "sidebar: typing reaches the terminal", action: {
             pane.type("echo after-sidebar")
             pane.pressEnter()

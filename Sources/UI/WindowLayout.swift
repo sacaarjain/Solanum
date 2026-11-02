@@ -29,6 +29,8 @@ struct WindowLayout {
     /// How wide the sidebars are, 0 when hidden.
     var leftWidth: Float = 0
     var rightWidth: Float = 0
+    /// The right sidebar belongs to a split window, as on the Mac: there's nothing to switch without one.
+    var showsRightToggle = false
 
     var tabBarHeight: Float { (38 * scale).rounded() }
     var statusBarHeight: Float { (26 * scale).rounded() }
@@ -106,7 +108,7 @@ struct WindowLayout {
     func part(atX x: Float, y: Float) -> WindowPart {
         if statusBar.contains(x, y) {
             if toggleLeft.contains(x, y) { return .toggleLeft }
-            if toggleRight.contains(x, y) { return .toggleRight }
+            if showsRightToggle && toggleRight.contains(x, y) { return .toggleRight }
             return .statusBar
         }
         guard y < tabBarHeight else {
@@ -147,6 +149,24 @@ enum WindowText {
         }
         parts += rest.split(whereSeparator: { $0 == "\\" || $0 == "/" }).map(String.init)
         return parts
+    }
+
+    /// The same parts, each with the folder it stands for, for going to them.
+    static func crumbPaths(_ path: String, home: String?) -> [(label: String, path: String)] {
+        var out: [(label: String, path: String)] = []
+        let labels = crumbs(path, home: home)
+        var current = ""
+        for (i, label) in labels.enumerated() {
+            if i == 0 && label == "~", let home {
+                current = home
+            } else if i == 0 && label.hasSuffix(":") {
+                current = label + "\\"
+            } else {
+                current = current.isEmpty ? label : WindowsPath.join(current, label)
+            }
+            out.append((label, current))
+        }
+        return out
     }
 
     /// What a tab is called: the program's title, unless that's just the path of the shell itself, which is what
