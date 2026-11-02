@@ -33,6 +33,9 @@ jobs:
           New-Item -Path HKLM:\SOFTWARE\OpenSSH -Force | Out-Null
           New-ItemProperty -Path HKLM:\SOFTWARE\OpenSSH -Name DefaultShell -Value 'C:\Program Files\Git\bin\bash.exe' -PropertyType String -Force | Out-Null
           net user solanumtest 'Sol-anum-2026!' /add
+          net localgroup Administrators solanumtest /add
+          Write-Host '--- sshd_config, settings only'
+          Get-Content C:\ProgramData\ssh\sshd_config -ErrorAction SilentlyContinue | Where-Object { $_ -and -not $_.StartsWith('#') }
           Start-Service sshd
           Get-Service sshd | Format-List Name, Status
           ssh -V
