@@ -169,7 +169,7 @@ final class RemoteConnection {
         }
     }
 
-    private static let shellFolderScript = #"""
+    static let shellFolderScript = #"""
     t='LC_SOLANUM_SESSION=SESSION'; best=; bestp=; only=; n=0
     for d in /proc/[0-9]*; do
       [ -O "$d" ] || continue

@@ -890,6 +890,11 @@ enum WindowSelfTest {
                 pane.remote?.run(look) { text, _ in
                     for line in (text ?? "(nothing)").split(separator: "\n") { print("    proc: " + line) }
                 }
+                let traced = "set -x; " + RemoteConnection.shellFolderScript.replacingOccurrences(of: "SESSION", with: pane.terminal.sshControlPath ?? "") + "\nset +x"
+                pane.remote?.run(traced, timeout: 40) { [weak remote = pane.remote] text, code in
+                    print("    probe printed: \(text ?? "nothing (timed out?)"), status \(code)")
+                    for line in (remote?.errorText ?? "").split(separator: "\n").suffix(40) { print("    trace: " + line) }
+                }
             }, done: { pane.remoteShellFolder != nil }))
             steps.append(Step(name: "ssh: the status bar shows the host's folder", action: {}, done: { window.crumbRect("~") != nil }))
             steps.append(Step(name: "ssh: double-clicking a folder sends the terminal there", action: {
