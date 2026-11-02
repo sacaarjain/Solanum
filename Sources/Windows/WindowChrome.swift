@@ -51,7 +51,9 @@ struct WindowChrome {
         sol_canvas_fill_rect(canvas.raw, 0, bar.maxY - 1, bar.width, 1, fg, 0.10)
         for i in tabs.indices { drawTab(i) }
         drawNewTabButton()
-        drawFlower(in: layout.flower)
+        let flower = (22 * scale).rounded()
+        canvas.drawArt("flower", UIRect(x: layout.flower.x + ((layout.flower.width - flower) / 2).rounded(),
+                                        y: ((layout.tabBarHeight - flower) / 2).rounded(), width: flower, height: flower), scale: scale)
         drawCaptionButtons()
     }
 
@@ -77,8 +79,8 @@ struct WindowChrome {
 
         let textAlpha: Float = active ? 1 : 0.55
         let promptX = r.x + 12 * scale
-        drawPrompt(atX: promptX, midY: r.midY, alpha: active ? 1 : 0.65)
-        let titleX = promptX + 26 * scale
+        drawPrompt(atX: promptX, midY: r.midY, active: active)
+        let titleX = promptX + 22 * scale
         let closes = (active || hover) && r.width >= 60 * scale
         let room = layout.tabClose(i).x - titleX - 4 * scale
         label(tabs[i], UIRect(x: titleX, y: r.y, width: max(room, 0), height: r.height), pixels: 12.5 * scale, color: fg, alpha: textAlpha)
@@ -91,28 +93,16 @@ struct WindowChrome {
         }
     }
 
-    /// The prompt a terminal's tab shows: a chevron in the petals' pale purple, and an underscore in the title's color.
-    private func drawPrompt(atX x: Float, midY: Float, alpha: Float) {
-        let h = 5 * scale, w = 6 * scale, thick = 1.6 * scale
-        sol_canvas_line(canvas.raw, x, midY - h, x + w, midY, TerminalPalette.accent, alpha, thick)
-        sol_canvas_line(canvas.raw, x + w, midY, x, midY + h, TerminalPalette.accent, alpha, thick)
-        sol_canvas_line(canvas.raw, x + w + 3 * scale, midY + h, x + w + 10 * scale, midY + h, fg, alpha, thick)
+    /// The prompt a terminal's tab shows: Solanum's two slim petals and an underscore.
+    private func drawPrompt(atX x: Float, midY: Float, active: Bool) {
+        let w = (15 * scale).rounded(), h = (13 * scale).rounded()
+        canvas.drawArt(active ? "prompt" : "promptDim", UIRect(x: x, y: (midY - h / 2).rounded(), width: w, height: h), scale: scale)
     }
 
     private func drawNewTabButton() {
         let r = layout.newTab
         if hovered == .newTab { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 5 * scale, fg, 0.10) }
         icon(Icon.add, r, pixels: 12 * scale, alpha: 0.75)
-    }
-
-    /// Solanum's flower: five petals around a yellow center.
-    private func drawFlower(in r: UIRect, side: Float? = nil) {
-        let cx = r.x + r.width / 2, cy = r.midY, reach = (side ?? 16 * scale) * 0.30, petal = (side ?? 16 * scale) * 0.27
-        for k in 0..<5 {
-            let angle = -Float.pi / 2 + Float(k) * 2 * Float.pi / 5
-            sol_canvas_fill_ellipse(canvas.raw, cx + reach * cos(angle), cy + reach * sin(angle), petal, petal, 0xD8C8F4, hovered == .flower ? 1 : 0.9)
-        }
-        sol_canvas_fill_ellipse(canvas.raw, cx, cy, petal * 0.62, petal * 0.62, 0xE9B54D, 1)
     }
 
     private func drawCaptionButtons() {
@@ -141,7 +131,8 @@ struct WindowChrome {
         let themeWidth = width(of: themeName, pixels: themePixels, semibold: true)
         let themeX = bar.maxX - 10 * scale - themeWidth
         label(themeName, UIRect(x: themeX, y: bar.y, width: themeWidth + 2, height: bar.height), pixels: themePixels, semibold: true, alpha: 0.55)
-        drawFlower(in: UIRect(x: themeX - 22 * scale, y: bar.y, width: 18 * scale, height: bar.height), side: 13 * scale)
+        let side = (16 * scale).rounded()
+        canvas.drawArt("flowerOutline", UIRect(x: themeX - side - 5 * scale, y: (bar.midY - side / 2).rounded(), width: side, height: side), scale: scale)
 
         // The folder on the left.
         var x = 12 * scale

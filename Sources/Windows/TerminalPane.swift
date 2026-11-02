@@ -143,8 +143,36 @@ final class TerminalPane: TerminalDelegate {
 
     /// Keys that don't type a character. True if it's dealt with, and shouldn't go on to become one.
     func keyDown(_ key: Int32) -> Bool {
-        let shift = isDown(Win.VK_SHIFT), ctrl = isDown(Win.VK_CONTROL), alt = isDown(Win.VK_MENU)
+        keyDown(key, shift: isDown(Win.VK_SHIFT), ctrl: isDown(Win.VK_CONTROL), alt: isDown(Win.VK_MENU))
+    }
+
+    func keyDown(_ key: Int32, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
         if key == Win.VK_F4 && alt { return false }
+
+        // Plain Ctrl+C, V and X act on the clipboard where that can't take anything from the program.
+        if ctrl && !shift && !alt {
+            switch key {
+            case 0x43:
+                // With nothing selected it's the program's interrupt. Copying clears the selection, so a second one is too.
+                guard let chosen = selection, !chosen.isEmpty else { break }
+                copySelection()
+                selection = nil
+                invalidate()
+                return true
+            case 0x56:
+                // Full-screen programs have their own use for it (vim's block selection, nano's page down), and Claude
+                // Code reads an image off the clipboard itself. Ctrl+Shift+V still pastes in both.
+                if terminal.usingAlt || (agentInputActive && IsClipboardFormatAvailable(Win.CF_DIB)) { break }
+                paste()
+                return true
+            case 0x58:
+                if let chosen = selection, !chosen.isEmpty, replaceSelectedInput(with: []) {
+                    setClipboard(chosen.text(in: terminal))
+                    return true
+                }
+            default: break
+            }
+        }
 
         // Ctrl+Shift is what's left for the app: on its own, Ctrl+C and Ctrl+V belong to the shell.
         if ctrl && shift && !alt {
@@ -575,7 +603,7 @@ final class TerminalPane: TerminalDelegate {
         SetClipboardData(Win.CF_UNICODETEXT, memory)
     }
 
-    private func clipboardText() -> String? {
+    func clipboardText() -> String? {
         guard OpenClipboard(hwnd) else { return nil }
         defer { CloseClipboard() }
         guard let memory = GetClipboardData(Win.CF_UNICODETEXT), let pointer = GlobalLock(memory) else { return nil }
@@ -621,6 +649,8 @@ final class TerminalPane: TerminalDelegate {
     func drag(fromCol: Int, toCol: Int, row: Int) { drag(fromCol: fromCol, fromRow: row, toCol: toCol, toRow: row) }
 
     func pressEscape() { PostMessageW(hwnd, Win.WM_KEYDOWN, WPARAM(Win.VK_ESCAPE), 0) }
+
+    var hasSelection: Bool { selection != nil }
 
     func pressBackspace() { PostMessageW(hwnd, Win.WM_KEYDOWN, WPARAM(Win.VK_BACK), 0) }
 

@@ -55,6 +55,10 @@ struct SolCanvas {
     std::map<std::pair<int, int>, ComPtr<IDWriteTextFormat>> labelFormats;
     std::map<int, ComPtr<IDWriteTextFormat>> iconFormats;
 
+    /// Decoded images, and the same on the graphics device, made when first drawn and again if the device is lost.
+    std::vector<ComPtr<IWICBitmapSource>> images;
+    std::vector<ComPtr<ID2D1Bitmap>> deviceImages;
+
     std::vector<UINT16> glyphs;
     std::vector<FLOAT> advances;
 
@@ -62,6 +66,7 @@ struct SolCanvas {
         windowTarget.Reset();
         target.Reset();
         brush.Reset();
+        for (auto &image : deviceImages) image.Reset();
         HRESULT hr;
         // 96 DPI makes one Direct2D unit one pixel.
         if (hwnd) {
@@ -227,7 +232,11 @@ SolCanvas *sol_canvas_create_window(void *hwnd, float fontPixels, int32_t *resul
     GetClientRect(canvas->hwnd, &client);
     canvas->width = static_cast<UINT32>(client.right - client.left);
     canvas->height = static_cast<UINT32>(client.bottom - client.top);
-    HRESULT hr = canvas->createFactories(fontPixels);
+    // S_FALSE just means COM was already started on this thread.
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (hr == RPC_E_CHANGED_MODE) hr = S_OK;
+    if (SUCCEEDED(hr)) hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&canvas->wic));
+    if (SUCCEEDED(hr)) hr = canvas->createFactories(fontPixels);
     if (SUCCEEDED(hr)) hr = canvas->createTarget();
     if (result) *result = hr;
     if (FAILED(hr)) {
@@ -287,6 +296,7 @@ int32_t sol_canvas_begin(SolCanvas *canvas, uint32_t background) {
 int32_t sol_canvas_end(SolCanvas *canvas) {
     HRESULT hr = canvas->target->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
+        for (auto &image : canvas->deviceImages) image.Reset();
         canvas->target.Reset();
         canvas->windowTarget.Reset();
         canvas->brush.Reset();
@@ -416,6 +426,32 @@ void sol_canvas_draw_icon(SolCanvas *canvas, float x, float y, float width, floa
     canvas->brush->SetColor(color(rgb, alpha));
     WCHAR text = static_cast<WCHAR>(glyph);
     canvas->target->DrawText(&text, 1, format, D2D1::RectF(x, y, x + width, y + height), canvas->brush.Get());
+}
+
+int32_t sol_canvas_load_image(SolCanvas *canvas, const uint8_t *png, int32_t length) {
+    ComPtr<IWICStream> stream;
+    if (FAILED(canvas->wic->CreateStream(&stream))) return -1;
+    if (FAILED(stream->InitializeFromMemory(const_cast<BYTE *>(png), static_cast<DWORD>(length)))) return -1;
+    ComPtr<IWICBitmapDecoder> decoder;
+    if (FAILED(canvas->wic->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad, &decoder))) return -1;
+    ComPtr<IWICBitmapFrameDecode> frame;
+    if (FAILED(decoder->GetFrame(0, &frame))) return -1;
+    ComPtr<IWICFormatConverter> converter;
+    if (FAILED(canvas->wic->CreateFormatConverter(&converter))) return -1;
+    if (FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom))) return -1;
+    // Copied out, because the stream only borrows the PNG's bytes.
+    ComPtr<IWICBitmap> copy;
+    if (FAILED(canvas->wic->CreateBitmapFromSource(converter.Get(), WICBitmapCacheOnLoad, &copy))) return -1;
+    canvas->images.push_back(copy);
+    canvas->deviceImages.emplace_back();
+    return static_cast<int32_t>(canvas->images.size()) - 1;
+}
+
+void sol_canvas_draw_image(SolCanvas *canvas, int32_t image, float x, float y, float width, float height, float alpha) {
+    if (image < 0 || image >= static_cast<int32_t>(canvas->images.size())) return;
+    auto &device = canvas->deviceImages[static_cast<size_t>(image)];
+    if (!device && FAILED(canvas->target->CreateBitmapFromWicBitmap(canvas->images[static_cast<size_t>(image)].Get(), &device))) return;
+    canvas->target->DrawBitmap(device.Get(), D2D1::RectF(x, y, x + width, y + height), alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
 }
 
 int32_t sol_canvas_save_png(SolCanvas *canvas, const uint16_t *path) {

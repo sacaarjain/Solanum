@@ -28,6 +28,7 @@ enum Win {
     static let CW_USEDEFAULT: Int32 = Int32.min
     static let CS_DBLCLKS: UINT = 0x0008
     static let CF_UNICODETEXT: UINT = 13
+    static let CF_DIB: UINT = 8
     static let GMEM_MOVEABLE: UINT = 0x0002
     static let SW_SHOW: Int32 = 5, SW_SHOWNOACTIVATE: Int32 = 4
     static let SWP_NOZORDER: UINT = 0x0004, SWP_NOACTIVATE: UINT = 0x0010, SWP_NOMOVE: UINT = 0x0002

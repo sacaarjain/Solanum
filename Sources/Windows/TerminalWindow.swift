@@ -430,10 +430,15 @@ final class TerminalWindow {
 
     private func isDown(_ key: Int32) -> Bool { GetKeyState(key) < 0 }
 
-    /// The window's own keys, ahead of the pane's. Ctrl+Shift, as Windows terminals have it, because Ctrl alone belongs
-    /// to the shell.
+    /// The window's own keys, ahead of the pane's. New and close tab are Ctrl+Shift, as Windows terminals have them, because
+    /// programs use Ctrl+T and Ctrl+W.
     private func keyDown(_ key: Int32) -> Bool {
         let shift = isDown(Win.VK_SHIFT), ctrl = isDown(Win.VK_CONTROL), alt = isDown(Win.VK_MENU)
+        // Ctrl+1 to 9 pick a tab, with or without Shift. Shells and programs have no use for them.
+        if ctrl && !alt && (0x31...0x39).contains(key) {
+            selectTab(Int(key) - 0x31)
+            return true
+        }
         if ctrl && !alt && key == Win.VK_TAB && panes.count > 1 {
             selectTab((activeIndex + (shift ? panes.count - 1 : 1)) % panes.count)
             return true
@@ -445,9 +450,6 @@ final class TerminalWindow {
                 return true
             case 0x57:
                 closeTab(activeIndex)
-                return true
-            case 0x31...0x39:
-                selectTab(Int(key) - 0x31)
                 return true
             default: break
             }

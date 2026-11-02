@@ -211,6 +211,33 @@ enum WindowSelfTest {
             }, done: { pane.cursorRowText.contains("echo mnZZ") }),
             Step(name: "window: the edited command runs", action: { pane.pressEnter() },
                  done: { hasLine("mnZZ") }),
+            Step(name: "keys: a command for the clipboard keys", action: { pane.type("echo uvwxyz") },
+                 done: { pane.cursorRowText.contains("echo uvwxyz") }),
+            Step(name: "keys: Ctrl+C copies a selection and clears it", action: {
+                pane.setClipboard("nothing yet")
+                select("vwx")
+            }, done: {
+                guard pane.hasSelection else { return false }
+                _ = pane.keyDown(0x43, shift: false, ctrl: true, alt: false)
+                return pane.clipboardText() == "vwx" && !pane.hasSelection
+            }),
+            Step(name: "keys: Ctrl+C with a selection doesn't interrupt", action: {},
+                 done: { pane.cursorRowText.contains("echo uvwxyz") }),
+            Step(name: "keys: Ctrl+V pastes", action: {
+                pane.setClipboard("-pasted")
+                _ = pane.keyDown(0x56, shift: false, ctrl: true, alt: false)
+            }, done: { pane.cursorRowText.contains("uvwxyz-pasted") }),
+            Step(name: "keys: Ctrl+X cuts a selection", action: { select("-pasted") }, done: {
+                guard pane.hasSelection else { return false }
+                _ = pane.keyDown(0x58, shift: false, ctrl: true, alt: false)
+                return true
+            }),
+            Step(name: "keys: and it's on the clipboard, gone from the line", action: {},
+                 done: { pane.clipboardText() == "-pasted" && !pane.cursorRowText.contains("-pasted") }),
+            Step(name: "keys: Ctrl+C with nothing selected interrupts", action: {
+                _ = pane.keyDown(0x43, shift: false, ctrl: true, alt: false)
+                pane.type("\u{03}")
+            }, done: { !pane.cursorRowText.contains("uvwxyz") && pane.cursorRowText.hasPrefix("PS ") }),
             Step(name: "window: colors from a real program", action: {
                 pane.type("Write-Host hello -ForegroundColor Green; Write-Host '✦ unicode typed'")
                 pane.pressEnter()

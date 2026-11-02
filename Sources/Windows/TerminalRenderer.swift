@@ -92,6 +92,20 @@ final class Canvas {
         if sol_canvas_set_font_pixels(raw, pixels) >= 0 { metrics = sol_canvas_metrics(raw) }
     }
 
+    private var loadedArt: [String: Int32] = [:]
+
+    /// Draws a piece of Solanum's art (`ArtData`) into a rectangle, from the rendering made for this display scale.
+    func drawArt(_ name: String, _ r: UIRect, scale: Float, alpha: Float = 1) {
+        let key = "\(name)@\(min(max(Int(scale.rounded(.up)), 1), 4))"
+        var image = loadedArt[key]
+        if image == nil {
+            guard let encoded = ArtData.images[key], let png = Data(base64Encoded: encoded) else { return }
+            image = png.withUnsafeBytes { sol_canvas_load_image(raw, $0.bindMemory(to: UInt8.self).baseAddress, Int32($0.count)) }
+            loadedArt[key] = image
+        }
+        sol_canvas_draw_image(raw, image ?? -1, r.x, r.y, r.width, r.height, alpha)
+    }
+
     func savePNG(to path: String) -> Bool {
         let wide = Array(path.utf16) + [0]
         return sol_canvas_save_png(raw, wide) >= 0

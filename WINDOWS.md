@@ -37,6 +37,11 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
 - **Interface:** Win32, Direct2D and DirectWrite through Swift's `WinSDK` module, with no WinUI dependency. Menus and
   flyouts are drawn by Solanum to match Windows 11, using the sizes and colors from the mock-ups.
 - **Local scripts:** Git for Windows' `sh.exe` runs the same git and search scripts the Mac uses.
+- **Shortcuts:** Ctrl+C copies when something's selected and interrupts otherwise; Ctrl+V pastes, except in full-screen
+  programs and for an image going to Claude Code; Ctrl+X cuts a selection in the line being typed. New and close tab stay
+  Ctrl+Shift+T and Ctrl+Shift+W because programs use Ctrl+T and Ctrl+W, and should become rebindable in Settings.
+- **Art:** `Tools/MakeWindowsArt.swift` renders the Mac's flower and tab prompt into `Sources/Windows/ArtData.swift`, until the
+  drawing itself is shared.
 - **Closing the last window:** it saves the session and exits, and the next launch restores it.
 - **Shells:** Solanum finds PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and each WSL distribution, and
   also takes a custom command. New Tab opens the default shell, a menu beside it opens any other, and Settings picks the

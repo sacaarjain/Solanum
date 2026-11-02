@@ -70,6 +70,10 @@ float sol_canvas_measure_label(SolCanvas *canvas, const uint16_t *text, int32_t 
 /// A glyph of the system icon font (Segoe Fluent Icons, or Segoe MDL2 Assets before Windows 11), centered in the rectangle.
 void sol_canvas_draw_icon(SolCanvas *canvas, float x, float y, float width, float height, uint16_t glyph, float pixels, uint32_t color, float alpha);
 
+/// Decodes a PNG for `sol_canvas_draw_image`. Returns its number, or a negative value if it can't be read.
+int32_t sol_canvas_load_image(SolCanvas *canvas, const uint8_t *png, int32_t length);
+void sol_canvas_draw_image(SolCanvas *canvas, int32_t image, float x, float y, float width, float height, float alpha);
+
 /// Bitmap canvases only. `path` is NUL-terminated UTF-16.
 int32_t sol_canvas_save_png(SolCanvas *canvas, const uint16_t *path);
 
