@@ -12,7 +12,7 @@ struct UIRect: Equatable {
 
 /// What's at a point of the window.
 enum WindowPart: Equatable {
-    case tab(Int), tabClose(Int), newTab, flower
+    case tab(Int), tabClose(Int), newTab, flower, scrollLeft, scrollRight
     case minimize, maximize, close
     /// The empty part of the tab bar, which drags the window.
     case titleBar
@@ -23,6 +23,8 @@ enum WindowPart: Equatable {
 /// has them, the status bar along the bottom, and the terminal between. Plain arithmetic, shared and testable.
 struct WindowLayout {
     let width: Float, height: Float, scale: Float, tabCount: Int
+    /// How far the tabs are scrolled, when they don't all fit.
+    var tabScroll: Float = 0
 
     var tabBarHeight: Float { (38 * scale).rounded() }
     var statusBarHeight: Float { (26 * scale).rounded() }
@@ -35,32 +37,55 @@ struct WindowLayout {
         let side = (36 * scale).rounded()
         return UIRect(x: minimize.x - side, y: 0, width: side, height: tabBarHeight)
     }
-    /// Right after the last tab, as far as there's room.
+    /// Right after the last tab, or pinned beside the flower when the tabs have to scroll.
     var newTab: UIRect {
-        let side = newTabSide
-        let x = min(tabsStart + Float(tabCount) * tabWidth + (6 * scale).rounded(), newTabLimit)
-        // On the tabs' center line, level with their close buttons, rather than the whole bar's.
-        return UIRect(x: x, y: (tab(0).midY - side / 2).rounded(), width: side, height: side)
+        let x = overflows ? newTabLimit : tabsStart + Float(tabCount) * tabWidth + (6 * scale).rounded()
+        return UIRect(x: x, y: (tabTop + (tabBarHeight - tabTop - newTabSide) / 2).rounded(), width: newTabSide, height: newTabSide)
     }
     private var newTabSide: Float { (28 * scale).rounded() }
     private var newTabLimit: Float { flower.x - newTabSide - (2 * scale).rounded() }
+    private var tabTop: Float { (5 * scale).rounded() }
+    private var tabsStart: Float { (8 * scale).rounded() }
+    private var minTabWidth: Float { (120 * scale).rounded() }
+    private var fittingTabWidth: Float { (newTabLimit - (6 * scale).rounded() - tabsStart) / Float(max(tabCount, 1)) }
 
-    /// Tabs share what's left, between these widths: past the narrowest, they stop fitting.
+    /// More tabs than fit at their narrowest: they scroll between two arrows, as on the Mac.
+    var overflows: Bool { tabCount > 0 && fittingTabWidth < minTabWidth }
+
     var tabWidth: Float {
         guard tabCount > 0 else { return 0 }
-        let room = newTabLimit - (6 * scale).rounded() - tabsStart
-        return max(min(room / Float(tabCount), 240 * scale), 72 * scale).rounded()
+        return overflows ? minTabWidth : min(fittingTabWidth, 240 * scale).rounded()
     }
-    private var tabsStart: Float { (8 * scale).rounded() }
+
+    private var arrowWidth: Float { (22 * scale).rounded() }
+    var scrollLeft: UIRect { UIRect(x: tabsStart, y: tabTop, width: arrowWidth, height: tabBarHeight - tabTop) }
+    var scrollRight: UIRect { UIRect(x: newTabLimit - (6 * scale).rounded() - arrowWidth, y: tabTop, width: arrowWidth, height: tabBarHeight - tabTop) }
+
+    /// The stretch of the bar tabs are drawn in, and can be clicked in.
+    var tabViewport: UIRect {
+        guard overflows else { return UIRect(x: tabsStart, y: 0, width: newTabLimit - tabsStart, height: tabBarHeight) }
+        let x = scrollLeft.maxX + (2 * scale).rounded()
+        return UIRect(x: x, y: 0, width: max(scrollRight.x - (2 * scale).rounded() - x, 0), height: tabBarHeight)
+    }
+
+    var maxTabScroll: Float { overflows ? max(Float(tabCount) * tabWidth - tabViewport.width, 0) : 0 }
 
     func tab(_ i: Int) -> UIRect {
-        let top = (5 * scale).rounded()
-        return UIRect(x: tabsStart + Float(i) * tabWidth, y: top, width: tabWidth, height: tabBarHeight - top)
+        let start = overflows ? tabViewport.x - tabScroll : tabsStart
+        return UIRect(x: start + Float(i) * tabWidth, y: tabTop, width: tabWidth, height: tabBarHeight - tabTop)
     }
 
     func tabClose(_ i: Int) -> UIRect {
         let r = tab(i), side = (18 * scale).rounded()
         return UIRect(x: r.maxX - side - (6 * scale).rounded(), y: (r.midY - side / 2).rounded(), width: side, height: side)
+    }
+
+    /// The scroll that brings a tab fully into view, moving as little as possible.
+    func scroll(showing i: Int) -> Float {
+        let r = tab(i), v = tabViewport
+        var target = tabScroll
+        if r.x < v.x { target += r.x - v.x } else if r.maxX > v.maxX { target += r.maxX - v.maxX }
+        return min(max(target, 0), maxTabScroll)
     }
 
     var statusBar: UIRect { UIRect(x: 0, y: height - statusBarHeight, width: width, height: statusBarHeight) }
@@ -74,8 +99,14 @@ struct WindowLayout {
         if minimize.contains(x, y) { return .minimize }
         if flower.contains(x, y) { return .flower }
         if newTab.contains(x, y) { return .newTab }
-        for i in 0..<tabCount where tab(i).contains(x, y) {
-            return tabClose(i).contains(x, y) ? .tabClose(i) : .tab(i)
+        if overflows {
+            if scrollLeft.contains(x, y) { return .scrollLeft }
+            if scrollRight.contains(x, y) { return .scrollRight }
+        }
+        if tabViewport.contains(x, y) {
+            for i in 0..<tabCount where tab(i).contains(x, y) {
+                return tabClose(i).contains(x, y) ? .tabClose(i) : .tab(i)
+            }
         }
         return .titleBar
     }

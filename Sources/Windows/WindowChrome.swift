@@ -5,6 +5,7 @@ import Foundation
 private enum Icon {
     static let minimize: UInt16 = 0xE921, maximize: UInt16 = 0xE922, restore: UInt16 = 0xE923, close: UInt16 = 0xE8BB
     static let add: UInt16 = 0xE710, folder: UInt16 = 0xE8B7
+    static let chevronLeft: UInt16 = 0xE76B, chevronRight: UInt16 = 0xE76C
 }
 
 /// The tab bar and status bar. One function for the window and for snapshots.
@@ -49,8 +50,12 @@ struct WindowChrome {
         let bar = UIRect(x: 0, y: 0, width: layout.width, height: layout.tabBarHeight)
         sol_canvas_fill_rect(canvas.raw, bar.x, bar.y, bar.width, bar.height, TerminalPalette.chrome, 1)
         sol_canvas_fill_rect(canvas.raw, 0, bar.maxY - 1, bar.width, 1, fg, 0.10)
-        for i in tabs.indices { drawTab(i) }
+        let v = layout.tabViewport
+        sol_canvas_push_clip(canvas.raw, v.x, v.y, v.width, v.height)
+        for i in tabs.indices where layout.tab(i).maxX > v.x && layout.tab(i).x < v.maxX { drawTab(i) }
         drawSeparators()
+        sol_canvas_pop_clip(canvas.raw)
+        drawScrollArrows()
         drawNewTabButton()
         let flower = (22 * scale).rounded()
         canvas.drawArt("flower", UIRect(x: layout.flower.x + ((layout.flower.width - flower) / 2).rounded(),
@@ -115,6 +120,17 @@ struct WindowChrome {
     private func drawPrompt(atX x: Float, midY: Float, active: Bool) {
         let w = (15 * scale).rounded(), h = (13 * scale).rounded()
         canvas.drawArt(active ? "prompt" : "promptDim", UIRect(x: x, y: (midY - h / 2).rounded(), width: w, height: h), scale: scale)
+    }
+
+    /// At both ends of tabs that don't all fit, faint when there's nothing more that way.
+    private func drawScrollArrows() {
+        guard layout.overflows else { return }
+        for (part, r, glyph, more) in [(WindowPart.scrollLeft, layout.scrollLeft, Icon.chevronLeft, layout.tabScroll > 0.5),
+                                       (.scrollRight, layout.scrollRight, Icon.chevronRight, layout.tabScroll < layout.maxTabScroll - 0.5)] {
+            let on = more && hovered == part
+            if on { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height - 4 * scale, 6 * scale, TerminalPalette.surface, 0.7) }
+            icon(glyph, UIRect(x: r.x, y: r.y, width: r.width, height: r.height - 4 * scale), pixels: 10 * scale, alpha: more ? (on ? 0.95 : 0.7) : 0.18)
+        }
     }
 
     private func drawNewTabButton() {

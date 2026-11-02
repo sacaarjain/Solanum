@@ -23,6 +23,7 @@ final class TerminalWindow {
     /// A press that began on the terminal, whose drag and release belong to it wherever they end up.
     private var terminalHasMouse = false
     private var clientWidth = 0, clientHeight = 0
+    private var tabScroll: Float = 0
     private var lastDrawn = Date.distantPast
     private(set) var paints = 0
 
@@ -94,7 +95,7 @@ final class TerminalWindow {
     private func scaledPadding() -> Float { (6 * scale).rounded() }
 
     private var layout: WindowLayout {
-        WindowLayout(width: Float(clientWidth), height: Float(clientHeight), scale: scale, tabCount: panes.count)
+        WindowLayout(width: Float(clientWidth), height: Float(clientHeight), scale: scale, tabCount: panes.count, tabScroll: tabScroll)
     }
 
     private func sizeWindow(toCols cols: Int, rows: Int) {
@@ -147,6 +148,7 @@ final class TerminalWindow {
         if panes.indices.contains(activeIndex) { panes[activeIndex].setFocused(false) }
         activeIndex = i
         panes[i].setFocused(isFocused)
+        settleTabScroll()
         detailsChanged()
     }
 
@@ -171,6 +173,7 @@ final class TerminalWindow {
         if i < activeIndex || activeIndex >= panes.count { activeIndex = max(activeIndex - 1, 0) }
         if wasActive { panes[activeIndex].setFocused(isFocused) }
         hovered = nil
+        settleTabScroll()
         detailsChanged()
     }
 
@@ -193,6 +196,18 @@ final class TerminalWindow {
     }
 
     private func invalidate() { InvalidateRect(hwnd, nil, false) }
+
+    /// Keeps the tabs' scroll in range and, unless the person's own scrolling is what moved them, the active tab in view.
+    private func settleTabScroll(showingActive: Bool = true) {
+        tabScroll = min(max(tabScroll, 0), layout.maxTabScroll)
+        if showingActive && panes.indices.contains(activeIndex) { tabScroll = layout.scroll(showing: activeIndex) }
+    }
+
+    private func scrollTabs(by delta: Float) {
+        tabScroll += delta
+        settleTabScroll(showingActive: false)
+        invalidate()
+    }
 
     // MARK: - Drawing
 
@@ -325,7 +340,14 @@ final class TerminalWindow {
             clientMouse(message, wParam, lParam)
             return 0
         case Win.WM_MOUSEWHEEL:
-            if !panes.isEmpty { activePane.wheel(wParam, lParam) }
+            guard !panes.isEmpty else { return 0 }
+            let (_, y) = screenPoint(lParam)
+            if y < layout.tabBarHeight {
+                let notches = Float(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Float(Win.WHEEL_DELTA)
+                scrollTabs(by: -notches * layout.tabWidth)
+            } else {
+                activePane.wheel(wParam, lParam)
+            }
             return 0
         case Win.WM_DESTROY:
             panes.forEach { $0.terminate() }
@@ -405,6 +427,7 @@ final class TerminalWindow {
         canvas.terminalArea = layout.terminal
         let grid = gridSize()
         panes.forEach { $0.resize(cols: grid.cols, rows: grid.rows) }
+        settleTabScroll()
         invalidate()
     }
 
@@ -427,6 +450,8 @@ final class TerminalWindow {
             setHovered(part, nonClient: false)
         case Win.WM_LBUTTONDOWN:
             if case .tab(let i) = part { selectTab(i) }
+            if part == .scrollLeft { scrollTabs(by: -layout.tabViewport.width * 0.75) }
+            if part == .scrollRight { scrollTabs(by: layout.tabViewport.width * 0.75) }
             pressed = part
         case Win.WM_LBUTTONUP:
             if part == pressed {

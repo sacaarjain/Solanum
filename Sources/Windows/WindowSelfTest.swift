@@ -86,6 +86,16 @@ enum WindowSelfTest {
         results.check("layout: the rest of the bar drags", WindowLayout(width: 1800, height: 640, scale: 1, tabCount: 2).part(atX: 1000, y: 10) == .titleBar)
         results.check("layout: below the bars is the terminal", layout.part(atX: 500, y: 300) == .terminal && layout.part(atX: 500, y: 630) == .statusBar)
         results.check("layout: many tabs still fit", WindowLayout(width: 1000, height: 640, scale: 2, tabCount: 4).tabWidth >= 144)
+        let many = WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 20, tabScroll: 300)
+        results.check("overflow: the arrows, tabs and + don't overlap", many.overflows && many.scrollLeft.maxX <= many.tabViewport.x
+                      && many.tabViewport.maxX <= many.scrollRight.x && many.scrollRight.maxX <= many.newTab.x && many.newTab.maxX <= many.flower.x)
+        results.check("overflow: + stays beside the flower, not over the buttons", many.flower.maxX <= many.minimize.x)
+        results.check("overflow: finds the arrows", many.part(atX: many.scrollLeft.x + 2, y: 20) == .scrollLeft && many.part(atX: many.scrollRight.x + 2, y: 20) == .scrollRight)
+        results.check("overflow: tabs out of view can't be clicked", WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 20).part(atX: many.newTab.x + 2, y: 20) == .newTab)
+        results.check("overflow: a tab in view can", many.part(atX: many.tabViewport.x + 40, y: 20) != .titleBar)
+        results.check("overflow: scrolls to show a tab past the end", WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 20).scroll(showing: 19) == many.maxTabScroll)
+        results.check("overflow: and back to the first", many.scroll(showing: 0) == 0)
+        results.check("overflow: not when they fit", !WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 3).overflows)
         results.check("layout: scales with the display", WindowLayout(width: 1000, height: 640, scale: 2, tabCount: 1).tabBarHeight == 76)
         results.check("text: home is ~", WindowText.crumbs(#"C:\Users\me\Projects\Solanum"#, home: #"C:\Users\me"#) == ["~", "Projects", "Solanum"])
         results.check("text: not home", WindowText.crumbs(#"C:\Users\medium"#, home: #"C:\Users\me"#) == ["C:", "Users", "medium"])
@@ -110,6 +120,12 @@ enum WindowSelfTest {
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
             results.check("chrome: saves", canvas.savePNG(to: dir + "\\chrome.png"))
         }
+        var crowded = WindowLayout(width: 1200, height: 420, scale: 1, tabCount: 22)
+        crowded.tabScroll = crowded.scroll(showing: 15)
+        guard sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
+        WindowChrome(canvas: canvas, layout: crowded, tabs: (1...22).map { "tab \($0)" }, activeTab: 15).draw()
+        results.check("chrome: draws with too many tabs", sol_canvas_end(canvas.raw) >= 0)
+        if let dir = snapshotDirectory { results.check("chrome: saves that too", canvas.savePNG(to: dir + "\\chrome-overflow.png")) }
     }
 
     /// A real window with a real shell, in the order someone would try it. Exit code 0 if it all works.
@@ -328,6 +344,20 @@ enum WindowSelfTest {
         }, done: { hasLine("after-reopen") }))
         steps.append(Step(name: "tabs: Ctrl+Shift+W closes one too", action: { press(0x57, shift: true) },
                           done: { window.panes.count == 2 }))
+        steps.append(Step(name: "overflow: opening tabs past what fits", action: {}, done: {
+            if !window.currentLayout.overflows { window.newTab() }
+            return window.currentLayout.overflows && pane.atPrompt
+        }))
+        steps.append(Step(name: "overflow: the new tab is in view", action: {}, done: {
+            let l = window.currentLayout, r = l.tab(window.activeIndex)
+            return r.x >= l.tabViewport.x && r.maxX <= l.tabViewport.maxX
+        }))
+        steps.append(Step(name: "overflow: the left arrow scrolls", action: { window.click(window.currentLayout.scrollLeft) },
+                          done: { window.currentLayout.tabScroll < window.currentLayout.maxTabScroll }))
+        steps.append(Step(name: "overflow: closing them ends it", action: {}, done: {
+            if window.panes.count > 2 && pane.atPrompt { press(0x57) }
+            return window.panes.count == 2 && !window.currentLayout.overflows && window.currentLayout.tabScroll == 0
+        }))
         steps.append(Step(name: "tabs: titled by folder, not the shell's path", action: {},
                           done: { !window.panes[1].tabTitle.contains(".exe") && !window.panes[1].tabTitle.isEmpty }))
         steps.append(Step(name: "tabs: exit closes only its tab", action: {
