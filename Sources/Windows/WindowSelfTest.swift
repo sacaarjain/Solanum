@@ -254,14 +254,15 @@ enum WindowSelfTest {
         }, done: { hasLine("in-tab-two") }))
         steps.append(Step(name: "tabs: clicking a tab shows it", action: { window.click(window.currentLayout.tab(0)) },
                           done: { window.activeIndex == 0 && !pane.visibleText.contains("in-tab-two") }))
-        steps.append(Step(name: "tabs: a background tab keeps running", action: {
+        steps.append(Step(name: "tabs: a command starts in the second tab", action: {
             window.selectTab(1)
-            pane.type("Start-Sleep 1; echo background-done")
+            pane.type("Start-Sleep 2; echo background-done")
             pane.pressEnter()
-            window.selectTab(0)
-        }, done: { window.panes[1].visibleText.contains("\nbackground-done") }))
-        steps.append(Step(name: "tabs: all of them resize", action: { window.resizeWindow(toCols: 80, rows: 30) },
-                          done: { window.panes[0].terminal.cols == 80 && window.panes[1].terminal.cols == 80 }))
+        }, done: { window.panes[1].terminal.currentBlock?.state == .running }))
+        steps.append(Step(name: "tabs: it keeps running behind another", action: { window.selectTab(0) },
+                          done: { window.activeIndex == 0 && window.panes[1].visibleText.contains("\nbackground-done") }))
+        steps.append(Step(name: "tabs: all of them resize", action: { window.resizeWindow(toCols: 100, rows: 30) },
+                          done: { window.panes[0].terminal.cols == 100 && window.panes[1].terminal.cols == 100 }))
         steps.append(Step(name: "tabs: titled by folder, not the shell's path", action: {},
                           done: { !window.panes[1].tabTitle.contains(".exe") && !window.panes[1].tabTitle.isEmpty }))
         steps.append(Step(name: "tabs: exit closes only its tab", action: {
