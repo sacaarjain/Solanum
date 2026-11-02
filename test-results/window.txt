@@ -23,39 +23,184 @@
   ✓ keys: a command for the clipboard keys
   ✓ keys: Ctrl+C copies a selection and clears it
   ✓ keys: Ctrl+C with a selection doesn't interrupt
-  ✓ keys: Ctrl+V pastes
-  ✓ keys: Ctrl+X cuts a selection
-  ✓ keys: and it's on the clipboard, gone from the line
-  ✓ keys: Ctrl+C with nothing selected interrupts
-  ✓ window: colors from a real program
-  ✓ tabs: the + button opens one
-  ✓ tabs: typing goes to the new tab
-  ✓ tabs: clicking a tab shows it
-  ✓ tabs: a command starts in the second tab
-  ✓ tabs: it keeps running behind another
-  ✓ tabs: all of them resize
-  ✓ tabs: Ctrl+T opens one at a prompt
-  ✓ tabs: a running program keeps Ctrl+T
-  ✓ tabs: Ctrl+Shift+T opens one from anywhere
-  ✓ tabs: Ctrl+Shift+W closes one
-  ✓ tabs: Ctrl+W closes one at a prompt
-  ✓ tabs: a tab with a program running
-  ✓ tabs: the program starts
-  ✓ tabs: Ctrl+W closes it, program and all
-  ✓ tabs: titled by folder, not the shell's path
-  ✓ tabs: exit closes only its tab
-  ✓ tabs: the x closes one
-  ✓ box: replace on one row: starts
-  ✓ box: replace on one row: selects and acts
-  ✓ box: replace on one row: leaves the right text
-  ✓ box: replace across two rows: starts
-  ✓ box: replace across two rows: selects and acts
-  ✓ box: replace across two rows: leaves the right text
-  ✓ box: delete across two rows: starts
-  ✓ box: delete across two rows: selects and acts
-  ✓ box: delete across two rows: leaves the right text
-  ✓ box: delete across three rows: starts
-  ✓ box: delete across three rows: selects and acts
-  ✓ box: delete across three rows: leaves the right text
-  ✓ window: painted
-All 60 checks passed.
+  ✗ keys: Ctrl+V pastes 
+line 1
+line 2
+line 3
+line 4
+line 5
+line 6
+line 7
+line 8
+line 9
+line 10
+line 11
+line 12
+line 13
+line 14
+line 15
+line 16
+line 17
+line 18
+line 19
+line 20
+line 21
+line 22
+line 23
+line 24
+line 25
+line 26
+line 27
+line 28
+line 29
+line 30
+line 31
+line 32
+line 33
+line 34
+line 35
+line 36
+line 37
+line 38
+line 39
+line 40
+line 41
+line 42
+line 43
+line 44
+line 45
+line 46
+line 47
+line 48
+line 49
+line 50
+line 51
+line 52
+line 53
+line 54
+line 55
+line 56
+line 57
+line 58
+line 59
+line 60
+PS C:\Users\sacaa> echo abXcdef
+abXcdef
+PS C:\Users\sacaa> echo mnZZ
+mnZZ
+PS C:\Users\sacaa> echo uvwxyz
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ✗ keys: Ctrl+X cuts a selection 
+line 1
+line 2
+line 3
+line 4
+line 5
+line 6
+line 7
+line 8
+line 9
+line 10
+line 11
+line 12
+line 13
+line 14
+line 15
+line 16
+line 17
+line 18
+line 19
+line 20
+line 21
+line 22
+line 23
+line 24
+line 25
+line 26
+line 27
+line 28
+line 29
+line 30
+line 31
+line 32
+line 33
+line 34
+line 35
+line 36
+line 37
+line 38
+line 39
+line 40
+line 41
+line 42
+line 43
+line 44
+line 45
+line 46
+line 47
+line 48
+line 49
+line 50
+line 51
+line 52
+line 53
+line 54
+line 55
+line 56
+line 57
+line 58
+line 59
+line 60
+PS C:\Users\sacaa> echo abXcdef
+abXcdef
+PS C:\Users\sacaa> echo mnZZ
+mnZZ
+PS C:\Users\sacaa> echo uvwxyz
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+2 of 27 checks FAILED.
