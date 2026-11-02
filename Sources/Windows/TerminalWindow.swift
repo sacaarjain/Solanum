@@ -1198,9 +1198,9 @@ final class TerminalWindow {
     func dragTab(_ i: Int, toX x: Float) {
         let r = layout.tab(i), y = Int(r.midY)
         func at(_ px: Int) -> LPARAM { LPARAM(px & 0xFFFF) | (LPARAM(y & 0xFFFF) << 16) }
-        PostMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, at(Int(r.x + 20)))
-        PostMessageW(hwnd, Win.WM_MOUSEMOVE, 1, at(Int(x)))
-        PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, at(Int(x)))
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, at(Int(r.x + 20)))
+        _ = SendMessageW(hwnd, Win.WM_MOUSEMOVE, 1, at(Int(x)))
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, at(Int(x)))
     }
 
     /// Keys while a sidebar has the focus. False hands the key on, and typing goes back to the terminal.
