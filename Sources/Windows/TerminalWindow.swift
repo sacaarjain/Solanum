@@ -260,7 +260,7 @@ final class TerminalWindow {
             let part = layout.part(atX: x, y: y), was = pressed
             pressed = nil
             invalidate()
-            if part == was, let part { pressCaptionButton(part) }
+            if let was, part == was { pressCaptionButton(part) }
             return was == nil ? DefWindowProcW(hwnd, message, wParam, lParam) : 0
         case Win.WM_SETCURSOR:
             return setCursor(wParam, lParam)
