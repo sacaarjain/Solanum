@@ -143,15 +143,15 @@ enum WindowSelfTest {
         results.check("tree: moving resets the view", tree.selection == nil && tree.scrollTop == 0 && tree.rows.isEmpty)
         tree.receive(#"C:\other"#, nil)
         results.check("tree: says when it can't read the root", tree.rootFailed)
-        let bars = WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 2, leftWidth: 240, rightWidth: 200)
-        results.check("sidebars: the terminal fits between them", bars.terminal.x == 240 && bars.terminal.maxX == 800)
-        results.check("sidebars: tabs start at the terminal", bars.tab(0).x == 240)
-        results.check("sidebars: found by position", bars.part(atX: 100, y: 200) == .leftSidebar && bars.part(atX: 900, y: 200) == .rightSidebar && bars.part(atX: 500, y: 200) == .terminal)
-        results.check("sidebars: their borders can be grabbed", bars.part(atX: 240, y: 200) == .leftEdge && bars.part(atX: 800, y: 200) == .rightEdge)
-        results.check("sidebars: switches in the status bar", bars.part(atX: bars.toggleLeft.x + 2, y: bars.toggleLeft.midY) == .toggleLeft && bars.part(atX: bars.toggleRight.x + 2, y: bars.toggleRight.midY) == .toggleRight)
-        results.check("sidebars: none when hidden", WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 2).part(atX: 3, y: 200) == .terminal)
-        let shape = SidebarLayout(area: bars.leftSidebar, scale: 1)
-        results.check("sidebars: rows from the top of the list", shape.visibleRow(atY: shape.list.y + 1) == 0 && shape.visibleRow(atY: shape.list.y + shape.rowHeight + 1) == 1 && shape.visibleRow(atY: shape.list.y - 1) == nil)
+        let sides = WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 2, leftWidth: 240, rightWidth: 200)
+        results.check("sidesides: the terminal fits between them", sides.terminal.x == 240 && sides.terminal.maxX == 800)
+        results.check("sidesides: tabs start at the terminal", sides.tab(0).x == 240)
+        results.check("sidesides: found by position", sides.part(atX: 100, y: 200) == .leftSidebar && sides.part(atX: 900, y: 200) == .rightSidebar && sides.part(atX: 500, y: 200) == .terminal)
+        results.check("sidesides: their borders can be grabbed", sides.part(atX: 240, y: 200) == .leftEdge && sides.part(atX: 800, y: 200) == .rightEdge)
+        results.check("sidesides: switches in the status bar", sides.part(atX: sides.toggleLeft.x + 2, y: sides.toggleLeft.midY) == .toggleLeft && sides.part(atX: sides.toggleRight.x + 2, y: sides.toggleRight.midY) == .toggleRight)
+        results.check("sidesides: none when hidden", WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 2).part(atX: 3, y: 200) == .terminal)
+        let shape = SidebarLayout(area: sides.leftSidebar, scale: 1)
+        results.check("sidesides: rows from the top of the list", shape.visibleRow(atY: shape.list.y + 1) == 0 && shape.visibleRow(atY: shape.list.y + shape.rowHeight + 1) == 1 && shape.visibleRow(atY: shape.list.y - 1) == nil)
 
         print("Command palette")
         var ran: [String] = []
@@ -534,11 +534,11 @@ enum WindowSelfTest {
         }, done: { window.leftRow(named: "late.txt") != nil }))
         steps.append(Step(name: "sidebar: Esc goes back to the terminal", action: { _ = window.keyDown(Int32(0x1B), shift: false, ctrl: false, alt: false) },
                           done: { !window.leftHasFocus }))
-        var widthBefore: Float = 0
+        var sidebarWidthBefore: Float = 0
         steps.append(Step(name: "sidebar: its border drags", action: {
-            widthBefore = window.leftWidthNow
-            window.dragLeftEdge(to: widthBefore + 60)
-        }, done: { abs(window.leftWidthNow - widthBefore - 60) <= 2 }))
+            sidebarWidthBefore = window.leftWidthNow
+            window.dragLeftEdge(to: sidebarWidthBefore + 60)
+        }, done: { abs(window.leftWidthNow - sidebarWidthBefore - 60) <= 2 }))
         steps.append(Step(name: "sidebar: double-clicking a folder sends the terminal there", action: {
             window.doubleClick(window.leftRow(named: "alpha")!)
         }, done: { pane.terminal.cwd?.hasSuffix("alpha") == true && pane.atPrompt }))
