@@ -79,6 +79,9 @@ final class TerminalPane: TerminalDelegate {
         WindowText.tabTitle(title: terminal.title, folder: terminal.cwd, home: ProcessInfo.processInfo.environment["USERPROFILE"])
     }
 
+    /// Whether the shell is waiting at its prompt, with no program running that might want a key.
+    var atPrompt: Bool { !terminal.usingAlt && terminal.currentBlock?.state == .prompt }
+
     /// Timed work that doesn't depend on being the pane on screen.
     func tick() {
         // Should the cursor never get there (the box closed, say), what's waiting still goes.

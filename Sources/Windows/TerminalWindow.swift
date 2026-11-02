@@ -430,10 +430,18 @@ final class TerminalWindow {
 
     private func isDown(_ key: Int32) -> Bool { GetKeyState(key) < 0 }
 
-    /// The window's own keys, ahead of the pane's. New and close tab are Ctrl+Shift, as Windows terminals have them, because
-    /// programs use Ctrl+T and Ctrl+W.
+    /// The window's own keys, ahead of the pane's.
     private func keyDown(_ key: Int32) -> Bool {
-        let shift = isDown(Win.VK_SHIFT), ctrl = isDown(Win.VK_CONTROL), alt = isDown(Win.VK_MENU)
+        keyDown(key, shift: isDown(Win.VK_SHIFT), ctrl: isDown(Win.VK_CONTROL), alt: isDown(Win.VK_MENU))
+    }
+
+    func keyDown(_ key: Int32, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
+        // Windows' Ctrl stands in for the Mac's Command where that costs little: at a prompt, for keys a shell rarely needs
+        // (see WINDOWS.md). A running program keeps them, and Ctrl+Shift reaches the app from anywhere.
+        if ctrl && !shift && !alt && activePane.atPrompt && key == 0x54 {
+            newTab()
+            return true
+        }
         // Ctrl+1 to 9 pick a tab, with or without Shift. Shells and programs have no use for them.
         if ctrl && !alt && (0x31...0x39).contains(key) {
             selectTab(Int(key) - 0x31)
@@ -454,7 +462,7 @@ final class TerminalWindow {
             default: break
             }
         }
-        return activePane.keyDown(key)
+        return activePane.keyDown(key, shift: shift, ctrl: ctrl, alt: alt)
     }
 
     /// Runs in the message loop, ahead of TranslateMessage. True if a key is dealt with, and shouldn't become a character.

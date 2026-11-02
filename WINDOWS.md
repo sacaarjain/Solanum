@@ -37,9 +37,14 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
 - **Interface:** Win32, Direct2D and DirectWrite through Swift's `WinSDK` module, with no WinUI dependency. Menus and
   flyouts are drawn by Solanum to match Windows 11, using the sizes and colors from the mock-ups.
 - **Local scripts:** Git for Windows' `sh.exe` runs the same git and search scripts the Mac uses.
-- **Shortcuts:** Ctrl+C copies when something's selected and interrupts otherwise; Ctrl+V pastes, except in full-screen
-  programs and for an image going to Claude Code; Ctrl+X cuts a selection in the line being typed. New and close tab stay
-  Ctrl+Shift+T and Ctrl+Shift+W because programs use Ctrl+T and Ctrl+W, and should become rebindable in Settings.
+- **Shortcuts:** Mac Option is Alt and Shift is Shift. Windows has one Ctrl for what the Mac splits between Command and
+  Control, and Fn can't be detected, so Ctrl stands in for Command where that costs little:
+  - Programs always keep Ctrl+A, D, E, H, J, K, L, R, U, W and Z.
+  - At a prompt, the app takes keys shells rarely need: Ctrl+T, N, B, F, O, S, Q, G and P, as each feature arrives.
+  - Full-screen programs get every Ctrl key, and a running program such as Claude Code keeps the ones it uses.
+  - Ctrl+Shift+letter reaches the app from anywhere. Ctrl+Shift+P is the command palette and Ctrl+Shift+W closes a tab.
+  - Ctrl+C copies when something's selected and interrupts otherwise; Ctrl+V pastes, except in full-screen programs and for
+    an image going to Claude Code; Ctrl+X cuts a selection in the line being typed; Ctrl+1 to 9 pick a tab.
 - **Art:** `Tools/MakeWindowsArt.swift` renders the Mac's flower and tab prompt into `Sources/Windows/ArtData.swift`, until the
   drawing itself is shared.
 - **Closing the last window:** it saves the session and exits, and the next launch restores it.

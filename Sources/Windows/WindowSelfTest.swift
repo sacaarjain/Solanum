@@ -290,6 +290,24 @@ enum WindowSelfTest {
                           done: { window.activeIndex == 0 && window.panes[1].visibleText.contains("\nbackground-done") }))
         steps.append(Step(name: "tabs: all of them resize", action: { window.resizeWindow(toCols: 100, rows: 30) },
                           done: { window.panes[0].terminal.cols == 100 && window.panes[1].terminal.cols == 100 }))
+        steps.append(Step(name: "tabs: Ctrl+T opens one at a prompt", action: {
+            _ = window.keyDown(0x54, shift: false, ctrl: true, alt: false)
+        }, done: { window.panes.count == 3 && pane.terminal.cwd != nil && pane.atPrompt }))
+        steps.append(Step(name: "tabs: a running program keeps Ctrl+T", action: {
+            pane.type("Start-Sleep 3")
+            pane.pressEnter()
+        }, done: {
+            guard pane.terminal.currentBlock?.state == .running else { return false }
+            _ = window.keyDown(0x54, shift: false, ctrl: true, alt: false)
+            return window.panes.count == 3
+        }))
+        steps.append(Step(name: "tabs: Ctrl+Shift+T opens one from anywhere", action: {
+            _ = window.keyDown(0x54, shift: true, ctrl: true, alt: false)
+        }, done: { window.panes.count == 4 }))
+        steps.append(Step(name: "tabs: Ctrl+Shift+W closes one", action: {
+            _ = window.keyDown(0x57, shift: true, ctrl: true, alt: false)
+        }, done: { window.panes.count == 3 }))
+        steps.append(Step(name: "tabs: and the third", action: { window.closeTab(2) }, done: { window.panes.count == 2 }))
         steps.append(Step(name: "tabs: titled by folder, not the shell's path", action: {},
                           done: { !window.panes[1].tabTitle.contains(".exe") && !window.panes[1].tabTitle.isEmpty }))
         steps.append(Step(name: "tabs: exit closes only its tab", action: {
