@@ -147,6 +147,24 @@ Tab groups
   ✓ groups: chip labels
   ✓ groups: a chip sits before its first tab
   ✓ groups: collapsed tabs take no room
+ssh
+  ✓ hosts: concrete ones from the config, with details
+  ✓ hosts: their names count as covered
+  ✓ hosts: known ones, skipping hashed entries
+  ✓ ssh: finds the destination
+  ✓ ssh: past grouped flags
+  ✓ ssh: the label drops the user
+  ✓ askpass: knows a password question
+  ✓ secret: comes back as it went in
+  ✓ remote: arguments for the sidebar's connection
+  ✓ remote: a listing's folders and files
+  ✓ hidden process: arguments quoted for Windows
+  ✓ remote: quoting for sh
+  ✓ paths: Unix ones
+  ✓ reconnect: words for PowerShell
+  ✓ paths: a host's folders from /
+  ✓ paths: home is ~ on a host too
+  ✓ menu: Alt shows alternates, where there are any
 Command palette
   ✓ palette: lists everything
   ✓ palette: fuzzy search
@@ -192,4 +210,4 @@ PowerShell hook
   ✓ powershell: Esc clears the line
   ✓ powershell: exits
   - pwsh.exe isn't installed
-All 183 checks passed.
+All 200 checks passed.
