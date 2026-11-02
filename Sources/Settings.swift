@@ -349,6 +349,36 @@ func sectionHeader(_ text: String) -> NSTextField {
     return l
 }
 
+/// A card's last row when it holds more than it first shows: "More" opens the rest, and "Less" folds it away again.
+final class SettingsMoreRow: SettingRow {
+    private let onPress: () -> Void
+
+    init(expanded: Bool, onPress: @escaping () -> Void) {
+        self.onPress = onPress
+        super.init(icon: expanded ? "chevron.up" : "chevron.down", title: expanded ? "Less" : "More")
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func resetCursorRects() { if !isDimmed { addCursorRect(bounds, cursor: .pointingHand) } }
+
+    override func mouseDown(with e: NSEvent) {
+        // An edit in progress commits first; then the page is rebuilt, once this click is done with the row.
+        window?.makeFirstResponder(nil)
+        DispatchQueue.main.async(execute: onPress)
+    }
+
+    /// A real click, through the window, at this row's center.
+    override func devPress() {
+        guard let w = window else { return }
+        let at = convert(NSPoint(x: bounds.midX, y: bounds.midY), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            if let e = NSEvent.mouseEvent(with: type, location: at, modifierFlags: [], timestamp: 0, windowNumber: w.windowNumber,
+                                          context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { w.sendEvent(e) }
+        }
+    }
+}
+
 /// Rounded card holding setting rows separated by hairlines.
 final class SettingsCard: NSView {
     private(set) var rows: [SettingRow] = []
@@ -398,6 +428,25 @@ class SettingRow: NSView {
     private let detailLabel: NSTextField?
     private let accessory: NSView?
     private let accessoryWidth: CGFloat
+    /// Greyed out and out of reach, for a setting that depends on another that's off.
+    var isDimmed = false {
+        didSet {
+            alphaValue = isDimmed ? 0.4 : 1
+            (accessory as? NSTextField)?.isEnabled = !isDimmed
+            accessory.map { window?.invalidateCursorRects(for: $0) }
+        }
+    }
+
+    /// Dev aid (DevTools settings-press): a real press on this row's toggle.
+    func devPress() {
+        guard let toggle = accessory as? ThemedToggle, let w = window else { return }
+        if let e = NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: w.windowNumber,
+                                      context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { toggle.mouseDown(with: e) }
+    }
+
+    var devTitle: String { titleLabel.stringValue }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { isDimmed ? nil : super.hitTest(point) }
 
     init(icon: String? = nil, title: String, detail: String? = nil, accessory: NSView? = nil, width: CGFloat? = nil, mono: Bool = false) {
         self.icon = icon
@@ -486,9 +535,11 @@ final class ThemedToggle: NSControl {
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
-    override func mouseEntered(with e: NSEvent) { hovering = true }
+    private var isDimmed: Bool { (superview as? SettingRow)?.isDimmed == true }
+
+    override func mouseEntered(with e: NSEvent) { hovering = !isDimmed }
     override func mouseExited(with e: NSEvent) { hovering = false }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+    override func resetCursorRects() { if !isDimmed { addCursorRect(bounds, cursor: .pointingHand) } }
 
     override var intrinsicContentSize: NSSize { NSSize(width: 38, height: 22) }
     override var fittingSize: NSSize { intrinsicContentSize }
@@ -625,7 +676,9 @@ final class ThemedField: NSTextField, NSTextFieldDelegate {
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
-    override func mouseEntered(with e: NSEvent) { hovering = true }
+    override var isEnabled: Bool { didSet { if !isEnabled { hovering = false } } }
+
+    override func mouseEntered(with e: NSEvent) { hovering = isEnabled }
     override func mouseExited(with e: NSEvent) { hovering = false }
 
     /// What the field held when editing began; Esc puts it back.
@@ -1427,17 +1480,71 @@ enum SettingsPages {
         if let w = ctl?.window { a.beginSheetModal(for: w) } else { a.runModal() }
     }
 
+    /// Whether Continue Agents lists every agent; until Solanum quits.
+    private static var agentsExpanded = false
+
     // Preferences: startup, window size, tabs and file transfers.
     private static func preferences(_ v: SettingsPageView, _ ctl: SettingsWindowController) {
         let c = Config.shared
+        // Coding agents only continue when the workspace is reloaded, so all of this waits on that setting.
+        let agentsHeader = sectionHeader("Continue Agents")
+        var agentRows: [SettingRow] = []
+        var refreshAgents: () -> Void = {}
+        let agentsRow = SettingRow(icon: "arrow.clockwise", title: "Continue coding agents",
+                                   detail: "Agents running when Solanum quit pick up their last session, using the command below. Needs Reload workspace every time.",
+                                   accessory: toggle(c.continueAgents) { [weak ctl] on in
+            Config.shared.continueAgents = on
+            ctl?.commit()
+            refreshAgents()
+        })
+        let agentsReset = linkButton("Reset to Default") {
+            Config.shared.continueCommands = [:]
+            Config.shared.commit()
+        }
+        refreshAgents = {
+            let restoring = Config.shared.restoreSession
+            agentsHeader.alphaValue = restoring ? 1 : 0.4
+            agentsRow.isDimmed = !restoring
+            let on = restoring && Config.shared.continueAgents
+            agentRows.forEach { $0.isDimmed = !on }
+            agentsReset.isEnabled = on
+            agentsReset.alphaValue = on ? 1 : 0.4
+        }
         v.add(sectionHeader("Startup"), height: 16, gap: 10)
         card(v, [
             SettingRow(icon: "macwindow.on.rectangle", title: "Reload workspace every time",
                        detail: "Off: Solanum starts fresh, and offers the last session for a minute.",
-                       accessory: toggle(c.restoreSession) { [weak ctl] on in Config.shared.restoreSession = on; ctl?.commit() }),
+                       accessory: toggle(c.restoreSession) { [weak ctl] on in
+                Config.shared.restoreSession = on
+                ctl?.commit()
+                refreshAgents()
+            }),
             SettingRow(icon: "text.alignleft", title: "Include recent output", detail: "Bring back each tab's last few thousand lines.",
                        accessory: toggle(c.restoreScrollback) { [weak ctl] on in Config.shared.restoreScrollback = on; ctl?.commit() }),
         ])
+
+        v.add(agentsHeader, height: 16, gap: 10)
+        // The best-known agents, then the rest behind More.
+        let shownAgents = agentsExpanded ? AgentKind.known : Array(AgentKind.known.prefix(4))
+        agentRows = shownAgents.map { kind in
+            let field = ThemedField(c.continueCommand(for: kind), placeholder: "Not continued")
+            field.onCommit = { [weak ctl] text in Config.shared.setContinueCommand(text, for: kind); ctl?.commit() }
+            let row = SettingRow(icon: "sparkles", title: kind.name, accessory: field, width: 280)
+            row.iconImage = kind.markImage
+            return row
+        }
+        let more = SettingsMoreRow(expanded: agentsExpanded) { [weak ctl] in
+            agentsExpanded.toggle()
+            ctl?.rebuild()
+        }
+        agentRows.append(more)
+        card(v, [agentsRow] + agentRows, gap: 12)
+        let agentsButtons = NSStackView(views: [agentsReset])
+        agentsButtons.orientation = .horizontal
+        agentsButtons.alignment = .centerY
+        agentsButtons.distribution = .gravityAreas
+        v.add(agentsButtons, height: 20, gap: 30)
+        refreshAgents()
 
         v.add(sectionHeader("Window Size"), height: 16, gap: 10)
         let picker = WindowSizePicker(columns: c.windowColumns, rows: c.windowRows)
@@ -1475,7 +1582,26 @@ enum SettingsPages {
                        accessory: newTabFolder, width: 150),
             SettingRow(icon: "bell", title: "Notify after (seconds)", detail: "When a command in a background tab runs at least this long. 0 turns it off.",
                        accessory: notify, width: 70),
+            SettingRow(icon: "speaker.wave.2", title: "Bell sound", detail: "Play the alert sound when a program rings the bell. It always flashes, and marks a background tab.",
+                       accessory: toggle(c.audibleBell) { [weak ctl] on in Config.shared.audibleBell = on; ctl?.commit() }),
             SettingRow(icon: "scroll", title: "Lines kept per tab", detail: "Older output is dropped past this.", accessory: lines, width: 90),
+        ])
+
+        v.add(sectionHeader("Keep Awake"), height: 16, gap: 10)
+        let awake = ThemedField(String(c.keepAwakeSeconds), placeholder: String(Config.defaultKeepAwakeSeconds))
+        awake.alignment = .right
+        awake.onCommit = { [weak ctl, weak awake] s in
+            // Empty goes back to the default; anything that isn't a number leaves it as it was.
+            let text = s.trimmingCharacters(in: .whitespaces)
+            if let n = text.isEmpty ? Config.defaultKeepAwakeSeconds : Int(text) {
+                Config.shared.keepAwakeSeconds = n
+                ctl?.commit()
+            }
+            awake?.stringValue = String(Config.shared.keepAwakeSeconds)
+        }
+        card(v, [
+            SettingRow(icon: "cup.and.saucer", title: "Keep awake for (seconds)",
+                       detail: "How long ⇧⌘A runs caffeinate. The default, 28800, is 8 hours.", accessory: awake, width: 90),
         ])
 
         v.add(sectionHeader("File Transfers"), height: 16, gap: 10)
@@ -1605,10 +1731,17 @@ enum SettingsPages {
             ctl?.commit()
             (NSApp.delegate as? AppDelegate)?.registerHotKey()
         }
+        let metaNames = ["both": "Both", "left": "Left", "right": "Right", "off": "Off"]
+        let meta = ChoicePopup(["Both", "Left", "Right", "Off"], selected: metaNames[c.optionAsMeta] ?? "Both")
+        meta.onChange = { [weak ctl] s in
+            Config.shared.optionAsMeta = metaNames.first { $0.value == s }?.key ?? "both"
+            ctl?.commit()
+        }
         v.add(sectionHeader("Keyboard & Mouse"), height: 16, gap: 10)
         card(v, [
-            SettingRow(icon: "option", title: "Option key acts as Meta", detail: "⌥← and ⌥→ jump words; ⌥ shortcuts reach the shell.",
-                       accessory: toggle(c.optionAsMeta) { [weak ctl] on in Config.shared.optionAsMeta = on; ctl?.commit() }),
+            SettingRow(icon: "option", title: "Option key acts as Meta",
+                       detail: "⌥ shortcuts reach the shell. Characters your layout puts on ⌥, like @ [ ] { } | ~, still type. Off: ⌥ types é, ñ, € and the like.",
+                       accessory: meta, width: 100),
             SettingRow(icon: "doc.on.clipboard", title: "Copy on select",
                        accessory: toggle(c.copyOnSelect) { [weak ctl] on in Config.shared.copyOnSelect = on; ctl?.commit() }),
         ])

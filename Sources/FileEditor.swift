@@ -245,7 +245,8 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         previewView?.frame = scroll.frame
     }
 
-    /// Search in Project Folder: a line (from 1) in view, with `text` on it selected.
+    /// Search in Project Folder and file links: a line (from 1) in view, with `text` on it selected. With no such
+    /// text the caret goes to the line's start, and the line flashes to show where that is.
     func reveal(line: Int, text: String) {
         guard mode == .file, media == nil else { return }
         guard loaded else {
@@ -263,7 +264,12 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         let target = found.location == NSNotFound ? NSRange(location: lineRange.location, length: 0) : found
         textView.setSelectedRange(target)
         textView.scrollRangeToVisible(target)
-        if target.length > 0 { textView.showFindIndicator(for: target) }
+        if target.length > 0 {
+            textView.showFindIndicator(for: target)
+        } else {
+            let text = s.substring(with: lineRange).trimmingCharacters(in: .newlines) as NSString
+            if text.length > 0 { textView.showFindIndicator(for: NSRange(location: lineRange.location, length: text.length)) }
+        }
     }
 
     var devHeader: EditorHeaderView { header }

@@ -13,7 +13,9 @@ BUILD_DIR="build"
 APP="$BUILD_DIR/$APP_NAME.app"
 INSTALL_DIR="$HOME/Applications"
 
-OPT="-O"; MODE="release"
+# Release skips Swift's runtime exclusivity checks: in the emulator's per-byte loops they took more time than the
+# parsing itself (a 20 MB cat ran 39% faster without them). Debug builds keep them, to catch a violation.
+OPT="-O -enforce-exclusivity=unchecked"; MODE="release"
 [[ "${1:-}" == "--debug" ]] && { OPT="-Onone -g"; MODE="debug"; }
 
 fail() { echo "✗ $*" >&2; exit 1; }

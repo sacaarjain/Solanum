@@ -15,6 +15,8 @@ extension TerminalView: NSMenuItemValidation {
             return !terminal.usingAlt && terminal.blocks.contains { $0.state == .finished }
         case #selector(copyBlockCommand(_:)), #selector(copyBlockOutput(_:)), #selector(toggleBlockCollapse(_:)):
             return !terminal.usingAlt && (targetTurn != nil || targetBlock != nil)
+        case #selector(sendToChat(_:)):
+            return !terminal.usingAlt && selectedTurnLine == nil && targetBlock != nil
         case #selector(rerunBlockCommand(_:)), #selector(saveCommandAsSnippet(_:)):
             return !terminal.usingAlt && targetTurn == nil && targetBlock != nil
         case #selector(jumpToPrompt(_:)):
@@ -168,6 +170,10 @@ extension TerminalView: NSMenuItemValidation {
             flashTurn(t)
             return
         }
+        if selectedBlocks.count > 1 {
+            AgentChats.putOnClipboard(chronological(selectedBlocks).map(\.command).joined(separator: "\n"))
+            return
+        }
         guard let b = targetBlock else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(b.command, forType: .string)
@@ -181,9 +187,9 @@ extension TerminalView: NSMenuItemValidation {
             flashTurn(t)
             return
         }
+        if selectedBlocks.count > 1 { return copySelectedBlocks() }
         guard let b = targetBlock else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(blockText(b, includeCommand: false), forType: .string)
+        AgentChats.putOnClipboard(blockText(b, includeCommand: true))
         flashBlock(b)
     }
 
@@ -313,10 +319,10 @@ extension TerminalView: NSMenuItemValidation {
 
     // MARK: - Keep awake
 
-    /// Types and runs `caffeinate` (display, idle and system sleep blocked for 8h). If this pane is
+    /// Types and runs `caffeinate` (display, idle and system sleep blocked for as long as Settings says). If this pane is
     /// busy (e.g. Claude Code), it runs in a new tab instead so it doesn't land in that program's input.
     @objc func keepAwake(_ sender: Any?) {
-        let cmd = "caffeinate -d -i -s -t 28800\r"
+        let cmd = Config.shared.keepAwakeCommand + "\r"
         guard pty?.hasForegroundJob == true, let wc = window?.windowController as? TerminalWindowController else {
             send(cmd)
             scrollOffset = 0

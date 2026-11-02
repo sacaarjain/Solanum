@@ -17,7 +17,10 @@ final class Config {
     var cursorStyle = "bar"
     var cursorBlink = true
     var ligatures = true
-    var optionAsMeta = true
+    /// Which ⌥ keys act as Meta: both, left, right or off.
+    var optionAsMeta = "both"
+    /// A ring of the bell plays the system alert sound too (it always flashes the pane).
+    var audibleBell = false
     var boldIsBright = false
     /// On light themes, darken text too faint to read (colors programs chose for dark backgrounds).
     var minimumContrast = true
@@ -35,7 +38,33 @@ final class Config {
     var themeIcon = true
     /// File and folder icons: "solanum", or the id of an installed VS Code icon theme (see IconPacks).
     var fileIcons = IconPacks.solanumID
+    /// How long ⇧⌘A's `caffeinate` runs.
+    static let defaultKeepAwakeSeconds = 28800
+    var keepAwakeSeconds = Config.defaultKeepAwakeSeconds {
+        didSet { keepAwakeSeconds = min(max(keepAwakeSeconds, 1), 31_536_000) }
+    }
+    var keepAwakeCommand: String { "caffeinate -d -i -s -t \(keepAwakeSeconds)" }
+    var keepAwakeTitle: String { "Keep Awake (caffeinate \(Self.shortDuration(keepAwakeSeconds)))" }
+
+    /// 28800 as "8h", 5400 as "1h 30m", 90 as "1m 30s".
+    static func shortDuration(_ seconds: Int) -> String {
+        let parts = [(seconds / 3600, "h"), (seconds % 3600 / 60, "m"), (seconds % 60, "s")].filter { $0.0 > 0 }
+        return parts.isEmpty ? "0s" : parts.map { "\($0.0)\($0.1)" }.joined(separator: " ")
+    }
+
     var restoreSession = true
+    /// Restoring a session continues the agents that were running in it.
+    var continueAgents = true
+    /// By an agent's command, what continues it where that's not the default; empty for not at all.
+    var continueCommands: [String: String] = [:]
+
+    func continueCommand(for kind: AgentKind) -> String { continueCommands[kind.command] ?? kind.defaultContinueCommand }
+
+    func setContinueCommand(_ command: String, for kind: AgentKind) {
+        let text = command.trimmingCharacters(in: .whitespaces)
+        continueCommands[kind.command] = text == kind.defaultContinueCommand ? nil : text
+    }
+
     var restoreScrollback = true
     /// Where ⌘T opens a tab: "current" (the focused terminal's folder, as Terminal does) or "home".
     var newTabFolder = "current"
@@ -63,6 +92,7 @@ final class Config {
             save()
             return
         }
+        continueCommands = [:]
         for raw in text.split(whereSeparator: \.isNewline) {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.isEmpty || line.hasPrefix("#") { continue }
@@ -76,6 +106,10 @@ final class Config {
     private func apply(key: String, value: String) {
         func bool() -> Bool { ["true", "yes", "on", "1"].contains(value.lowercased()) }
         func num() -> CGFloat? { Double(value).map { CGFloat($0) } }
+        if key.hasPrefix("continue-command-") {
+            continueCommands[String(key.dropFirst("continue-command-".count))] = value
+            return
+        }
         switch key {
         case "theme": themeName = ThemeLibrary.all.contains { $0.name.caseInsensitiveCompare(value) == .orderedSame } ? value : ThemeLibrary.defaultName
         case "font-family": fontFamily = value.isEmpty ? "System Mono" : value
@@ -86,7 +120,13 @@ final class Config {
         case "cursor-style": cursorStyle = value.lowercased()
         case "cursor-blink": cursorBlink = bool()
         case "font-ligatures": ligatures = bool()
-        case "option-as-meta": optionAsMeta = bool()
+        case "option-as-meta":
+            switch value.lowercased() {
+            case "left", "right": optionAsMeta = value.lowercased()
+            case "false", "no", "off", "none": optionAsMeta = "off"
+            default: optionAsMeta = "both"
+            }
+        case "audible-bell": audibleBell = bool()
         case "bold-is-bright": boldIsBright = bool()
         case "minimum-contrast": minimumContrast = bool()
         case "scrollback-lines": if let n = Int(value) { scrollback = min(max(n, 100), 200_000) }
@@ -96,12 +136,14 @@ final class Config {
         case "quick-terminal-height": if let n = num() { quickTerminalHeight = min(max(n, 0.2), 0.95) }
         case "quick-terminal-autohide": quickTerminalAutoHide = bool()
         case "notify-after-seconds": if let n = Double(value) { notifyAfterSeconds = n }
+        case "keep-awake-seconds": if let n = Int(value) { keepAwakeSeconds = n }
         case "copy-on-select": copyOnSelect = bool()
         case "confirm-quit": confirmQuit = bool()
         case "theme-icon", "planet-companion": themeIcon = bool()
         case "file-icons": fileIcons = value.isEmpty ? IconPacks.solanumID : value
         case "restore-session": restoreSession = bool()
         case "restore-scrollback": restoreScrollback = bool()
+        case "continue-agents": continueAgents = bool()
         case "new-tab-folder": newTabFolder = value.lowercased() == "home" ? "home" : "current"
         case "check-for-updates": checkForUpdates = bool()
         case "transfer-folder": transferFolder = value
@@ -137,7 +179,11 @@ final class Config {
         cursor-style = \(cursorStyle)
         cursor-blink = \(cursorBlink)
 
+        # Which Option keys act as Meta: both | left | right | off. Either way Option types the characters a
+        # keyboard layout puts on it that are plain ASCII, such as @ [ ] { } | ~ on German and French layouts.
         option-as-meta = \(optionAsMeta)
+        # Play the alert sound when a program rings the bell (it always flashes the pane).
+        audible-bell = \(audibleBell)
         bold-is-bright = \(boldIsBright)
 
         # On light themes, darken text too faint to read, such as colors a program chose for dark backgrounds.
@@ -156,11 +202,20 @@ final class Config {
 
         # Notify when a command running in the background takes at least this long (0 = off).
         notify-after-seconds = \(fmt(CGFloat(notifyAfterSeconds)))
+
+        # How long Keep Awake (⇧⌘A) runs caffeinate, in seconds.
+        keep-awake-seconds = \(keepAwakeSeconds)
+
         confirm-quit = \(confirmQuit)
 
         # Reopen windows, tabs, splits, tab names and groups on launch; optionally with recent output.
         restore-session = \(restoreSession)
         restore-scrollback = \(restoreScrollback)
+
+        # Restoring a session continues the coding agents that were running in it. Solanum knows each one's command;
+        # continue-command-<agent> = <command> replaces it, and left empty skips that agent.
+        continue-agents = \(continueAgents)
+        \(continueCommands.sorted { $0.key < $1.key }.map { "continue-command-\($0.key) = \($0.value)" }.joined(separator: "\n"))
 
         # Where ⌘T opens a new tab: current (the focused terminal's folder) | home
         new-tab-folder = \(newTabFolder)

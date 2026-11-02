@@ -158,3 +158,137 @@ final class CornerNoticeView: NSView {
         }
     }
 }
+
+/// In the corner of a pane whose ssh connection was lost: what to do about it, for as long as that's still the
+/// question (the notice saying so goes away on its own, or gets closed).
+final class ConnectionLostBar: NSView {
+    static let height: CGFloat = 32
+    private let label: NSTextField
+    private let reconnectButton: NSButton
+    private let closeButton: NSButton
+
+    init(host: String, onReconnect: @escaping () -> Void, onClose: @escaping () -> Void) {
+        let th = Config.shared.theme
+        label = NSTextField(labelWithString: "Lost connection to \(host)")
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = th.foreground
+        label.lineBreakMode = .byTruncatingMiddle
+        reconnectButton = SettingsPages.linkButton("Reconnect", onReconnect)
+        closeButton = SettingsPages.linkButton("Close", onClose)
+        super.init(frame: .zero)
+        [label, reconnectButton, closeButton].forEach(addSubview)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isFlipped: Bool { true }
+
+    var preferredWidth: CGFloat {
+        32 + ceil(label.fittingSize.width) + 12 + reconnectButton.fittingSize.width + 10 + closeButton.fittingSize.width + 12
+    }
+
+    override func layout() {
+        super.layout()
+        let closeW = closeButton.fittingSize.width, reconnectW = reconnectButton.fittingSize.width
+        closeButton.frame = NSRect(x: bounds.width - closeW - 12, y: 6, width: closeW, height: 20)
+        reconnectButton.frame = NSRect(x: closeButton.frame.minX - reconnectW - 10, y: 6, width: reconnectW, height: 20)
+        label.frame = NSRect(x: 32, y: 7, width: max(0, reconnectButton.frame.minX - 44), height: 17)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let th = Config.shared.theme
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
+        th.surface.withAlphaComponent(1).setFill()
+        path.fill()
+        th.border.setStroke()
+        path.stroke()
+        let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold).applying(.init(paletteColors: [.white, th.red]))
+        if let img = NSImage(systemSymbolName: "wifi.exclamationmark", accessibilityDescription: nil)?.withSymbolConfiguration(cfg) {
+            img.draw(in: NSRect(x: 11, y: (bounds.height - img.size.height) / 2, width: img.size.width, height: img.size.height))
+        }
+    }
+
+    // Clicks and the pointer stay here, not with the terminal underneath.
+    override func mouseDown(with e: NSEvent) {}
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.cursorUpdate, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func cursorUpdate(with event: NSEvent) { NSCursor.arrow.set() }
+
+    func devPress(_ title: String) { [reconnectButton, closeButton].first { $0.title == title }?.performClick(nil) }
+}
+
+/// In the corner of a pane with several commands selected: what to do with them all.
+final class BlockSelectionBar: NSView {
+    static let height: CGFloat = 32
+    private let label = NSTextField(labelWithString: "")
+    private let copyButton: NSButton
+    private var sendButton: NSButton!
+    private let clearButton: NSButton
+
+    init(onCopy: @escaping () -> Void, onSend: @escaping (NSView) -> Void, onClear: @escaping () -> Void) {
+        let th = Config.shared.theme
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = th.foreground
+        copyButton = SettingsPages.linkButton("Copy All", onCopy)
+        clearButton = SettingsPages.linkButton("Clear", onClear)
+        super.init(frame: .zero)
+        sendButton = SettingsPages.linkButton("Send to Chat") { [weak self] in
+            if let b = self?.sendButton { onSend(b) }
+        }
+        [label, copyButton, sendButton!, clearButton].forEach(addSubview)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isFlipped: Bool { true }
+
+    var count = 0 {
+        didSet {
+            label.stringValue = "\(count) commands selected"
+            needsLayout = true
+            superview?.needsLayout = true
+        }
+    }
+
+    var preferredWidth: CGFloat {
+        14 + ceil(label.fittingSize.width) + [copyButton, sendButton!, clearButton].reduce(0) { $0 + 12 + $1.fittingSize.width } + 12
+    }
+
+    override func layout() {
+        super.layout()
+        var right = bounds.width - 12
+        for b in [clearButton, sendButton!, copyButton] {
+            let w = b.fittingSize.width
+            b.frame = NSRect(x: right - w, y: 6, width: w, height: 20)
+            right = b.frame.minX - 12
+        }
+        label.frame = NSRect(x: 14, y: 7, width: max(0, right - 14), height: 17)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let th = Config.shared.theme
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
+        th.surface.withAlphaComponent(1).setFill()
+        path.fill()
+        th.accent.withAlphaComponent(0.6).setStroke()
+        path.stroke()
+    }
+
+    // Clicks and the pointer stay here, not with the terminal underneath.
+    override func mouseDown(with e: NSEvent) {}
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.cursorUpdate, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func cursorUpdate(with event: NSEvent) { NSCursor.arrow.set() }
+
+    func devPress(_ title: String) { [copyButton, sendButton!, clearButton].first { $0.title == title }?.performClick(nil) }
+}

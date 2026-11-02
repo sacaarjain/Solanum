@@ -151,18 +151,20 @@ final class FileTabStrip: NSView {
     }
 
     /// Solanum's own tab icon: what the tab shows, or the kind of file.
-    private func drawSymbol(_ mode: EditorMode, _ name: String, _ r: NSRect, _ th: Theme) {
-        let symbol: String
+    static func symbol(_ mode: EditorMode, _ name: String) -> String {
         switch mode {
-        case .diff, .stagedDiff, .commitDiff: symbol = "plusminus"
-        case .commit: symbol = "smallcircle.filled.circle"
-        case .status: symbol = "square.and.pencil"
-        case .graph: symbol = "arrow.triangle.branch"
-        case .preview: symbol = "doc.richtext"
-        case .file: symbol = FileSidebarView.symbol(for: name)
+        case .diff, .stagedDiff, .commitDiff: return "plusminus"
+        case .commit: return "smallcircle.filled.circle"
+        case .status: return "square.and.pencil"
+        case .graph: return "arrow.triangle.branch"
+        case .preview: return "doc.richtext"
+        case .file: return FileSidebarView.symbol(for: name)
         }
+    }
+
+    private func drawSymbol(_ mode: EditorMode, _ name: String, _ r: NSRect, _ th: Theme) {
         let config = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular).applying(.init(paletteColors: [th.dimText]))
-        if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(config) {
+        if let img = NSImage(systemSymbolName: Self.symbol(mode, name), accessibilityDescription: nil)?.withSymbolConfiguration(config) {
             img.draw(in: NSRect(x: r.minX + 9, y: r.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
         }
     }

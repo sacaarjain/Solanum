@@ -17,6 +17,10 @@ struct Selection {
     /// Top rule of Claude Code's input box, when the selection lies inside it: the box is redrawn lower down
     /// whenever Claude prints above it, and the selection moves with it (see `followInputBox`).
     var inputBoxTop: Int?
+    /// ⌥-drag: the columns between the two ends on every line between them, not running text.
+    var rect = false
+    /// A rectangular selection's columns.
+    var cols: ClosedRange<Int> { min(aStart.col, hStart.col)...max(aEnd.col, hEnd.col) }
 }
 
 struct SearchMatch {
@@ -193,7 +197,14 @@ final class TerminalView: NSView, TerminalDelegate {
         }
     }
     private var followingInputBox = false
-    var selectedBlock: Block?
+    /// The selected commands, in the order they were picked: one from a click, more with ⌘-click.
+    var selectedBlocks: [Block] = [] { didSet { updateSelectionBar() } }
+    /// The one a single selection is on (for several, the last picked).
+    var selectedBlock: Block? {
+        get { selectedBlocks.last }
+        set { selectedBlocks = newValue.map { [$0] } ?? [] }
+    }
+    func isSelected(_ b: Block) -> Bool { selectedBlocks.contains { $0 === b } }
     /// Prompt line of the selected agent turn (see AgentTurns.swift).
     var selectedTurnLine: Int?
     /// Prompt lines of agent turns whose responses are collapsed.
@@ -220,7 +231,10 @@ final class TerminalView: NSView, TerminalDelegate {
     var bellFlash: CGFloat = 0
     var jumpPillRect: CGRect = .zero
     var collapseChips: [(CGRect, () -> Void)] = []
-    var hoverURL: (line: Int, start: Int, end: Int)?
+    /// The link under the pointer, its card (see Links.swift), and whether the pointer is on the card.
+    var hoverURL: LinkHover?
+    var linkCardRect: CGRect = .null
+    var hoverLinkCard = false
     private(set) var remote: RemoteSession?
     private var remoteSyncWork: DispatchWorkItem?
     private var lastTitle = ""
@@ -235,6 +249,8 @@ final class TerminalView: NSView, TerminalDelegate {
     /// moves to another cell, not when the text moves under a still pointer.
     var lastDragCell: (col: Int, row: Int)?
     var didDrag = false
+    /// This press went to a link or a button, so its release isn't a click on the terminal (which would select the block).
+    var pressTaken = false
     var reportingMouse = false
     var lastReportedCell: (Int, Int)?
     /// A click waiting for the screen to settle before it's interpreted (see `whenCursorSettled`).
@@ -245,6 +261,11 @@ final class TerminalView: NSView, TerminalDelegate {
     var awaitingCursorEcho = false
     /// While a selection in Claude Code's box is being removed: what follows it, keys typed meanwhile included.
     var afterSelectionDeleted: [() -> Void]?
+    /// Text the input method is still composing (Chinese, Japanese, Korean, a dead key), drawn at the cursor.
+    var markedText = ""
+    var markedSelection = NSRange(location: 0, length: 0)
+    /// The key being handed to the input method, for what it passes back (see `doCommand(by:)`).
+    var keyEventForInput: NSEvent?
     var selectionDeleteGeneration = 0
     /// Output from a previous session, replayed above the new shell's first prompt.
     var restoredText: String?
@@ -273,6 +294,15 @@ final class TerminalView: NSView, TerminalDelegate {
     /// "Copy output" on the hovered command's first line, and the block it just copied.
     var blockCopyButton: (rect: CGRect, block: Block)?
     var hoverBlockCopy = false
+    /// "Send to chat" beside it (see AgentChats.swift).
+    var blockSendButton: (rect: CGRect, block: Block)?
+    var hoverBlockSend = false
+    /// The bar offering Copy All and Send to Chat while several commands are selected.
+    var selectionBar: BlockSelectionBar?
+    /// Text waiting for an agent starting in this pane to be ready for it, until when, and what checks.
+    var chatPaste: (text: String, deadline: Date, timer: Timer)?
+    /// The send menu last shown, for DevTools.
+    var devSendMenu: NSMenu?
     var copiedBlock: Block?
     /// Transcript sizes + screen extent at the last scan; a scan only runs when this changes.
     private var boxScanKey = ""
@@ -292,6 +322,13 @@ final class TerminalView: NSView, TerminalDelegate {
     var pendingCommand: String?
     /// False: `pendingCommand` is only typed, waiting for Return.
     var pendingCommandRuns = true
+    /// The ssh session here lost its connection and nothing's been decided yet: where it was, how to log back in, and
+    /// the command that ended it (another one finishing means this shell has moved on).
+    private var lostSession: (host: String, command: String, block: Block?)?
+    private var lostBar: ConnectionLostBar?
+    private weak var lostNotice: CornerNoticeView?
+    /// Logging back in was asked for; if that doesn't work out, the bar comes back.
+    private var reconnecting = false
 
     init(cwd: String?) {
         initialDirectory = cwd
@@ -500,10 +537,40 @@ final class TerminalView: NSView, TerminalDelegate {
         remote = terminal.sshControlPath.map { RemoteSession(controlPath: $0, sshArgs: terminal.sshArgs) }
         remote?.onChange = { [weak self] in
             guard let self else { return }
+            if self.remote?.isReady == true { self.clearLostSession() }
             self.tab?.paneCwdChanged(self)
         }
         remote?.start()
     }
+
+    private func clearLostSession() {
+        lostSession = nil
+        reconnecting = false
+        lostNotice?.dismiss()
+        updateLostBar()
+    }
+
+    /// Shown while the connection is lost and no ssh is running here (trying again, say).
+    private func updateLostBar() {
+        guard let lost = lostSession, terminal.sshControlPath == nil, !reconnecting else {
+            lostBar?.removeFromSuperview()
+            lostBar = nil
+            return
+        }
+        guard lostBar == nil else { return }
+        let bar = ConnectionLostBar(host: lost.host, onReconnect: { [weak self] in
+            guard let self, let command = self.lostSession?.command else { return }
+            self.reconnect(command)
+        }, onClose: { [weak self] in
+            guard let self else { return }
+            self.tab?.requestClose(self)
+        })
+        lostBar = bar
+        addSubview(bar)
+        needsLayout = true
+    }
+
+    var devLostBar: ConnectionLostBar? { lostBar }
 
     /// True when something other than the shell is running in the foreground.
     var hasRunningJob: Bool {
@@ -674,6 +741,15 @@ final class TerminalView: NSView, TerminalDelegate {
         if let sb = searchBar {
             sb.frame = NSRect(x: bounds.width - sb.frame.width - 12, y: 8, width: sb.frame.width, height: sb.frame.height)
         }
+        if let bar = lostBar {
+            let w = min(bar.preferredWidth, bounds.width - 16)
+            bar.frame = NSRect(x: max(8, bounds.width - w - 12), y: bounds.height - ConnectionLostBar.height - 10, width: w, height: ConnectionLostBar.height)
+        }
+        if let bar = selectionBar {
+            let w = min(bar.preferredWidth, bounds.width - 16)
+            let bottom = lostBar.map { $0.frame.minY - 6 } ?? bounds.height - 10
+            bar.frame = NSRect(x: max(8, bounds.width - w - 12), y: bottom - BlockSelectionBar.height, width: w, height: BlockSelectionBar.height)
+        }
     }
 
     /// Repaints this pane, and gets whatever runs in it to repaint too: the size is reported one column narrower
@@ -767,6 +843,7 @@ final class TerminalView: NSView, TerminalDelegate {
     func terminalTitleChanged(_ t: Terminal) { refreshTitle() }
     func terminalCwdChanged(_ t: Terminal) {
         updateRemoteSession()
+        updateLostBar()
         refreshTitle()
         tab?.paneCwdChanged(self)
     }
@@ -774,8 +851,19 @@ final class TerminalView: NSView, TerminalDelegate {
     func terminalBell(_ t: Terminal) {
         bellFlash = 1
         animateBell()
+        // At most a few a second: a program ringing in a loop shouldn't ring on and on.
+        if Config.shared.audibleBell, Date().timeIntervalSince(Self.lastBellSound) > 0.25 {
+            Self.lastBellSound = Date()
+            NSSound.beep()
+        }
+        if let tab, !tab.isShown, !tab.rang {
+            tab.rang = true
+            tab.owner?.tabDidUpdate(tab)
+        }
         if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
     }
+
+    private static var lastBellSound = Date.distantPast
 
     private func animateBell() {
         Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
@@ -787,6 +875,9 @@ final class TerminalView: NSView, TerminalDelegate {
     }
 
     func terminalBlockFinished(_ t: Terminal, block: Block) {
+        if let lost = lostSession, block !== lost.block, terminal.sshControlPath == nil, !reconnecting, !block.command.isEmpty {
+            clearLostSession()
+        }
         if let k = runningAgent {
             runningAgent = nil
             // Ctrl-C (130) is the usual way out, not a failure.
@@ -809,9 +900,10 @@ final class TerminalView: NSView, TerminalDelegate {
 
     /// A card in the top-right corner of the window being looked at (else the tab's own), for 30 seconds unless
     /// said otherwise. Clicking it goes to the tab.
-    private func showCornerNotice(title: String, symbol: (name: String, color: NSColor), lines: [String], in tab: TabSession,
-                                  button: (title: String, action: () -> Void)? = nil, lifetime: TimeInterval = 30) {
-        guard let wc = (NSApp.keyWindow?.windowController as? TerminalWindowController) ?? tab.windowController else { return }
+    @discardableResult
+    func showCornerNotice(title: String, symbol: (name: String, color: NSColor), lines: [String], in tab: TabSession,
+                                  button: (title: String, action: () -> Void)? = nil, lifetime: TimeInterval = 30) -> CornerNoticeView? {
+        guard let wc = (NSApp.keyWindow?.windowController as? TerminalWindowController) ?? tab.windowController else { return nil }
         let notice = CornerNoticeView(title: title, symbol: symbol, lines: lines, button: button, lifetime: lifetime)
         notice.onClick = { [weak tab] in
             guard let tab, let column = tab.owner as? TabColumn, let i = column.tabs.firstIndex(of: tab), let owner = column.owner else { return }
@@ -821,24 +913,31 @@ final class TerminalView: NSView, TerminalDelegate {
             NSApp.activate(ignoringOtherApps: true)
         }
         wc.rootView.showNotice(notice)
+        return notice
     }
 
     /// ssh exits with 255 when the connection drops (a network change, the Mac sleeping, the server going down).
     /// If the session had logged in, offers to log back in, in this pane, in the folder it was in.
     func terminalSSHExited(_ t: Terminal, status: Int) {
+        // A try at logging back in that didn't work out: still lost, and that command isn't the shell moving on.
+        reconnecting = false
+        lostSession?.block = terminal.currentBlock
         guard status == 255, let remote, remote.isReady, let tab,
               let command = remote.reconnectCommand(in: terminal.remoteCwd ?? remote.cwd) else { return }
         let host = remote.hostLabel ?? "the ssh host"
+        lostSession = (host, command, terminal.currentBlock)
         let th = Config.shared.theme
-        showCornerNotice(title: "Lost connection to \(host)", symbol: ("wifi.exclamationmark", th.red),
-                         lines: [Self.place(of: tab), terminal.remoteCwd ?? remote.cwd ?? ""].filter { !$0.isEmpty }, in: tab,
-                         button: ("Reconnect", { [weak self] in self?.reconnect(command) }), lifetime: 600)
+        lostNotice = showCornerNotice(title: "Lost connection to \(host)", symbol: ("wifi.exclamationmark", th.red),
+                                      lines: [Self.place(of: tab), terminal.remoteCwd ?? remote.cwd ?? ""].filter { !$0.isEmpty }, in: tab,
+                                      button: ("Reconnect", { [weak self] in self?.reconnect(command) }), lifetime: 600)
         if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
     }
 
     /// Runs `command` at this pane's prompt (once the shell is back at one); not while something else has the pane.
     private func reconnect(_ command: String) {
         guard !exited, terminal.sshControlPath == nil, !terminal.usingAlt, !hasRunningJob else { return NSSound.beep() }
+        reconnecting = lostSession != nil
+        updateLostBar()
         if terminal.currentBlock?.state == .prompt {
             send("\u{15}" + command + "\r")
         } else {
@@ -1051,10 +1150,12 @@ final class TerminalView: NSView, TerminalDelegate {
         drawCells(ctx)
         drawImageChips(ctx)
         drawCursor(ctx)
+        drawMarkedText(ctx)
         drawBlockChrome(ctx, spans)
         drawCopyButtons(ctx)
         drawTurnChrome(ctx)
         ctx.restoreGState()
+        drawLinkCard(ctx)
         drawOverlays(ctx)
         drawImagePreview(ctx)
         recordDrawn(rects, full: full)
@@ -1131,7 +1232,15 @@ final class TerminalView: NSView, TerminalDelegate {
         let th = palette.theme
         for b in codeBoxes where b.kind == .code {
             guard let (r0, r1) = visibleRows(b) else { continue }
-            let x = max(2, padX + CGFloat(b.indent) * fonts.cellW - 9)
+            var x = max(2, padX + CGFloat(b.indent) * fonts.cellW - 9)
+            // Keep the edge clear of anything left of the code, such as the "⏺" before a reply's first line.
+            var left = -1
+            for r in r0...r1 {
+                guard let l = terminal.line(abs: rowMap[r]) else { continue }
+                for c in stride(from: min(b.indent, l.cells.count) - 1, to: left, by: -1)
+                where l.cells[c].ch != 0 && l.cells[c].ch != 0x20 { left = c; break }
+            }
+            if left >= 0 { x = max(x, min(padX + CGFloat(left + 1) * fonts.cellW + 3, padX + CGFloat(b.indent) * fonts.cellW - 3)) }
             let rect = CGRect(x: x, y: rowY(r0) - 1, width: bounds.width - padX + 6 - x, height: CGFloat(r1 - r0 + 1) * fonts.cellH + 2)
             let path = CGPath(roundedRect: rect, cornerWidth: 6, cornerHeight: 6, transform: nil)
             ctx.setFillColor(th.foreground.withAlphaComponent(0.045).cgColor)
@@ -1163,13 +1272,13 @@ final class TerminalView: NSView, TerminalDelegate {
     }
 
     /// A small "⧉ Copy…" button ending at `rightX`; `top` gives its top edge from its height. Returns its rect.
-    private func drawCopyPill(_ text: String, copied: Bool, hover: Bool, rightX: CGFloat, top: (CGFloat) -> CGFloat,
+    private func drawCopyPill(_ text: String, symbol: String = "doc.on.doc", copied: Bool, hover: Bool, rightX: CGFloat, top: (CGFloat) -> CGFloat,
                               _ ctx: CGContext) -> CGRect {
         let th = palette.theme
         let font = NSFont.systemFont(ofSize: max(10, fonts.size - 2.5), weight: .medium)
         let color = copied ? th.green : hover ? th.foreground : th.dimText
         let label = NSAttributedString(string: copied ? "✓ " + text : text, attributes: [.font: font, .foregroundColor: color])
-        let icon = copied ? nil : NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)?
+        let icon = copied ? nil : NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: font.pointSize - 1, weight: .medium).applying(.init(paletteColors: [color])))
         let size = label.size()
         let w = size.width + 16 + (icon.map { $0.size.width + 4 } ?? 0)
@@ -1200,10 +1309,9 @@ final class TerminalView: NSView, TerminalDelegate {
         return rect
     }
 
-    /// Copies a command's output (as ⌘⌥C does) and shows "Copied" on its button for a moment.
+    /// Copies a command and its output (as ⌘⌥C does) and shows "Copied" on its button for a moment.
     func copyOutput(of b: Block) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(blockText(b, includeCommand: false), forType: .string)
+        AgentChats.putOnClipboard(blockText(b, includeCommand: true))
         copiedBlock = b
         needsDisplay = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
@@ -1234,7 +1342,7 @@ final class TerminalView: NSView, TerminalDelegate {
         let th = palette.theme
         for s in spans {
             let top = rowY(s.first) - 2, height = CGFloat(s.last - s.first + 1) * fonts.cellH + 4
-            if s.block === selectedBlock {
+            if isSelected(s.block) {
                 // Inside its outline (drawn with the block's chrome), not past it.
                 ctx.setFillColor(th.accent.withAlphaComponent(0.11).cgColor)
                 ctx.addPath(selectionOutline(top: top, height: height))
@@ -1250,6 +1358,7 @@ final class TerminalView: NSView, TerminalDelegate {
         guard let s = selection else { return nil }
         let st = s.start, en = s.end
         guard a >= st.line && a <= en.line else { return nil }
+        if s.rect { return s.cols }
         let lo = a == st.line ? st.col : 0
         let hi = a == en.line ? en.col : terminal.cols - 1
         return lo <= hi ? lo...hi : nil
@@ -1402,7 +1511,7 @@ final class TerminalView: NSView, TerminalDelegate {
                 }
             }
 
-            // ⌘-hover link underline
+            // Hovered link underline
             if let hu = hoverURL, hu.line == a {
                 ctx.setFillColor(palette.accent)
                 ctx.fill(CGRect(x: padX + CGFloat(hu.start) * cw, y: baseY + fonts.underlineOffset,
@@ -1477,10 +1586,54 @@ final class TerminalView: NSView, TerminalDelegate {
         }
     }
 
+    /// Text being composed, over the cells from the cursor on: underlined, with the part being converted thicker.
+    private func drawMarkedText(_ ctx: CGContext) {
+        guard !markedText.isEmpty, let r = rowMap.firstIndex(of: terminal.cursorAbs) else { return }
+        let x0 = padX + CGFloat(terminal.cursorX) * fonts.cellW, y = rowY(r)
+        let widths = markedText.unicodeScalars.map { CGFloat(CharWidth.of($0.value)) }
+        let w = widths.reduce(0, +) * fonts.cellW
+        ctx.setFillColor(palette.bg)
+        ctx.fill(CGRect(x: x0, y: y, width: w, height: fonts.cellH))
+        drawString(markedText, style: 0, color: palette.fg, x: x0, baseline: y + fonts.baseline, ctx)
+        let uy = y + fonts.baseline + fonts.underlineOffset
+        ctx.setFillColor(palette.fg)
+        ctx.fill(CGRect(x: x0, y: uy, width: w, height: fonts.lineWidth))
+        // The clause the input method has selected, in UTF-16 offsets.
+        let sel = markedSelection
+        if sel.length > 0 {
+            var offset = 0, start: CGFloat?, end = x0
+            var x = x0
+            for (i, sc) in markedText.unicodeScalars.enumerated() {
+                if offset >= sel.location && offset < sel.location + sel.length {
+                    if start == nil { start = x }
+                    end = x + widths[i] * fonts.cellW
+                }
+                offset += sc.utf16.count
+                x += widths[i] * fonts.cellW
+            }
+            if let start { ctx.fill(CGRect(x: start, y: uy, width: end - start, height: fonts.lineWidth * 2)) }
+        }
+        // Where the next character goes.
+        let caretX = x0 + widths.prefix(caretScalarIndex()).reduce(0, +) * fonts.cellW
+        ctx.setFillColor(palette.cursor)
+        ctx.fill(CGRect(x: caretX, y: y + fonts.baseline - fonts.ascent - 1, width: 2, height: ceil(fonts.ascent + fonts.descent) + 2))
+    }
+
+    /// The scalar the input method's caret sits before (its selection's start, in UTF-16 offsets).
+    private func caretScalarIndex() -> Int {
+        var offset = 0
+        for (i, sc) in markedText.unicodeScalars.enumerated() {
+            if offset >= markedSelection.location { return i }
+            offset += sc.utf16.count
+        }
+        return markedText.unicodeScalars.count
+    }
+
     private func drawBlockChrome(_ ctx: CGContext, _ spans: [(block: Block, first: Int, last: Int)]) {
         let th = palette.theme
         collapseChips = []
         blockCopyButton = nil
+        blockSendButton = nil
         for s in spans {
             let b = s.block
             let top = rowY(s.first) - 2
@@ -1491,7 +1644,7 @@ final class TerminalView: NSView, TerminalDelegate {
                 ctx.setFillColor(th.border.cgColor)
                 ctx.fill(CGRect(x: 0, y: top - 0.5, width: bounds.width, height: 1))
             }
-            if b === selectedBlock {
+            if isSelected(b) {
                 ctx.setStrokeColor(th.accent.withAlphaComponent(0.85).cgColor)
                 ctx.setLineWidth(1.5)
                 ctx.addPath(selectionOutline(top: top, height: height))
@@ -1519,6 +1672,9 @@ final class TerminalView: NSView, TerminalDelegate {
                 let rect = drawCopyPill(b === copiedBlock ? "Copied" : "Copy output", copied: b === copiedBlock, hover: hoverBlockCopy,
                                         rightX: right, top: { self.rowY(s.first) + (self.fonts.cellH - $0) / 2 }, ctx)
                 blockCopyButton = (rect, b)
+                let send = drawCopyPill("Send to chat", symbol: "arrowshape.turn.up.right", copied: false, hover: hoverBlockSend, rightX: rect.minX - 6,
+                                        top: { self.rowY(s.first) + (self.fonts.cellH - $0) / 2 }, ctx)
+                blockSendButton = (send, b)
             }
 
             // "⋯ N lines" chip for collapsed blocks, after the command text.
@@ -1550,7 +1706,7 @@ final class TerminalView: NSView, TerminalDelegate {
 
     /// The status badge on a block's first line, if it shows one.
     func blockBadge(_ b: Block) -> (text: String, color: NSColor)? {
-        guard let d = b.duration, b === selectedBlock || b === hoverBlock || b.failed || b.state == .running else { return nil }
+        guard let d = b.duration, isSelected(b) || b === hoverBlock || b.failed || b.state == .running else { return nil }
         let th = palette.theme
         switch b.state {
         case .running:

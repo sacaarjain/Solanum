@@ -8,12 +8,17 @@ purple, and each planet theme is colored like its planet, with that planet besid
 ## Features
 
 **Terminal**
-- Fast xterm-compatible emulator with scrollback reflow, ligatures, true color and synchronized output.
+- Fast xterm-compatible emulator with scrollback reflow, ligatures, true color, synchronized output and OSC 8 links.
+- Input methods (Chinese, Japanese, Korean) and dead keys compose at the cursor. ⌥ acts as Meta from both keys, one
+  or neither, and still types what your layout puts on it in plain ASCII (`@ [ ] { } | ~` on German or French layouts).
+- ⌥-click moves the cursor (in vim, nano and the like too); ⌥-drag selects a rectangle.
+- A bell in a background tab marks it until you look; the alert sound is optional (`audible-bell`).
 - Command blocks (via shell integration for bash and zsh): select, copy, re-run, collapse or jump between commands.
 - Split panes, tabs, tab groups (named, colored, collapsible) and a split window with two independent columns.
 - Command palette (⇧⌘P), searchable history (⌃H), snippets and aliases.
 - A quick-terminal drop-down available from any app (⌃` by default).
-- Session restore: windows, tabs, splits, groups, open files and recent output come back on launch, or are offered
+- Session restore: windows, tabs, splits, groups, open files and recent output come back on launch and after closing
+  the last window with its red button (closing its tabs one by one starts over, as does Restart Fresh), or are offered
   in the corner for a minute if you'd rather start fresh.
 - A corner notice when a long command finishes in a tab you're not looking at.
 - Updates itself: once a day it checks main in the repository it was built from and offers Update & Restart, which
@@ -25,7 +30,8 @@ purple, and each planet theme is colored like its planet, with that planet besid
   when it finishes or needs input in a background tab.
 - Code blocks and tables in Claude's replies get a Copy button.
 - Session restore relaunches Claude Code where it was running, continuing the conversation (your alias for
-  `claude`, if you have one, with `-c`).
+  `claude`, if you have one, with `-c`). Other agents continue too (`codex resume --last`, `agy -c`, …);
+  each one's command, or none, is set in Settings › Preferences › Continue Agents.
 - Selecting text in Claude's input box stays on that text while Claude prints above it; ⌫ / ⌘⌫ delete the selection.
 
 **Files**
@@ -41,6 +47,8 @@ purple, and each planet theme is colored like its planet, with that planet besid
   (logs, on ssh hosts too) open read-only, in full up to 512 MB and past that their last 10 MB. The eye in the editor's header follows a file as it changes,
   re-reading it every 5 seconds while it's showing, like tail -f for a growing log.
 - Right-click a Markdown file › Open Preview to see it rendered as on GitHub.
+- ⌘-click a file named in the terminal (`Sources/Links.swift:52`, `~/notes.md`, `"My Notes/plan.md"`) to open it at that line.
+  A file under the pane's folder or the tab's pinned folder opens above the terminal; anything else opens in its own tab.
 - Drag and drop or copy/paste between this Mac and ssh hosts (or between two hosts). Transfers stream over the existing
   ssh connection, so there's no second login, and they never overwrite: a taken name gets " copy".
 - The status bar shows each column's folder as clickable breadcrumbs and its git branch, sync state and changes.
@@ -71,6 +79,8 @@ folder access) each time. To keep them, create a self-signed code-signing certif
 | Keys | Action |
 |---|---|
 | ⇧⌘P | Command palette (every command, theme and snippet) |
+| ⇧⌘R | Restart Solanum, bringing everything back |
+| ⌥⇧⌘R | Restart Fresh: nothing that was open comes back |
 | ⌃` | Quick terminal (change in Settings) |
 | ⌘T / ⌘N / ⌘W | New tab / new window / close pane |
 | ⌘D / ⇧⌘D | Split right / split down |
@@ -79,7 +89,8 @@ folder access) each time. To keep them, create a self-signed code-signing certif
 | ⇧⌘] ⇧⌘[ · ⇧⌘← ⇧⌘→ · ⌃Tab · ⌘1…9 | Switch tabs |
 | ⌘↑ / ⌘↓ | Previous / next command block (or Claude prompt) |
 | ⌘J | Jump to a Claude prompt |
-| ⇧⌘C / ⌥⌘C / ⌥⌘R | Copy command / copy output / re-run |
+| ⇧⌘C / ⌥⌘C / ⌥⌘R | Copy command / copy command and output / re-run |
+| ⌥⌘S | Send the selected command and its output to an agent's chat |
 | ⇧⌘E | Collapse or expand a block's output |
 | ⌘F, ⌘G, ⇧⌘G | Find in scrollback |
 | ⌘K | Clear the buffer (keeps the prompt) |
@@ -126,7 +137,8 @@ read, keeping its hue. Turn it off with `minimum-contrast = false`, or in Settin
 - **Snapshots:** `SOLANUM_SNAPSHOT=/tmp/shot.png` renders the first window to a PNG after a few seconds and quits.
   `SOLANUM_SNAPSHOT_ACTIONS` scripts what happens first (splits, tabs, typing, clicks…). The full list is at the top of
   `SnapshotHelper` in `Sources/DevTools.swift`. Set `SOLANUM_SESSION_FILE` to a scratch file so test runs never touch
-  your real session.
+  your real session. Snapshot runs are headless: no Dock icon, no focus taken, and windows stay invisible while they
+  draw, so tests can run while you work. `SOLANUM_SNAPSHOT_VISIBLE=1` shows them.
 
 ## Code map
 

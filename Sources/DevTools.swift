@@ -131,6 +131,62 @@ enum SelfTest {
             let ranges = [NSRange(location: 5, length: 1), NSRange(location: 10, length: 1)]
             check("find in file: starts at or after the caret, then wraps", EditorFind.index(of: ranges, from: 0) == 0 && EditorFind.index(of: ranges, from: 6) == 1 && EditorFind.index(of: ranges, from: 11) == 0 && EditorFind.index(of: [], from: 0) == nil)
         }
+        do {
+            // Reconnecting keeps just how to reach the host, whatever the session ran there.
+            let c = RemoteSession.connectionArgs
+            check("ssh args: plain", c("myhost") == "myhost" && c("-p 2222 me@host") == "-p 2222 me@host" && c("-p2222 -i ~/k host") == "-p2222 -i ~/k host")
+            check("ssh args: a reconnect's command dropped", c("-t mb1.example.com cd\\ \\'/mnt\\'\\ 2\\>/dev/null\\;\\ exec\\ \\\"\\$SHELL\\\"\\ -l") == "mb1.example.com")
+            check("ssh args: quoted command dropped", c("-t -o 'ProxyJump bastion' host 'cd /x; exec $SHELL -l'") == "-o 'ProxyJump bastion' host")
+            check("ssh args: flags kept, -t dropped", c("-A -tt -v host ls") == "-A -v host" && c("-o") == nil && c("") == nil)
+        }
+        do {
+            // Background commands over ssh wait their turn rather than go past the server's limit.
+            let gate = ChannelGate(limit: 2)
+            var started: [Int] = []
+            for i in 0..<5 { gate.enter { started.append(i) } }
+            check("channels: only so many at once", started == [0, 1])
+            gate.leave()
+            check("channels: the next goes as one ends", started == [0, 1, 2])
+            gate.leave(); gate.leave(); gate.leave(); gate.leave()
+            check("channels: all get their turn, in order", started == [0, 1, 2, 3, 4])
+            gate.enter { started.append(5) }
+            check("channels: room again once they've ended", started.last == 5)
+        }
+        do {
+            // Closing a pane stops what's running in it, also jobs a script put in process groups of their own (`set -m`),
+            // which the shell doesn't know about. Jobs the user kept (nohup, disown) keep running.
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("solanum-hangup-\(getpid())").path
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let script = """
+            #!/bin/bash
+            set -m
+            echo $$ > '\(dir)/script'
+            sleep 300 & echo $! > '\(dir)/nested'
+            nohup sleep 300 >/dev/null 2>&1 & echo $! > '\(dir)/nohup'
+            wait
+            """
+            try? script.write(toFile: dir + "/run.sh", atomically: true, encoding: .utf8)
+            func pid(_ name: String) -> pid_t? {
+                (try? String(contentsOfFile: dir + "/" + name, encoding: .utf8)).flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            }
+            func alive(_ p: pid_t?) -> Bool { p.map { kill($0, 0) == 0 } ?? false }
+            func waitUntil(_ cond: () -> Bool) { for _ in 0..<100 where !cond() { RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05)) } }
+            let pty = PTYProcess(executable: "/bin/bash", args: ["bash", "--noprofile", "--norc", "-i"], env: ["TERM": "dumb", "PATH": "/usr/bin:/bin"], cwd: dir, cols: 80, rows: 24)
+            pty?.start()
+            pty?.write(Array("sleep 300 & echo $! > disowned; disown; /bin/bash run.sh\n".utf8))
+            waitUntil { pid("disowned") != nil && pid("script") != nil && pid("nested") != nil && pid("nohup") != nil }
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+            check("hangup: all started", alive(pid("disowned")) && alive(pid("script")) && alive(pid("nested")) && alive(pid("nohup")))
+            pty?.terminate()
+            waitUntil { !alive(pid("script")) && !alive(pid("nested")) }
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+            check("hangup: the script stops", !alive(pid("script")))
+            check("hangup: its job in a process group of its own stops too", !alive(pid("nested")))
+            check("hangup: nohup keeps running", alive(pid("nohup")))
+            check("hangup: disowned keeps running", alive(pid("disowned")))
+            for name in ["script", "nested", "nohup", "disowned"] { if let p = pid(name) { kill(p, SIGKILL) } }
+        }
         func make(_ c: Int = 20, _ r: Int = 5) -> (Terminal, Sink) {
             let t = Terminal(cols: c, rows: r, scrollbackLimit: 1000)
             let s = Sink()
@@ -242,6 +298,24 @@ enum SelfTest {
         }
         do {
             let (t, _) = make(20, 8)
+            feed(t, "see \u{1b}]8;id=1;https://example.com/a\u{1b}\\docs\u{1b}]8;;\u{1b}\\ now")
+            let l = t.screen[0]
+            check("OSC 8 links", (4...7).allSatisfy { l.links?[$0] == "https://example.com/a" } && l.links?[3] == nil && l.links?[8] == nil)
+            feed(t, "\r\u{1b}[K")
+            check("OSC 8 erased", t.screen[0].links?.isEmpty ?? true)
+            feed(t, String(repeating: "x", count: 18) + "\u{1b}]8;;file:///tmp/f\u{7}abcd\u{1b}]8;;\u{7}")
+            t.resize(cols: 10, rows: 8)
+            let linked = (0..<4).flatMap { a in (0..<10).filter { t.screen[a].links?[$0] == "file:///tmp/f" }.map { "\(a):\($0)" } }
+            check("OSC 8 links reflow", linked == ["1:8", "1:9", "2:0", "2:1"], linked.joined(separator: " "))
+        }
+        do {
+            check("OSC 8 link schemes", TerminalView.hyperlinkURL("https://a.com/x")?.absoluteString == "https://a.com/x"
+                  && TerminalView.hyperlinkURL("file://localhost/tmp/a%20b")?.path == "/tmp/a b"
+                  && TerminalView.hyperlinkURL("file://some-other-host.example/tmp/a") == nil
+                  && TerminalView.hyperlinkURL("x-apple.systempreferences:foo") == nil)
+        }
+        do {
+            let (t, _) = make(20, 8)
             feed(t, "\u{1b}[1;31mred\u{1b}[0m plain\r\n" + String(repeating: "x", count: 25) + "\r\n\u{1b}[48;2;10;20;30mshaded\u{1b}[0m")
             let (u, _) = make(20, 8)
             feed(u, t.restorableText(maxLines: 100))
@@ -266,15 +340,154 @@ enum SelfTest {
                              chrome: j["chrome"] as? String, ansi: j["ansi"] as! [String])
             check("theme JSON round-trip", back.json as NSDictionary == j as NSDictionary)
         }
+        do {
+            func urls(_ s: String) -> [String] { TerminalView.links(in: s).map(\.url.absoluteString) }
+            check("links: trailing punctuation", urls("It's up at http://127.0.0.1:3007.") == ["http://127.0.0.1:3007"])
+            check("links: bare localhost gets http", urls("ready on localhost:5173/app, go") == ["http://localhost:5173/app"])
+            check("links: 0.0.0.0 opens as localhost", urls("listening on http://0.0.0.0:8000") == ["http://localhost:8000"])
+            check("links: no port, no link", urls("ssh localhost and 127.0.0.1") == [])
+            check("links: inside a scheme link once", urls("(see https://localhost:3000/x)") == ["https://localhost:3000/x"])
+            func named(_ s: String) -> [String] { FileLinks.mentions(in: s).map { $0.path + ($0.line.map { ":\($0)" } ?? "") } }
+            check("file links: with a line", named("at Sources/AgentStatus.swift:52.") == ["at", "Sources/AgentStatus.swift:52"])
+            check("file links: line and column", named("x.swift:7:3: error") == ["x.swift:7", "error"])
+            check("file links: in quotes and brackets", named("(`~/a.md`) \"b/c\",") == ["~/a.md", "b/c"])
+            check("file links: no line 0", FileLinks.mentions(in: "a.txt:0").first?.line == nil)
+            check("file links: quoted, with spaces", named("open \"My Notes/a.md\" now").first == "My Notes/a.md")
+            check("file links: quoted, line inside or after", named("'a b.txt:4'").first == "a b.txt:4" && named("`a b.txt`:9").first == "a b.txt:9")
+            check("file links: quoted, other characters", named("\"report (1).pdf\"").first == "report (1).pdf")
+            check("file links: quoted, words inside still count", named("\"see a/b.txt:3 now\"") == ["see a/b.txt:3 now", "see", "a/b.txt:3", "now"])
+            check("file links: apostrophes aren't quotes", named("it's dogs' a.txt") == ["it", "s", "dogs", "a.txt"])
+            check("file links: backslashed", named(#"cat My\ Notes/a.md:7 x"#) == ["cat", "My Notes/a.md:7", "x"])
+            check("file links: unquoted spaces stay apart", named("My Notes/a.md") == ["My", "Notes/a.md"])
+            let folders = ["/proj/sub", "/pin"]
+            check("file links: relative, nearest first", FileLinks.locations(of: "a/b.txt", in: folders, home: "/h") == ["/proj/sub/a/b.txt", "/pin/a/b.txt"])
+            check("file links: dots", FileLinks.locations(of: "../c.txt", in: ["/proj/sub"], home: nil) == ["/proj/c.txt"])
+            check("file links: home and absolute", FileLinks.locations(of: "~/n.md", in: folders, home: "/h") == ["/h/n.md"]
+                  && FileLinks.locations(of: "/etc/hosts", in: folders, home: "/h") == ["/etc/hosts"])
+            check("file links: inside a folder", FileLinks.isInside("/a/b/c", "/a") && FileLinks.isInside("/a/b", "/a/b") && FileLinks.isInside("/a", "/")
+                  && !FileLinks.isInside("/ab/c", "/a"))
+            check("file links: worth a look over ssh", FileLinks.looksLikePath("a/b") && FileLinks.looksLikePath("a.txt")
+                  && !FileLinks.looksLikePath("word") && !FileLinks.looksLikePath("/") && !FileLinks.looksLikePath("..") && !FileLinks.looksLikePath("dir/"))
+            do {
+                // A question near the top of a tall screen counts, as it does at the bottom; old menus further up don't.
+                let (t, _) = make(40, 50)
+                feed(t, "Trust this folder?\r\n❯ 1. Yes\r\n  2. No\r\n")
+                check("agent status: question at the top of a tall screen", t.agentScreenStatus() == .waiting)
+                feed(t, String(repeating: "line\r\n", count: 30))
+                check("agent status: an old question far above isn't live", t.agentScreenStatus() == .done)
+            }
+            check("chats: commands join oldest first", AgentChats.transcript(["$ a\n1", "$ b\n2"]) == "$ a\n1\n\n$ b\n2")
+            check("chats: agents found on PATH", InstalledAgents.parse("noise\nsolanum-agent:codex\nsolanum-agent:claude\nsolanum-agent:nonsense\n").map(\.command) == ["claude", "codex"])
+            check("chats: every known agent can start", AgentKind.known.allSatisfy { !$0.command.isEmpty } && AgentKind.known.contains(.other("aider")))
+            check("agents: astra is found by its command", AgentKind.detect(name: "astra", path: "/usr/local/bin/astra", args: []) == .other("astra"))
+            check("agents: continue commands", AgentKind.claude.defaultContinueCommand == "claude -c" && AgentKind.codex.defaultContinueCommand == "codex resume --last"
+                  && AgentKind.antigravity.defaultContinueCommand == "agy -c" && AgentKind.other("amp").defaultContinueCommand.isEmpty)
+            check("agents: known by their commands", AgentKind.known.allSatisfy { AgentKind.named($0.command) == $0 } && AgentKind.named("zsh") == nil)
+            check("agents: continue goes through an alias", AgentKind.claude.throughAlias("claude -c", alias: "c") == "c -c"
+                  && AgentKind.claude.throughAlias("claudette -c", alias: "c") == "claudette -c" && AgentKind.codex.throughAlias("codex resume --last", alias: nil) == "codex resume --last")
+            check("session: Claude from an older session still continues", {
+                let old = try? JSONDecoder().decode(PaneState.self, from: Data(#"{"claude":true}"#.utf8))
+                return old?.claude == true && old?.agent == nil
+            }())
+            check("agents: Antigravity is found by its command", AgentKind.detect(name: "agy", path: "/usr/local/bin/agy", args: []) == .antigravity && AgentKind.named("agy") == .antigravity)
+            check("keep awake: durations read short", Config.shortDuration(28800) == "8h" && Config.shortDuration(5400) == "1h 30m"
+                  && Config.shortDuration(90) == "1m 30s" && Config.shortDuration(45) == "45s" && Config.shortDuration(3661) == "1h 1m 1s")
+            check("keep awake: defaults to 8 hours", Config.defaultKeepAwakeSeconds == 28800)
+            check("agents: logo loads", AgentLogos.openAI(.white) != nil)
+            check("chats: paste waits", !AgentChats.readyForPaste(bracketed: false, status: .done, quietFor: 9)
+                  && !AgentChats.readyForPaste(bracketed: true, status: nil, quietFor: 9)
+                  && !AgentChats.readyForPaste(bracketed: true, status: .waiting, quietFor: 9)
+                  && !AgentChats.readyForPaste(bracketed: true, status: .done, quietFor: 0.1)
+                  && AgentChats.readyForPaste(bracketed: true, status: .done, quietFor: 1)
+                  && AgentChats.readyForPaste(bracketed: true, status: .working, quietFor: 1))
+            check("links: local or not", TerminalView.isLocal(URL(string: "http://localhost:3000")!)
+                  && !TerminalView.isLocal(URL(string: "https://github.com")!))
+        }
+        do {
+            // Scrolling reuses lines and their cells: what comes back in must be blank, all the way across.
+            let t = Terminal(cols: 20, rows: 3, scrollbackLimit: 100)
+            feed(t, "long line here!!\r\na\r\nbb\r\nccc\r\n")
+            check("scroll: scrollback keeps text", t.scrollback.count == 2 && t.scrollback[0].text() == "long line here!!"
+                  && t.scrollback[1].text() == "a", t.scrollback.toArray().map { $0.text() }.description)
+            check("scroll: scrollback lines trimmed", t.scrollback[1].cells.count == 1)
+            check("scroll: new lines blank and full width", (0..<3).map { row(t, $0) } == ["bb", "ccc", ""]
+                  && t.screen.allSatisfy { $0.cells.count == 20 } && t.screen[2].cells.allSatisfy { $0 == Cell() })
+            feed(t, "\u{1b}[44m\r\n\r\n")
+            check("scroll: erase color fills reused lines", t.screen[2].cells.allSatisfy { $0.bg == TermColor.indexed(4) })
+            feed(t, "\u{1b}[0mx\r\n\r\n\r\n")
+            check("scroll: plain lines after colored ones", t.screen.allSatisfy { $0.cells.allSatisfy { $0 == Cell() } || $0.text() == "x" })
+            let r = Terminal(cols: 10, rows: 4, scrollbackLimit: 100)
+            feed(r, "top\r\n\u{1b}[2;4r\u{1b}[2;1Hone\r\ntwo\r\nthree\r\nfour")
+            check("scroll: region reuses its line blank", (0..<4).map { row(r, $0) } == ["top", "two", "three", "four"]
+                  && r.scrollback.count == 0, (0..<4).map { row(r, $0) }.description)
+            feed(r, "\u{1b}[2;1H\u{1b}M")
+            check("scroll: reverse index in a region", (0..<4).map { row(r, $0) } == ["top", "", "two", "three"]
+                  && r.screen[1].cells.count == 10, (0..<4).map { row(r, $0) }.description)
+        }
         print(failures == 0 ? "All \(count) checks passed." : "\(failures) of \(count) checks FAILED.")
         return failures == 0
+    }
+}
+
+/// Development aid: snapshot runs (SOLANUM_SNAPSHOT) are headless, so a test never shows up over someone's work or
+/// takes their keyboard. There's no Dock icon or menu bar, the app never activates (nor hands activation to another
+/// app), and every window (sheets, panels, tooltips, the quick terminal) is fully transparent and click-through while
+/// still laying out and drawing as usual: the snapshot is drawn from the views, not read off the screen. Opening a
+/// link or file in another app only prints "headless: open <url>".
+/// SOLANUM_SNAPSHOT_VISIBLE=1 shows the windows, to watch a run.
+enum Headless {
+    static let active: Bool = {
+        let env = ProcessInfo.processInfo.environment
+        return env["SOLANUM_SNAPSHOT"] != nil && env["SOLANUM_SNAPSHOT_VISIBLE"] == nil
+    }()
+
+    static func install() {
+        guard active else { return }
+        swap(NSWindow.self, #selector(NSWindow.order(_:relativeTo:)), #selector(NSWindow.headlessOrder(_:relativeTo:)))
+        swap(NSWindow.self, #selector(setter: NSWindow.alphaValue), #selector(NSWindow.headlessSetAlphaValue(_:)))
+        swap(NSApplication.self, #selector(NSApplication.activate(ignoringOtherApps:)), #selector(NSApplication.headlessActivate(ignoringOtherApps:)))
+        swap(NSApplication.self, #selector(NSApplication.activate as (NSApplication) -> () -> Void),
+             #selector(NSApplication.headlessActivate as (NSApplication) -> () -> Void))
+        swap(NSRunningApplication.self, #selector(NSRunningApplication.activate(options:)), #selector(NSRunningApplication.headlessActivate(options:)))
+        swap(NSWorkspace.self, #selector(NSWorkspace.open(_:)), #selector(NSWorkspace.headlessOpen(_:)))
+    }
+
+    private static func swap(_ cls: AnyClass, _ a: Selector, _ b: Selector) {
+        guard let m = class_getInstanceMethod(cls, a), let n = class_getInstanceMethod(cls, b) else { return }
+        method_exchangeImplementations(m, n)
+    }
+}
+
+// Swapped in by Headless.install, so each calls the original under its own name.
+extension NSWindow {
+    @objc fileprivate func headlessOrder(_ place: NSWindow.OrderingMode, relativeTo other: Int) {
+        if place != .out { alphaValue = 0; hasShadow = false; ignoresMouseEvents = true }
+        headlessOrder(place, relativeTo: other)
+    }
+
+    @objc fileprivate func headlessSetAlphaValue(_ value: CGFloat) { headlessSetAlphaValue(0) }
+}
+
+extension NSApplication {
+    @objc fileprivate func headlessActivate(ignoringOtherApps flag: Bool) {}
+    @objc fileprivate func headlessActivate() {}
+}
+
+extension NSRunningApplication {
+    @objc fileprivate func headlessActivate(options: NSApplication.ActivationOptions) -> Bool { false }
+}
+
+extension NSWorkspace {
+    @objc fileprivate func headlessOpen(_ url: URL) -> Bool {
+        FileHandle.standardError.write("headless: open \(url.absoluteString)\n".data(using: .utf8)!)
+        return true
     }
 }
 
 /// Development aid: SOLANUM_SNAPSHOT=/path.png renders the first window to a PNG after a delay.
 /// SOLANUM_SNAPSHOT_INPUT types text first; SOLANUM_SNAPSHOT_ACTIONS=split,palette,select-block,collapse,jump-prompt,find,find-commands,find-output,click:<col>:<row>,keys:<text>,theme:<name>,
 /// newtab,rename-tab,new-group,edit:<text>,select-tab:<i>,collapse-group:<i>,split-down,save-session,
-/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,crumb-menu[:<item>],press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>
+/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,crumb-menu[:<item>],press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>
 /// (with SOLANUM_SESSION_FILE set, which also makes the run restore from that file).
 enum SnapshotHelper {
     static func runIfRequested() {
@@ -302,6 +515,11 @@ enum SnapshotHelper {
                     return
                 }
                 defer { run(i + 1) }
+                // These work with no window open.
+                if action == "app-quit" { NSApp.terminate(nil) }
+                if action == "app-new-window" { (NSApp.delegate as? AppDelegate)?.newWindow(nil) }
+                if action == "app-reopen" { _ = (NSApp.delegate as? AppDelegate)?.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false) }
+                if action == "restart-fresh" { (NSApp.delegate as? AppDelegate)?.restartFresh(nil) }
                 guard let c = wc(), let pane = c.activeTab?.focusedPane else { return }
                 switch action {
                 case "split": pane.splitRight(nil)
@@ -479,10 +697,21 @@ enum SnapshotHelper {
                             NSApp.sendEvent(e)
                         }
                     }
-                    if action.hasPrefix("click:") || action.hasPrefix("click-input:"), let w = c.window {
-                        // click:<col>:<row> — a plain single click on a screen cell.
+                    if action.hasPrefix("hover-link:") || action.hasPrefix("cmd-hover-link:") {
+                        // hover-link:<col>:<row> — the pointer moves onto a screen cell (⌘ held, for cmd-hover-link); prints the link found there.
+                        let cmd = action.hasPrefix("cmd-")
+                        let n = action.dropFirst(cmd ? 15 : 11).split(separator: ":").compactMap { Double($0) }
+                        if n.count == 2 {
+                            pane.updateLinkHover(NSPoint(x: pane.padX + (n[0] + 0.5) * pane.fonts.cellW,
+                                                         y: pane.padTop + (n[1] + 0.5) * pane.fonts.cellH), cmd: cmd)
+                            print("link: \(pane.hoverURL.map { "\($0.url.absoluteString) cols \($0.start)-\($0.end) · \($0.opener)" } ?? "none")")
+                        }
+                    }
+                    if action.hasPrefix("click:") || action.hasPrefix("click-input:") || action.hasPrefix("cmd-click:"), let w = c.window {
+                        // click:<col>:<row> — a plain single click on a screen cell (cmd-click: with ⌘).
                         // click-input:<col> — the same on the first row of an agent's input box.
-                        var n = action.dropFirst(action.hasPrefix("click:") ? 6 : 12).split(separator: ":").compactMap { Double($0) }
+                        let flags: NSEvent.ModifierFlags = action.hasPrefix("cmd-click:") ? [.command] : []
+                        var n = action.dropFirst(action.hasPrefix("click-input:") ? 12 : flags.isEmpty ? 6 : 10).split(separator: ":").compactMap { Double($0) }
                         if action.hasPrefix("click-input:"), let b = pane.terminal.currentBlock, let rows = pane.terminal.agentInputRows(b) {
                             n.append(Double(rows.lowerBound - pane.terminal.screenTopAbs))
                         }
@@ -490,12 +719,134 @@ enum SnapshotHelper {
                             let p = NSPoint(x: pane.padX + (n[0] + 0.5) * pane.fonts.cellW, y: pane.padTop + (n[1] + 0.5) * pane.fonts.cellH)
                             let loc = pane.convert(p, to: nil)
                             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                                if let e = NSEvent.mouseEvent(with: type, location: loc, modifierFlags: [], timestamp: 0, windowNumber: w.windowNumber,
+                                if let e = NSEvent.mouseEvent(with: type, location: loc, modifierFlags: flags, timestamp: 0, windowNumber: w.windowNumber,
                                                               context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
                                     if type == .leftMouseDown { pane.mouseDown(with: e) } else { pane.mouseUp(with: e) }
                                 }
                             }
                         }
+                    }
+                    if action == "print-blocks" {
+                        let list = pane.selectedBlocks.map(\.command)
+                        FileHandle.standardError.write("blocks: selected=\(list) bar=\(pane.selectionBar != nil) visible=\(pane.terminal.blocks.filter { $0.state == .finished }.map(\.command))\n".data(using: .utf8)!)
+                    }
+                    if action == "block-copy" { pane.copyBlockOutput(nil) }
+                    if action == "print-clipboard" { FileHandle.standardError.write("clipboard: \(String(reflecting: AgentChats.clipboard.string(forType: .string) ?? ""))\n".data(using: .utf8)!) }
+                    if action == "send-menu" || action.hasPrefix("send-menu-run:") {
+                        // The send menu for the selected commands: prints its items, or runs the one starting with the given title.
+                        let text = pane.selectedBlocks.isEmpty ? pane.targetBlock.map { pane.blockText($0, includeCommand: true) } ?? "" : pane.selectedTranscript
+                        let items = AgentChats.menu(sending: text, from: pane).items
+                        FileHandle.standardError.write("send-menu: \(items.map { ($0.isSeparatorItem ? "---" : $0.title) + ($0.isEnabled ? "" : " [off]") })\n".data(using: .utf8)!)
+                        if action.hasPrefix("send-menu-run:"), let item = items.first(where: { $0.title.hasPrefix(action.dropFirst(14)) }), let a = item.action {
+                            NSApp.sendAction(a, to: item.target, from: item)
+                        }
+                    }
+                    if action.hasPrefix("send-menu-mark:") {
+                        // As highlighting the send menu's item ending in the given title does.
+                        let menu = AgentChats.menu(sending: "", from: pane)
+                        pane.devSendMenu = menu
+                        AgentChats.devMark(menu, title: String(action.dropFirst(15)))
+                    }
+                    if action.hasPrefix("send-menu-png:") {
+                        // Draws the send menu's item titles, chips and all, to a file (a real menu can't be snapshotted).
+                        let items = AgentChats.menu(sending: "", from: pane).items.filter { !$0.isSeparatorItem }
+                        let image = NSImage(size: NSSize(width: 420, height: 26 * items.count + 8), flipped: true) { r in
+                            NSColor.white.setFill()
+                            r.fill()
+                            for (i, item) in items.enumerated() {
+                                let title = item.attributedTitle ?? NSAttributedString(string: item.title, attributes: [.font: NSFont.menuFont(ofSize: 0)])
+                                title.draw(at: NSPoint(x: 30, y: 8 + 26 * i))
+                                item.image?.draw(in: NSRect(x: 10, y: 9 + 26 * i, width: 14, height: 14), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+                            }
+                            return true
+                        }
+                        // At 2x, as on a Retina screen.
+                        if let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(image.size.width) * 2, pixelsHigh: Int(image.size.height) * 2, bitsPerSample: 8,
+                                                      samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) {
+                            rep.size = image.size
+                            NSGraphicsContext.saveGraphicsState()
+                            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+                            image.draw(in: NSRect(origin: .zero, size: image.size))
+                            NSGraphicsContext.restoreGraphicsState()
+                            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: String(action.dropFirst(14))))
+                        }
+                    }
+                    if action == "send-menu-real" || action.hasPrefix("send-menu-real:"), let w = pane.window {
+                        // The real menu, stepped down with posted keys: prints what's highlighted and marked after each, then closes.
+                        // With a path, also writes the menu's window with each of the first two chats highlighted (<path>-<n>.png).
+                        let shots = action.hasPrefix("send-menu-real:") ? String(action.dropFirst(15)) : nil
+                        for (n, delay) in [0.9, 1.5].enumerated() {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                                guard let shots else { return }
+                                for other in NSApp.windows where other !== w && other.isVisible && String(describing: type(of: other)).contains("Menu") {
+                                    guard let v = other.contentView?.superview ?? other.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { continue }
+                                    v.cacheDisplay(in: v.bounds, to: rep)
+                                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(shots)-\(n).png"))
+                                }
+                            }
+                        }
+                        NSApp.activate(ignoringOtherApps: true)
+                        w.makeKeyAndOrderFront(nil)
+                        func report() {
+                            let marked = c.columns.compactMap { $0.tabBar.sendTarget?.customTitle }
+                            FileHandle.standardError.write("send-menu-real: highlighted=\(pane.devSendMenu?.highlightedItem?.title ?? "-") marked=\(marked) unpainted=\(c.columns.contains { $0.tabBar.needsDisplay })\n".data(using: .utf8)!)
+                        }
+                        for (n, delay) in [0.5, 1.0].enumerated() {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                                if n == 0 { report() }
+                                let down = String(UnicodeScalar(NSDownArrowFunctionKey)!)
+                                if let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
+                                                            context: nil, characters: down, charactersIgnoringModifiers: down, isARepeat: false, keyCode: 125) { NSApp.postEvent(e, atStart: false) }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: report)
+                            }
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { pane.devSendMenu?.cancelTrackingWithoutAnimation() }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.3, execute: report)
+                        // From a timer: a menu opened in a main-queue block would hold the queue, and the reports above, until it closes.
+                        Timer.scheduledTimer(withTimeInterval: 0.01, repeats: false) { _ in pane.showSendMenu(for: pane.targetBlock.map { [$0] } ?? [], at: NSPoint(x: 40, y: 80)) }
+                    }
+                    if action.hasPrefix("print-context-menu:") {
+                        // print-context-menu:<col>:<row> — what a right-click on a screen cell offers.
+                        let n = action.dropFirst(19).split(separator: ":").compactMap { Double($0) }
+                        if n.count == 2, let w = c.window,
+                           let e = NSEvent.mouseEvent(with: .rightMouseDown, location: pane.convert(NSPoint(x: pane.padX + (n[0] + 0.5) * pane.fonts.cellW, y: pane.padTop + (n[1] + 0.5) * pane.fonts.cellH), to: nil),
+                                                      modifierFlags: [], timestamp: 0, windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                            let items = pane.menu(for: e)?.items ?? []
+                            FileHandle.standardError.write("context-menu: \(items.filter { !$0.isSeparatorItem }.map { $0.title + ($0.submenu.map { " > \($0.items.map(\.title))" } ?? "") })\n".data(using: .utf8)!)
+                        }
+                    }
+                    if action.hasPrefix("bar-press:") { pane.selectionBar?.devPress(String(action.dropFirst(10))) }
+                    if action == "press-copy-pill", let button = pane.blockCopyButton, let w = pane.window {
+                        // A real press and release on "Copy output".
+                        let loc = pane.convert(NSPoint(x: button.rect.midX, y: button.rect.midY), to: nil)
+                        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                            if let e = NSEvent.mouseEvent(with: type, location: loc, modifierFlags: [], timestamp: 0, windowNumber: w.windowNumber,
+                                                          context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                                if type == .leftMouseDown { pane.mouseDown(with: e) } else { pane.mouseUp(with: e) }
+                            }
+                        }
+                    }
+                    if action == "press-send-pill", let button = pane.blockSendButton, let w = pane.window {
+                        // A real press on "Send to chat"; its menu reports what it offers, then closes.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                            FileHandle.standardError.write("pill-menu: \(pane.devSendMenu?.items.map(\.title) ?? [])\n".data(using: .utf8)!)
+                            pane.devSendMenu?.cancelTrackingWithoutAnimation()
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { pane.devSendMenu?.cancelTrackingWithoutAnimation() }
+                        let loc = pane.convert(NSPoint(x: button.rect.midX, y: button.rect.midY), to: nil)
+                        if let e = NSEvent.mouseEvent(with: .leftMouseDown, location: loc, modifierFlags: [], timestamp: 0, windowNumber: w.windowNumber,
+                                                      context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { pane.mouseDown(with: e) }
+                    }
+                    if action == "print-agent-tail" {
+                        let tail = (max(pane.terminal.firstAbs, pane.terminal.lastAbs - 30)...pane.terminal.lastAbs).compactMap { pane.terminal.line(abs: $0)?.text() }.filter { !$0.isEmpty }
+                        FileHandle.standardError.write("agent=\(pane.agent?.summary ?? "none") paste-waiting=\(pane.chatPaste != nil) bracketed=\(pane.terminal.bracketedPaste)\ntail: \(tail.suffix(12).joined(separator: " | "))\n".data(using: .utf8)!)
+                    }
+                    if action.hasPrefix("set-pin:") { c.activeTab?.pinnedFolder = (pane.fileSystem, String(action.dropFirst(8))) }
+                    if action == "print-tab-files" {
+                        let tabs = c.allTabs.map { t in
+                            "[\(t === c.activeTab ? "*" : "")\(t.showsTerminal ? "term" : "file") \(t.editors.map { $0.displayName + ":\($0.devCaretLine)" }) showing \(t.editor?.displayName ?? "-")]"
+                        }
+                        FileHandle.standardError.write("tab-files: \(tabs.joined(separator: " "))\n".data(using: .utf8)!)
                     }
                     if action.hasPrefix("edit:"), let f = c.tabBar.subviews.compactMap({ $0 as? NSTextField }).first {
                         // Types into the open tab/group name editor and commits it by moving focus away.
@@ -626,6 +977,24 @@ enum SnapshotHelper {
                             }
                         }
                     }
+                    if action.hasPrefix("opt-drag:"), let w = pane.window {
+                        // opt-drag:<col0>:<row0>:<col1>:<row1> — an ⌥-drag between two screen cells (a rectangular selection).
+                        let n = action.dropFirst(9).split(separator: ":").compactMap { Double($0) }
+                        if n.count == 4 {
+                            func at(_ col: Double, _ row: Double) -> NSPoint {
+                                pane.convert(NSPoint(x: pane.padX + (col + 0.5) * pane.fonts.cellW, y: pane.padTop + (row + 0.5) * pane.fonts.cellH), to: nil)
+                            }
+                            for (t, p) in [(NSEvent.EventType.leftMouseDown, at(n[0], n[1])), (.leftMouseDragged, at(n[2], n[3])), (.leftMouseUp, at(n[2], n[3]))] {
+                                guard let e = NSEvent.mouseEvent(with: t, location: p, modifierFlags: [.option], timestamp: 0, windowNumber: w.windowNumber,
+                                                                 context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { continue }
+                                switch t {
+                                case .leftMouseDown: pane.mouseDown(with: e)
+                                case .leftMouseDragged: pane.mouseDragged(with: e)
+                                default: pane.mouseUp(with: e)
+                                }
+                            }
+                        }
+                    }
                     if action == "print-selection" {
                         let t = pane.selection.map { pane.textForSelection($0) } ?? "none"
                         FileHandle.standardError.write("selection=\(t) lines=\(pane.selection.map { "\($0.start.line)-\($0.end.line)" } ?? "-")\n".data(using: .utf8)!)
@@ -643,6 +1012,10 @@ enum SnapshotHelper {
                     if action.hasPrefix("sidebar-rename:") { c.rootView.sidebar.devBeginRename(String(action.dropFirst(15))) }
                     if action.hasPrefix("sidebar-rename-to:") { c.rootView.sidebar.devFinishRename(String(action.dropFirst(18))) }
                     if action.hasPrefix("sidebar-click:") { c.rootView.sidebar.devClick(String(action.dropFirst(14))) }
+                    if action == "press-cmd-return", let w = c.window,
+                       let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                windowNumber: w.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+                                                isARepeat: false, keyCode: 36) { NSApp.sendEvent(e) }
                     if action == "press-return", let w = c.window,
                        let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                                 windowNumber: w.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
@@ -679,6 +1052,37 @@ enum SnapshotHelper {
                         FileHandle.standardError.write("folder: \(Config.shared.fileIcons) on \(Config.shared.theme.name) -> \(IconPacks.shownID): \(img == nil ? "none" : "image")\n".data(using: .utf8)!)
                         if let img, let t = img.tiffRepresentation, let png = NSBitmapImageRep(data: t)?.representation(using: .png, properties: [:]) {
                             try? png.write(to: URL(fileURLWithPath: String(action.dropFirst(12))))
+                        }
+                    }
+                    // A real press on the window's red button, and on a button of the sheet it may bring up.
+                    if action == "window-red-button" { c.window?.standardWindowButton(.closeButton)?.performClick(nil) }
+                    if action.hasPrefix("sheet-press:") {
+                        func buttons(_ v: NSView) -> [NSButton] { ((v as? NSButton).map { [$0] } ?? []) + v.subviews.flatMap(buttons) }
+                        c.window?.attachedSheet?.contentView.map(buttons)?.first { $0.title == action.dropFirst(12) }?.performClick(nil)
+                    }
+                    if action.hasPrefix("settings-page:") {
+                        // Opens the Settings page with this title.
+                        SettingsWindowController.shared.present()
+                        if let p = SettingsWindowController.Page.allCases.first(where: { $0.title == action.dropFirst(14) }) { SettingsWindowController.shared.show(p) }
+                    }
+                    if action.hasPrefix("settings-press:") {
+                        // A real press on the toggle of the row with this title, on the page showing.
+                        func rows(_ v: NSView) -> [SettingRow] { ((v as? SettingRow).map { [$0] } ?? []) + v.subviews.flatMap(rows) }
+                        if let root = SettingsWindowController.shared.window?.contentView {
+                            let row = rows(root).first { $0.devTitle == action.dropFirst(15) }
+                            let at = row.map { $0.convert(NSPoint(x: $0.bounds.midX, y: $0.bounds.midY), to: nil) } ?? .zero
+                            let hit = root.superview.flatMap { $0.hitTest(at) } ?? root.hitTest(at)
+                            FileHandle.standardError.write("settings-press: \(action.dropFirst(15)) found=\(row != nil) titles=\(rows(root).map(\.devTitle).suffix(3)) at=\(at) window=\(root.frame.size) hit=\(hit.map { String(describing: type(of: $0)) } ?? "nil")\n".data(using: .utf8)!)
+                            row?.devPress()
+                        }
+                    }
+                    if action.hasPrefix("settings-page-png:") {
+                        // The page showing, all of it however it's scrolled, to a PNG (its background is the window's, so clear).
+                        func pages(_ v: NSView) -> [SettingsPageView] { ((v as? SettingsPageView).map { [$0] } ?? []) + v.subviews.flatMap(pages) }
+                        if let root = SettingsWindowController.shared.window?.contentView, let page = pages(root).first,
+                           let rep = page.bitmapImageRepForCachingDisplay(in: page.bounds) {
+                            page.cacheDisplay(in: page.bounds, to: rep)
+                            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: String(action.dropFirst(18))))
                         }
                     }
                     if action == "settings-bottom" {
@@ -773,6 +1177,13 @@ enum SnapshotHelper {
                         let tabs = c.allTabs.map { $0.pinnedFolder?.path ?? "-" }.joined(separator: ", ")
                         FileHandle.standardError.write("pins tabs=[\(tabs)] active=\(c.activeIndex) sidebarPinned=\(c.rootView.sidebar.isPinned)\n".data(using: .utf8)!)
                     }
+                    if action.hasPrefix("pane-send:") { pane.send(action.dropFirst(10).replacingOccurrences(of: "\\r", with: "\r")) }
+                    if action.hasPrefix("lost-bar:") { c.activeTab?.panes.compactMap(\.devLostBar).first?.devPress(String(action.dropFirst(9))) }
+                    if action == "print-lost-bar" {
+                        let frames = c.activeTab?.panes.map { p in p.devLostBar.map { "\(Int($0.frame.minX)),\(Int($0.frame.minY)) \(Int($0.frame.width))x\(Int($0.frame.height)) of \(Int(p.bounds.width))x\(Int(p.bounds.height))" } ?? "none" } ?? []
+                        FileHandle.standardError.write("lost-bar panes=\(frames)\n".data(using: .utf8)!)
+                    }
+                    if action == "refresh-sidebar" { c.rootView.sidebar.refresh(nil) }
                     if action == "refresh-tab" { c.refreshTab(nil) }
                     if action == "glide-bottom" { pane.smoothScroll(to: 0) }
                     if action == "print-scroll" { FileHandle.standardError.write("scroll offset=\(pane.scrollOffset) shift=\(String(format: "%.1f", pane.scrollPixelShift))\n".data(using: .utf8)!) }
@@ -797,6 +1208,7 @@ enum SnapshotHelper {
                     if action.hasPrefix("palette-query:"), let w = c.window {
                         CommandPalette.show(in: w, items: CommandPalette.collectItems(), tracksRecents: true, query: String(action.dropFirst(14)))
                     }
+                    if action.hasPrefix("goto-folder") { c.goToFolder(nil) }
                     if action == "palette-run" { CommandPalette.devRunSelected() }
                     if action == "print-cwds" {
                         let cwds = c.allTabs.map { $0.focusedPane.currentDirectory ?? "-" }
@@ -902,7 +1314,10 @@ enum SnapshotHelper {
             img.lockFocus()
             Config.shared.theme.background.setFill()
             NSRect(origin: .zero, size: v.bounds.size).fill()
-            rep.draw(in: NSRect(origin: .zero, size: v.bounds.size))
+            // Blended over it: a plain draw copies the capture's alpha, leaving see-through holes where the background is
+            // translucent (background-opacity) or a view clears behind its text.
+            rep.draw(in: NSRect(origin: .zero, size: v.bounds.size), from: .zero, operation: .sourceOver, fraction: 1,
+                     respectFlipped: false, hints: nil)
             img.unlockFocus()
             if let tiff = img.tiffRepresentation, let bmp = NSBitmapImageRep(data: tiff),
                let png = bmp.representation(using: .png, properties: [:]) {

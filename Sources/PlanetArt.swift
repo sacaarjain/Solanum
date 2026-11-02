@@ -537,7 +537,10 @@ enum PlanetArt {
             var line = [p]
             for i in 1...24 {
                 let t = Float(i) / 24
-                let heading = start + (0.4 + 0.5 * h[2]) * sin(t * (5 + 4 * h[3]) + h[0] * 6.3) * (0.3 + t) + curl * t * t * t
+                // In parts: as one expression it took the type checker seconds.
+                let amplitude: Float = 0.4 + 0.5 * h[2]
+                let phase: Float = t * (5 + 4 * h[3]) + h[0] * 6.3
+                let heading: Float = start + amplitude * sin(phase) * (0.3 + t) + curl * t * t * t
                 p += V2(cos(heading), sin(heading)) * length / 24
                 line.append(p)
             }
