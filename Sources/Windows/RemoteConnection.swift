@@ -14,10 +14,10 @@ final class RemoteConnection {
     private(set) var home: String?
     var onChange: (() -> Void)?
 
-    private let process = Process()
-    private let input = Pipe()
-    private let output = Pipe()
-    private let errors = Pipe()
+    private var child: HiddenProcess?
+    private let executable: String
+    private let arguments: [String]
+    private let environment: [String: String]
     /// What ssh said on its standard error, the last of it, to show why it failed. Never holds a password: those go
     /// through Askpass.
     private(set) var errorText = ""
@@ -43,12 +43,12 @@ final class RemoteConnection {
         guard let target = Self.connectionArguments(arguments),
               SearchPathW(nil, Array("ssh.exe".utf16) + [0], nil, DWORD(path.count), &path, nil) > 0 else { return nil }
         self.post = post
-        process.executableURL = URL(fileURLWithPath: String(decodingCString: path, as: UTF16.self))
+        executable = String(decodingCString: path, as: UTF16.self)
         // The terminal's own options go first, as ssh takes the first of each. Then never a second question about the host's
         // identity, unless they said otherwise: the terminal's connection has settled that by now.
-        process.arguments = ["-T"] + target.dropLast() + ["-o", "NumberOfPasswordPrompts=1", "-o", "StrictHostKeyChecking=yes",
+        self.arguments = ["-T"] + target.dropLast() + ["-o", "NumberOfPasswordPrompts=1", "-o", "StrictHostKeyChecking=yes",
                              "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", target.last!, "sh"]
-        var env = ProcessInfo.processInfo.environment
+        var env: [String: String] = [:]
         var exe = [UInt16](repeating: 0, count: 1024)
         _ = GetModuleFileNameW(nil, &exe, DWORD(exe.count))
         env["SSH_ASKPASS"] = String(decodingCString: exe, as: UTF16.self)
@@ -56,33 +56,29 @@ final class RemoteConnection {
         env["SOLANUM_ASKPASS"] = "1"
         env["SOLANUM_ASKPASS_PIPE"] = askpassPipe
         env["SOLANUM_ASKPASS_TOKEN"] = token
-        process.environment = env
-        process.standardInput = input
-        process.standardOutput = output
-        process.standardError = errors
-        process.terminationHandler = { [weak self] proc in
-            guard let self else { return }
-            let said = self.errorText.split(whereSeparator: \.isNewline).last.map(String.init)
-            self.finish(.failed(said ?? (proc.terminationStatus == 255 ? "Couldn't connect or sign in." : "The connection closed.")))
-        }
+        environment = env
     }
 
     func start() {
-        do { try process.run() } catch {
-            finish(.failed("Couldn't start ssh."))
-            return
+        // Started with no window: from Solanum, which has no console, ssh would otherwise open one of its own.
+        guard let child = HiddenProcess(executable: executable, arguments: arguments, extraEnvironment: environment) else {
+            return finish(.failed("Couldn't start ssh."))
         }
-        Thread.detachNewThread { [weak self] in self?.read() }
-        Thread.detachNewThread { [weak self] in
-            guard let handle = self?.errors.fileHandleForReading else { return }
-            while true {
-                let data = handle.availableData
-                guard !data.isEmpty, let self else { break }
-                self.lock.lock()
-                self.errorText = String((self.errorText + String(decoding: data, as: UTF8.self)).suffix(2000))
-                self.lock.unlock()
-            }
+        child.onOutput = { [weak self] data in self?.receive(data) }
+        child.onError = { [weak self] data in
+            guard let self else { return }
+            self.lock.lock()
+            self.errorText = String((self.errorText + String(decoding: data, as: UTF8.self)).suffix(2000))
+            self.lock.unlock()
         }
+        child.onExit = { [weak self] status in
+            guard let self else { return }
+            self.lock.lock()
+            let said = self.errorText.split(whereSeparator: \.isNewline).last.map(String.init)
+            self.lock.unlock()
+            self.finish(.failed(said ?? (status == 255 ? "Couldn't connect or sign in." : "The connection closed.")))
+        }
+        self.child = child
         run("printf '%s\\n' \"$HOME\"", timeout: 60) { [weak self] text, code in
             guard let self else { return }
             guard let text, code == 0, let home = text.split(separator: "\n").first.map(String.init), !home.isEmpty else {
@@ -94,7 +90,7 @@ final class RemoteConnection {
     }
 
     func close() {
-        if process.isRunning { process.terminate() }
+        child?.terminate()
     }
 
     deinit { close() }
@@ -121,26 +117,20 @@ final class RemoteConnection {
         }
     }
 
-    private func read() {
-        let handle = output.fileHandleForReading
-        while true {
-            let data = handle.availableData
-            if data.isEmpty { break }
-            lock.lock()
-            buffer += String(decoding: data, as: UTF8.self)
-            var finished: ((String?, Int32) -> Void, String, Int32)?
-            if let current = waiting, let range = buffer.range(of: current.marker) {
-                let body = String(buffer[..<range.lowerBound])
-                let rest = buffer[range.upperBound...]
-                let line = rest.prefix { $0 != "\n" }
-                let code = Int32(line.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
-                buffer = rest.contains("\n") ? String(rest[rest.index(after: rest.firstIndex(of: "\n")!)...]) : ""
-                waiting = nil
-                finished = (current.done, body, code)
-            }
-            lock.unlock()
-            if let finished { finished.0(finished.1, finished.2) }
+    private func receive(_ data: Data) {
+        lock.lock()
+        buffer += String(decoding: data, as: UTF8.self)
+        var finished: ((String?, Int32) -> Void, String, Int32)?
+        // Only once the marker's whole line is here, status and all.
+        if let current = waiting, let range = buffer.range(of: current.marker), let end = buffer[range.upperBound...].firstIndex(of: "\n") {
+            let body = String(buffer[..<range.lowerBound])
+            let code = Int32(buffer[range.upperBound..<end].trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
+            buffer = String(buffer[buffer.index(after: end)...])
+            waiting = nil
+            finished = (current.done, body, code)
         }
+        lock.unlock()
+        if let finished { finished.0(finished.1, finished.2) }
     }
 
     /// Runs a command on the host, one at a time, and hands back what it printed and its exit status (nil if the connection
@@ -159,7 +149,7 @@ final class RemoteConnection {
             })
             self.lock.unlock()
             let line = command + "; printf '\\n" + marker + "%d\\n' $?\n"
-            self.input.fileHandleForWriting.write(Data(line.utf8))
+            self.child?.write(Data(line.utf8))
             if finished.wait(timeout: .now() + timeout) == .timedOut {
                 self.lock.lock()
                 self.waiting = nil

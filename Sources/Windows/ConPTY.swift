@@ -175,7 +175,7 @@ final class ConPTY {
     }
 
     /// A job whose programs stop when its last handle closes, so they can't outlive Solanum.
-    private static func makeJob() -> HANDLE? {
+    static func makeJob() -> HANDLE? {
         guard let job = CreateJobObjectW(nil, nil) else { return nil }
         var limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         limits.BasicLimitInformation.LimitFlags = DWORD(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
@@ -185,7 +185,7 @@ final class ConPTY {
     }
 
     /// NUL-separated KEY=value pairs in the case-insensitive order Windows expects, ending in an extra NUL.
-    private static func environmentBlock(_ extra: [String: String]) -> [UInt16] {
+    static func environmentBlock(_ extra: [String: String]) -> [UInt16] {
         var merged: [String: (key: String, value: String)] = [:]
         for (k, v) in ProcessInfo.processInfo.environment { merged[k.uppercased()] = (k, v) }
         for (k, v) in extra { merged[k.uppercased()] = (k, v) }
