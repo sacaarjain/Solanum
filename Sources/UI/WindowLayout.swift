@@ -35,15 +35,19 @@ struct WindowLayout {
         let side = (36 * scale).rounded()
         return UIRect(x: minimize.x - side, y: 0, width: side, height: tabBarHeight)
     }
+    /// Right after the last tab, as far as there's room.
     var newTab: UIRect {
-        let side = (28 * scale).rounded()
-        return UIRect(x: flower.x - side - (2 * scale).rounded(), y: ((tabBarHeight - side) / 2).rounded(), width: side, height: side)
+        let side = newTabSide
+        let x = min(tabsStart + Float(tabCount) * tabWidth + (4 * scale).rounded(), newTabLimit)
+        return UIRect(x: x, y: ((tabBarHeight - side) / 2).rounded(), width: side, height: side)
     }
+    private var newTabSide: Float { (28 * scale).rounded() }
+    private var newTabLimit: Float { flower.x - newTabSide - (2 * scale).rounded() }
 
     /// Tabs share what's left, between these widths: past the narrowest, they stop fitting.
     var tabWidth: Float {
         guard tabCount > 0 else { return 0 }
-        let room = newTab.x - (6 * scale).rounded() - tabsStart
+        let room = newTabLimit - (6 * scale).rounded() - tabsStart
         return max(min(room / Float(tabCount), 240 * scale), 72 * scale).rounded()
     }
     private var tabsStart: Float { (8 * scale).rounded() }
