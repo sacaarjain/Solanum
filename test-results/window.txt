@@ -38,9 +38,14 @@
   ✓ tabs: a program starts in it
   ✓ tabs: Ctrl+T opens one from a program too
   ✓ tabs: Ctrl+W closes one at a prompt
-  ✓ keys: Ctrl+Shift+T sends the program Ctrl+T
-  ✓ keys: Ctrl+Shift+W sends the program Ctrl+W
   ✓ tabs: Ctrl+W closes one with a program running
+  ✓ reopen: a tab with a folder and some output
+  ✓ reopen: it gets them
+  ✓ reopen: closed
+  ✓ reopen: Ctrl+Shift+T brings it back
+  ✓ reopen: with what it showed
+  ✓ reopen: typing works in it
+  ✓ tabs: Ctrl+Shift+W closes one too
   ✓ tabs: titled by folder, not the shell's path
   ✓ tabs: exit closes only its tab
   ✓ tabs: the x closes one
@@ -57,5 +62,5 @@
   ✓ box: delete across three rows: selects and acts
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
-Clipboard found busy 0 times; got through 58 of 58 steps.
-All 59 checks passed.
+Clipboard found busy 0 times; got through 63 of 63 steps.
+All 64 checks passed.

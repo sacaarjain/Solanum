@@ -55,6 +55,9 @@ Drawing
 Window layout
   ✓ layout: window buttons at the right end
   ✓ layout: tabs clear of the + button
+  ✓ layout: the + button follows the last tab
+  ✓ layout: the + button is level with the tabs' x
+  ✓ layout: and stays clear of the flower
   ✓ layout: the terminal is between the bars
   ✓ layout: finds a tab
   ✓ layout: finds its close button
@@ -91,4 +94,4 @@ PowerShell hook
   ✓ powershell: Esc clears the line
   ✓ powershell: exits
   - pwsh.exe isn't installed
-All 87 checks passed.
+All 90 checks passed.
