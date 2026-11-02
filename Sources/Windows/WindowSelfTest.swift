@@ -73,7 +73,7 @@ enum WindowSelfTest {
         let layout = WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 3)
         results.check("layout: window buttons at the right end", layout.close.maxX == 1000 && layout.maximize.maxX == layout.close.x && layout.minimize.maxX == layout.maximize.x)
         results.check("layout: tabs clear of the + button", layout.tab(2).maxX <= layout.newTab.x)
-        results.check("layout: the + button follows the last tab", layout.newTab.x == layout.tab(2).maxX + 4)
+        results.check("layout: the + button follows the last tab", layout.newTab.x == layout.tab(2).maxX + 6)
         let crowded = WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 12)
         results.check("layout: the + button is level with the tabs' x", abs(layout.newTab.midY - layout.tabClose(1).midY) <= 0.5,
                       "\(layout.newTab.midY) \(layout.tabClose(1).midY)")
@@ -93,14 +93,13 @@ enum WindowSelfTest {
         results.check("text: nor as administrator", WindowText.tabTitle(title: #"Administrator: C:\Windows\system32\cmd.exe"#, folder: #"C:\Users\me"#, home: #"C:\Users\me"#) == "~")
 
         guard let canvas = Canvas(width: 1200, height: 420, fontPixels: 15) else { return }
-        let bars = WindowLayout(width: 1200, height: 420, scale: 1, tabCount: 3)
+        let bars = WindowLayout(width: 1200, height: 420, scale: 1, tabCount: 5)
         canvas.terminalArea = bars.terminal
         let grid = TerminalRenderer.grid(width: 1200, height: 420, canvas: canvas)
         let terminal = Terminal(cols: grid.cols, rows: grid.rows, scrollbackLimit: 100)
         Array("PS C:\\Users\\dev\\Projects\\Solanum> ".utf8).withUnsafeBufferPointer { terminal.feed($0) }
         guard sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
-        var chrome = WindowChrome(canvas: canvas, layout: bars, tabs: ["~", "Solanum", "a long tab title that has to be cut short somewhere"], activeTab: 1)
-        chrome.hovered = .tab(2)
+        var chrome = WindowChrome(canvas: canvas, layout: bars, tabs: ["~", "Solanum", "docs", "tests", "a long tab title that has to be cut short somewhere"], activeTab: 2)
         chrome.folder = #"C:\Users\dev\Projects\Solanum"#
         chrome.home = #"C:\Users\dev"#
         chrome.draw()

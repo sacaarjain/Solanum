@@ -50,11 +50,32 @@ struct WindowChrome {
         sol_canvas_fill_rect(canvas.raw, bar.x, bar.y, bar.width, bar.height, TerminalPalette.chrome, 1)
         sol_canvas_fill_rect(canvas.raw, 0, bar.maxY - 1, bar.width, 1, fg, 0.10)
         for i in tabs.indices { drawTab(i) }
+        drawSeparators()
         drawNewTabButton()
         let flower = (22 * scale).rounded()
         canvas.drawArt("flower", UIRect(x: layout.flower.x + ((layout.flower.width - flower) / 2).rounded(),
                                         y: ((layout.tabBarHeight - flower) / 2).rounded(), width: flower, height: flower), scale: scale)
         drawCaptionButtons()
+    }
+
+    /// Lines between tabs at rest, as on the Mac: one before the first, one between each two and one after the last, but
+    /// none beside the active or hovered tab, which stand out by themselves.
+    private func drawSeparators() {
+        func quiet(_ i: Int) -> Bool { i == activeTab || hovered == .tab(i) || hovered == .tabClose(i) }
+        func line(atX x: Float, midY: Float) {
+            let height = (16 * scale).rounded(), width = max(scale.rounded(), 1)
+            sol_canvas_fill_rect(canvas.raw, x.rounded(), (midY - height / 2).rounded(), width, height, fg, 0.18)
+        }
+        guard !tabs.isEmpty else { return }
+        if !quiet(0) { line(atX: layout.tab(0).x, midY: layout.tab(0).midY) }
+        for i in tabs.indices {
+            let r = layout.tab(i)
+            if i + 1 < tabs.count {
+                if !quiet(i) && !quiet(i + 1) { line(atX: r.maxX, midY: r.midY) }
+            } else if !quiet(i) {
+                line(atX: r.maxX + 2 * scale, midY: r.midY)
+            }
+        }
     }
 
     private func drawTab(_ i: Int) {
@@ -72,9 +93,6 @@ struct WindowChrome {
             let inset = 2 * scale
             sol_canvas_fill_rounded(canvas.raw, r.x + inset, r.y + inset, r.width - inset * 2, r.height - inset * 3, radius - 2,
                                     TerminalPalette.surface, 0.55)
-        } else if i + 1 != activeTab, i + 1 < tabs.count {
-            // A divider between two tabs at rest.
-            sol_canvas_fill_rect(canvas.raw, r.maxX - 1, r.y + 7 * scale, 1, r.height - 14 * scale, fg, 0.14)
         }
 
         let textAlpha: Float = active ? 1 : 0.55

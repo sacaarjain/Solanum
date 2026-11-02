@@ -38,7 +38,7 @@ struct WindowLayout {
     /// Right after the last tab, as far as there's room.
     var newTab: UIRect {
         let side = newTabSide
-        let x = min(tabsStart + Float(tabCount) * tabWidth + (4 * scale).rounded(), newTabLimit)
+        let x = min(tabsStart + Float(tabCount) * tabWidth + (6 * scale).rounded(), newTabLimit)
         // On the tabs' center line, level with their close buttons, rather than the whole bar's.
         return UIRect(x: x, y: (tab(0).midY - side / 2).rounded(), width: side, height: side)
     }
