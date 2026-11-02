@@ -145,9 +145,15 @@ extension TabSession {
 
     fileprivate static func node(_ v: NSView) -> PaneNode? {
         if let t = v as? TerminalView {
+            if !t.hasStarted, let saved = t.restoredFrom {
+                return .pane(PaneState(cwd: t.currentDirectory, text: Config.shared.restoreScrollback ? saved.text : nil,
+                                       claude: saved.claude))
+            }
             let text = Config.shared.restoreScrollback ? t.terminal.restorableText(maxLines: SessionStore.maxLines) : nil
+            // Also while `claude -c` is still waiting for the new shell's first prompt.
+            let claude = t.pty?.foregroundIsClaudeCode == true || (t.restoredFrom?.claude == true && t.pendingCommand != nil)
             return .pane(PaneState(cwd: t.currentDirectory, text: text?.isEmpty == false ? text : nil,
-                                   claude: t.pty?.foregroundIsClaudeCode == true ? true : nil))
+                                   claude: claude ? true : nil))
         }
         if let s = v as? PaneSplitView {
             let children = s.arrangedSubviews.compactMap(node)
@@ -164,6 +170,7 @@ extension TabSession {
             switch n {
             case .pane(let p):
                 let v = TerminalView(cwd: p.cwd.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil })
+                v.restoredFrom = p
                 if let text = p.text { v.restoredText = text + TabSession.restoredBanner }
                 if p.claude == true { v.pendingCommand = TabSession.claudeContinueCommand }
                 panes.append(v)

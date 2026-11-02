@@ -248,6 +248,9 @@ final class TerminalView: NSView, TerminalDelegate {
     var selectionDeleteGeneration = 0
     /// Output from a previous session, replayed above the new shell's first prompt.
     var restoredText: String?
+    /// What this pane was restored from, saved again unchanged until its shell starts (a tab not shown yet
+    /// would otherwise come back empty, and without its Claude Code conversation, after the next quit).
+    var restoredFrom: PaneState?
     /// When the program last printed anything (see `whenOutputQuiet`).
     var lastOutputAt = Date.distantPast
     /// The coding agent running here and what it's doing (see AgentStatus.swift); nil when none.
