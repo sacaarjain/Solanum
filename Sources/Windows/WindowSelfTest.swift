@@ -75,6 +75,8 @@ enum WindowSelfTest {
         results.check("layout: tabs clear of the + button", layout.tab(2).maxX <= layout.newTab.x)
         results.check("layout: the + button follows the last tab", layout.newTab.x == layout.tab(2).maxX + 4)
         let crowded = WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 12)
+        results.check("layout: the + button is level with the tabs' x", abs(layout.newTab.midY - layout.tabClose(1).midY) <= 0.5,
+                      "\(layout.newTab.midY) \(layout.tabClose(1).midY)")
         results.check("layout: and stays clear of the flower", crowded.newTab.maxX <= crowded.flower.x)
         results.check("layout: the terminal is between the bars", layout.terminal.y == layout.tabBarHeight && layout.terminal.maxY == layout.statusBar.y)
         results.check("layout: finds a tab", layout.part(atX: layout.tab(1).x + 20, y: 20) == .tab(1))
@@ -304,11 +306,27 @@ enum WindowSelfTest {
                           done: { window.panes.count == 4 && window.activeIndex == 3 && pane.atPrompt }))
         steps.append(Step(name: "tabs: Ctrl+W closes one at a prompt", action: { press(0x57) },
                           done: { window.panes.count == 3 && window.activeIndex == 2 }))
-        steps.append(Step(name: "keys: Ctrl+Shift+T sends the program Ctrl+T", action: { press(0x54, shift: true) },
-                          done: { cell(of: "^T") != nil && window.panes.count == 3 }))
-        steps.append(Step(name: "keys: Ctrl+Shift+W sends the program Ctrl+W", action: { press(0x57, shift: true) },
-                          done: { cell(of: "^W") != nil && window.panes.count == 3 }))
         steps.append(Step(name: "tabs: Ctrl+W closes one with a program running", action: { press(0x57) },
+                          done: { window.panes.count == 2 }))
+        let folder = ProcessInfo.processInfo.environment["SystemRoot"] ?? #"C:\Windows"#
+        steps.append(Step(name: "reopen: a tab with a folder and some output", action: { window.newTab() },
+                          done: { window.panes.count == 3 && pane.atPrompt }))
+        steps.append(Step(name: "reopen: it gets them", action: {
+            pane.type("cd '\(folder)'; echo reopen-marker")
+            pane.pressEnter()
+        }, done: { hasLine("reopen-marker") && pane.terminal.cwd?.lowercased() == folder.lowercased() && pane.atPrompt }))
+        steps.append(Step(name: "reopen: closed", action: { window.selectTab(0); window.selectTab(2); press(0x57) },
+                          done: { window.panes.count == 2 }))
+        steps.append(Step(name: "reopen: Ctrl+Shift+T brings it back", action: { press(0x54, shift: true) }, done: {
+            window.panes.count == 3 && window.activeIndex == 2 && pane.atPrompt
+                && pane.terminal.cwd?.lowercased() == folder.lowercased()
+        }))
+        steps.append(Step(name: "reopen: with what it showed", action: {}, done: { hasLine("reopen-marker") }))
+        steps.append(Step(name: "reopen: typing works in it", action: {
+            pane.type("echo after-reopen")
+            pane.pressEnter()
+        }, done: { hasLine("after-reopen") }))
+        steps.append(Step(name: "tabs: Ctrl+Shift+W closes one too", action: { press(0x57, shift: true) },
                           done: { window.panes.count == 2 }))
         steps.append(Step(name: "tabs: titled by folder, not the shell's path", action: {},
                           done: { !window.panes[1].tabTitle.contains(".exe") && !window.panes[1].tabTitle.isEmpty }))

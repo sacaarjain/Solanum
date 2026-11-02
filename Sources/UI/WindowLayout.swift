@@ -39,7 +39,8 @@ struct WindowLayout {
     var newTab: UIRect {
         let side = newTabSide
         let x = min(tabsStart + Float(tabCount) * tabWidth + (4 * scale).rounded(), newTabLimit)
-        return UIRect(x: x, y: ((tabBarHeight - side) / 2).rounded(), width: side, height: side)
+        // On the tabs' center line, level with their close buttons, rather than the whole bar's.
+        return UIRect(x: x, y: (tab(0).midY - side / 2).rounded(), width: side, height: side)
     }
     private var newTabSide: Float { (28 * scale).rounded() }
     private var newTabLimit: Float { flower.x - newTabSide - (2 * scale).rounded() }

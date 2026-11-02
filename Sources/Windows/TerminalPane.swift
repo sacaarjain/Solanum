@@ -39,7 +39,7 @@ final class TerminalPane: TerminalDelegate {
     private static let inboxLimit = 8 * 1024 * 1024
 
     /// Starts a shell. Nil if it can't.
-    init?(host: TerminalWindow, commandLine: String, cols: Int, rows: Int) {
+    init?(host: TerminalWindow, commandLine: String, cols: Int, rows: Int, cwd: String? = nil, restoring text: String? = nil) {
         id = Self.nextID
         Self.nextID += 1
         self.host = host
@@ -47,9 +47,14 @@ final class TerminalPane: TerminalDelegate {
         terminal = Terminal(cols: cols, rows: rows, scrollbackLimit: 10000)
         terminal.delegate = self
         terminal.repaintedByConsole = true
+        if let text, !text.isEmpty {
+            // Moved up into scrollback, since the console is about to draw on a screen it thinks is empty.
+            Array((text + String(repeating: "\r\n", count: rows)).utf8).withUnsafeBufferPointer { terminal.feed($0) }
+            terminal.scrollbackPushes = 0
+        }
         let home = ProcessInfo.processInfo.environment["USERPROFILE"]
         let environment = ["TERM": "xterm-256color", "COLORTERM": "truecolor", "TERM_PROGRAM": "Solanum"]
-        guard let pty = ConPTY(commandLine: commandLine, extraEnvironment: environment, cwd: home, cols: cols, rows: rows) else { return nil }
+        guard let pty = ConPTY(commandLine: commandLine, extraEnvironment: environment, cwd: cwd ?? home, cols: cols, rows: rows) else { return nil }
         self.pty = pty
         let target = UInt(bitPattern: hwnd), id = id
         pty.onData = { [weak self] bytes in self?.receive(bytes, window: target, id: id) }
@@ -188,10 +193,6 @@ final class TerminalPane: TerminalDelegate {
                 return true
             case 0x58:
                 cutSelection()
-                return true
-            case 0x54, 0x57:
-                // The plain keys are the app's, so this is how a program gets them.
-                input([UInt8(key - 0x40)])
                 return true
             default: break
             }

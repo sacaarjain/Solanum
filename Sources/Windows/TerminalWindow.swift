@@ -113,12 +113,26 @@ final class TerminalWindow {
     }
 
     @discardableResult
-    private func addPane() -> Bool {
+    private func addPane(at index: Int? = nil, cwd: String? = nil, restoring text: String? = nil) -> Bool {
         let grid = clientWidth > 0 ? gridSize() : (cols: 110, rows: 32)
-        guard let pane = TerminalPane(host: self, commandLine: commandLine, cols: grid.cols, rows: grid.rows) else { return false }
-        panes.append(pane)
-        activate(panes.count - 1)
+        guard let pane = TerminalPane(host: self, commandLine: commandLine, cols: grid.cols, rows: grid.rows, cwd: cwd, restoring: text) else { return false }
+        if panes.indices.contains(activeIndex) { panes[activeIndex].setFocused(false) }
+        let at = min(index ?? panes.count, panes.count)
+        panes.insert(pane, at: at)
+        activate(at)
         return true
+    }
+
+    /// What's needed to bring a closed tab back, most recent last.
+    private struct ClosedTab {
+        let index: Int, folder: String?, text: String
+    }
+    private var closedTabs: [ClosedTab] = []
+
+    /// The last tab closed, in its place and folder, with what it showed in its scrollback.
+    func reopenClosedTab() {
+        guard let closed = closedTabs.popLast() else { return }
+        addPane(at: closed.index, cwd: closed.folder, restoring: closed.text)
     }
 
     func newTab() { addPane() }
@@ -138,6 +152,9 @@ final class TerminalWindow {
     /// Stops the tab's shell. The tab goes when it has ended (see `paneExited`).
     func closeTab(_ i: Int) {
         guard panes.indices.contains(i) else { return }
+        let terminal = panes[i].terminal
+        closedTabs.append(ClosedTab(index: i, folder: terminal.cwd, text: terminal.restorableText(maxLines: 5000)))
+        if closedTabs.count > 25 { closedTabs.removeFirst() }
         panes[i].terminate()
     }
 
@@ -436,12 +453,12 @@ final class TerminalWindow {
     }
 
     func keyDown(_ key: Int32, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
-        // Windows' Ctrl stands in for the Mac's Command: keys the app claims are the app's, whatever's running, and
-        // Ctrl+Shift sends a program the plain key instead (see WINDOWS.md).
-        if ctrl && !shift && !alt {
+        // Windows' Ctrl stands in for the Mac's Command, and Shift is Shift: keys the app claims are the app's, whatever's
+        // running (see WINDOWS.md).
+        if ctrl && !alt {
             switch key {
             case 0x54:
-                newTab()
+                if shift { reopenClosedTab() } else { newTab() }
                 return true
             case 0x57:
                 closeTab(activeIndex)

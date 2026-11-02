@@ -37,16 +37,15 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
 - **Interface:** Win32, Direct2D and DirectWrite through Swift's `WinSDK` module, with no WinUI dependency. Menus and
   flyouts are drawn by Solanum to match Windows 11, using the sizes and colors from the mock-ups.
 - **Local scripts:** Git for Windows' `sh.exe` runs the same git and search scripts the Mac uses.
-- **Shortcuts:** Mac Option is Alt and Shift is Shift. Windows has one Ctrl for what the Mac splits between Command and
-  Control, and Fn can't be detected, so Ctrl stands in for Command:
-  - A key the app claims is the app's, whatever's running, Claude Code included: Ctrl+T new tab, Ctrl+W close tab (no
-    confirmation yet). Ctrl+Shift+T and Ctrl+Shift+W send the program the plain key instead. Later features may claim Ctrl+N,
-    B, F, O, S, Q and G the same way.
+- **Shortcuts:** Windows' Ctrl is the Mac's Command, Alt is Option, and Shift is Shift. There's no key for the Mac's Control
+  beside it, because Fn can't be detected.
+  - A key the app claims is the app's, whatever's running, Claude Code included. A program can't get that key, by choice:
+    Ctrl+T new tab, Ctrl+Shift+T reopen a closed tab, Ctrl+W close tab (no confirmation yet), Ctrl+Shift+W also closes the
+    tab until there are several windows. Later features may claim Ctrl+N, B, F, O, S, Q and G the same way.
   - Programs keep the keys the app doesn't claim, including Ctrl+A, D, E, H, J, K, L, R, U and Z.
   - Ctrl+C copies when something's selected and interrupts otherwise; Ctrl+V pastes, except in full-screen programs and for
     an image going to Claude Code; Ctrl+X cuts a selection in the line being typed; Ctrl+1 to 9 pick a tab.
-  - Ctrl+Shift+P is planned as the command palette. The Mac's Command+Shift shortcuts, such as reopening a closed tab, need
-    other keys now, to be settled as they arrive.
+  - Ctrl+Shift+P is planned as the command palette.
 - **Art:** `Tools/MakeWindowsArt.swift` renders the Mac's flower and tab prompt into `Sources/Windows/ArtData.swift`, until the
   drawing itself is shared.
 - **Closing the last window:** it saves the session and exits, and the next launch restores it.
