@@ -374,6 +374,8 @@ final class TerminalWindow {
             if palette != nil {
                 paletteTyped(UInt16(truncatingIfNeeded: wParam))
             } else if !panes.isEmpty {
+                // Typing is for the terminal, wherever the keyboard was.
+                focusTerminal()
                 activePane.typed(UInt16(truncatingIfNeeded: wParam), meta: false)
             }
             return 0
@@ -708,9 +710,10 @@ final class TerminalWindow {
                 invalidate()
             }
         case Win.WM_LBUTTONDOWN:
-            focus(sidebar)
+            // Its buttons leave the keyboard where it was, so typing carries on in the terminal.
             if let button { press(button, sidebar) }
             if let row {
+                focus(sidebar)
                 sidebar.tree.selection = row.entry.path
                 if row.entry.isDirectory { sidebar.tree.toggle(row.entry.path) }
             }
@@ -722,6 +725,7 @@ final class TerminalWindow {
                 // Back to how it was before this double click's first click, then the terminal goes there, as on the Mac.
                 sidebar.tree.toggle(row.entry.path)
                 activePane.changeDirectory(to: row.entry.path)
+                focusTerminal()
             } else {
                 onOpenFile(row.entry.path)
             }
