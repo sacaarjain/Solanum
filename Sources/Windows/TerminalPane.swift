@@ -68,10 +68,12 @@ final class TerminalPane: TerminalDelegate {
     /// Its size, as the window has just changed. Later, `reanchorIfSettled` deals with what that did to the shell.
     func resize(cols: Int, rows: Int) {
         guard cols != terminal.cols || rows != terminal.rows else { return }
+        // Getting shorter is what moves the console's rows without PSReadLine knowing. It deals with width by itself.
+        let shorter = rows < terminal.rows
         terminal.resize(cols: cols, rows: rows)
         pty?.resize(cols: cols, rows: rows)
         scrollOffset = min(scrollOffset, terminal.scrollback.count)
-        lastResize = Date()
+        if shorter || lastResize != nil { lastResize = Date() }
     }
 
     func setFocused(_ on: Bool) {

@@ -34,7 +34,14 @@ enum PowerShellIntegration {
         # Sent after a resize (see reanchorKey).
         if (Get-Command Set-PSReadLineKeyHandler -ErrorAction SilentlyContinue) {
             Set-PSReadLineKeyHandler -Chord 'Ctrl+Alt+F12' -ScriptBlock {
-                [Microsoft.PowerShell.PSConsoleReadLine]::InvokePrompt($null, $Host.UI.RawUI.CursorPosition.Y)
+                # A long prompt and what's typed can wrap, so the first row may be a few above the cursor.
+                $line = $null; $at = 0
+                [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$at)
+                $text = ((& $global:__solanum_prompt) -join '') -replace "$([char]27)\[[0-9;]*[A-Za-z]", ''
+                $width = [Math]::Max($Host.UI.RawUI.BufferSize.Width, 1)
+                $rows = [Math]::Floor(($text.Length + $at) / $width)
+                $top = [Math]::Max($Host.UI.RawUI.CursorPosition.Y - $rows, 0)
+                [Microsoft.PowerShell.PSConsoleReadLine]::InvokePrompt($null, $top)
             }
         }
         if (Test-Path Function:\PSConsoleHostReadLine) {

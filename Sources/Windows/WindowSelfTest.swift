@@ -555,8 +555,24 @@ enum WindowSelfTest {
                 return window.saveSnapshot(to: dir + "\\sidebars.png")
             }))
         }
-        steps.append(Step(name: "sidebar: both hide again", action: {
+        // A prompt long enough to wrap, which is how a sidebar can leave things, through changes of both kinds.
+        func promptsIntact() -> Bool {
+            !pane.terminal.screen.contains { $0.text().contains("PS ") && !$0.text().hasPrefix("PS ") }
+        }
+        steps.append(Step(name: "wrapped prompt: a sidebar's width leaves it whole", action: {
             _ = window.keyDown(0x42, shift: false, ctrl: true, alt: true)
+        }, done: { !window.rightIsVisible && !pane.isSettlingResize && promptsIntact() }))
+        steps.append(Step(name: "wrapped prompt: getting shorter leaves it whole", action: { window.resizeWindow(toCols: 40, rows: 8) },
+                          done: { pane.terminal.rows == 8 && !pane.isSettlingResize && promptsIntact() }))
+        steps.append(Step(name: "wrapped prompt: taller too", action: { window.resizeWindow(toCols: 40, rows: 24) },
+                          done: { pane.terminal.rows == 24 && !pane.isSettlingResize && promptsIntact() }))
+        steps.append(Step(name: "wrapped prompt: typing goes after it", action: { pane.type("claud") }, done: {
+            guard let row = pane.terminal.screen.firstIndex(where: { $0.text().hasPrefix("claud") || $0.text().contains("> claud") || $0.text().hasSuffix("claud") }) else { return false }
+            return row == pane.terminal.cursorY && promptsIntact()
+        }))
+        steps.append(Step(name: "wrapped prompt: clears", action: { pane.pressEscape() }, done: { !pane.cursorRowText.contains("claud") }))
+        steps.append(Step(name: "wrapped prompt: back to size", action: { window.resizeWindow(toCols: 100, rows: 30) }, done: { pane.terminal.cols == 100 || window.leftIsVisible }))
+        steps.append(Step(name: "sidebar: both hide again", action: {
             press(0x42)
         }, done: { !window.rightIsVisible && !window.leftIsVisible && pane.terminal.cols >= colsWithoutSidebar }))
         steps.append(Step(name: "sidebar: typing reaches the terminal", action: {
