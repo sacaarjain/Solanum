@@ -1,4 +1,5 @@
 import Foundation
+import WinSDK
 
 /// The drawing and the real window, driven the way a person would. `Solanum-test --selftest` covers drawing;
 /// `Solanum-test --window-test` opens a window, without taking focus, and runs a shell in it.
@@ -96,7 +97,7 @@ enum WindowSelfTest {
             let done: () -> Bool
         }
         var widthBefore = 0
-        let steps = [
+        var steps = [
             Step(name: "window: shell reaches its prompt", action: {}, done: { window.terminal.cwd != nil }),
             Step(name: "window: typing runs a command", action: {
                 window.type("echo window-ok")
@@ -174,6 +175,43 @@ enum WindowSelfTest {
                 window.pressEnter()
             }, done: { hasLine("✦ unicode typed") }),
         ]
+
+        // Selections in a Claude Code-like input box. Each run starts it afresh, selects from the start of one word to
+        // the end of another, does `act`, then leaves it, and it prints what's left of its text.
+        let sampleText = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau"
+        var executable = [UInt16](repeating: 0, count: 1024)
+        _ = GetModuleFileNameW(nil, &executable, DWORD(executable.count))
+        let launch = "& '\(String(decodingCString: executable, as: UTF16.self))' --fake-agent \(sampleText)"
+        func cell(of word: String) -> (col: Int, row: Int)? {
+            for (row, line) in window.terminal.screen.enumerated() {
+                let text = line.text()
+                if let found = text.range(of: word) { return (text.distance(from: text.startIndex, to: found.lowerBound), row) }
+            }
+            return nil
+        }
+        func boxRun(_ name: String, from: String, through: String, act: @escaping () -> Void, leaves expected: String) {
+            var acted = Date.distantFuture
+            steps.append(Step(name: "box: \(name): starts", action: {
+                window.type(launch)
+                window.pressEnter()
+            }, done: { cell(of: "❯ alpha") != nil && window.terminal.currentBlock?.state == .running }))
+            steps.append(Step(name: "box: \(name): selects and acts", action: {
+                guard let a = cell(of: from), let b = cell(of: through) else { return }
+                window.drag(fromCol: a.col, fromRow: a.row, toCol: b.col + through.count, toRow: b.row)
+                act()
+                acted = Date()
+            }, done: { Date().timeIntervalSince(acted) > 3 }))
+            steps.append(Step(name: "box: \(name): leaves the right text", action: { window.pressEscape() },
+                              done: { hasLine("final=" + expected) && window.terminal.currentBlock?.state == .prompt }))
+        }
+        boxRun("replace on one row", from: "gamma", through: "gamma", act: { window.type("X") },
+               leaves: sampleText.replacingOccurrences(of: "gamma", with: "X"))
+        boxRun("replace across two rows", from: "gamma", through: "lambda", act: { window.type("X") },
+               leaves: "alpha beta X mu nu xi omicron pi rho sigma tau")
+        boxRun("delete across two rows", from: "gamma", through: "lambda", act: { window.pressBackspace() },
+               leaves: "alpha beta  mu nu xi omicron pi rho sigma tau")
+        boxRun("delete across three rows", from: "epsilon", through: "rho", act: { window.pressBackspace() },
+               leaves: "alpha beta gamma delta  sigma tau")
 
         var index = 0
         var deadline = Date().addingTimeInterval(45)

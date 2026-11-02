@@ -773,17 +773,21 @@ final class TerminalWindow: TerminalDelegate {
         PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, position)
     }
 
-    /// Drags the mouse across cells of one row, selecting them.
-    func drag(fromCol: Int, toCol: Int, row: Int) {
+    /// Drags the mouse from one cell to another, selecting what's between.
+    func drag(fromCol: Int, fromRow: Int, toCol: Int, toRow: Int) {
         let m = canvas.metrics
-        func position(_ col: Int) -> LPARAM {
+        func position(_ col: Int, _ row: Int) -> LPARAM {
             let x = Int(canvas.padding + (Float(col) + 0.1) * m.cellWidth), y = Int(canvas.padding + (Float(row) + 0.5) * m.cellHeight)
             return LPARAM(x & 0xFFFF) | (LPARAM(y & 0xFFFF) << 16)
         }
-        PostMessageW(hwnd, Win.WM_LBUTTONDOWN, Win.MK_LBUTTON, position(fromCol))
-        PostMessageW(hwnd, Win.WM_MOUSEMOVE, Win.MK_LBUTTON, position(toCol))
-        PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, position(toCol))
+        PostMessageW(hwnd, Win.WM_LBUTTONDOWN, Win.MK_LBUTTON, position(fromCol, fromRow))
+        PostMessageW(hwnd, Win.WM_MOUSEMOVE, Win.MK_LBUTTON, position(toCol, toRow))
+        PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, position(toCol, toRow))
     }
+
+    func drag(fromCol: Int, toCol: Int, row: Int) { drag(fromCol: fromCol, fromRow: row, toCol: toCol, toRow: row) }
+
+    func pressEscape() { PostMessageW(hwnd, Win.WM_KEYDOWN, WPARAM(Win.VK_ESCAPE), 0) }
 
     func pressBackspace() { PostMessageW(hwnd, Win.WM_KEYDOWN, WPARAM(Win.VK_BACK), 0) }
 

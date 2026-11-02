@@ -13,6 +13,11 @@ if CommandLine.arguments.contains("--selftest") {
     exit(results.finish() ? 0 : 1)
 }
 
+if let flag = CommandLine.arguments.firstIndex(of: "--fake-agent") {
+    FakeAgent.run(text: CommandLine.arguments[(flag + 1)...].joined(separator: " "))
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--input-probe") {
     ConPTYSelfTest.probeInput()
     exit(0)
