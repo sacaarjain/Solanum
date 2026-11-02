@@ -880,9 +880,9 @@ enum WindowSelfTest {
             if let dir = snapshotDirectory {
                 steps.append(Step(name: "ssh: snapshot of the sidebar on the host", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-sidebar.png") }))
             }
-            // The terminal's ssh ends as it does when the connection drops: with 255.
+            // The server's end of each connection goes, as when the network drops: ssh sees the connection close, and exits 255.
             steps.append(Step(name: "ssh: a dropped connection shows the bar", action: {
-                print("    ended ssh: \(endChildSSH(of: pane.shellProcessID))")
+                print("    ended \(endSSHConnections()) of the server's connection processes")
             }, done: { pane.showsLostBar && pane.sshHost == nil && window.leftTree.root.map(AnyPath.isUnix) == false }))
             if let dir = snapshotDirectory {
                 steps.append(Step(name: "ssh: snapshot of the bar", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-lost.png") }))
@@ -1047,22 +1047,26 @@ enum WindowSelfTest {
     }
 }
 
-/// Ends the ssh.exe the shell `parent` started, with ssh's own exit code for a lost connection. For tests.
-func endChildSSH(of parent: DWORD) -> Bool {
+/// Ends every connection to this machine's ssh server, leaving the server itself: the sshd processes it started for
+/// them. For tests.
+func endSSHConnections() -> Int {
     let snapshot = CreateToolhelp32Snapshot(DWORD(TH32CS_SNAPPROCESS), 0)
-    guard let snapshot, snapshot != INVALID_HANDLE_VALUE else { return false }
+    guard let snapshot, snapshot != INVALID_HANDLE_VALUE else { return 0 }
     defer { CloseHandle(snapshot) }
     var entry = PROCESSENTRY32W()
     entry.dwSize = DWORD(MemoryLayout<PROCESSENTRY32W>.size)
+    var processes: [DWORD: (name: String, parent: DWORD)] = [:]
     var more = Process32FirstW(snapshot, &entry)
-    var ended = false
     while more {
         let name = withUnsafeBytes(of: entry.szExeFile) { String(decoding: $0.bindMemory(to: UInt16.self).prefix { $0 != 0 }, as: UTF16.self) }
-        if entry.th32ParentProcessID == parent, name.lowercased() == "ssh.exe", let process = OpenProcess(DWORD(PROCESS_TERMINATE), false, entry.th32ProcessID) {
-            ended = TerminateProcess(process, 255) || ended
-            CloseHandle(process)
-        }
+        processes[entry.th32ProcessID] = (name.lowercased(), entry.th32ParentProcessID)
         more = Process32NextW(snapshot, &entry)
+    }
+    var ended = 0
+    for (id, p) in processes where p.name == "sshd.exe" && processes[p.parent]?.name == "sshd.exe" {
+        guard let process = OpenProcess(DWORD(PROCESS_TERMINATE), false, id) else { continue }
+        if TerminateProcess(process, 1) { ended += 1 }
+        CloseHandle(process)
     }
     return ended
 }

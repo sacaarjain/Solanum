@@ -10,7 +10,9 @@ final class TerminalPane: TerminalDelegate, Groupable {
     let id: UInt
     private(set) weak var host: TerminalWindow?
     private let hwnd: HWND
-    private var canvas: Canvas { host!.canvas }
+    private var canvas: Canvas { drawTarget ?? host!.canvas }
+    /// Where `drawOverlays(on:)` is drawing, when it isn't the window.
+    private var drawTarget: Canvas?
     private(set) var terminal: Terminal
     private var pty: ConPTY?
     private var selection: TerminalSelection?
@@ -417,6 +419,14 @@ final class TerminalPane: TerminalDelegate, Groupable {
         renderer.cursorShown = cursorShown
         renderer.cursorStyle = style
         renderer.drawContents()
+        drawLostBar()
+        drawQuestion()
+    }
+
+    /// What's drawn over the terminal (the lost connection bar, ssh's question), on another canvas: for snapshots.
+    func drawOverlays(on target: Canvas) {
+        drawTarget = target
+        defer { drawTarget = nil }
         drawLostBar()
         drawQuestion()
     }

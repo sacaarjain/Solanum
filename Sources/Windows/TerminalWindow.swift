@@ -446,6 +446,7 @@ final class TerminalWindow {
         var renderer = TerminalRenderer(canvas: bitmap, terminal: activePane.terminal)
         renderer.scrollOffset = activePane.scrollOffset
         renderer.drawContents()
+        activePane.drawOverlays(on: bitmap)
         drawSidebars(on: bitmap, layout: layout)
         drawPalette(on: bitmap)
         if let menu { MenuView(canvas: bitmap, menu: menu).draw() }
