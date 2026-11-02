@@ -103,6 +103,57 @@ enum WindowSelfTest {
         results.check("text: a shell's own path isn't", WindowText.tabTitle(title: #"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"#, folder: #"C:\Users\me\Solanum"#, home: #"C:\Users\me"#) == "Solanum")
         results.check("text: nor as administrator", WindowText.tabTitle(title: #"Administrator: C:\Windows\system32\cmd.exe"#, folder: #"C:\Users\me"#, home: #"C:\Users\me"#) == "~")
 
+        print("Command palette")
+        var ran: [String] = []
+        func item(_ title: String, _ category: String = "Shell") -> PaletteItem {
+            PaletteItem(title: title, category: category) { ran.append(title) }
+        }
+        let commands = [item("New Tab"), item("Close Tab"), item("Reopen Closed Tab"), item("Paste", "Edit"), item("Scroll to Top", "View")]
+        let palette = PaletteModel(items: commands)
+        results.check("palette: lists everything", palette.rows.count == 5 && palette.selectedItem?.title == "New Tab")
+        palette.insert("reop")
+        results.check("palette: fuzzy search", palette.rows.first?.title == "Reopen Closed Tab" && palette.rows.count == 1, "\(palette.rows.map(\.title))")
+        palette.deleteBackward(); palette.deleteBackward(); palette.deleteBackward(); palette.deleteBackward()
+        palette.insert("ct")
+        results.check("palette: word starts win", palette.rows.first?.title == "Close Tab", "\(palette.rows.map(\.title))")
+        palette.deleteBackward(word: true)
+        palette.insert("edit")
+        results.check("palette: finds by category", palette.rows.first?.title == "Paste", "\(palette.rows.map(\.title))")
+        palette.insert("zzz")
+        results.check("palette: no matches", palette.rows.isEmpty && palette.selectedItem == nil)
+        palette.deleteBackward(word: true)
+        results.check("palette: typing starts over", palette.query.isEmpty && palette.rows.count == 5)
+        palette.moveSelection(by: 2)
+        results.check("palette: arrows move", palette.selectedItem?.title == "Reopen Closed Tab")
+        palette.moveSelection(by: 100)
+        results.check("palette: a page past the end stops there", palette.selectedItem?.title == "Scroll to Top")
+        palette.insert("ab")
+        palette.moveCaret(by: -1)
+        palette.insert("X")
+        results.check("palette: typing goes in at the caret", palette.query == "aXb" && palette.textBeforeCaret == "aX")
+        palette.moveCaret(to: 0)
+        palette.deleteForward()
+        results.check("palette: Delete", palette.query == "Xb")
+        palette.noteRun(commands[3])
+        palette.noteRun(commands[1])
+        palette.noteRun(commands[3])
+        results.check("palette: recents, newest first, without repeats", palette.recents == [commands[3].recentKey, commands[1].recentKey])
+        let remembered = PaletteModel(items: commands, recents: palette.recents)
+        results.check("palette: recents on top", remembered.rows.map(\.title) == ["Recently used", "Paste", "Close Tab", "All commands", "New Tab", "Close Tab", "Reopen Closed Tab", "Paste", "Scroll to Top"],
+                      "\(remembered.rows.map(\.title))")
+        results.check("palette: starts past the header", remembered.selectedItem?.title == "Paste")
+        remembered.moveSelection(by: 2)
+        results.check("palette: arrows step over headers", remembered.selectedItem?.title == "New Tab")
+        let vanished = PaletteModel(items: commands, recents: ["Gone › Removed"])
+        results.check("palette: a recent that no longer exists isn't shown", vanished.rows.count == 5)
+        let longList = PaletteModel(items: (0..<30).map { item("Command \($0)") })
+        for _ in 0..<15 { longList.moveSelection(by: 1) }
+        results.check("palette: the selection stays in view", longList.scrollTop > 0 && longList.selected < longList.scrollTop + PaletteModel.maxRows)
+        let shape = PaletteLayout(windowWidth: 1000, windowHeight: 700, scale: 1, rowCount: 3)
+        results.check("palette: centered, and stays put as it shrinks", shape.panel.x == 190 && shape.panel.y == PaletteLayout(windowWidth: 1000, windowHeight: 700, scale: 1, rowCount: 10).panel.y)
+        results.check("palette: finds a row", shape.visibleRow(atX: 500, y: shape.row(1).midY) == 1 && shape.visibleRow(atX: 10, y: 10) == nil)
+        results.check("palette: fits a small window", PaletteLayout(windowWidth: 400, windowHeight: 300, scale: 1, rowCount: 3).panel.maxX <= 400)
+
         guard let canvas = Canvas(width: 1200, height: 420, fontPixels: 15) else { return }
         let bars = WindowLayout(width: 1200, height: 420, scale: 1, tabCount: 5)
         canvas.terminalArea = bars.terminal
@@ -126,6 +177,17 @@ enum WindowSelfTest {
         WindowChrome(canvas: canvas, layout: pastFitting, tabs: (1...22).map { "tab \($0)" }, activeTab: 15).draw()
         results.check("chrome: draws with too many tabs", sol_canvas_end(canvas.raw) >= 0)
         if let dir = snapshotDirectory { results.check("chrome: saves that too", canvas.savePNG(to: dir + "\\chrome-overflow.png")) }
+        let openBars = WindowLayout(width: 1200, height: 660, scale: 1, tabCount: 2)
+        if let big = Canvas(width: 1200, height: 660, fontPixels: 15), sol_canvas_begin(big.raw, TerminalPalette.background) >= 0 {
+            WindowChrome(canvas: big, layout: openBars, tabs: ["~", "Solanum"], activeTab: 1).draw()
+            let shown = PaletteModel(items: [PaletteItem(title: "New Tab", category: "Shell", shortcut: "Ctrl+T"), PaletteItem(title: "Reopen Closed Tab", category: "Shell", shortcut: "Ctrl+Shift+T"),
+                                             PaletteItem(title: "Close Tab", category: "Shell", shortcut: "Ctrl+W"), PaletteItem(title: "Next Tab", category: "Window", shortcut: "Ctrl+Tab"),
+                                             PaletteItem(title: "Paste", category: "Edit", shortcut: "Ctrl+V"), PaletteItem(title: "Scroll to Top", category: "View")],
+                                     recents: ["Shell › Close Tab", "Edit › Paste"])
+            PaletteView(canvas: big, model: shown, layout: PaletteLayout(windowWidth: 1200, windowHeight: 660, scale: 1, rowCount: shown.visibleRowCount), hoveredRow: nil).draw()
+            results.check("palette: draws", sol_canvas_end(big.raw) >= 0)
+            if let dir = snapshotDirectory { results.check("palette: saves", big.savePNG(to: dir + "\\palette.png")) }
+        }
     }
 
     /// A real window with a real shell, in the order someone would try it. Exit code 0 if it all works.
@@ -367,6 +429,30 @@ enum WindowSelfTest {
             if window.panes.count > 2 && pane.atPrompt { press(0x57) }
             return window.panes.count == 2 && !window.currentLayout.overflows && window.currentLayout.tabScroll == 0
         }))
+        steps.append(Step(name: "palette: Ctrl+Shift+P opens it", action: { press(0x50, shift: true) }, done: { window.isPaletteOpen }))
+        steps.append(Step(name: "palette: typing filters it", action: { pane.type("new tab") },
+                          done: { window.paletteSelection?.title == "New Tab" }))
+        steps.append(Step(name: "palette: what's typed stays out of the shell", action: {},
+                          done: { !pane.cursorRowText.contains("new tab") }))
+        steps.append(Step(name: "palette: Enter runs it and closes", action: { pane.pressEnter() },
+                          done: { !window.isPaletteOpen && window.panes.count == 3 && pane.atPrompt }))
+        steps.append(Step(name: "palette: lists the tabs", action: { press(0x50, shift: true) },
+                          done: { window.paletteRows.contains { $0.title.hasPrefix("Go to Tab:") } }))
+        steps.append(Step(name: "palette: Esc closes it", action: { pane.pressEscape() }, done: { !window.isPaletteOpen }))
+        steps.append(Step(name: "palette: and Close Tab works from it", action: {
+            press(0x50, shift: true)
+            pane.type("close tab")
+        }, done: { window.paletteSelection?.title == "Close Tab" }))
+        steps.append(Step(name: "palette: closes the tab", action: { pane.pressEnter() }, done: { window.panes.count == 2 && !window.isPaletteOpen }))
+        steps.append(Step(name: "palette: clicking outside closes it", action: {
+            press(0x50, shift: true)
+            window.click(UIRect(x: 2, y: Float(window.currentLayout.height) - 40, width: 2, height: 2))
+        }, done: { !window.isPaletteOpen }))
+        steps.append(Step(name: "palette: typing reaches the shell again", action: {
+            pane.type("echo after-palette")
+            pane.pressEnter()
+        }, done: { hasLine("after-palette") }))
+
         steps.append(Step(name: "tabs: titled by folder, not the shell's path", action: {},
                           done: { !window.panes[1].tabTitle.contains(".exe") && !window.panes[1].tabTitle.isEmpty }))
         steps.append(Step(name: "tabs: exit closes only its tab", action: {

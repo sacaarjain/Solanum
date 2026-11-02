@@ -45,7 +45,7 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
   - Programs keep the keys the app doesn't claim, including Ctrl+A, D, E, H, J, K, L, R, U and Z.
   - Ctrl+C copies when something's selected and interrupts otherwise; Ctrl+V pastes, except in full-screen programs and for
     an image going to Claude Code; Ctrl+X cuts a selection in the line being typed; Ctrl+1 to 9 pick a tab.
-  - Ctrl+Shift+P is planned as the command palette.
+  - Ctrl+Shift+P is the command palette, which stands in for the Mac's menu bar.
 - **Art:** `Tools/MakeWindowsArt.swift` renders the Mac's flower, tab prompt and app icon into `Sources/Windows/ArtData.swift`
   and `Support/Windows/Solanum.ico`, until the drawing itself is shared.
 - **Closing the last window:** it saves the session and exits, and the next launch restores it.

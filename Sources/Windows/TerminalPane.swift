@@ -397,6 +397,16 @@ final class TerminalPane: TerminalDelegate {
         }
     }
 
+    func scrollToTop() {
+        scrollOffset = terminal.usingAlt ? 0 : terminal.scrollback.count
+        invalidate()
+    }
+
+    func scrollToBottom() {
+        scrollOffset = 0
+        invalidate()
+    }
+
     private func scroll(by lines: Int) {
         scrollOffset = min(max(scrollOffset + lines, 0), terminal.scrollback.count)
         invalidate()

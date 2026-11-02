@@ -24,6 +24,10 @@ final class TerminalWindow {
     private var terminalHasMouse = false
     private var clientWidth = 0, clientHeight = 0
     private var tabScroll: Float = 0
+    private var palettePendingSurrogate: UInt16?
+    private var palette: PaletteModel?
+    private var hoveredPaletteRow: Int?
+    private var paletteRecents: [String] = TerminalWindow.loadPaletteRecents()
     private var lastDrawn = Date.distantPast
     private(set) var paints = 0
 
@@ -229,6 +233,7 @@ final class TerminalWindow {
         guard !panes.isEmpty, sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
         chrome(on: canvas, layout: layout).draw()
         activePane.draw()
+        drawPalette(on: canvas)
         _ = sol_canvas_end(canvas.raw)
         paints += 1
         lastDrawn = Date()
@@ -244,6 +249,7 @@ final class TerminalWindow {
         var renderer = TerminalRenderer(canvas: bitmap, terminal: activePane.terminal)
         renderer.scrollOffset = activePane.scrollOffset
         renderer.drawContents()
+        drawPalette(on: bitmap)
         guard sol_canvas_end(bitmap.raw) >= 0 else { return false }
         return bitmap.savePNG(to: path)
     }
@@ -330,10 +336,14 @@ final class TerminalWindow {
             }
             return 0
         case Win.WM_CHAR:
-            if !panes.isEmpty { activePane.typed(UInt16(truncatingIfNeeded: wParam), meta: false) }
+            if palette != nil {
+                paletteTyped(UInt16(truncatingIfNeeded: wParam))
+            } else if !panes.isEmpty {
+                activePane.typed(UInt16(truncatingIfNeeded: wParam), meta: false)
+            }
             return 0
         case Win.WM_SYSCHAR:
-            if !panes.isEmpty { activePane.typed(UInt16(truncatingIfNeeded: wParam), meta: true) }
+            if palette == nil && !panes.isEmpty { activePane.typed(UInt16(truncatingIfNeeded: wParam), meta: true) }
             return 0
         case Win.WM_LBUTTONDOWN, Win.WM_LBUTTONUP, Win.WM_LBUTTONDBLCLK, Win.WM_MOUSEMOVE,
              Win.WM_RBUTTONDOWN, Win.WM_RBUTTONUP, Win.WM_MBUTTONDOWN, Win.WM_MBUTTONUP:
@@ -349,7 +359,10 @@ final class TerminalWindow {
         case Win.WM_MOUSEWHEEL:
             guard !panes.isEmpty else { return 0 }
             let (_, y) = screenPoint(lParam)
-            if y < layout.tabBarHeight {
+            if let palette {
+                palette.scroll(by: Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF) > 0 ? -2 : 2)
+                invalidate()
+            } else if y < layout.tabBarHeight {
                 let notches = Float(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Float(Win.WHEEL_DELTA)
                 scrollTabs(by: -notches * layout.tabWidth)
             } else {
@@ -401,7 +414,7 @@ final class TerminalWindow {
         var point = POINT()
         GetCursorPos(&point)
         ScreenToClient(hwnd, &point)
-        let onTerminal = layout.part(atX: Float(point.x), y: Float(point.y)) == .terminal
+        let onTerminal = palette == nil && layout.part(atX: Float(point.x), y: Float(point.y)) == .terminal
         SetCursor(LoadCursorW(nil, onTerminal ? Win.ibeamCursor : Win.arrowCursor))
         return 1
     }
@@ -442,6 +455,10 @@ final class TerminalWindow {
     private func clientMouse(_ message: UINT, _ wParam: WPARAM, _ lParam: LPARAM) {
         guard !panes.isEmpty else { return }
         let (x, y) = clientPoint(lParam)
+        if palette != nil {
+            paletteMouse(message, x: x, y: y)
+            return
+        }
         let part = layout.part(atX: x, y: y)
         if message == Win.WM_LBUTTONDOWN || message == Win.WM_RBUTTONDOWN || message == Win.WM_MBUTTONDOWN || message == Win.WM_LBUTTONDBLCLK {
             terminalHasMouse = part == .terminal
@@ -476,6 +493,149 @@ final class TerminalWindow {
         invalidate()
     }
 
+    // MARK: - Command palette
+
+    var isPaletteOpen: Bool { palette != nil }
+    var paletteRows: [PaletteItem] { palette?.rows ?? [] }
+    var paletteSelection: PaletteItem? { palette?.selectedItem }
+
+    private var paletteLayout: PaletteLayout {
+        PaletteLayout(windowWidth: Float(clientWidth), windowHeight: Float(clientHeight), scale: scale, rowCount: palette?.visibleRowCount ?? 0)
+    }
+
+    private func drawPalette(on target: Canvas) {
+        guard let palette else { return }
+        PaletteView(canvas: target, model: palette, layout: paletteLayout, hoveredRow: hoveredPaletteRow).draw()
+    }
+
+    /// Everything the app can do. On Windows this stands in for the Mac's menu bar, which is where its palette reads them.
+    private func paletteItems() -> [PaletteItem] {
+        var items = [
+            PaletteItem(title: "New Tab", category: "Shell", shortcut: "Ctrl+T") { [weak self] in self?.newTab() },
+            PaletteItem(title: "Reopen Closed Tab", category: "Shell", shortcut: "Ctrl+Shift+T") { [weak self] in self?.reopenClosedTab() },
+            PaletteItem(title: "Close Tab", category: "Shell", shortcut: "Ctrl+W") { [weak self] in self.map { $0.closeTab($0.activeIndex) } },
+            PaletteItem(title: "Next Tab", category: "Window", shortcut: "Ctrl+Tab") { [weak self] in self.map { $0.selectTab(($0.activeIndex + 1) % $0.panes.count) } },
+            PaletteItem(title: "Previous Tab", category: "Window", shortcut: "Ctrl+Shift+Tab") { [weak self] in
+                self.map { $0.selectTab(($0.activeIndex + $0.panes.count - 1) % $0.panes.count) }
+            },
+            PaletteItem(title: "Paste", category: "Edit", shortcut: "Ctrl+V") { [weak self] in self?.activePane.paste() },
+            PaletteItem(title: "Scroll to Top", category: "View") { [weak self] in self?.activePane.scrollToTop() },
+            PaletteItem(title: "Scroll to Bottom", category: "View") { [weak self] in self?.activePane.scrollToBottom() },
+            PaletteItem(title: "Minimize", category: "Window") { [weak self] in self?.pressCaptionButton(.minimize) },
+            PaletteItem(title: IsZoomed(hwnd) ? "Restore" : "Maximize", category: "Window") { [weak self] in self?.pressCaptionButton(.maximize) },
+            PaletteItem(title: "Close Window", category: "Window", shortcut: "Alt+F4") { [weak self] in self?.pressCaptionButton(.close) },
+        ]
+        for (i, pane) in panes.enumerated() {
+            items.append(PaletteItem(title: "Go to Tab: \(pane.tabTitle)", category: "Tabs", shortcut: i < 9 ? "Ctrl+\(i + 1)" : "") { [weak self] in self?.selectTab(i) })
+        }
+        return items
+    }
+
+    func togglePalette() {
+        if palette != nil {
+            closePalette()
+        } else {
+            palette = PaletteModel(items: paletteItems(), recents: paletteRecents)
+            activePane.setFocused(false)
+            invalidate()
+        }
+    }
+
+    private func closePalette() {
+        palette = nil
+        hoveredPaletteRow = nil
+        activePane.setFocused(isFocused)
+        invalidate()
+    }
+
+    private func runPalette(_ item: PaletteItem? = nil) {
+        guard let palette, let item = item ?? palette.selectedItem else { return }
+        palette.noteRun(item)
+        paletteRecents = palette.recents
+        Self.savePaletteRecents(paletteRecents)
+        closePalette()
+        item.run()
+    }
+
+    private func paletteTyped(_ unit: UInt16) {
+        guard let palette, unit >= 0x20, unit != 0x7F else { return }
+        // Surrogate pairs come in two messages, and the first can't be shown alone.
+        if UTF16.isLeadSurrogate(unit) {
+            palettePendingSurrogate = unit
+            return
+        }
+        var units = [unit]
+        if let lead = palettePendingSurrogate, UTF16.isTrailSurrogate(unit) { units = [lead, unit] }
+        palettePendingSurrogate = nil
+        palette.insert(String(decoding: units, as: UTF16.self))
+        invalidate()
+    }
+
+    /// A key while the palette is open. Everything stays with it, so nothing typed lands in the shell behind.
+    private func paletteKey(_ key: Int32, ctrl: Bool) -> Bool {
+        guard let palette else { return false }
+        switch key {
+        case Win.VK_ESCAPE: closePalette()
+        case Win.VK_RETURN: runPalette()
+        case Win.VK_UP: palette.moveSelection(by: -1)
+        case Win.VK_DOWN: palette.moveSelection(by: 1)
+        case Win.VK_PRIOR: palette.moveSelection(by: -PaletteModel.maxRows)
+        case Win.VK_NEXT: palette.moveSelection(by: PaletteModel.maxRows)
+        case Win.VK_LEFT: palette.moveCaret(by: -1)
+        case Win.VK_RIGHT: palette.moveCaret(by: 1)
+        case Win.VK_HOME: palette.moveCaret(to: 0)
+        case Win.VK_END: palette.moveCaret(to: palette.query.count)
+        case Win.VK_BACK: palette.deleteBackward(word: ctrl)
+        case Win.VK_DELETE: palette.deleteForward()
+        case 0x56 where ctrl:
+            if let text = activePane.clipboardText() { palette.insert(text) }
+        case Win.VK_F4: return false
+        default:
+            // Characters come through as WM_CHAR. With Ctrl they'd be control codes, which have no place in the field.
+            if ctrl { return true }
+            return false
+        }
+        invalidate()
+        return true
+    }
+
+    private func paletteMouse(_ message: UINT, x: Float, y: Float) {
+        guard let palette else { return }
+        let l = paletteLayout
+        let row = l.visibleRow(atX: x, y: y).map { $0 + palette.scrollTop }
+        switch message {
+        case Win.WM_MOUSEMOVE:
+            let visible = l.visibleRow(atX: x, y: y)
+            if visible != hoveredPaletteRow {
+                hoveredPaletteRow = visible
+                invalidate()
+            }
+        case Win.WM_LBUTTONDOWN, Win.WM_RBUTTONDOWN:
+            // Outside it dismisses, as on the Mac.
+            if !l.panel.contains(x, y) { closePalette() }
+        case Win.WM_LBUTTONUP:
+            if let row, palette.rows.indices.contains(row), !palette.rows[row].isHeader { runPalette(palette.rows[row]) }
+        default: break
+        }
+    }
+
+    // Kept between launches, as on the Mac. Tests leave a person's list alone.
+    private static var paletteRecentsFile: URL? {
+        guard !CommandLine.arguments.contains("--window-test"), let appData = ProcessInfo.processInfo.environment["APPDATA"] else { return nil }
+        return URL(fileURLWithPath: appData).appendingPathComponent("Solanum").appendingPathComponent("palette-recents.txt")
+    }
+
+    private static func loadPaletteRecents() -> [String] {
+        guard let file = paletteRecentsFile, let text = try? String(contentsOf: file, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").map(String.init)
+    }
+
+    private static func savePaletteRecents(_ recents: [String]) {
+        guard let file = paletteRecentsFile else { return }
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? recents.joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
+    }
+
     // MARK: - Keyboard
 
     private func isDown(_ key: Int32) -> Bool { GetKeyState(key) < 0 }
@@ -486,6 +646,11 @@ final class TerminalWindow {
     }
 
     func keyDown(_ key: Int32, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
+        if ctrl && shift && !alt && key == 0x50 {
+            togglePalette()
+            return true
+        }
+        if palette != nil { return paletteKey(key, ctrl: ctrl) }
         // Windows' Ctrl stands in for the Mac's Command, and Shift is Shift: keys the app claims are the app's, whatever's
         // running (see WINDOWS.md).
         if ctrl && !alt {
