@@ -759,12 +759,24 @@ enum WindowSelfTest {
             Array(window.menuTitles.prefix(3)) == ["Go to Folder…", "Pin in Sidebar", "Copy Path"]
                 && window.menuShortcuts["Go to Folder…"] == "Ctrl+Shift+O" && window.menuShortcuts["Pin in Sidebar"] == "Ctrl+Shift+B"
         }))
+        if let dir = snapshotDirectory {
+            steps.append(Step(name: "path-menu: snapshot", action: {}, done: {
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                return window.saveSnapshot(to: dir + "\\path-menu.png")
+            }))
+        }
         steps.append(Step(name: "path: closes", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
         // Go to Folder.
         func key(_ k: Int32, ctrl: Bool = false, shift: Bool = false) { _ = window.keyDown(k, shift: shift, ctrl: ctrl, alt: false) }
         steps.append(Step(name: "go to: Ctrl+Shift+O starts at the terminal's folder", action: { key(0x4F, ctrl: true, shift: true) }, done: {
             window.isPaletteOpen && window.paletteQuery?.hasSuffix(#"alpha\"#) == true && window.paletteSelection?.title.hasSuffix(#"alpha Here"#) == true
         }))
+        if let dir = snapshotDirectory {
+            steps.append(Step(name: "go-to-folder: snapshot", action: {}, done: {
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                return window.saveSnapshot(to: dir + "\\go-to-folder.png")
+            }))
+        }
         steps.append(Step(name: "go to: Ctrl+Backspace clears the field", action: { key(Win.VK_BACK, ctrl: true) }, done: { window.paletteQuery == "" }))
         steps.append(Step(name: "go to: a relative path", action: { pane.type(#"..\"#) },
                           done: { window.paletteSelection.map { $0.title.hasPrefix("Open ") && $0.title.hasSuffix(sampleName + " Here") } == true
