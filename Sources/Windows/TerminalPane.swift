@@ -334,7 +334,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
 
     /// The bar's Reconnect: ssh again, at the prompt once the shell is at one.
     func reconnect() {
-        guard let lost, terminal.sshControlPath == nil, !terminal.usingAlt else { return MessageBeep(UINT(bitPattern: -1)) }
+        guard let lost, terminal.sshControlPath == nil, !terminal.usingAlt else { _ = MessageBeep(UINT(bitPattern: -1)); return }
         reconnecting = true
         pendingCommand = lost.command
         invalidate()
