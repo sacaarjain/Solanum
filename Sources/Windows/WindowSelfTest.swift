@@ -275,6 +275,26 @@ enum WindowSelfTest {
                       == [#"plain"#, #""a b""#, #""say \"hi\"""#, #""C:\my dir\\""#, #"C:\dir\"#, #""""#])
         results.check("remote: quoting for sh", RemoteConnection.quote("it's") == "'it'\\''s'")
         results.check("paths: Unix ones", AnyPath.parent("/home/pi") == "/home" && AnyPath.parent("/home") == "/" && AnyPath.parent("/") == nil && AnyPath.join("/", "etc") == "/etc")
+        let pc = GoToPaths(unix: false, base: #"C:\Users\me\proj"#, home: #"C:\Users\me"#)
+        results.check("go to: relative paths start at the terminal's folder", pc.resolve(".") == #"C:\Users\me\proj"# && pc.resolve("..") == #"C:\Users\me"#
+                      && pc.resolve(#"src\..\docs"#) == #"C:\Users\me\proj\docs"#, pc.resolve(#"src\..\docs"#))
+        results.check("go to: ~, drives, either slash", pc.resolve(#"~\Desktop"#) == #"C:\Users\me\Desktop"# && pc.resolve("d:/x/./y/..") == #"D:\x"#
+                      && pc.resolve("c:") == #"C:\"# && pc.resolve(#"\Windows"#) == #"C:\Windows"# && pc.resolve("~") == #"C:\Users\me"#, pc.resolve("d:/x/./y/.."))
+        results.check("go to: never above the top", pc.resolve(#"C:\..\.."#) == #"C:\"# && pc.parent(#"C:\"#) == nil && pc.parent(#"C:\Users"#) == #"C:\"#)
+        results.check("go to: home shows as ~", pc.shown(#"c:\users\me\proj"#) == #"~\proj"# && pc.shown(#"C:\Users\me"#) == "~" && pc.shown(#"C:\Users\meg"#) == #"C:\Users\meg"#
+                      && pc.field(#"C:\Users\me\proj"#) == #"~\proj\"# && pc.field(#"C:\"#) == #"C:\"#)
+        results.check("go to: what's typed splits at the last slash", pc.typedParent(#"~\Pro"#) == #"~\"# && pc.lastPart("~/Pro") == "Pro"
+                      && pc.endsInSeparator("C:/") && pc.cleaned(#""C:\a b""#) == #"C:\a b"#)
+        let host = GoToPaths(unix: true, base: "/home/u/p", home: "/home/u")
+        results.check("go to: on a host", host.resolve("~/x") == "/home/u/x" && host.resolve("../..") == "/home" && host.resolve("/") == "/"
+                      && host.parent("/") == nil && host.shown("/home/u/p") == "~/p" && host.cleaned(#"a\ b"#) == "a b" && host.lastPart(#"a\b"#) == #"a\b"#)
+        var live = ["x"]
+        let goTo = PaletteModel(query: #"C:\"#, placeholder: "", icon: 0, emptyMessage: "") { q in live.map { PaletteItem(title: q + $0) } }
+        let startedAtEnd = goTo.caret == 3 && goTo.rows.first?.title == #"C:\x"#
+        goTo.deleteToStart()
+        live = ["y"]
+        goTo.refresh()
+        results.check("palette: a live one works its rows out from the field", startedAtEnd && goTo.query.isEmpty && goTo.rows.first?.title == "y" && goTo.isLive)
         results.check("reconnect: words for PowerShell", ["-o", "StrictHostKeyChecking=accept-new", "pi@host", "a b", "it's", "@x"].map(TerminalPane.powerShellWord)
                       == ["-o", "StrictHostKeyChecking=accept-new", "pi@host", "'a b'", "'it''s'", "'@x'"])
         results.check("paths: a host's folders from /", WindowText.crumbPaths("/etc/ssh", home: "/home/pi").map(\.path) == ["/", "/etc", "/etc/ssh"]
@@ -725,6 +745,44 @@ enum WindowSelfTest {
             return true
         }))
         steps.append(Step(name: "path: it gets there", action: {}, done: { pane.terminal.cwd?.hasSuffix("alpha") == true && pane.atPrompt && window.leftTree.root?.hasSuffix("alpha") == true }))
+        // Pinning from the path.
+        let sampleName = WindowsPath.name(windowsFolder)
+        steps.append(Step(name: "path: right-click offers the pin", action: { window.rightClick(window.crumbRect(sampleName)!) },
+                          done: { window.menuTitles == ["Pin in Sidebar", "Copy Path"] && window.menuShortcuts["Pin in Sidebar"] == "" }))
+        steps.append(Step(name: "path: the pin keeps the sidebar there", action: { window.click(window.menuRow("Pin in Sidebar")!) },
+                          done: { !window.isMenuOpen && inSample(window.leftPinned) && inSample(window.leftTree.root) && pane.terminal.cwd?.hasSuffix("alpha") == true }))
+        steps.append(Step(name: "path: and the menu offers to unpin it, with its keys", action: { window.rightClick(window.crumbRect(sampleName)!) },
+                          done: { window.menuTitles == ["Unpin Sidebar", "Copy Path"] && window.menuShortcuts["Unpin Sidebar"] == "Ctrl+Shift+B" }))
+        steps.append(Step(name: "path: unpinned, it follows the terminal again", action: { window.click(window.menuRow("Unpin Sidebar")!) },
+                          done: { !window.isMenuOpen && window.leftPinned == nil && window.leftTree.root?.hasSuffix("alpha") == true }))
+        steps.append(Step(name: "path: clicking a part has Go to Folder and the pin", action: { window.click(window.crumbRect("alpha")!) }, done: {
+            Array(window.menuTitles.prefix(3)) == ["Go to Folder…", "Pin in Sidebar", "Copy Path"]
+                && window.menuShortcuts["Go to Folder…"] == "Ctrl+Shift+O" && window.menuShortcuts["Pin in Sidebar"] == "Ctrl+Shift+B"
+        }))
+        steps.append(Step(name: "path: closes", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
+        // Go to Folder.
+        func key(_ k: Int32, ctrl: Bool = false, shift: Bool = false) { _ = window.keyDown(k, shift: shift, ctrl: ctrl, alt: false) }
+        steps.append(Step(name: "go to: Ctrl+Shift+O starts at the terminal's folder", action: { key(0x4F, ctrl: true, shift: true) }, done: {
+            window.isPaletteOpen && window.paletteQuery?.hasSuffix(#"alpha\"#) == true && window.paletteSelection?.title.hasSuffix(#"alpha Here"#) == true
+        }))
+        steps.append(Step(name: "go to: Ctrl+Backspace clears the field", action: { key(Win.VK_BACK, ctrl: true) }, done: { window.paletteQuery == "" }))
+        steps.append(Step(name: "go to: a relative path", action: { pane.type(#"..\"#) },
+                          done: { window.paletteSelection.map { $0.title.hasPrefix("Open ") && $0.title.hasSuffix(sampleName + " Here") } == true
+                                    && window.paletteRows.contains { $0.title == "alpha" } }))
+        steps.append(Step(name: "go to: Enter goes there", action: { pane.pressEnter() },
+                          done: { !window.isPaletteOpen && inSample(pane.terminal.cwd) && pane.atPrompt }))
+        steps.append(Step(name: "go to: typing picks a folder", action: {
+            key(0x4F, ctrl: true, shift: true)
+            pane.type("alp")
+        }, done: { window.paletteSelection?.title == "alpha" }))
+        steps.append(Step(name: "go to: Tab goes into it", action: { key(Win.VK_TAB) },
+                          done: { window.paletteQuery?.hasSuffix(#"\alpha\"#) == true && window.paletteSelection?.title.hasSuffix("alpha Here") == true }))
+        steps.append(Step(name: "go to: Enter there", action: { pane.pressEnter() },
+                          done: { !window.isPaletteOpen && pane.terminal.cwd?.hasSuffix("alpha") == true && pane.atPrompt }))
+        steps.append(Step(name: "go to: Ctrl+Shift+O again closes it", action: {
+            key(0x4F, ctrl: true, shift: true)
+            key(0x4F, ctrl: true, shift: true)
+        }, done: { !window.isPaletteOpen }))
         steps.append(Step(name: "path: the folder icon lists the first part's folders", action: { window.click(window.folderIconRect!) },
                           done: { window.menuTitles.contains("Copy Path") }))
         steps.append(Step(name: "path: and closes", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))

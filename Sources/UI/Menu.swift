@@ -8,6 +8,10 @@ struct MenuItem {
     var isSeparator = false
     /// A colored dot before the title, for a group's color.
     var swatch: UInt32?
+    /// A glyph (Segoe Fluent Icons) before the title, where a check would go.
+    var icon: UInt16?
+    /// The keys that do the same, dim at the right, as the Mac's menus show them.
+    var shortcut = ""
     var run: () -> Void = {}
     /// What it becomes while Alt is held, as the Mac's menus do with Option: another title and command.
     var alternate: (title: String, run: () -> Void)?

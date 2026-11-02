@@ -33,7 +33,7 @@ struct PaletteView {
         drawField()
         sol_canvas_fill_rect(canvas.raw, p.x + 10 * scale, layout.dividerY, p.width - 20 * scale, 1, fg, 0.10)
         if model.rows.isEmpty {
-            label("No matching commands", insetRow(layout.row(0)), pixels: 13 * scale, alpha: 0.55)
+            label(model.emptyMessage, insetRow(layout.row(0)), pixels: 13 * scale, alpha: 0.55)
             return
         }
         for visible in 0..<model.visibleRowCount where model.scrollTop + visible < model.rows.count {
@@ -43,13 +43,19 @@ struct PaletteView {
 
     private func drawField() {
         let f = layout.field, pixels = 15 * scale
-        sol_canvas_draw_icon(canvas.raw, layout.icon.x, layout.icon.y, layout.icon.width, layout.icon.height, 0xE721, 14 * scale, TerminalPalette.accent, 0.9)
+        sol_canvas_draw_icon(canvas.raw, layout.icon.x, layout.icon.y, layout.icon.width, layout.icon.height, model.icon, 14 * scale, TerminalPalette.accent, 0.9)
+        // A long path slides left, so the caret stays in view.
+        let beforeCaret = width(of: model.textBeforeCaret, pixels: pixels)
+        let shift = max(beforeCaret - f.width + 4 * scale, 0).rounded()
         if model.query.isEmpty {
-            label("Type a command…", f, pixels: pixels, alpha: 0.45)
+            label(model.placeholder, f, pixels: pixels, alpha: 0.45)
         } else {
-            label(model.query, f, pixels: pixels)
+            sol_canvas_push_clip(canvas.raw, f.x, f.y, f.width, f.height)
+            let full = width(of: model.query, pixels: pixels).rounded(.up) + 8 * scale
+            label(model.query, UIRect(x: f.x - shift, y: f.y, width: max(full, f.width + shift), height: f.height), pixels: pixels)
+            sol_canvas_pop_clip(canvas.raw)
         }
-        let caretX = f.x + width(of: model.textBeforeCaret, pixels: pixels)
+        let caretX = f.x + beforeCaret - shift
         let height = 20 * scale
         sol_canvas_fill_rect(canvas.raw, caretX.rounded(), (f.midY - height / 2).rounded(), max(scale.rounded(), 1), height, TerminalPalette.accent, 1)
     }

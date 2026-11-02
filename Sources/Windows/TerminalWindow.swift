@@ -1032,6 +1032,12 @@ final class TerminalWindow {
     /// As they show: with Alt held, the alternates.
     var menuTitles: [String] { menu.map { m in m.items.indices.map { m.title($0) } } ?? [] }
 
+    /// The keys each item shows at its right.
+    var menuShortcuts: [String: String] {
+        guard let menu else { return [:] }
+        return Dictionary(menu.items.indices.map { (menu.title($0), menu.items[$0].shortcut) }, uniquingKeysWith: { a, _ in a })
+    }
+
     func menuRow(_ title: String) -> UIRect? {
         guard let menu, let i = menu.items.indices.first(where: { menu.title($0) == title }) else { return nil }
         return menu.rect(i)
@@ -1116,17 +1122,20 @@ final class TerminalWindow {
         let unix = AnyPath.isUnix(crumb.path)
         let current = unix ? activePane.remoteTerminalFolder : activePane.terminal.cwd
         let copy = MenuItem(title: "Copy Path") { [weak self] in self?.activePane.setClipboard(crumb.path) }
+        let pin = pinItem(crumb.path, current: current)
         guard !copyOnly else {
-            openMenu([copy], x: crumb.rect.x, y: crumb.rect.y - 2 * scale, above: true)
+            openMenu([pin, copy], x: crumb.rect.x, y: crumb.rect.y - 2 * scale, above: true)
             return
         }
+        var goTo = MenuItem(title: "Go to Folder…") { [weak self] in self?.showGoToFolder() }
+        goTo.shortcut = "Ctrl+Shift+O"
         // Unix paths are case-sensitive; Windows ones aren't.
         func same(_ a: String) -> String { unix ? a : a.lowercased() }
         let show: ([FileEntry]?) -> Void = { [weak self] entries in
             self?.runOnWindowThread {
                 guard let self else { return }
                 let sorted = FileTree.sortedForDisplay((entries ?? []).filter { $0.isDirectory && !$0.isHidden }).prefix(400)
-                var items = [copy, MenuItem.separator]
+                var items = [goTo, pin, copy, MenuItem.separator]
                 if same(crumb.path) != current.map(same) {
                     items.append(MenuItem(title: "Go to \(crumb.label)") { [weak self] in self?.goTo(folder: crumb.path) })
                     items.append(.separator)
@@ -1147,6 +1156,32 @@ final class TerminalWindow {
         } else {
             Thread.detachNewThread { show(FileSidebar.list(crumb.path)) }
         }
+    }
+
+    /// Keeps the left sidebar on a folder from the path while the terminal goes elsewhere, or, when it's already pinned
+    /// there, lets it follow the terminal again. Ctrl+Shift+B shows beside it when that does the same.
+    private func pinItem(_ folder: String, current: String?) -> MenuItem {
+        let unix = AnyPath.isUnix(folder)
+        func same(_ a: String?, _ b: String?) -> Bool { unix ? a == b : a?.lowercased() == b?.lowercased() }
+        let unpins = same(left.pinned, folder)
+        var item = MenuItem(title: unpins ? "Unpin Sidebar" : "Pin in Sidebar") { [weak self] in self?.pinLeft(to: unpins ? nil : folder) }
+        item.icon = unpins ? 0xE77A : 0xE718
+        if unpins || (left.pinned == nil && same(folder, current)) { item.shortcut = "Ctrl+Shift+B" }
+        return item
+    }
+
+    /// Pins the left sidebar to `folder`, opening it if it's closed; nil unpins it.
+    private func pinLeft(to folder: String?) {
+        if let folder {
+            if !left.isVisible { toggleSidebar(left) }
+            left.pinned = folder
+            left.tree.setRoot(folder)
+        } else {
+            left.pinned = nil
+            left.followed = nil
+            followTerminalFolder()
+        }
+        invalidate()
     }
 
     /// The status bar's folder parts under the pointer. True if it dealt with the mouse.
@@ -1615,12 +1650,133 @@ final class TerminalWindow {
         openMenu(items, x: x, y: y, above: false)
     }
 
+    // MARK: - Go to Folder
+
+    /// Folder listings for Go to Folder, by path, while it's open: nil inside while an ssh host's is on its way.
+    private var goToListings: [String: [FileEntry]?] = [:]
+
+    /// Where Go to Folder looks: this PC, or the host of an ssh tab once the sidebar's connection is up.
+    private func goToPlace() -> (paths: GoToPaths, remote: RemoteConnection?)? {
+        guard !panes.isEmpty else { return nil }
+        let pane = activePane
+        if pane.sshArguments != nil {
+            guard let remote = pane.remote, remote.state == .ready, let home = remote.home else { return nil }
+            return (GoToPaths(unix: true, base: pane.remoteFolder ?? home, home: home), remote)
+        }
+        let home = ProcessInfo.processInfo.environment["USERPROFILE"] ?? #"C:\"#
+        return (GoToPaths(unix: false, base: pane.terminal.cwd ?? home, home: home), nil)
+    }
+
+    /// Ctrl+Shift+O: a palette whose field is just a path, starting at the terminal's folder. Ctrl+Backspace clears it
+    /// for typing one afresh. Enter goes there in this tab (or a new one, with Ctrl), Tab goes into the folder picked.
+    func showGoToFolder(path: String? = nil) {
+        goToListings = [:]
+        let place = goToPlace()
+        let start = path ?? place.map { $0.paths.field($0.paths.base) } ?? ""
+        let waiting = activePane.sshArguments != nil && place == nil
+        palette = PaletteModel(query: start, placeholder: "Go to folder: a path, ~\\…, or a folder in this one", icon: 0xE8B7,
+                               emptyMessage: waiting ? "Waiting for the ssh connection…" : "No folders") { [weak self] typed in
+            self?.goToItems(typed) ?? []
+        }
+        hoveredPaletteRow = nil
+        activePane.setFocused(false)
+        invalidate()
+    }
+
+    /// The folders in `dir`, or nil while an ssh host's are on their way (the rows are worked out again when they come).
+    private func goToFolders(in dir: String, remote: RemoteConnection?) -> [FileEntry]? {
+        if let listed = goToListings[dir] { return listed }
+        guard let remote else {
+            let entries = (FileSidebar.list(dir) ?? []).filter(\.isDirectory)
+            goToListings[dir] = entries
+            return entries
+        }
+        goToListings[dir] = .some(nil)
+        remote.list(dir) { [weak self] entries in
+            self?.runOnWindowThread {
+                guard let self, let palette = self.palette, palette.isLive else { return }
+                self.goToListings[dir] = (entries ?? []).filter(\.isDirectory)
+                palette.refresh()
+                self.invalidate()
+            }
+        }
+        return nil
+    }
+
+    /// Whether `path` is a folder; nil while that's not known yet.
+    private func isGoToFolder(_ path: String, _ paths: GoToPaths, remote: RemoteConnection?) -> Bool? {
+        guard remote != nil else {
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
+        guard let up = paths.parent(path) else { return true }
+        return goToFolders(in: up, remote: remote)?.contains { $0.name == AnyPath.name(path) }
+    }
+
+    /// Go to Folder's rows for what's typed: opening that folder, then the folders that start with its last part (or,
+    /// when it ends at a folder, the ones inside), as on the Mac.
+    private func goToItems(_ raw: String) -> [PaletteItem] {
+        guard let place = goToPlace() else { return [] }
+        let paths = place.paths, remote = place.remote
+        let typed = paths.cleaned(raw)
+        let target = paths.resolve(typed.isEmpty ? "." : typed)
+        // Here is a cd typed at the prompt; over ssh, whenever the session isn't in a full-screen program.
+        let here = remote == nil ? activePane.atPrompt : activePane.canChangeRemoteFolder
+        let newTab: ((String) -> Void)? = remote == nil ? { [weak self] dir in _ = self?.addPane(cwd: dir) } : nil
+        let open: (String) -> Void = { [weak self] dir in
+            guard let self else { return }
+            if here { self.activePane.changeDirectory(to: dir); self.focusTerminal() } else { newTab?(dir) }
+        }
+        func shown(_ p: String) -> String { paths.shown(p) }
+        var out: [PaletteItem] = []
+        let isFolder = isGoToFolder(target, paths, remote: remote)
+        if isFolder == true {
+            if here {
+                var item = PaletteItem(title: "Open \(shown(target)) Here", category: "cd in this tab", shortcut: "Enter") { open(target) }
+                item.alternate = newTab.map { f in { f(target) } }
+                out.append(item)
+                if let newTab { out.append(PaletteItem(title: "Open \(shown(target)) in a New Tab", shortcut: "Ctrl+Enter") { newTab(target) }) }
+            } else if let newTab {
+                out.append(PaletteItem(title: "Open \(shown(target)) in a New Tab", category: "a program is running here", shortcut: "Enter") { newTab(target) })
+            } else {
+                out.append(.header("A program is running here: go once it's done"))
+            }
+        }
+        let inside = typed.isEmpty || paths.endsInSeparator(typed) || (isFolder == true && typed.hasSuffix("."))
+        let parent = inside ? target : paths.parent(target) ?? target
+        let stem = inside ? "" : paths.lastPart(typed).lowercased()
+        let typedParent = paths.typedParent(typed)
+        guard let listed = goToFolders(in: parent, remote: remote) else {
+            out.append(.header("Loading \(shown(parent))…"))
+            return out
+        }
+        let names = FileTree.sortedForDisplay(listed.filter {
+            let name = $0.name.lowercased()
+            return name.hasPrefix(stem) && (!$0.isHidden || stem.hasPrefix(".")) && (inside || name != stem)
+        }).prefix(30)
+        if inside { out.append(.header("In \(shown(parent))")) } else if !names.isEmpty { out.append(.header("Folders")) }
+        if inside, let up = paths.parent(parent) {
+            var item = PaletteItem(title: "..", category: "Parent folder", shortcut: "Tab") { [weak self] in self?.showGoToFolder(path: paths.field(up)) }
+            item.completion = paths.field(up)
+            out.append(item)
+        }
+        for entry in names {
+            let dir = AnyPath.join(parent, entry.name)
+            var item = PaletteItem(title: entry.name, category: shown(parent), shortcut: "Tab") { open(dir) }
+            item.alternate = newTab.map { f in { f(dir) } }
+            item.completion = typedParent + entry.name + paths.separator
+            out.append(item)
+        }
+        if out.allSatisfy(\.isHeader) && !(inside && out.count == 1) { out.append(.header("No folder at \(shown(target))")) }
+        return out
+    }
+
     // MARK: - Shortcuts
 
     /// Every shortcut, as Settings › Shortcuts lists them. Ctrl stands in for the Mac's Command.
     static let shortcutGroups: [(title: String, items: [(title: String, keys: String)])] = [
         ("Solanum", [("Settings…", "Ctrl+,"), ("Command Palette…", "Ctrl+Shift+P")]),
-        ("Shell", [("New Tab", "Ctrl+T"), ("New Tab in Group", "Ctrl+Alt+T"), ("Reopen Closed Tab", "Ctrl+Shift+T"), ("Close Tab", "Ctrl+W"),
+        ("Shell", [("New Tab", "Ctrl+T"), ("New Tab in Group", "Ctrl+Alt+T"), ("Reopen Closed Tab", "Ctrl+Shift+T"), ("Go to Folder…", "Ctrl+Shift+O"), ("Close Tab", "Ctrl+W"),
                    ("Close Tab (also)", "Ctrl+Shift+W"), ("Rename Tab…", "Ctrl+Shift+I"), ("Add Tab to New Group", "Ctrl+Alt+G")]),
         ("Tabs", [("Pick another tab", "Ctrl+Click"), ("Pick the tabs between", "Shift+Click"), ("Collapse or expand a group", "Click its chip")]),
         ("Edit", [("Copy (with something selected)", "Ctrl+C"), ("Stop the program (with nothing selected)", "Ctrl+C"), ("Cut (in the line being typed)", "Ctrl+X"),
@@ -1634,6 +1790,7 @@ final class TerminalWindow {
     var isPaletteOpen: Bool { palette != nil }
     var paletteRows: [PaletteItem] { palette?.rows ?? [] }
     var paletteSelection: PaletteItem? { palette?.selectedItem }
+    var paletteQuery: String? { palette?.query }
 
     private var paletteLayout: PaletteLayout {
         PaletteLayout(windowWidth: Float(clientWidth), windowHeight: Float(clientHeight), scale: scale, rowCount: palette?.visibleRowCount ?? 0)
@@ -1649,6 +1806,7 @@ final class TerminalWindow {
         var items = [
             PaletteItem(title: "New Tab", category: "Shell", shortcut: "Ctrl+T") { [weak self] in self?.newTab() },
             PaletteItem(title: "Reopen Closed Tab", category: "Shell", shortcut: "Ctrl+Shift+T") { [weak self] in self?.reopenClosedTab() },
+            PaletteItem(title: "Go to Folder…", category: "Shell", shortcut: "Ctrl+Shift+O") { [weak self] in self?.showGoToFolder() },
             PaletteItem(title: "Close Tab", category: "Shell", shortcut: "Ctrl+W") { [weak self] in self.map { $0.closeTab($0.activeIndex) } },
             PaletteItem(title: "Next Tab", category: "Window", shortcut: "Ctrl+Tab") { [weak self] in self.map { $0.selectTab(($0.activeIndex + 1) % $0.panes.count) } },
             PaletteItem(title: "Previous Tab", category: "Window", shortcut: "Ctrl+Shift+Tab") { [weak self] in
@@ -1707,9 +1865,11 @@ final class TerminalWindow {
 
     private func runPalette(_ item: PaletteItem? = nil) {
         guard let palette, let item = item ?? palette.selectedItem else { return }
-        palette.noteRun(item)
-        paletteRecents = palette.recents
-        Self.savePaletteRecents(paletteRecents)
+        if !palette.isLive {
+            palette.noteRun(item)
+            paletteRecents = palette.recents
+            Self.savePaletteRecents(paletteRecents)
+        }
         closePalette()
         item.run()
     }
@@ -1733,7 +1893,16 @@ final class TerminalWindow {
         guard let palette else { return false }
         switch key {
         case Win.VK_ESCAPE: closePalette()
-        case Win.VK_RETURN: runPalette()
+        case Win.VK_RETURN:
+            // Ctrl+Enter: Go to Folder's new tab.
+            if ctrl, let alternate = palette.selectedItem?.alternate {
+                closePalette()
+                alternate()
+                return true
+            }
+            runPalette()
+        case Win.VK_TAB:
+            if let completion = palette.selectedItem?.completion { palette.setQuery(completion) }
         case Win.VK_UP: palette.moveSelection(by: -1)
         case Win.VK_DOWN: palette.moveSelection(by: 1)
         case Win.VK_PRIOR: palette.moveSelection(by: -PaletteModel.maxRows)
@@ -1742,6 +1911,8 @@ final class TerminalWindow {
         case Win.VK_RIGHT: palette.moveCaret(by: 1)
         case Win.VK_HOME: palette.moveCaret(to: 0)
         case Win.VK_END: palette.moveCaret(to: palette.query.count)
+        // In a path, Ctrl+Backspace clears the field for typing one afresh, as ⌘⌫ does on the Mac.
+        case Win.VK_BACK where ctrl && palette.isLive: palette.deleteToStart()
         case Win.VK_BACK: palette.deleteBackward(word: ctrl)
         case Win.VK_DELETE: palette.deleteForward()
         case 0x56 where ctrl:
@@ -1816,6 +1987,10 @@ final class TerminalWindow {
         }
         if ctrl && shift && !alt && key == 0x50 {
             togglePalette()
+            return true
+        }
+        if ctrl && shift && !alt && key == 0x4F {
+            if palette?.isLive == true { closePalette() } else { showGoToFolder() }
             return true
         }
         if palette != nil { return paletteKey(key, ctrl: ctrl) }

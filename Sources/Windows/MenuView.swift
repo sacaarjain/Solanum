@@ -7,6 +7,7 @@ struct MenuView {
     let menu: MenuModel
 
     static let textPixels: Float = 12.5
+    static let shortcutPixels: Float = 11.5
 
     /// How wide a menu has to be for these items.
     static func width(for items: [MenuItem], canvas: Canvas, scale: Float) -> Float {
@@ -16,7 +17,13 @@ struct MenuView {
             return sol_canvas_measure_label(canvas.raw, units, Int32(units.count), textPixels * scale, 0)
         }.max() ?? 0
         let swatches: Float = items.contains { $0.swatch != nil } ? 18 * scale : 0
-        return max(widest + 52 * scale + swatches, 160 * scale).rounded(.up)
+        // Room for the keys at the right, apart from the title.
+        let keys = items.map { item -> Float in
+            guard !item.shortcut.isEmpty else { return 0 }
+            let units = Array(item.shortcut.utf16)
+            return sol_canvas_measure_label(canvas.raw, units, Int32(units.count), shortcutPixels * scale, 0) + 28 * scale
+        }.max() ?? 0
+        return max(widest + 52 * scale + swatches + keys, 160 * scale).rounded(.up)
     }
 
     func draw() {
@@ -41,6 +48,15 @@ struct MenuView {
             let checkWidth = 22 * scale
             if item.isChecked {
                 sol_canvas_draw_icon(canvas.raw, r.x, r.y, checkWidth, r.height, 0xE73E, 10 * scale, TerminalPalette.accent, 1)
+            } else if let icon = item.icon {
+                sol_canvas_draw_icon(canvas.raw, r.x + 2 * scale, r.y, checkWidth, r.height, icon, 12 * scale, fg, item.isEnabled ? 0.8 : 0.35)
+            }
+            var right = r.maxX - 8 * scale
+            if !item.shortcut.isEmpty {
+                let units = Array(item.shortcut.utf16), pixels = MenuView.shortcutPixels * scale
+                let w = sol_canvas_measure_label(canvas.raw, units, Int32(units.count), pixels, 0).rounded(.up)
+                sol_canvas_draw_label(canvas.raw, right - w, r.y, w + 2, r.height, units, Int32(units.count), pixels, 0, fg, 0.5)
+                right -= w + 16 * scale
             }
             var textX = r.x + checkWidth
             if let swatch = item.swatch {
@@ -48,7 +64,7 @@ struct MenuView {
                 textX += 18 * scale
             }
             let units = Array(menu.title(i).utf16)
-            sol_canvas_draw_label(canvas.raw, textX, r.y, r.maxX - textX - 8 * scale, r.height, units, Int32(units.count),
+            sol_canvas_draw_label(canvas.raw, textX, r.y, max(right - textX, 0), r.height, units, Int32(units.count),
                                   MenuView.textPixels * scale, 0, fg, item.isEnabled ? 0.95 : 0.4)
         }
     }

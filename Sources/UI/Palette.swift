@@ -7,7 +7,11 @@ struct PaletteItem {
     var category = ""
     var shortcut = ""
     var isHeader = false
+    /// Go to Folder: what Tab puts in the field, to go into this folder rather than open it.
+    var completion: String?
     var run: () -> Void = {}
+    /// What Ctrl+Enter runs instead (Go to Folder: a new tab).
+    var alternate: (() -> Void)?
 
     static func header(_ title: String) -> PaletteItem { PaletteItem(title: title, isHeader: true) }
 
@@ -21,6 +25,14 @@ final class PaletteModel {
     static let maxRecents = 5
 
     let items: [PaletteItem]
+    /// Go to Folder: rows worked out from what's typed, instead of `items` filtered.
+    private let live: ((String) -> [PaletteItem])?
+    /// Shown in the empty field.
+    let placeholder: String
+    /// The field's glyph (Segoe Fluent Icons).
+    let icon: UInt16
+    /// Shown when there are no rows.
+    let emptyMessage: String
     private(set) var recents: [String]
     private(set) var query = ""
     /// In characters.
@@ -32,7 +44,40 @@ final class PaletteModel {
     init(items: [PaletteItem], recents: [String] = []) {
         self.items = items
         self.recents = recents
+        live = nil
+        placeholder = "Type a command…"
+        icon = 0xE721
+        emptyMessage = "No matching commands"
         refilter()
+    }
+
+    /// A palette whose rows come from what's typed, starting with `query` in the field.
+    init(query: String, placeholder: String, icon: UInt16, emptyMessage: String, live: @escaping (String) -> [PaletteItem]) {
+        items = []
+        recents = []
+        self.live = live
+        self.placeholder = placeholder
+        self.icon = icon
+        self.emptyMessage = emptyMessage
+        self.query = query
+        caret = query.count
+        refilter()
+    }
+
+    var isLive: Bool { live != nil }
+
+    /// Puts `text` in the field, the caret at its end.
+    func setQuery(_ text: String) {
+        query = text.filter { !$0.isNewline }
+        caret = query.count
+        refilter()
+    }
+
+    /// Works the rows out again for the same query (a folder's listing has come), keeping the selection where it can.
+    func refresh() {
+        let was = selected
+        refilter()
+        if rows.indices.contains(was), !rows[was].isHeader { select(was) }
     }
 
     var selectedItem: PaletteItem? { rows.indices.contains(selected) && !rows[selected].isHeader ? rows[selected] : nil }
@@ -60,6 +105,14 @@ final class PaletteModel {
         chars.removeSubrange(start..<caret)
         query = String(chars)
         caret = start
+        refilter()
+    }
+
+    /// Everything before the caret, as ⌘⌫ does on the Mac.
+    func deleteToStart() {
+        guard caret > 0 else { return }
+        query = String(query.dropFirst(caret))
+        caret = 0
         refilter()
     }
 
@@ -116,6 +169,13 @@ final class PaletteModel {
     // MARK: Filtering
 
     private func refilter() {
+        if let live {
+            rows = live(query)
+            scrollTop = 0
+            selected = firstSelectable
+            select(selected)
+            return
+        }
         let needle = Array(query.lowercased().filter { $0 != " " })
         if needle.isEmpty {
             // The last few run go on top, then everything.
