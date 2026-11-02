@@ -37,6 +37,10 @@ jobs:
           Write-Host '--- sshd_config, settings only'
           Get-Content C:\ProgramData\ssh\sshd_config -ErrorAction SilentlyContinue | Where-Object { $_ -and -not $_.StartsWith('#') }
           Start-Service sshd
+          # LC_ variables taken, as Debian's sshd does by default (the Pi's included).
+          $config = Get-Content C:\ProgramData\ssh\sshd_config
+          Set-Content C:\ProgramData\ssh\sshd_config (@('AcceptEnv LANG LC_*') + $config)
+          Restart-Service sshd
           Get-Service sshd | Format-List Name, Status
           ssh -V
           # The account on its own, through the same helper with a fixed answer, outside Solanum's window.

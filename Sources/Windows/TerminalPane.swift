@@ -34,6 +34,10 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// Why the sidebar's last connection failed, and what it was asked, for tests.
     private(set) var remoteDiagnostics: [String] = []
     private var lastRemoteFailure: String?
+    /// Where the terminal's shell is on the host, as the sidebar's connection last found it.
+    private(set) var remoteShellFolder: String?
+    private var nextShellProbe = Date.distantPast
+    private var probingShell = false
     /// Asks the window to look again, as the remote connection comes and goes.
     var onRemoteChange: (() -> Void)?
 
@@ -220,6 +224,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
             remoteRetryAt = nil
             lastRemoteFailure = nil
             sessionSignedIn = false
+            remoteShellFolder = nil
             onRemoteChange?()
         } else if sshStartedAt == nil {
             sshStartedAt = Date()
@@ -230,6 +235,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// seconds in when there was no question (a key). A failed one is tried again a couple of times, quietly.
     private func manageRemote() {
         guard let args = sshArguments, let started = sshStartedAt, let host else { return }
+        probeShellFolder()
         if let remote, case .failed(let why) = remote.state {
             lastRemoteFailure = why
             remoteDiagnostics.append("failed: " + remote.errorText.suffix(400))
@@ -257,11 +263,36 @@ final class TerminalPane: TerminalDelegate, Groupable {
         onRemoteChange?()
     }
 
-    /// Where the sidebar should go on the host: the remote shell's folder when it says, else home.
+    /// Every couple of seconds, where the terminal's shell is on the host: the remote shell may say itself (OSC 7), but
+    /// most don't.
+    private func probeShellFolder() {
+        guard let remote, remote.state == .ready, !probingShell, Date() >= nextShellProbe, let session = terminal.sshControlPath else { return }
+        probingShell = true
+        remote.shellFolder(session: session) { [weak self, weak remote] folder in
+            self?.host?.runOnWindowThreadPublic {
+                guard let self, let remote, remote === self.remote else { return }
+                self.probingShell = false
+                self.nextShellProbe = Date().addingTimeInterval(2)
+                if let folder, folder != self.remoteShellFolder {
+                    self.remoteShellFolder = folder
+                    self.onRemoteChange?()
+                }
+            }
+        }
+    }
+
+    /// Where the terminal is on the host, when that's known.
+    var remoteTerminalFolder: String? { terminal.remoteCwd ?? remoteShellFolder }
+
+    /// Where the sidebar should go on the host: the terminal's folder there, else home.
     var remoteFolder: String? {
         guard let remote, remote.state == .ready else { return nil }
-        return terminal.remoteCwd ?? remote.home
+        return remoteTerminalFolder ?? remote.home
     }
+
+    /// Whether a `cd` can be typed into the ssh session: outside full-screen programs, as on the Mac, since its prompt
+    /// can't be seen from here.
+    var canChangeRemoteFolder: Bool { sshArguments != nil && !terminal.usingAlt && !hasQuestion }
 
     /// What the sidebar says while there's nothing to list from the host.
     var remoteStatus: String? {
@@ -752,6 +783,14 @@ final class TerminalPane: TerminalDelegate, Groupable {
 
     /// Sends the shell to a folder, when it's waiting at its prompt. Quotes are doubled, the way PowerShell escapes them.
     func changeDirectory(to path: String) {
+        if AnyPath.isUnix(path) {
+            guard canChangeRemoteFolder else { _ = MessageBeep(UINT(bitPattern: -1)); return }
+            selection = nil
+            // Ctrl+U first clears whatever's half typed at the remote prompt.
+            write(Array(("\u{15}cd -- " + RemoteConnection.quote(path) + "\r").utf8))
+            nextShellProbe = Date().addingTimeInterval(0.4)
+            return
+        }
         guard atPrompt else { return }
         selection = nil
         write(Array("cd -LiteralPath '\(path.replacingOccurrences(of: "'", with: "''"))'\r".utf8))

@@ -62,12 +62,16 @@ enum PowerShellIntegration {
             $words = @($args | ForEach-Object { "$_" })
             $joined = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($words -join [char]0x1F)))
             [Console]::Write((__solanum_osc "1337;SolanumSSHArgs=$joined"))
-            [Console]::Write((__solanum_osc "1337;SolanumSSH=$([guid]::NewGuid().ToString('N'))"))
+            $session = [guid]::NewGuid().ToString('N')
+            [Console]::Write((__solanum_osc "1337;SolanumSSH=$session"))
             $env:SSH_ASKPASS = $env:SOLANUM_ASKPASS_EXE
             $env:SSH_ASKPASS_REQUIRE = 'force'
             $env:SOLANUM_ASKPASS = '1'
-            try { & ssh.exe @args; $code = $LASTEXITCODE }
-            finally { Remove-Item Env:\SSH_ASKPASS, Env:\SSH_ASKPASS_REQUIRE, Env:\SOLANUM_ASKPASS -ErrorAction SilentlyContinue }
+            # A tag the remote shell carries, so the sidebar's own connection can find it and read its folder. Most
+            # servers take LC_ variables (Debian's sshd does by default); one that doesn't just leaves it out.
+            $env:LC_SOLANUM_SESSION = $session
+            try { & ssh.exe -o SendEnv=LC_SOLANUM_SESSION @args; $code = $LASTEXITCODE }
+            finally { Remove-Item Env:\SSH_ASKPASS, Env:\SSH_ASKPASS_REQUIRE, Env:\SOLANUM_ASKPASS, Env:\LC_SOLANUM_SESSION -ErrorAction SilentlyContinue }
             [Console]::Write((__solanum_osc "1337;SolanumSSHExit=$code"))
             [Console]::Write((__solanum_osc '1337;SolanumSSH='))
             $global:LASTEXITCODE = $code

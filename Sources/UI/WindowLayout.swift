@@ -178,10 +178,15 @@ enum WindowText {
     static func crumbs(_ path: String, home: String?) -> [String] {
         var rest = path
         var parts: [String] = []
-        let separator = AnyPath.isUnix(path) ? "/" : "\\"
-        if let home, !home.isEmpty, rest.lowercased() == home.lowercased() || rest.lowercased().hasPrefix(home.lowercased() + separator) {
+        let unix = AnyPath.isUnix(path)
+        let separator = unix ? "/" : "\\"
+        // Unix paths are case-sensitive; Windows ones aren't.
+        let (r, h) = unix ? (rest, home ?? "") : (rest.lowercased(), home?.lowercased() ?? "")
+        if !h.isEmpty, r == h || r.hasPrefix(h + separator) {
             parts.append("~")
-            rest = String(rest.dropFirst(home.count))
+            rest = String(rest.dropFirst(h.count))
+        } else if unix {
+            parts.append("/")
         }
         parts += rest.split(whereSeparator: { $0 == "\\" || $0 == "/" }).map(String.init)
         return parts
@@ -195,10 +200,12 @@ enum WindowText {
         for (i, label) in labels.enumerated() {
             if i == 0 && label == "~", let home {
                 current = home
+            } else if i == 0 && label == "/" {
+                current = "/"
             } else if i == 0 && label.hasSuffix(":") {
                 current = label + "\\"
             } else {
-                current = current.isEmpty ? label : WindowsPath.join(current, label)
+                current = current.isEmpty ? label : AnyPath.join(current, label)
             }
             out.append((label, current))
         }

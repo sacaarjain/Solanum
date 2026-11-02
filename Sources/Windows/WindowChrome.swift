@@ -247,15 +247,17 @@ struct WindowChrome {
     }
 
     private func crumbSpots(themeX: Float) -> [(label: String, path: String, rect: UIRect, hit: UIRect)] {
-        guard let folder, sshHost == nil else { return [] }
+        guard let folder else { return [] }
         let bar = layout.statusBar, pixels = 12 * scale, limit = themeX - 34 * scale
         let iconX = layout.hostsButton.maxX + 6 * scale
         var x = layout.hostsButton.maxX + 8 * scale + 21 * scale
+        // Over ssh, after the host's name.
+        if let sshHost { x = layout.hostsButton.maxX + 10 * scale + (14 * scale).rounded() + 5 * scale + width(of: sshHost, pixels: pixels) + 14 * scale }
         var out: [(label: String, path: String, rect: UIRect, hit: UIRect)] = []
         for (i, crumb) in WindowText.crumbPaths(folder, home: home).enumerated() {
             let w = min(width(of: crumb.label, pixels: pixels), max(limit - x, 0))
             // The first takes in the folder icon, and each a little either side, so that a short one like ~ is easy to hit.
-            let start = i == 0 ? iconX : x - 4 * scale
+            let start = i == 0 && sshHost == nil ? iconX : x - 4 * scale
             let hit = UIRect(x: start, y: bar.y, width: x + w + 4 * scale - start, height: bar.height)
             out.append((crumb.label, crumb.path, UIRect(x: x, y: bar.y, width: w, height: bar.height), hit))
             x += w + 13 * scale
@@ -292,12 +294,12 @@ struct WindowChrome {
         if hovered == .hosts { sol_canvas_fill_rounded(canvas.raw, hosts.x, hosts.y, hosts.width, hosts.height, 4 * scale, fg, 0.10) }
         canvas.drawArt("serverRack", UIRect(x: hosts.x + ((hosts.width - art) / 2).rounded(), y: (hosts.midY - art / 2).rounded(), width: art, height: art), scale: scale)
 
-        // Over ssh, the host instead: the folder's parts are this machine's, which isn't where the terminal is.
+        // Over ssh, the host first, then its folder's parts when the terminal's folder there is known.
         if let sshHost {
             let x = layout.hostsButton.maxX + 10 * scale, art = (14 * scale).rounded()
             canvas.drawArt("network", UIRect(x: x, y: (bar.midY - art / 2).rounded(), width: art, height: art), scale: scale)
-            label(sshHost, UIRect(x: x + art + 5 * scale, y: bar.y, width: max(themeX - x - 40 * scale, 0), height: bar.height), pixels: pixels, color: TerminalPalette.accent)
-            return
+            let w = min(width(of: sshHost, pixels: pixels), max(themeX - x - 40 * scale, 0))
+            label(sshHost, UIRect(x: x + art + 5 * scale, y: bar.y, width: w + 1, height: bar.height), pixels: pixels, color: TerminalPalette.accent)
         }
         // The folder on the left: the icon, then each part, which opens a menu of what's in it.
         let spots = crumbSpots(themeX: themeX)
@@ -307,6 +309,8 @@ struct WindowChrome {
             label(spot.label, UIRect(x: spot.rect.x, y: bar.y, width: spot.rect.width + 1, height: bar.height), pixels: pixels, alpha: last || hoveredCrumb == i ? 0.85 : 0.55)
             if !last { label("›", UIRect(x: spot.rect.maxX + 3 * scale, y: bar.y, width: 8 * scale, height: bar.height), pixels: pixels, alpha: 0.4) }
         }
-        icon(Icon.folder, UIRect(x: layout.hostsButton.maxX + 8 * scale, y: bar.y, width: 16 * scale, height: bar.height), pixels: 12 * scale, alpha: 0.75)
+        if sshHost == nil {
+            icon(Icon.folder, UIRect(x: layout.hostsButton.maxX + 8 * scale, y: bar.y, width: 16 * scale, height: bar.height), pixels: 12 * scale, alpha: 0.75)
+        }
     }
 }

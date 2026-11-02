@@ -135,7 +135,7 @@ final class RemoteConnection {
 
     /// Runs a command on the host, one at a time, and hands back what it printed and its exit status (nil if the connection
     /// failed or it took too long).
-    private func run(_ command: String, timeout: TimeInterval = 15, _ done: @escaping (String?, Int32) -> Void) {
+    func run(_ command: String, timeout: TimeInterval = 15, _ done: @escaping (String?, Int32) -> Void) {
         queue.async { [weak self] in
             guard let self else { return done(nil, -1) }
             let finished = DispatchSemaphore(value: 0)
@@ -158,6 +158,35 @@ final class RemoteConnection {
             done(result.0, result.1)
         }
     }
+
+    /// The folder of the terminal's shell on the host: the process carrying the session's tag (the login shell, if it can
+    /// tell), or failing that the only login shell on a terminal. Nil when there's no telling, as on a host without /proc.
+    func shellFolder(session: String, _ done: @escaping (String?) -> Void) {
+        guard state == .ready, session.allSatisfy({ $0.isHexDigit }) else { return done(nil) }
+        run(Self.shellFolderScript.replacingOccurrences(of: "SESSION", with: session)) { text, _ in
+            let line = text?.split(separator: "\n").last.map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            done(line.flatMap { $0.hasPrefix("/") ? $0 : nil })
+        }
+    }
+
+    private static let shellFolderScript = #"""
+    t='LC_SOLANUM_SESSION=SESSION'; best=; bestp=; only=; n=0
+    for d in /proc/[0-9]*; do
+      [ -O "$d" ] || continue
+      case $(readlink "$d/fd/0" 2>/dev/null) in /dev/pts/*|/dev/pty*|/dev/cons*) ;; *) continue ;; esac
+      p=${d#/proc/}
+      pp=$(sed 's/.*) [A-Za-z] \([0-9]*\).*/\1/' "$d/stat" 2>/dev/null)
+      case $(cat "/proc/$pp/comm" 2>/dev/null) in sshd*) login=1 ;; *) login= ;; esac
+      if tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -qxF "$t"; then
+        c=$(readlink "$d/cwd" 2>/dev/null) || continue
+        if [ -n "$login" ]; then best=$c; break; fi
+        if [ -z "$bestp" ] || [ "$p" -lt "$bestp" ]; then bestp=$p; best=$c; fi
+      elif [ -n "$login" ]; then
+        n=$((n+1)); only=$(readlink "$d/cwd" 2>/dev/null)
+      fi
+    done
+    if [ -n "$best" ]; then printf '%s\n' "$best"; elif [ "$n" = 1 ]; then printf '%s\n' "$only"; fi
+    """#
 
     /// The folder's contents on the host, or nil if it can't be read.
     func list(_ folder: String, _ done: @escaping ([FileEntry]?) -> Void) {

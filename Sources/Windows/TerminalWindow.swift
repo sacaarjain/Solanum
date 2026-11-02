@@ -368,8 +368,10 @@ final class TerminalWindow {
         chrome.pressed = pressed
         chrome.maximized = IsZoomed(hwnd)
         chrome.focused = isFocused
-        chrome.folder = panes.isEmpty ? nil : activePane.terminal.cwd
-        chrome.home = ProcessInfo.processInfo.environment["USERPROFILE"]
+        // Over ssh, the host's folder, when it's known.
+        let overSSH = !panes.isEmpty && activePane.sshArguments != nil
+        chrome.folder = panes.isEmpty ? nil : overSSH ? activePane.remoteTerminalFolder : activePane.terminal.cwd
+        chrome.home = overSSH ? activePane.remote?.home : ProcessInfo.processInfo.environment["USERPROFILE"]
         chrome.hoveredCrumb = hoveredCrumb
         chrome.sshHost = panes.isEmpty ? nil : activePane.sshHost
         for (first, group) in groupStarts() {
@@ -991,13 +993,11 @@ final class TerminalWindow {
             guard let row else { break }
             sidebar.tree.selection = row.entry.path
             if row.entry.isDirectory {
-                // Back to how it was before this double click's first click, then the terminal goes there, as on the Mac. Not on
-                // an ssh host: the terminal there is a shell Solanum can't safely type into.
+                // Back to how it was before this double click's first click, then the terminal goes there, as on the Mac (on
+                // an ssh host too, by typing a cd into the session).
                 sidebar.tree.toggle(row.entry.path)
-                if !AnyPath.isUnix(row.entry.path) {
-                    activePane.changeDirectory(to: row.entry.path)
-                    focusTerminal()
-                }
+                activePane.changeDirectory(to: row.entry.path)
+                focusTerminal()
             } else if !AnyPath.isUnix(row.entry.path) {
                 onOpenFile(row.entry.path)
             }
@@ -1089,7 +1089,10 @@ final class TerminalWindow {
     // MARK: - The folder in the status bar
 
     private func goTo(folder: String) {
-        if activePane.atPrompt {
+        if AnyPath.isUnix(folder) {
+            activePane.changeDirectory(to: folder)
+            focusTerminal()
+        } else if activePane.atPrompt {
             activePane.changeDirectory(to: folder)
         } else {
             // What's running keeps its place, as on the Mac.
@@ -1099,29 +1102,39 @@ final class TerminalWindow {
 
     /// The folders in one of the path's parts, with what else there is to do with it.
     private func showCrumbMenu(_ crumb: (label: String, path: String, rect: UIRect, hit: UIRect), copyOnly: Bool) {
-        let current = activePane.terminal.cwd
+        let unix = AnyPath.isUnix(crumb.path)
+        let current = unix ? activePane.remoteTerminalFolder : activePane.terminal.cwd
         let copy = MenuItem(title: "Copy Path") { [weak self] in self?.activePane.setClipboard(crumb.path) }
         guard !copyOnly else {
             openMenu([copy], x: crumb.rect.x, y: crumb.rect.y - 2 * scale, above: true)
             return
         }
-        Thread.detachNewThread { [weak self] in
-            let folders = (FileSidebar.list(crumb.path) ?? []).filter { $0.isDirectory && !$0.isHidden }
-            let sorted = FileTree.sortedForDisplay(folders).prefix(400)
+        // Unix paths are case-sensitive; Windows ones aren't.
+        func same(_ a: String) -> String { unix ? a : a.lowercased() }
+        let show: ([FileEntry]?) -> Void = { [weak self] entries in
             self?.runOnWindowThread {
                 guard let self else { return }
+                let sorted = FileTree.sortedForDisplay((entries ?? []).filter { $0.isDirectory && !$0.isHidden }).prefix(400)
                 var items = [copy, MenuItem.separator]
-                if crumb.path.lowercased() != current?.lowercased() {
+                if same(crumb.path) != current.map(same) {
                     items.append(MenuItem(title: "Go to \(crumb.label)") { [weak self] in self?.goTo(folder: crumb.path) })
                     items.append(.separator)
                 }
+                let separator = unix ? "/" : "\\"
                 for folder in sorted {
-                    let onPath = current.map { $0.lowercased() == folder.path.lowercased() || $0.lowercased().hasPrefix(folder.path.lowercased() + "\\") } ?? false
+                    let onPath = current.map { same($0) == same(folder.path) || same($0).hasPrefix(same(folder.path) + separator) } ?? false
                     items.append(MenuItem(title: folder.name, isChecked: onPath) { [weak self] in self?.goTo(folder: folder.path) })
                 }
-                if sorted.isEmpty { items.append(MenuItem(title: "No folders inside", isEnabled: false)) }
+                if sorted.isEmpty { items.append(MenuItem(title: entries == nil ? "Couldn't read this folder" : "No folders inside", isEnabled: false)) }
                 self.openMenu(items, x: crumb.rect.x, y: crumb.rect.y - 2 * self.scale, above: true)
             }
+        }
+        if unix {
+            // On the host, through the sidebar's connection.
+            guard let remote = activePane.remote else { return show(nil) }
+            remote.list(crumb.path) { show($0) }
+        } else {
+            Thread.detachNewThread { show(FileSidebar.list(crumb.path)) }
         }
     }
 

@@ -277,6 +277,9 @@ enum WindowSelfTest {
         results.check("paths: Unix ones", AnyPath.parent("/home/pi") == "/home" && AnyPath.parent("/home") == "/" && AnyPath.parent("/") == nil && AnyPath.join("/", "etc") == "/etc")
         results.check("reconnect: words for PowerShell", ["-o", "StrictHostKeyChecking=accept-new", "pi@host", "a b", "it's", "@x"].map(TerminalPane.powerShellWord)
                       == ["-o", "StrictHostKeyChecking=accept-new", "pi@host", "'a b'", "'it''s'", "'@x'"])
+        results.check("paths: a host's folders from /", WindowText.crumbPaths("/etc/ssh", home: "/home/pi").map(\.path) == ["/", "/etc", "/etc/ssh"]
+                      && WindowText.crumbPaths("/home/pi/docs", home: "/home/pi").map(\.path) == ["/home/pi", "/home/pi/docs"]
+                      && WindowText.crumbs("/home/Pi", home: "/home/pi") == ["/", "home", "Pi"])
         results.check("paths: home is ~ on a host too", WindowText.crumbs("/home/pi/docs", home: "/home/pi") == ["~", "docs"])
 
         print("Command palette")
@@ -881,6 +884,23 @@ enum WindowSelfTest {
                 pane.type(" touch from-remote.txt")
                 pane.pressEnter()
             }, done: { window.leftRow(named: "from-remote.txt") != nil }))
+            steps.append(Step(name: "ssh: finds the terminal's folder on the host", action: {
+                let look = #"for d in /proc/[0-9]*; do [ -O "$d" ] && echo "${d#/proc/} $(readlink $d/fd/0) $(cat $d/comm) $(tr '\0' ' ' < $d/environ 2>/dev/null | grep -o 'LC_SOLANUM[^ ]*')"; done 2>/dev/null | grep -v ' pipe:\| socket:' | head -20"#
+                print("    session: \(pane.terminal.sshControlPath ?? "none")")
+                pane.remote?.run(look) { text, _ in
+                    for line in (text ?? "(nothing)").split(separator: "\n") { print("    proc: " + line) }
+                }
+            }, done: { pane.remoteShellFolder != nil }))
+            steps.append(Step(name: "ssh: the status bar shows the host's folder", action: {}, done: { window.crumbRect("~") != nil }))
+            steps.append(Step(name: "ssh: double-clicking a folder sends the terminal there", action: {
+                if let row = window.leftRow(named: "Documents") { window.doubleClick(row) }
+            }, done: { pane.remoteShellFolder?.hasSuffix("/Documents") == true && window.leftTree.root?.hasSuffix("/Documents") == true }))
+            steps.append(Step(name: "ssh: the path's ~ lists the host's folders", action: {
+                if let r = window.crumbRect("~") { window.click(r) }
+            }, done: { window.menuTitles.contains("Desktop") && window.menuTitles.contains("Copy Path") }))
+            steps.append(Step(name: "ssh: choosing one sends the terminal there", action: {
+                if let row = window.menuRow("Desktop") { window.click(row) }
+            }, done: { pane.remoteShellFolder?.hasSuffix("/Desktop") == true && !window.isMenuOpen }))
             if let dir = snapshotDirectory {
                 steps.append(Step(name: "ssh: snapshot of the sidebar on the host", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-sidebar.png") }))
             }
