@@ -682,17 +682,11 @@ final class StatusBarView: NSView {
         NSRect(x: x, y: centerY + font.capHeight / 2 - font.ascender, width: width, height: ceil(font.ascender - font.descender) + 1)
     }
 
-    /// (label, full path) for each folder from the top of `path` down.
+    /// (label, full path) for each folder from the top of `path` down: always from /, never shortened to ~, so that every
+    /// folder above is a click away.
     private func segments(_ path: String) -> [(String, String)] {
-        var out: [(String, String)] = []
-        var rest: Substring
-        if let home, home != "/", path == home || path.hasPrefix(home + "/") {
-            out.append(("~", home))
-            rest = path.dropFirst(home.count)
-        } else {
-            out.append(("/", "/"))
-            rest = Substring(path)
-        }
+        var out: [(String, String)] = [("/", "/")]
+        let rest = Substring(path)
         var cur = out[0].1
         for c in rest.split(separator: "/") {
             cur = FilePaths.join(cur, String(c))
@@ -1104,17 +1098,32 @@ final class SidebarResizeHandle: NSView {
         boundsOutsideOverlays.forEach { addCursorRect($0, cursor: .resizeLeftRight) }
     }
 
-    override func mouseDragged(with e: NSEvent) {
-        guard let root = superview as? WindowRootView else { return }
-        let x = root.convert(e.locationInWindow, from: nil).x
-        if isRight { root.rightSidebarWidth = root.bounds.width - x } else { root.sidebarWidth = x }
-        root.needsLayout = true
-    }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    override func mouseUp(with e: NSEvent) {
-        guard let root = superview as? WindowRootView else { return }
+    /// The whole drag is tracked here, from press to release, so the file rows under the strip (and the
+    /// terminal beside it) never see it: nothing can pick up a file while the sidebar is being resized.
+    override func mouseDown(with e: NSEvent) {
+        guard let root = superview as? WindowRootView, let window else { return }
+        // Where in the strip it was grabbed, so the edge doesn't jump to the pointer.
+        let edge = isRight ? root.rightSidebar.frame.minX : root.sidebar.frame.maxX
+        let grab = root.convert(e.locationInWindow, from: nil).x - edge
+        NSCursor.resizeLeftRight.push()
+        window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: NSEvent.foreverDuration,
+                           mode: .eventTracking) { ev, stop in
+            guard let ev else { return }
+            if ev.type == .leftMouseUp {
+                stop.pointee = true
+                return
+            }
+            let x = root.convert(ev.locationInWindow, from: nil).x - grab
+            if self.isRight { root.rightSidebarWidth = root.bounds.width - x } else { root.sidebarWidth = x }
+            root.needsLayout = true
+            root.layoutSubtreeIfNeeded()
+        }
+        NSCursor.pop()
         let (key, w) = isRight ? ("solanum.sidebar.right.width", root.rightSidebarWidth) : ("solanum.sidebar.width", root.sidebarWidth)
         UserDefaults.standard.set(Double(w), forKey: key)
+        window.invalidateCursorRects(for: self)
     }
 }
 
@@ -1304,6 +1313,19 @@ final class WindowRootView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override var isFlipped: Bool { true }
+
+    /// A press on a resize strip goes to the strip, not the file row or terminal it overlaps, whatever order
+    /// the views happen to be in. (Tab strips, notices and overlays over the strip still get their clicks.)
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        let p = convert(point, from: superview)
+        guard let hit, [sidebar, rightSidebar].contains(where: { hit.isDescendant(of: $0) })
+                || columns.contains(where: { hit.isDescendant(of: $0.content) }) else { return hit }
+        for handle in [sidebarHandle, rightSidebarHandle] where !handle.isHidden && handle.frame.contains(p) {
+            return handle
+        }
+        return hit
+    }
 
     /// Shows these columns (one, or two side by side); the last one's strip carries the Settings flower.
     func setColumns(_ cols: [TabColumn]) {

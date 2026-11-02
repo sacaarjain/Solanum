@@ -164,10 +164,18 @@ extension TabSession {
 
     fileprivate static func node(_ v: NSView) -> PaneNode? {
         if let t = v as? TerminalView {
+            // Not shown since it was restored: saved again as it came back, its agent and ssh session included.
+            if !t.hasStarted, var saved = t.restoredFrom {
+                saved.cwd = t.currentDirectory
+                if !Config.shared.restoreScrollback { saved.text = nil }
+                return .pane(saved)
+            }
             let text = Config.shared.restoreScrollback ? t.terminal.restorableText(maxLines: SessionStore.maxLines) : nil
             let ssh = t.remote != nil ? t.terminal.sshArgs.flatMap { $0.isEmpty ? nil : $0 } : nil
+            // Also while the agent's continue command is still waiting for the new shell's first prompt.
+            let waiting = t.pendingCommand != nil ? t.restoredFrom.flatMap { $0.agent ?? ($0.claude == true ? "claude" : nil) } : nil
             return .pane(PaneState(cwd: t.currentDirectory, text: text?.isEmpty == false ? text : nil,
-                                   agent: t.pty?.foregroundAgent?.command,
+                                   agent: t.pty?.foregroundAgent?.command ?? waiting,
                                    ssh: ssh, remoteCwd: ssh == nil ? nil : t.browseDirectory))
         }
         if let s = v as? PaneSplitView {
@@ -185,6 +193,7 @@ extension TabSession {
             switch n {
             case .pane(let p):
                 let v = TerminalView(cwd: p.cwd.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil })
+                v.restoredFrom = p
                 if let text = p.text { v.restoredText = text + TabSession.restoredBanner }
                 if let command = TabSession.continueCommand(agent: p.agent ?? (p.claude == true ? "claude" : nil)) { v.pendingCommand = command }
                 if let ssh = p.ssh, let login = RemoteSession(controlPath: "", sshArgs: ssh).reconnectCommand(in: p.remoteCwd) {
