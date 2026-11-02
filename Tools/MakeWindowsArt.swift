@@ -58,6 +58,17 @@ enum MakeWindowsArt {
             add("flowerOutline", png(points: CGSize(width: 16, height: 16), scale: scale) { ctx, r in
                 SolanumArt.drawOutline(in: ctx, rect: r, color: foreground.withAlphaComponent(0.75).cgColor, lineWidth: 1.1)
             })
+            // The status bar's ssh symbols, as the Mac draws them.
+            for (name, symbol, color) in [("serverRack", "server.rack", foreground.withAlphaComponent(0.75)),
+                                          ("network", "network", NSColor(srgbRed: 0xA5 / 255.0, green: 0x84 / 255.0, blue: 0xE8 / 255.0, alpha: 1))] {
+                let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium).applying(.init(paletteColors: [color]))
+                if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(config) {
+                    add(name, png(points: CGSize(width: 16, height: 16), scale: scale) { _, r in
+                        let s = image.size
+                        image.draw(in: CGRect(x: (r.width - s.width) / 2, y: (r.height - s.height) / 2, width: s.width, height: s.height))
+                    })
+                }
+            }
             for (name, title, petals) in [("prompt", foreground, CGFloat(1)), ("promptDim", foreground.withAlphaComponent(0.55), 0.65)] {
                 let image = SolanumArt.promptImage(style: .pale, underscore: title, petalAlpha: petals)
                 add(name, png(points: SolanumArt.promptSize, scale: scale) { _, r in image.draw(in: r) })

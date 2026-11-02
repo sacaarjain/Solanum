@@ -55,6 +55,23 @@ enum PowerShellIntegration {
                 } catch {}
             }
         }
+        # ssh tells Solanum when a session starts and ends, and asks Solanum for passwords (see Askpass), so the sidebar
+        # can sign in with the same one. Anything not at a person's terminal goes straight to ssh.
+        function global:ssh {
+            if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected -or -not $env:SOLANUM_ASKPASS_EXE) { & ssh.exe @args; return }
+            $words = @($args | ForEach-Object { "$_" })
+            $joined = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($words -join [char]0x1F)))
+            [Console]::Write((__solanum_osc "1337;SolanumSSHArgs=$joined"))
+            [Console]::Write((__solanum_osc "1337;SolanumSSH=$([guid]::NewGuid().ToString('N'))"))
+            $env:SSH_ASKPASS = $env:SOLANUM_ASKPASS_EXE
+            $env:SSH_ASKPASS_REQUIRE = 'force'
+            $env:SOLANUM_ASKPASS = '1'
+            try { & ssh.exe @args; $code = $LASTEXITCODE }
+            finally { Remove-Item Env:\SSH_ASKPASS, Env:\SSH_ASKPASS_REQUIRE, Env:\SOLANUM_ASKPASS -ErrorAction SilentlyContinue }
+            [Console]::Write((__solanum_osc "1337;SolanumSSHExit=$code"))
+            [Console]::Write((__solanum_osc '1337;SolanumSSH='))
+            $global:LASTEXITCODE = $code
+        }
         if (Test-Path Function:\PSConsoleHostReadLine) {
             $global:__solanum_readline = $function:PSConsoleHostReadLine
             function global:PSConsoleHostReadLine {

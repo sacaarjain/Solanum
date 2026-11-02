@@ -38,6 +38,8 @@ final class AppSettings {
     var themeIcon: Bool { file.bool("theme-icon", true) }
     /// "current": a new tab opens in the current tab's folder. "home": in the home folder.
     var newTabFolder: String { file["new-tab-folder"]?.lowercased() == "home" ? "home" : "current" }
+    /// Keep the password an ssh session signed in with, in memory only, so the sidebar can sign in with it too.
+    var rememberSSHPasswords: Bool { file.bool("remember-ssh-passwords", true) }
     var windowColumns: Int { Int(file.number("window-columns", 110, in: 40...400)) }
     var windowRows: Int { Int(file.number("window-rows", 32, in: 10...200)) }
 
@@ -106,7 +108,7 @@ final class AppSettings {
         "scrollback-lines": "10000", "shell": "", "shell-integration": "true", "theme-icon": "true", "new-tab-folder": "current",
         "window-columns": "110", "window-rows": "32", "notify-after-seconds": "10", "keep-awake-seconds": "28800",
         "confirm-quit": "true", "restore-session": "true", "restore-scrollback": "true", "continue-agents": "true",
-        "check-for-updates": "true", "minimum-contrast": "true",
+        "check-for-updates": "true", "minimum-contrast": "true", "remember-ssh-passwords": "true",
     ]
 
     static let sections: [(comment: String?, keys: [String])] = [
@@ -116,6 +118,7 @@ final class AppSettings {
         ("bar | block | underline", ["cursor-style", "cursor-blink"]),
         ("Play the alert sound when a program rings the bell (it always flashes the taskbar).", ["audible-bell", "bold-is-bright", "minimum-contrast", "copy-on-select", "scrollback-lines"]),
         ("Leave empty for PowerShell. A full command line works too, such as cmd.exe.", ["shell", "shell-integration"]),
+        ("Keep an ssh session's password in memory, encrypted and never saved, so the sidebar can sign in with it too.", ["remember-ssh-passwords"]),
         ("Where Ctrl+T opens a new tab: current (the current tab's folder) | home", ["new-tab-folder"]),
         ("Notify when a command in a background tab takes at least this long (0 = off). Keep Awake's length in seconds.", ["notify-after-seconds", "keep-awake-seconds"]),
         ("Reopen windows and tabs on launch, with recent output, continuing coding agents.", ["restore-session", "restore-scrollback", "continue-agents", "confirm-quit", "check-for-updates"]),

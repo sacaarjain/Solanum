@@ -24,7 +24,22 @@ jobs:
       - name: Self-tests
         timeout-minutes: 10
         run: .\build\windows\Solanum-test.exe --selftest
+      - name: ssh server
+        if: success() || failure()
+        timeout-minutes: 10
+        run: |
+          # A local user that signs in with a password, and Git's bash as the shell, so it's like a Linux host.
+          if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) { Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null }
+          New-Item -Path HKLM:\SOFTWARE\OpenSSH -Force | Out-Null
+          New-ItemProperty -Path HKLM:\SOFTWARE\OpenSSH -Name DefaultShell -Value 'C:\Program Files\Git\bin\bash.exe' -PropertyType String -Force | Out-Null
+          net user solanumtest 'Sol-anum-2026!' /add
+          Start-Service sshd
+          Get-Service sshd | Format-List Name, Status
+          ssh -V
       - name: Window test
+        env:
+          SOLANUM_TEST_SSH_USER: solanumtest
+          SOLANUM_TEST_SSH_PASSWORD: Sol-anum-2026!
         if: success() || failure()
         timeout-minutes: 10
         run: .\build\windows\Solanum-test.exe --window-test

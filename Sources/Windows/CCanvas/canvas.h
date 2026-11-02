@@ -84,6 +84,10 @@ void sol_canvas_draw_image(SolCanvas *canvas, int32_t image, float x, float y, f
 /// Bitmap canvases only. `path` is NUL-terminated UTF-16.
 int32_t sol_canvas_save_png(SolCanvas *canvas, const uint16_t *path);
 
+/// Encrypts (or, with `reveal`, decrypts) memory in place so only this process can read it: Windows' CryptProtectMemory.
+/// `length` must be a multiple of 16. Returns false if it failed.
+int32_t sol_protect_memory(void *bytes, uint32_t length, int32_t reveal);
+
 #ifdef __cplusplus
 }
 #endif

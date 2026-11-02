@@ -19,7 +19,7 @@ enum WindowPart: Equatable {
     /// The empty part of the tab bar, which drags the window.
     case titleBar
     case statusBar, terminal
-    case leftSidebar, rightSidebar, leftEdge, rightEdge, toggleLeft, toggleRight
+    case leftSidebar, rightSidebar, leftEdge, rightEdge, toggleLeft, toggleRight, hosts
 }
 
 /// Where everything in a window goes: the tab bar along the top, with the window's buttons at its right end as Windows
@@ -134,11 +134,14 @@ struct WindowLayout {
     var rightSidebar: UIRect { UIRect(x: width - rightWidth, y: tabBarHeight, width: rightWidth, height: terminal.height) }
     private var toggleSide: Float { (22 * scale).rounded() }
     var toggleLeft: UIRect { UIRect(x: (8 * scale).rounded(), y: statusBar.y + 2 * scale, width: toggleSide, height: statusBarHeight - 4 * scale) }
+    /// The ssh hosts button, beside the left sidebar's switch, as on the Mac.
+    var hostsButton: UIRect { UIRect(x: toggleLeft.maxX + (2 * scale).rounded(), y: toggleLeft.y, width: toggleSide, height: toggleLeft.height) }
     var toggleRight: UIRect { UIRect(x: width - toggleSide - (8 * scale).rounded(), y: statusBar.y + 2 * scale, width: toggleSide, height: statusBarHeight - 4 * scale) }
 
     func part(atX x: Float, y: Float) -> WindowPart {
         if statusBar.contains(x, y) {
             if toggleLeft.contains(x, y) { return .toggleLeft }
+            if hostsButton.contains(x, y) { return .hosts }
             if showsRightToggle && toggleRight.contains(x, y) { return .toggleRight }
             return .statusBar
         }

@@ -5,6 +5,11 @@ import WinSDK
 // console program that can print test results and that PowerShell waits for.
 _ = SetConsoleOutputCP(65001)
 
+// Started by ssh to ask for a password (see Askpass): ask the running Solanum, and print the answer for ssh.
+if ProcessInfo.processInfo.environment["SOLANUM_ASKPASS"] == "1" {
+    exit(Askpass.runHelper(prompt: CommandLine.arguments.dropFirst().joined(separator: " ")))
+}
+
 if CommandLine.arguments.contains("--selftest") {
     let results = CoreSelfTest.Results()
     CoreSelfTest.run(results)

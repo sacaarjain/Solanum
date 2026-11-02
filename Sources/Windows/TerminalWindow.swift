@@ -29,6 +29,9 @@ final class TerminalWindow {
     var onOpenFile: ((String) -> Void) = { path in
         _ = wide(path).withUnsafeBufferPointer { ShellExecuteW(nil, nil, $0.baseAddress, nil, nil, 1) }
     }
+    /// Where ssh in this window's tabs asks for passwords (see Askpass).
+    private var askpass: Askpass.Server!
+    var askpassPipeName: String { askpass.pipeName }
     private let runLock = NSLock()
     private var runQueue: [() -> Void] = []
     private var lastLook = Date.distantPast
@@ -111,6 +114,8 @@ final class TerminalWindow {
         canvas.padding = scaledPadding()
         AppSettings.shared.onChange.append { [weak self] in self?.settingsChanged() }
         Self.windows[created] = self
+        askpass = Askpass.Server(post: { [weak self] work in self?.runOnWindowThread(work) })
+        askpass.handler = { [weak self] request, reply in self?.answerAskpass(request, reply) ?? reply(nil) }
         for sidebar in [left, right] {
             sidebar.tree.onNeedsListing = { [weak self, weak sidebar] folder in
                 guard let sidebar else { return }
@@ -360,6 +365,7 @@ final class TerminalWindow {
         chrome.folder = panes.isEmpty ? nil : activePane.terminal.cwd
         chrome.home = ProcessInfo.processInfo.environment["USERPROFILE"]
         chrome.hoveredCrumb = hoveredCrumb
+        chrome.sshHost = panes.isEmpty ? nil : activePane.sshHost
         for (first, group) in groupStarts() {
             let members = panes.indices.filter { panes[$0].group === group }
             chrome.chips[first] = (group.chipLabel(count: members.count), group.color.rgb, members.last ?? first, group.collapsed)
@@ -536,6 +542,8 @@ final class TerminalWindow {
         case Win.WM_CHAR:
             if menu != nil {
                 // A menu takes no text.
+            } else if !panes.isEmpty, activePane.hasQuestion {
+                activePane.questionTyped(UInt16(truncatingIfNeeded: wParam))
             } else if var current = naming {
                 let unit = UInt16(truncatingIfNeeded: wParam)
                 if unit >= 0x20, unit != 0x7F, let scalar = Unicode.Scalar(unit) {
@@ -729,6 +737,7 @@ final class TerminalWindow {
                 case .chip(let first): if let g = panes[first].group { setCollapsed(g, !g.collapsed) }
                 case .flower: SettingsWindow.shared.show()
                 case .toggleLeft: toggleSidebar(left)
+                case .hosts: showHostsMenu()
                 case .toggleRight: toggleSidebar(right)
                 default: break
                 }
@@ -1122,6 +1131,47 @@ final class TerminalWindow {
         guard let first = chrome(on: canvas, layout: layout).crumbSpots().first else { return nil }
         return UIRect(x: first.hit.x + 2, y: first.hit.y, width: 8 * scale, height: first.hit.height)
     }
+
+    // MARK: - ssh
+
+    /// A question from ssh in one of this window's tabs: that tab shows it, coming to the front if it isn't already.
+    private func answerAskpass(_ request: Askpass.Request, _ reply: @escaping (String?) -> Void) {
+        guard let i = panes.firstIndex(where: { $0.askpassToken == request.token }) else { return reply(nil) }
+        if i != activeIndex { selectTab(i) }
+        panes[i].ask(request.prompt, reply: reply)
+        invalidate()
+    }
+
+    /// Hosts from ~/.ssh/config and known_hosts, as on the Mac. A new tab connects; with Alt held, this one does.
+    private func showHostsMenu() {
+        let folder = (ProcessInfo.processInfo.environment["USERPROFILE"] ?? "") + "\\.ssh"
+        let (configured, known) = SSHHostList.load(sshFolder: folder)
+        func connect(_ host: SSHHostEntry) {
+            let command = "ssh " + host.target
+            if GetKeyState(Win.VK_MENU) < 0 && activePane.atPrompt {
+                activePane.pendingCommand = command
+            } else {
+                newTab()
+                activePane.pendingCommand = command
+            }
+        }
+        var items = [MenuItem(title: configured.isEmpty ? "No hosts in ~\\.ssh\\config" : "Connect in a new tab (Alt: this tab)", isEnabled: false)]
+        items += configured.map { host in MenuItem(title: host.title + (host.detail.map { "  —  " + $0 } ?? "")) { connect(host) } }
+        if !known.isEmpty {
+            items += [.separator, MenuItem(title: "Known Hosts", isEnabled: false)]
+            items += known.prefix(60).map { host in MenuItem(title: host.title) { connect(host) } }
+        }
+        items += [.separator, MenuItem(title: "Edit SSH Config…") {
+            try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+            let config = folder + "\\config"
+            if !FileManager.default.fileExists(atPath: config) { _ = FileManager.default.createFile(atPath: config, contents: Data()) }
+            _ = wide(config).withUnsafeBufferPointer { ShellExecuteW(nil, nil, $0.baseAddress, nil, nil, 1) }
+        }]
+        let anchor = layout.hostsButton
+        openMenu(items, x: anchor.x, y: anchor.y - 2 * scale, above: true)
+    }
+
+    var hostsButtonRect: UIRect { layout.hostsButton }
 
     // MARK: - Themes
 
@@ -1668,6 +1718,7 @@ final class TerminalWindow {
 
     func keyDown(_ key: Int32, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
         if menu != nil { return menuKey(key) }
+        if !panes.isEmpty, activePane.hasQuestion { return activePane.questionKey(key, ctrl: ctrl) }
         if naming != nil { return namingKey(key, ctrl: ctrl) }
         // Ctrl+Alt+T and Ctrl+Alt+G, as the Mac's Command-Option-T and G: a new tab in this group, and a new group.
         if ctrl && alt && !shift && key == 0x54 { newTabInGroup(); return true }

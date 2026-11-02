@@ -253,6 +253,21 @@ enum WindowSelfTest {
         let collapsedChips = WindowLayout(width: 1200, height: 640, scale: 1, tabCount: 4, chips: [1: 60], hiddenTabs: [1, 2])
         results.check("groups: collapsed tabs take no room", collapsedChips.tab(1).width == 0 && collapsedChips.tab(3).x == collapsedChips.chip(1)!.maxX + 6)
 
+        print("ssh")
+        var hostEntries: [SSHHostEntry] = [], covered = Set<String>()
+        SSHHostList.parse("Host pi\n  HostName itsacaarpi.local\n  User pi\nHost *.corp\n  User me\nHost build-01 build-02\n  Port 2222\n", into: &hostEntries, covered: &covered)
+        results.check("hosts: concrete ones from the config, with details", hostEntries.map(\.title) == ["pi", "build-01", "build-02"] && hostEntries[0].detail == "pi@itsacaarpi.local" && hostEntries[1].detail == "build-01:2222",
+                      "\(hostEntries)")
+        results.check("hosts: their names count as covered", covered.contains("itsacaarpi.local"))
+        let knownList = SSHHostList.knownHosts("itsacaarpi.local,192.168.1.5 ssh-ed25519 AAAA\n|1|hashed= ssh-rsa AAAA\n[box.local]:2200 ssh-ed25519 AAAA\n")
+        results.check("hosts: known ones, skipping hashed entries", knownList.map(\.title) == ["itsacaarpi.local", "192.168.1.5", "box.local:2200"] && knownList[2].target == "-p 2200 box.local", "\(knownList)")
+        results.check("ssh: finds the destination", SSHHostList.destination(fromArguments: ["-p", "22", "-o", "X=y", "pi@itsacaarpi.local", "ls"]) == "pi@itsacaarpi.local")
+        results.check("ssh: past grouped flags", SSHHostList.destination(fromArguments: ["-tA", "host"]) == "host" && SSHHostList.destination(fromArguments: ["-vp2222", "h"]) == "h")
+        results.check("ssh: the label drops the user", SSHHostList.hostLabel("pi@itsacaarpi.local") == "itsacaarpi.local")
+        results.check("askpass: knows a password question", Askpass.isSecret("pi@itsacaarpi.local's password: ") && Askpass.isPassword("Password:") && !Askpass.isSecret("Are you sure you want to continue connecting (yes/no)?"))
+        let secret = ProtectedSecret("hunter2 ✦")
+        results.check("secret: comes back as it went in", secret.reveal { $0 } == "hunter2 ✦")
+
         print("Command palette")
         var ran: [String] = []
         func item(_ title: String, _ category: String = "Shell") -> PaletteItem {
@@ -817,6 +832,36 @@ enum WindowSelfTest {
             window.hover(window.currentLayout.flower)
             flowerLit = window.hoveredPart == .flower
         }, done: { flowerLit }))
+        // ssh: the hosts button, and where GitHub's machine has an ssh server with a password, the whole flow.
+        steps.append(Step(name: "ssh: the hosts button opens its menu", action: { window.click(window.hostsButtonRect) },
+                          done: { window.menuTitles.contains("Edit SSH Config…") }))
+        steps.append(Step(name: "ssh: closes", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
+        let env = ProcessInfo.processInfo.environment
+        if let user = env["SOLANUM_TEST_SSH_USER"], let password = env["SOLANUM_TEST_SSH_PASSWORD"] {
+            steps.append(Step(name: "ssh: asks for the password in Solanum", action: {
+                pane.type("ssh -o StrictHostKeyChecking=accept-new \(user)@localhost")
+                pane.pressEnter()
+            }, done: { pane.questionPrompt?.lowercased().contains("password") == true }))
+            if let dir = snapshotDirectory {
+                steps.append(Step(name: "ssh: snapshot of the question", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-question.png") }))
+            }
+            steps.append(Step(name: "ssh: signs in with it", action: {
+                window.typeIntoWindow(password)
+                pane.pressEnter()
+            }, done: { !pane.hasQuestion && pane.sshHost == "localhost" }))
+            steps.append(Step(name: "ssh: keeps the password for the sidebar", action: {}, done: { pane.hasRememberedPassword }))
+            steps.append(Step(name: "ssh: the remote machine answers", action: {
+                pane.type("echo remote-ok")
+                pane.pressEnter()
+            }, done: { hasLine("remote-ok") }))
+            if let dir = snapshotDirectory {
+                steps.append(Step(name: "ssh: snapshot connected", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-connected.png") }))
+            }
+            steps.append(Step(name: "ssh: leaving forgets the password", action: {
+                pane.type("exit")
+                pane.pressEnter()
+            }, done: { pane.sshHost == nil && !pane.hasRememberedPassword && pane.atPrompt }))
+        }
         // Settings.
         let settingsWindow = SettingsWindow.shared
         steps.append(Step(name: "settings: the flower opens it", action: { window.click(window.currentLayout.flower) },

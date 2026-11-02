@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <d2d1.h>
 #include <dwmapi.h>
+#include <dpapi.h>
 #include <dwrite.h>
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -19,6 +20,7 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "crypt32.lib")
 
 using Microsoft::WRL::ComPtr;
 
@@ -525,6 +527,11 @@ int32_t sol_canvas_save_png(SolCanvas *canvas, const uint16_t *path) {
     hr = frame->Commit();
     if (FAILED(hr)) return hr;
     return encoder->Commit();
+}
+
+int32_t sol_protect_memory(void *bytes, uint32_t length, int32_t reveal) {
+    if (reveal) return CryptUnprotectMemory(bytes, length, CRYPTPROTECTMEMORY_SAME_PROCESS) ? 1 : 0;
+    return CryptProtectMemory(bytes, length, CRYPTPROTECTMEMORY_SAME_PROCESS) ? 1 : 0;
 }
 
 }  // extern "C"

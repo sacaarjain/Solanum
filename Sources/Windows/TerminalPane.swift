@@ -17,6 +17,16 @@ final class TerminalPane: TerminalDelegate, Groupable {
     private var selecting = false
     private(set) var scrollOffset = 0
     var focused = false
+    /// Proves a question for a password came from ssh in this tab (see Askpass).
+    let askpassToken = Askpass.makeToken()
+    /// A question from ssh waiting for an answer, shown over the bottom of the terminal.
+    private(set) var question: (prompt: String, field: TextFieldState, secret: Bool, reply: (String?) -> Void)?
+    /// The password this tab's ssh session signed in with, for the sidebar's own connection. Only in memory, encrypted,
+    /// and dropped when the session ends.
+    private(set) var rememberedPassword: ProtectedSecret?
+    /// A command to run once the shell first reaches its prompt.
+    var pendingCommand: String?
+
     var group: TabGroup?
     /// A name given to the tab, in place of the one it would have.
     var customTitle: String?
@@ -59,7 +69,11 @@ final class TerminalPane: TerminalDelegate, Groupable {
             terminal.scrollbackPushes = 0
         }
         let home = ProcessInfo.processInfo.environment["USERPROFILE"]
-        let environment = ["TERM": "xterm-256color", "COLORTERM": "truecolor", "TERM_PROGRAM": "Solanum", "SOLANUM_ALIASES": AliasFile.scriptURL.path]
+        var exe = [UInt16](repeating: 0, count: 1024)
+        _ = GetModuleFileNameW(nil, &exe, DWORD(exe.count))
+        let environment = ["TERM": "xterm-256color", "COLORTERM": "truecolor", "TERM_PROGRAM": "Solanum", "SOLANUM_ALIASES": AliasFile.scriptURL.path,
+                           "SOLANUM_ASKPASS_EXE": String(decodingCString: exe, as: UTF16.self),
+                           "SOLANUM_ASKPASS_PIPE": host.askpassPipeName, "SOLANUM_ASKPASS_TOKEN": askpassToken]
         guard let pty = ConPTY(commandLine: commandLine, extraEnvironment: environment, cwd: cwd ?? home, cols: cols, rows: rows) else { return nil }
         self.pty = pty
         let target = UInt(bitPattern: hwnd), id = id
@@ -69,7 +83,12 @@ final class TerminalPane: TerminalDelegate, Groupable {
         }
     }
 
-    func terminate() { pty?.terminate() }
+    func terminate() {
+        question?.reply(nil)
+        question = nil
+        rememberedPassword = nil
+        pty?.terminate()
+    }
 
     /// Its size, as the window has just changed. Later, `reanchorIfSettled` deals with what that did to the shell.
     func resize(cols: Int, rows: Int) {
@@ -96,8 +115,78 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// Whether the shell is waiting at its prompt, with no program running that might want a key.
     var atPrompt: Bool { !terminal.usingAlt && terminal.currentBlock?.state == .prompt }
 
+    // MARK: - ssh
+
+    /// The ssh session running in this tab: what it was started with, and the host it went to.
+    var sshArguments: [String]? {
+        guard terminal.sshControlPath != nil else { return nil }
+        return terminal.sshArgs.map { $0.split(separator: "\u{1F}", omittingEmptySubsequences: false).map(String.init) } ?? []
+    }
+
+    var sshHost: String? {
+        guard let args = sshArguments else { return nil }
+        return SSHHostList.destination(fromArguments: args).map(SSHHostList.hostLabel) ?? "ssh"
+    }
+
+    /// ssh asks a question: shown over the terminal, typed unseen when it's for a secret.
+    func ask(_ prompt: String, reply: @escaping (String?) -> Void) {
+        question?.reply(nil)
+        question = (prompt.trimmingCharacters(in: .whitespacesAndNewlines), TextFieldState(""), Askpass.isSecret(prompt), reply)
+        invalidate()
+    }
+
+    private func answer(_ text: String?) {
+        guard let current = question else { return }
+        question = nil
+        if let text, Askpass.isPassword(current.prompt), AppSettings.shared.rememberSSHPasswords { rememberedPassword = ProtectedSecret(text) }
+        current.reply(text)
+        invalidate()
+    }
+
+    var hasQuestion: Bool { question != nil }
+    var questionPrompt: String? { question?.prompt }
+    var hasRememberedPassword: Bool { rememberedPassword != nil }
+
+    /// A key while ssh's question is showing. True if it's dealt with; characters come through `questionTyped`.
+    func questionKey(_ key: Int32, ctrl: Bool) -> Bool {
+        guard var current = question else { return false }
+        switch key {
+        case Win.VK_RETURN: answer(current.field.text); return true
+        case Win.VK_ESCAPE: answer(nil); return true
+        case Win.VK_BACK: current.field.deleteBackward(word: ctrl && !current.secret)
+        case Win.VK_DELETE: current.field.deleteForward()
+        case Win.VK_LEFT: current.field.move(by: -1)
+        case Win.VK_RIGHT: current.field.move(by: 1)
+        case 0x56 where ctrl:
+            if let pasted = clipboardText() { current.field.insert(pasted) }
+        default: return false
+        }
+        question = current
+        invalidate()
+        return true
+    }
+
+    func questionTyped(_ unit: UInt16) {
+        guard var current = question, unit >= 0x20, unit != 0x7F, let scalar = Unicode.Scalar(unit) else { return }
+        current.field.insert(String(Character(scalar)))
+        question = current
+        invalidate()
+    }
+
+    /// The session has started or ended. Ending it forgets its password, and any question it left unanswered.
+    private func sshChanged() {
+        if terminal.sshControlPath == nil {
+            rememberedPassword = nil
+            if question != nil { answer(nil) }
+        }
+    }
+
     /// Timed work that doesn't depend on being the pane on screen.
     func tick() {
+        if let command = pendingCommand, atPrompt {
+            pendingCommand = nil
+            write(Array((command + "\r").utf8))
+        }
         // Should the cursor never get there (the box closed, say), what's waiting still goes.
         if let deadline = selectionDeleteDeadline, Date() > deadline { endDeletingSelection() }
         reanchorIfSettled()
@@ -111,6 +200,29 @@ final class TerminalPane: TerminalDelegate, Groupable {
         renderer.cursorShown = cursorShown
         renderer.cursorStyle = style
         renderer.drawContents()
+        drawQuestion()
+    }
+
+    /// ssh's question, in a box along the bottom of the terminal, with a lock for a secret.
+    private func drawQuestion() {
+        guard let current = question, let area = canvas.terminalArea else { return }
+        let s = Float(GetDpiForWindow(hwnd)) / 96, fg = TerminalPalette.foreground
+        let box = UIRect(x: area.x + 16 * s, y: area.maxY - 64 * s, width: max(area.width - 32 * s, 200 * s), height: 48 * s)
+        sol_canvas_fill_rounded(canvas.raw, box.x, box.y + 2 * s, box.width, box.height, 10 * s, 0x000000, 0.25)
+        sol_canvas_fill_rounded(canvas.raw, box.x, box.y, box.width, box.height, 10 * s, TerminalPalette.mix(TerminalPalette.surface, TerminalPalette.chrome, 0.75), 1)
+        sol_canvas_stroke_rounded(canvas.raw, box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1, 10 * s, TerminalPalette.accent, 0.8, 1)
+        sol_canvas_draw_icon(canvas.raw, box.x + 10 * s, box.y, 24 * s, box.height, current.secret ? 0xE72E : 0xE897, 13 * s, TerminalPalette.accent, 1)
+        let prompt = Array(current.prompt.utf16)
+        let promptWidth = min(sol_canvas_measure_label(canvas.raw, prompt, Int32(prompt.count), 12.5 * s, 0), box.width * 0.55)
+        sol_canvas_draw_label(canvas.raw, box.x + 40 * s, box.y, promptWidth + 2, box.height, prompt, Int32(prompt.count), 12.5 * s, 0, fg, 0.8)
+        let fieldX = box.x + 48 * s + promptWidth, field = UIRect(x: fieldX, y: box.y + 9 * s, width: box.maxX - 12 * s - fieldX, height: 30 * s)
+        sol_canvas_fill_rounded(canvas.raw, field.x, field.y, field.width, field.height, 5 * s, TerminalPalette.mix(0x000000, TerminalPalette.background, 0.3), 1)
+        let shown = current.secret ? String(repeating: "•", count: current.field.text.count) : current.field.text
+        let caretText = current.secret ? String(repeating: "•", count: current.field.caret) : current.field.beforeCaret
+        let units = Array(shown.utf16), before = Array(caretText.utf16)
+        sol_canvas_draw_label(canvas.raw, field.x + 8 * s, field.y, field.width - 16 * s, field.height, units, Int32(units.count), 13 * s, 0, fg, 1)
+        let caretX = field.x + 8 * s + sol_canvas_measure_label(canvas.raw, before, Int32(before.count), 13 * s, 0)
+        sol_canvas_fill_rect(canvas.raw, caretX.rounded(), field.y + 7 * s, max(s.rounded(), 1), field.height - 14 * s, TerminalPalette.accent, 1)
     }
 
     // MARK: - Output
@@ -733,7 +845,10 @@ final class TerminalPane: TerminalDelegate, Groupable {
 
     func terminalTitleChanged(_ t: Terminal) { host?.paneDetailsChanged(self) }
 
-    func terminalCwdChanged(_ t: Terminal) { host?.paneDetailsChanged(self) }
+    func terminalCwdChanged(_ t: Terminal) {
+        sshChanged()
+        host?.paneDetailsChanged(self)
+    }
 
     func terminalBell(_ t: Terminal) {
         if !(host?.isFocused ?? false) { FlashWindow(hwnd, true) }
