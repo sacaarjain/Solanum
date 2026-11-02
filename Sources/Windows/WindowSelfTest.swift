@@ -617,9 +617,12 @@ enum WindowSelfTest {
             pane.type("cd '\(windowsFolder)'")
             pane.pressEnter()
         }, done: { pane.terminal.cwd?.hasSuffix(WindowsPath.name(windowsFolder)) == true && pane.atPrompt }))
+        var sawSlide = false
         steps.append(Step(name: "sidebar: Ctrl+B shows it, on that folder", action: { press(0x42) }, done: {
-            window.leftIsVisible && window.leftTree.root?.lowercased() == pane.terminal.cwd?.lowercased() && window.leftRow(named: "alpha") != nil
+            if window.leftShown > 0 && window.leftShown < 1 { sawSlide = true }
+            return window.leftIsVisible && window.leftShown == 1 && window.leftTree.root?.lowercased() == pane.terminal.cwd?.lowercased() && window.leftRow(named: "alpha") != nil
         }))
+        steps.append(Step(name: "sidebar: it slides in, when Windows animates", action: {}, done: { sawSlide || !window.animatesSidebars }))
         steps.append(Step(name: "sidebar: the terminal makes room", action: {}, done: { pane.terminal.cols < colsWithoutSidebar }))
         steps.append(Step(name: "sidebar: lists folders first", action: {},
                           done: { window.leftTree.rows.map(\.entry.name) == ["alpha", "zeta.txt"] }))
@@ -809,8 +812,11 @@ enum WindowSelfTest {
             return window.panes.count == 2
         }))
 
-        steps.append(Step(name: "flower: highlights under the pointer", action: { window.hover(window.currentLayout.flower) },
-                          done: { window.hoveredPart == .flower }))
+        var flowerLit = false
+        steps.append(Step(name: "flower: highlights under the pointer", action: {
+            window.hover(window.currentLayout.flower)
+            flowerLit = window.hoveredPart == .flower
+        }, done: { flowerLit }))
         // Settings.
         let settingsWindow = SettingsWindow.shared
         steps.append(Step(name: "settings: the flower opens it", action: { window.click(window.currentLayout.flower) },

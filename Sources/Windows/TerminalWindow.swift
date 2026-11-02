@@ -158,7 +158,63 @@ final class TerminalWindow {
     private var layout: WindowLayout {
         WindowLayout(width: Float(clientWidth), height: Float(clientHeight), scale: scale, tabCount: panes.count, tabScroll: tabScroll,
                      chips: chipWidths(), hiddenTabs: hiddenTabs,
-                     leftWidth: left.isVisible ? sidebarWidth(left) : 0, rightWidth: rightIsShowing ? sidebarWidth(right) : 0, showsRightToggle: hasSplit)
+                     leftWidth: (sidebarWidth(left) * left.shown).rounded(), rightWidth: rightIsShowing ? sidebarWidth(right) : 0, showsRightToggle: hasSplit)
+    }
+
+    /// Where the terminal is drawn. While a sidebar slides, the terminal moves with it but keeps the size it has at the
+    /// start of opening or the end of closing, as on the Mac: each resize makes the shell and programs redraw.
+    private var terminalArea: UIRect {
+        let now = layout.terminal
+        let leftForGrid: Float = left.isVisible || left.shown > 0 ? sidebarWidth(left) : 0
+        let width = max(Float(clientWidth) - leftForGrid - (rightIsShowing ? sidebarWidth(right) : 0), 0)
+        return UIRect(x: now.x, y: now.y, width: width, height: now.height)
+    }
+
+    /// Where the left sidebar is drawn: its full width, slid partly off the window's edge while it comes and goes.
+    private var leftSidebarArea: UIRect {
+        let l = layout, full = sidebarWidth(left)
+        return UIRect(x: l.leftWidth - full, y: l.leftSidebar.y, width: full, height: l.leftSidebar.height)
+    }
+
+    // MARK: - Sliding the sidebars
+
+    private var slideStart = Date.distantPast
+    private var slideFrom: Float = 0
+    private static let slideTimer: UINT_PTR = 5
+
+    /// Windows' own "Animation effects" setting, which turns off motion like this.
+    var animatesSidebars: Bool {
+        var on: WindowsBool = true
+        _ = SystemParametersInfoW(UINT(0x1042), 0, &on, 0)
+        return on.boolValue && IsWindowVisible(hwnd)
+    }
+
+    private func slideLeft() {
+        let target: Float = left.isVisible ? 1 : 0
+        guard animatesSidebars else {
+            left.shown = target
+            layoutChanged()
+            return
+        }
+        slideFrom = left.shown
+        slideStart = Date()
+        _ = SetTimer(hwnd, Self.slideTimer, 10, nil)
+    }
+
+    /// One frame: a critically damped spring, as on the Mac, which sets off gently and settles without overshooting.
+    private func slideStep() {
+        let target: Float = left.isVisible ? 1 : 0
+        let t = Float(Date().timeIntervalSince(slideStart)), w: Float = 20
+        let done = t >= 0.4
+        let e = done ? 1 : 1 - (1 + w * t) * exp(-w * t)
+        left.shown = slideFrom + (target - slideFrom) * e
+        canvas.terminalArea = terminalArea
+        if done {
+            KillTimer(hwnd, Self.slideTimer)
+            // Closing resizes the terminal at the end, now that the sidebar's gone.
+            layoutChanged()
+        }
+        invalidate()
     }
 
     private func sizeWindow(toCols cols: Int, rows: Int) {
@@ -468,6 +524,8 @@ final class TerminalWindow {
                 activePane.runPendingClick()
             } else if wParam == WPARAM(TerminalPane.quietTimer) {
                 activePane.runQuietWork()
+            } else if wParam == WPARAM(Self.slideTimer) {
+                slideStep()
             } else {
                 panes.forEach { $0.tick() }
                 lookForChanges()
@@ -608,7 +666,7 @@ final class TerminalWindow {
         clientWidth = width
         clientHeight = height
         sol_canvas_resize(canvas.raw, Int32(width), Int32(height))
-        canvas.terminalArea = layout.terminal
+        canvas.terminalArea = terminalArea
         let grid = gridSize()
         panes.forEach { $0.resize(cols: grid.cols, rows: grid.rows) }
         settleTabScroll()
@@ -698,15 +756,17 @@ final class TerminalWindow {
     }
 
     private func sidebarLayout(_ sidebar: FileSidebar) -> SidebarLayout {
-        SidebarLayout(area: sidebar === left ? layout.leftSidebar : layout.rightSidebar, scale: scale)
+        SidebarLayout(area: sidebar === left ? leftSidebarArea : layout.rightSidebar, scale: scale)
     }
 
     private func drawSidebars(on target: Canvas, layout l: WindowLayout) {
         let home = ProcessInfo.processInfo.environment["USERPROFILE"]
         let folder = panes.isEmpty ? nil : activePane.terminal.cwd
-        for (sidebar, area, edge) in [(left, l.leftSidebar, l.leftWidth - 1), (right, l.rightSidebar, l.width - l.rightWidth)] where area.width > 0 {
+        for (sidebar, visible, area, edge) in [(left, l.leftSidebar, leftSidebarArea, l.leftWidth - 1), (right, l.rightSidebar, l.rightSidebar, l.width - l.rightWidth)] where visible.width > 0 {
+            sol_canvas_push_clip(target.raw, visible.x, visible.y, visible.width, visible.height)
             SidebarView(canvas: target, sidebar: sidebar, layout: SidebarLayout(area: area, scale: scale), terminalFolder: folder, home: home).draw()
-            sol_canvas_fill_rect(target.raw, edge, area.y, 1, area.height, TerminalPalette.foreground, 0.10)
+            sol_canvas_pop_clip(target.raw)
+            sol_canvas_fill_rect(target.raw, edge, visible.y, 1, visible.height, TerminalPalette.foreground, 0.10)
         }
     }
 
@@ -767,7 +827,13 @@ final class TerminalWindow {
     private func toggleSidebar(_ sidebar: FileSidebar) {
         sidebar.isVisible.toggle()
         if !sidebar.isVisible && sidebar.isFocused { focusTerminal() }
-        layoutChanged()
+        // Opening resizes the terminal at the start, closing at the end of the slide.
+        if sidebar === left {
+            if left.isVisible { layoutChanged() }
+            slideLeft()
+        } else {
+            layoutChanged()
+        }
         if sidebar.isVisible {
             if let pinned = sidebar.pinned { sidebar.tree.setRoot(pinned) } else { followTerminalFolder() }
             sidebar.tree.refresh()
@@ -778,7 +844,7 @@ final class TerminalWindow {
     /// The bars have moved, so the terminal's area and grid have changed.
     private func layoutChanged() {
         guard clientWidth > 0 else { return }
-        canvas.terminalArea = layout.terminal
+        canvas.terminalArea = terminalArea
         let grid = gridSize()
         panes.forEach { $0.resize(cols: grid.cols, rows: grid.rows) }
         settleTabScroll()
@@ -1680,9 +1746,11 @@ final class TerminalWindow {
     var groupNames: [String] { TabGroupOps.groups(in: panes).map(\.name) }
     var isNaming: Bool { naming != nil }
     var hoveredPart: WindowPart? { hovered }
+    var leftShown: Float { left.shown }
+    /// The pointer over a rectangle, handled before this returns, so a real pointer elsewhere can't get in first.
     func hover(_ rect: UIRect) {
         let position = LPARAM(Int(rect.x + rect.width / 2) & 0xFFFF) | (LPARAM(Int(rect.y + rect.height / 2) & 0xFFFF) << 16)
-        PostMessageW(hwnd, Win.WM_MOUSEMOVE, 0, position)
+        _ = SendMessageW(hwnd, Win.WM_MOUSEMOVE, 0, position)
     }
     func pickForTest(_ i: Int, range: Bool) { pick(i, range: range) }
     func chipRect(_ first: Int) -> UIRect? { layout.chip(first) }

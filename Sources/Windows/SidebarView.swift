@@ -36,9 +36,13 @@ final class FileSidebar {
     var hoveredRow: Int?
     var hoveredButton: SidebarButton?
 
+    /// How much of it is showing, from 0 to 1, while it slides in or out.
+    var shown: Float
+
     init(visible: Bool, width: Float) {
         isVisible = visible
         self.width = width
+        shown = visible ? 1 : 0
     }
 
     /// Lists a folder off the message loop, since a slow or disconnected drive can take a long time to answer.
