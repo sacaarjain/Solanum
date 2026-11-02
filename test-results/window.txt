@@ -131,6 +131,8 @@
   ✓ groups: ungroups
   ✓ groups: back to two tabs
   ✓ flower: highlights under the pointer
+  ✓ ssh: the hosts button opens its menu
+  ✓ ssh: closes
   ✓ settings: the flower opens it
   ✓ settings: System
   ✓ settings: Preferences
@@ -172,5 +174,5 @@
   ✓ box: delete across three rows: selects and acts
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
-Clipboard found busy 0 times; got through 173 of 173 steps.
-All 174 checks passed.
+Clipboard found busy 0 times; got through 175 of 175 steps.
+All 176 checks passed.
