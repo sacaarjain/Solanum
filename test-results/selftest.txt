@@ -107,6 +107,7 @@ File tree
   ✓ sidebars: the right switch only in a split
   ✓ path: parts know their folders
   ✓ path: from the drive
+  ✓ tree: a place comes back whole
 Menus
   ✓ menu: opens below
   ✓ menu: or above
@@ -163,4 +164,4 @@ PowerShell hook
   ✓ powershell: Esc clears the line
   ✓ powershell: exits
   - pwsh.exe isn't installed
-All 156 checks passed.
+All 157 checks passed.

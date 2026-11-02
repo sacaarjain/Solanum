@@ -89,6 +89,14 @@
   ✓ path: Esc closes the menu
   ✓ path: choosing a folder sends the terminal there
   ✓ path: it gets there
+  ✓ path: the folder icon lists the first part's folders
+  ✓ path: and closes
+  ✓ per tab: pinned here
+  ✓ per tab: a new tab isn't
+  ✓ per tab: back again, it still is
+  ✓ per tab: and the other still isn't
+  ✓ per tab: closing it returns to the pinned one
+  ✓ per tab: unpinned
   ✓ drag: a third tab to move
   ✓ drag: past its neighbor, they trade places
   ✓ drag: a short drag is only a click
@@ -116,5 +124,5 @@
   ✓ box: delete across three rows: selects and acts
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
-Clipboard found busy 0 times; got through 117 of 117 steps.
-All 118 checks passed.
+Clipboard found busy 1 times; got through 125 of 125 steps.
+All 126 checks passed.
