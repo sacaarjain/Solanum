@@ -868,6 +868,9 @@ enum WindowSelfTest {
             steps.append(Step(name: "ssh: the sidebar signs in with the same password", action: { press(0x42) }, done: {
                 window.leftIsVisible && window.leftTree.root.map(AnyPath.isUnix) == true && !window.leftTree.rows.isEmpty
             }))
+            steps.append(Step(name: "ssh: the sidebar's connection, as it went", action: {
+                for line in pane.remoteDiagnostics { print("    " + line.replacingOccurrences(of: "\n", with: " | ")) }
+            }, done: { true }))
             steps.append(Step(name: "ssh: and shows what's made there", action: {
                 pane.type("touch from-remote.txt")
                 pane.pressEnter()

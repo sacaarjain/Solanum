@@ -29,6 +29,9 @@ final class TerminalPane: TerminalDelegate, Groupable {
     private var sshStartedAt: Date?
     private var remoteAttempts = 0
     private var remoteRetryAt: Date?
+    /// Why the sidebar's last connection failed, and what it was asked, for tests.
+    private(set) var remoteDiagnostics: [String] = []
+    private var lastRemoteFailure: String?
     /// Asks the window to look again, as the remote connection comes and goes.
     var onRemoteChange: (() -> Void)?
 
@@ -200,6 +203,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
             sshStartedAt = nil
             remoteAttempts = 0
             remoteRetryAt = nil
+            lastRemoteFailure = nil
             onRemoteChange?()
         } else if sshStartedAt == nil {
             sshStartedAt = Date()
@@ -210,7 +214,9 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// seconds in when there was no question (a key). A failed one is tried again a couple of times, quietly.
     private func manageRemote() {
         guard let args = sshArguments, let started = sshStartedAt, let host else { return }
-        if let remote, case .failed = remote.state {
+        if let remote, case .failed(let why) = remote.state {
+            lastRemoteFailure = why
+            remoteDiagnostics.append("failed: " + remote.errorText.suffix(400))
             self.remote = nil
             remoteRetryAt = remoteAttempts < 3 ? Date().addingTimeInterval(5) : nil
             onRemoteChange?()
@@ -242,13 +248,16 @@ final class TerminalPane: TerminalDelegate, Groupable {
         case .ready: return nil
         case .failed(let why)?: return why
         case .connecting?: return "Connecting to \(host)…"
-        case nil: return remoteAttempts >= 3 ? "Couldn't connect to \(host) for the sidebar." : "Connecting to \(host)…"
+        case nil:
+            guard remoteAttempts >= 3 else { return "Connecting to \(host)…" }
+            return "Couldn't connect to \(host) for the sidebar." + (lastRemoteFailure.map { "\n" + $0 } ?? "")
         }
     }
 
     /// An answer for the sidebar's connection: the remembered password, when that's what it asks for. Anything else (a
     /// one-time code) is asked here, marked as for the sidebar.
     func answerForRemote(_ prompt: String, reply: @escaping (String?) -> Void) {
+        remoteDiagnostics.append("asked: " + prompt + (rememberedPassword == nil ? " (nothing remembered)" : ""))
         if Askpass.isPassword(prompt), let password = rememberedPassword {
             password.reveal { reply($0) }
             return

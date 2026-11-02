@@ -17,6 +17,10 @@ final class RemoteConnection {
     private let process = Process()
     private let input = Pipe()
     private let output = Pipe()
+    private let errors = Pipe()
+    /// What ssh said on its standard error, the last of it, to show why it failed. Never holds a password: those go
+    /// through Askpass.
+    private(set) var errorText = ""
     private let lock = NSLock()
     private var buffer = ""
     private var waiting: (marker: String, done: (String?, Int32) -> Void)?
@@ -40,9 +44,10 @@ final class RemoteConnection {
               SearchPathW(nil, Array("ssh.exe".utf16) + [0], nil, DWORD(path.count), &path, nil) > 0 else { return nil }
         self.post = post
         process.executableURL = URL(fileURLWithPath: String(decodingCString: path, as: UTF16.self))
-        // Never a second question about the host's identity: the terminal's connection has settled that by now.
-        process.arguments = ["-T", "-o", "BatchMode=no", "-o", "NumberOfPasswordPrompts=1", "-o", "StrictHostKeyChecking=yes",
-                             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"] + target + ["sh"]
+        // The terminal's own options go first, as ssh takes the first of each. Then never a second question about the host's
+        // identity, unless they said otherwise: the terminal's connection has settled that by now.
+        process.arguments = ["-T"] + target.dropLast() + ["-o", "NumberOfPasswordPrompts=1", "-o", "StrictHostKeyChecking=yes",
+                             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", target.last!, "sh"]
         var env = ProcessInfo.processInfo.environment
         var exe = [UInt16](repeating: 0, count: 1024)
         _ = GetModuleFileNameW(nil, &exe, DWORD(exe.count))
@@ -54,9 +59,11 @@ final class RemoteConnection {
         process.environment = env
         process.standardInput = input
         process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
+        process.standardError = errors
         process.terminationHandler = { [weak self] proc in
-            self?.finish(.failed(proc.terminationStatus == 255 ? "Couldn't connect or sign in." : "The connection closed."))
+            guard let self else { return }
+            let said = self.errorText.split(whereSeparator: \.isNewline).last.map(String.init)
+            self.finish(.failed(said ?? (proc.terminationStatus == 255 ? "Couldn't connect or sign in." : "The connection closed.")))
         }
     }
 
@@ -66,6 +73,16 @@ final class RemoteConnection {
             return
         }
         Thread.detachNewThread { [weak self] in self?.read() }
+        Thread.detachNewThread { [weak self] in
+            guard let handle = self?.errors.fileHandleForReading else { return }
+            while true {
+                let data = handle.availableData
+                guard !data.isEmpty, let self else { break }
+                self.lock.lock()
+                self.errorText = String((self.errorText + String(decoding: data, as: UTF8.self)).suffix(2000))
+                self.lock.unlock()
+            }
+        }
         run("printf '%s\\n' \"$HOME\"", timeout: 60) { [weak self] text, code in
             guard let self else { return }
             guard let text, code == 0, let home = text.split(separator: "\n").first.map(String.init), !home.isEmpty else {
@@ -116,7 +133,7 @@ final class RemoteConnection {
                 let body = String(buffer[..<range.lowerBound])
                 let rest = buffer[range.upperBound...]
                 let line = rest.prefix { $0 != "\n" }
-                let code = Int32(line.trimmingCharacters(in: .whitespaces)) ?? -1
+                let code = Int32(line.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
                 buffer = rest.contains("\n") ? String(rest[rest.index(after: rest.firstIndex(of: "\n")!)...]) : ""
                 waiting = nil
                 finished = (current.done, body, code)
@@ -163,7 +180,8 @@ final class RemoteConnection {
 
     /// `ls -1Ap`'s output as entries: a trailing slash marks a folder.
     static func entries(fromListing text: String, in folder: String) -> [FileEntry] {
-        text.split(separator: "\n").compactMap { raw in
+        // By scalars: "\r\n" is one Character, which a split on "\n" would pass over.
+        text.unicodeScalars.split(separator: "\n").compactMap { raw in
             let line = String(raw).trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
             guard !line.isEmpty else { return nil }
             let isFolder = line.hasSuffix("/")

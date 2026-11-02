@@ -105,7 +105,10 @@ struct SidebarView {
         sol_canvas_push_clip(canvas.raw, list.x, list.y, list.width, list.height)
         defer { sol_canvas_pop_clip(canvas.raw) }
         if let status {
-            label(status, UIRect(x: a.x + 12 * scale, y: list.y + 4 * scale, width: a.width - 24 * scale, height: 22 * scale), pixels: 12.5 * scale, alpha: 0.5)
+            for (i, line) in status.split(separator: "\n").prefix(4).enumerated() {
+                label(String(line), UIRect(x: a.x + 12 * scale, y: list.y + (4 + 20 * Float(i)) * scale, width: a.width - 24 * scale, height: 20 * scale),
+                      pixels: (i == 0 ? 12.5 : 11.5) * scale, alpha: i == 0 ? 0.5 : 0.4)
+            }
             return
         }
         if tree.rootFailed {
