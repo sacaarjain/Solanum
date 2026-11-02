@@ -49,7 +49,19 @@
   ✓ overflow: opening tabs past what fits
   ✓ overflow: the new tab is in view
   ✓ overflow: the left arrow scrolls
+  ✓ overflow: a sideways swipe scrolls right
+  ✓ overflow: and left
   ✓ overflow: closing them ends it
+  ✓ palette: Ctrl+Shift+P opens it
+  ✓ palette: typing filters it
+  ✓ palette: what's typed stays out of the shell
+  ✓ palette: Enter runs it and closes
+  ✓ palette: lists the tabs
+  ✓ palette: Esc closes it
+  ✓ palette: and Close Tab works from it
+  ✓ palette: closes the tab
+  ✓ palette: clicking outside closes it
+  ✓ palette: typing reaches the shell again
   ✓ tabs: titled by folder, not the shell's path
   ✓ tabs: exit closes only its tab
   ✓ tabs: the x closes one
@@ -66,5 +78,5 @@
   ✓ box: delete across three rows: selects and acts
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
-Clipboard found busy 0 times; got through 67 of 67 steps.
-All 68 checks passed.
+Clipboard found busy 0 times; got through 79 of 79 steps.
+All 80 checks passed.

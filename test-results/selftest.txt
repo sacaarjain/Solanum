@@ -80,8 +80,29 @@ Window layout
   ✓ text: a program's title is the tab's
   ✓ text: a shell's own path isn't
   ✓ text: nor as administrator
+Command palette
+  ✓ palette: lists everything
+  ✓ palette: fuzzy search
+  ✓ palette: word starts win
+  ✓ palette: finds by category
+  ✓ palette: no matches
+  ✓ palette: typing starts over
+  ✓ palette: arrows move
+  ✓ palette: a page past the end stops there
+  ✓ palette: typing goes in at the caret
+  ✓ palette: Delete
+  ✓ palette: recents, newest first, without repeats
+  ✓ palette: recents on top
+  ✓ palette: starts past the header
+  ✓ palette: arrows step over headers
+  ✓ palette: a recent that no longer exists isn't shown
+  ✓ palette: the selection stays in view
+  ✓ palette: centered, and stays put as it shrinks
+  ✓ palette: finds a row
+  ✓ palette: fits a small window
   ✓ chrome: draws
   ✓ chrome: draws with too many tabs
+  ✓ palette: draws
 ConPTY
   ✓ conpty: output reaches the emulator
   ✓ conpty: exit code
@@ -104,4 +125,4 @@ PowerShell hook
   ✓ powershell: Esc clears the line
   ✓ powershell: exits
   - pwsh.exe isn't installed
-All 100 checks passed.
+All 120 checks passed.
