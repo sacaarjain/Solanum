@@ -525,7 +525,7 @@ enum WindowSelfTest {
                           done: { window.leftTree.rows.map(\.entry.name) == ["alpha", "zeta.txt"] }))
         steps.append(Step(name: "sidebar: clicking a folder opens it", action: { window.click(window.leftRow(named: "alpha")!) },
                           done: { window.leftRow(named: "inner.txt") != nil && window.leftHasFocus }))
-        steps.append(Step(name: "sidebar: arrow keys move through it", action: { press(0x28); _ = window.keyDown(Int32(0x28), shift: false, ctrl: false, alt: false) },
+        steps.append(Step(name: "sidebar: arrow keys move through it", action: { _ = window.keyDown(Int32(0x28), shift: false, ctrl: false, alt: false) },
                           done: { window.leftTree.selection?.hasSuffix("inner.txt") == true }))
         steps.append(Step(name: "sidebar: Enter opens a file", action: { _ = window.keyDown(Int32(0x0D), shift: false, ctrl: false, alt: false) },
                           done: { openedFile?.hasSuffix("inner.txt") == true }))
