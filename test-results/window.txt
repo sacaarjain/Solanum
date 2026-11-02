@@ -20,6 +20,13 @@
   ✓ window: Backspace deletes the selection
   ✓ window: paste replaces the selection
   ✓ window: the edited command runs
+  ✓ keys: a command for the clipboard keys
+  ✓ keys: Ctrl+C copies a selection and clears it
+  ✓ keys: Ctrl+C with a selection doesn't interrupt
+  ✓ keys: Ctrl+V pastes
+  ✓ keys: Ctrl+X cuts a selection
+  ✓ keys: and it's on the clipboard, gone from the line
+  ✓ keys: Ctrl+C with nothing selected interrupts
   ✓ window: colors from a real program
   ✓ tabs: the + button opens one
   ✓ tabs: typing goes to the new tab
@@ -43,4 +50,4 @@
   ✓ box: delete across three rows: selects and acts
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
-All 45 checks passed.
+All 52 checks passed.
