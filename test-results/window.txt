@@ -119,12 +119,46 @@
   ✓ groups: Ctrl and Shift pick tabs
   ✓ groups: right-click offers to group them
   ✓ groups: grouping asks for a name
+  ✓ groups: keys pressed while naming go on to be typed
+  ✓ groups: Enter keeps the suggested name
+  ✓ groups: Rename Group… from its chip
   ✓ groups: typing names it
+  ✓ groups: and it's named
   ✓ groups: its chip collapses it
   ✓ groups: and expands it
   ✓ groups: the chip's menu
   ✓ groups: ungroups
   ✓ groups: back to two tabs
+  ✗ flower: highlights under the pointer PS C:\Users\sacaa>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   ✓ settings: the flower opens it
   ✓ settings: System
   ✓ settings: Preferences
@@ -166,5 +200,5 @@
   ✓ box: delete across three rows: selects and acts
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
-Clipboard found busy 0 times; got through 167 of 167 steps.
-All 168 checks passed.
+Clipboard found busy 0 times; got through 172 of 172 steps.
+1 of 173 checks FAILED.
