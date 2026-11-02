@@ -282,6 +282,14 @@ enum WindowSelfTest {
                       && WindowText.crumbs("/home/Pi", home: "/home/pi") == ["/", "home", "Pi"])
         results.check("paths: home is ~ on a host too", WindowText.crumbs("/home/pi/docs", home: "/home/pi") == ["~", "docs"])
 
+        var altMenu = MenuItem(title: "pi") {}
+        altMenu.alternate = ("pi — in This Pane", {})
+        let alternates = MenuModel(items: [altMenu, MenuItem(title: "Edit")], anchorX: 0, anchorY: 0, above: false, width: 200,
+                                   window: UIRect(x: 0, y: 0, width: 800, height: 600), scale: 1)
+        let plainTitles = [alternates.title(0), alternates.title(1)]
+        alternates.showsAlternates = true
+        results.check("menu: Alt shows alternates, where there are any", plainTitles == ["pi", "Edit"] && [alternates.title(0), alternates.title(1)] == ["pi — in This Pane", "Edit"])
+
         print("Command palette")
         var ran: [String] = []
         func item(_ title: String, _ category: String = "Shell") -> PaletteItem {
@@ -935,6 +943,27 @@ enum WindowSelfTest {
             steps.append(Step(name: "ssh: the sidebar comes back to this machine", action: {},
                               done: { window.leftTree.root.map(AnyPath.isUnix) == false && pane.remoteStatus == nil }))
             steps.append(Step(name: "ssh: the sidebar hides", action: { press(0x42) }, done: { !window.leftIsVisible }))
+            // The hosts menu now knows localhost, from known_hosts. Alt shows each host's "in This Pane".
+            steps.append(Step(name: "hosts: a known host", action: { window.click(window.hostsButtonRect) },
+                              done: { window.menuTitles.contains("localhost") }))
+            steps.append(Step(name: "hosts: holding Alt shows in This Pane", action: { PostMessageW(window.hwnd, Win.WM_SYSKEYDOWN, WPARAM(Win.VK_MENU), 0) },
+                              done: { window.menuTitles.contains("localhost — in This Pane") && !window.menuTitles.contains("localhost") && window.isMenuOpen }))
+            steps.append(Step(name: "hosts: letting go shows the new tab one again", action: { PostMessageW(window.hwnd, Win.WM_KEYUP, WPARAM(Win.VK_MENU), 0) },
+                              done: { window.menuTitles.contains("localhost") && window.isMenuOpen }))
+            var tabsBefore = 0
+            steps.append(Step(name: "hosts: in This Pane connects here, not in a new tab", action: {
+                tabsBefore = window.tabCount
+                PostMessageW(window.hwnd, Win.WM_SYSKEYDOWN, WPARAM(Win.VK_MENU), 0)
+            }, done: {
+                guard window.tabCount == tabsBefore else { return false }
+                if let row = window.menuRow("localhost — in This Pane") { window.click(row) }
+                return !window.isMenuOpen && pane.logicalText.contains("ssh localhost")
+            }))
+            // There's no password for this account: each question is cancelled until ssh gives up.
+            steps.append(Step(name: "hosts: and gives up when cancelled", action: {}, done: {
+                if pane.hasQuestion { pane.pressEscape() }
+                return window.tabCount == tabsBefore && pane.atPrompt && pane.sshHost == nil
+            }))
         }
         // Settings.
         let settingsWindow = SettingsWindow.shared

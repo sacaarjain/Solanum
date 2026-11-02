@@ -10,8 +10,9 @@ struct MenuView {
 
     /// How wide a menu has to be for these items.
     static func width(for items: [MenuItem], canvas: Canvas, scale: Float) -> Float {
-        let widest = items.map { item -> Float in
-            let units = Array(item.title.utf16)
+        // Wide enough for either title, so holding Alt doesn't change its size.
+        let widest = items.flatMap { [$0.title] + ($0.alternate.map { [$0.title] } ?? []) }.map { title -> Float in
+            let units = Array(title.utf16)
             return sol_canvas_measure_label(canvas.raw, units, Int32(units.count), textPixels * scale, 0)
         }.max() ?? 0
         let swatches: Float = items.contains { $0.swatch != nil } ? 18 * scale : 0
@@ -46,7 +47,7 @@ struct MenuView {
                 sol_canvas_fill_ellipse(canvas.raw, textX + 5 * scale, r.midY, 5 * scale, 5 * scale, swatch, 1)
                 textX += 18 * scale
             }
-            let units = Array(item.title.utf16)
+            let units = Array(menu.title(i).utf16)
             sol_canvas_draw_label(canvas.raw, textX, r.y, r.maxX - textX - 8 * scale, r.height, units, Int32(units.count),
                                   MenuView.textPixels * scale, 0, fg, item.isEnabled ? 0.95 : 0.4)
         }

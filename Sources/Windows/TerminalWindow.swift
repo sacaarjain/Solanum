@@ -1027,16 +1027,27 @@ final class TerminalWindow {
     // MARK: - Menus
 
     var isMenuOpen: Bool { menu != nil }
-    var menuTitles: [String] { menu?.items.map(\.title) ?? [] }
+    var tabCount: Int { panes.count }
+
+    /// As they show: with Alt held, the alternates.
+    var menuTitles: [String] { menu.map { m in m.items.indices.map { m.title($0) } } ?? [] }
 
     func menuRow(_ title: String) -> UIRect? {
-        guard let menu, let i = menu.items.firstIndex(where: { $0.title == title }) else { return nil }
+        guard let menu, let i = menu.items.indices.first(where: { menu.title($0) == title }) else { return nil }
         return menu.rect(i)
     }
 
     private func openMenu(_ items: [MenuItem], x: Float, y: Float, above: Bool) {
         menu = MenuModel(items: items, anchorX: x, anchorY: y, above: above, width: MenuView.width(for: items, canvas: canvas, scale: scale),
                          window: UIRect(x: 0, y: 0, width: Float(clientWidth), height: Float(clientHeight)), scale: scale)
+        menu?.showsAlternates = GetKeyState(Win.VK_MENU) < 0
+        invalidate()
+    }
+
+    /// Alt pressed or let go while a menu is open: its items with an alternate switch to it, and back.
+    func menuAltChanged(_ down: Bool) {
+        guard let menu, menu.showsAlternates != down else { return }
+        menu.showsAlternates = down
         invalidate()
     }
 
@@ -1059,7 +1070,7 @@ final class TerminalWindow {
             if !menu.frame.contains(x, y) { closeMenu() }
         case Win.WM_LBUTTONUP:
             if let row, menu.items[row].isEnabled {
-                let run = menu.items[row].run
+                let run = menu.action(row)
                 closeMenu()
                 run()
             }
@@ -1075,7 +1086,7 @@ final class TerminalWindow {
         case Win.VK_DOWN: menu.moveHighlight(by: 1)
         case Win.VK_RETURN:
             if let i = menu.highlighted {
-                let run = menu.items[i].run
+                let run = menu.action(i)
                 closeMenu()
                 run()
             }
@@ -1217,20 +1228,24 @@ final class TerminalWindow {
     private func showHostsMenu() {
         let folder = (ProcessInfo.processInfo.environment["USERPROFILE"] ?? "") + "\\.ssh"
         let (configured, known) = SSHHostList.load(sshFolder: folder)
-        func connect(_ host: SSHHostEntry) {
+        func connect(_ host: SSHHostEntry, here: Bool) {
             let command = "ssh " + host.target
-            if GetKeyState(Win.VK_MENU) < 0 && activePane.atPrompt {
-                activePane.pendingCommand = command
-            } else {
-                newTab()
-                activePane.pendingCommand = command
-            }
+            // In this pane only when its shell is at a prompt to take it; otherwise a new tab, rather than typing into
+            // whatever's running.
+            if !(here && activePane.atPrompt) { newTab() }
+            activePane.pendingCommand = command
         }
-        var items = [MenuItem(title: configured.isEmpty ? "No hosts in ~\\.ssh\\config" : "Connect in a new tab (Alt: this tab)", isEnabled: false)]
-        items += configured.map { host in MenuItem(title: host.title + (host.detail.map { "  —  " + $0 } ?? "")) { connect(host) } }
+        // Hold Alt to connect in this pane instead of a new tab, as Option does on the Mac.
+        func item(_ host: SSHHostEntry, title: String) -> MenuItem {
+            var item = MenuItem(title: title) { connect(host, here: false) }
+            item.alternate = ("\(host.title) — in This Pane", { connect(host, here: true) })
+            return item
+        }
+        var items = [MenuItem(title: configured.isEmpty ? "No hosts in ~\\.ssh\\config" : "Connect in a new tab (Alt: this pane)", isEnabled: false)]
+        items += configured.map { host in item(host, title: host.title + (host.detail.map { "  —  " + $0 } ?? "")) }
         if !known.isEmpty {
             items += [.separator, MenuItem(title: "Known Hosts", isEnabled: false)]
-            items += known.prefix(60).map { host in MenuItem(title: host.title) { connect(host) } }
+            items += known.prefix(60).map { host in item(host, title: host.title) }
         }
         items += [.separator, MenuItem(title: "Edit SSH Config…") {
             try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
@@ -1843,6 +1858,13 @@ final class TerminalWindow {
 
     /// Runs in the message loop, ahead of TranslateMessage. True if a key is dealt with, and shouldn't become a character.
     static func preprocess(_ message: inout MSG) -> Bool {
+        // Alt, while a menu is open, swaps in its items' alternates. Kept from Windows, which would otherwise take a lone
+        // Alt as going to the window's own menu.
+        if [Win.WM_KEYDOWN, Win.WM_SYSKEYDOWN, Win.WM_KEYUP, Win.WM_SYSKEYUP].contains(message.message),
+           Int32(truncatingIfNeeded: message.wParam) == Win.VK_MENU, let hwnd = message.hwnd, let window = windows[hwnd], window.menu != nil {
+            window.menuAltChanged(message.message == Win.WM_KEYDOWN || message.message == Win.WM_SYSKEYDOWN)
+            return true
+        }
         guard message.message == Win.WM_KEYDOWN || message.message == Win.WM_SYSKEYDOWN,
               let hwnd = message.hwnd, let window = windows[hwnd], !window.panes.isEmpty else { return false }
         return window.keyDown(Int32(truncatingIfNeeded: message.wParam))

@@ -9,6 +9,8 @@ struct MenuItem {
     /// A colored dot before the title, for a group's color.
     var swatch: UInt32?
     var run: () -> Void = {}
+    /// What it becomes while Alt is held, as the Mac's menus do with Option: another title and command.
+    var alternate: (title: String, run: () -> Void)?
 
     static var separator: MenuItem { MenuItem(isEnabled: false, isSeparator: true) }
 }
@@ -17,6 +19,8 @@ struct MenuItem {
 final class MenuModel {
     let items: [MenuItem]
     private(set) var highlighted: Int?
+    /// Alt is held: items with an alternate show and run that instead.
+    var showsAlternates = false
     private(set) var scroll: Float = 0
     let frame: UIRect
     let scale: Float
@@ -54,6 +58,9 @@ final class MenuModel {
         guard frame.contains(x, y) else { return nil }
         return items.indices.first { !items[$0].isSeparator && rect($0).contains(x, y) }
     }
+
+    func title(_ i: Int) -> String { showsAlternates ? items[i].alternate?.title ?? items[i].title : items[i].title }
+    func action(_ i: Int) -> () -> Void { showsAlternates ? items[i].alternate?.run ?? items[i].run : items[i].run }
 
     func highlight(_ i: Int?) { highlighted = i.flatMap { items.indices.contains($0) && items[$0].isEnabled ? $0 : nil } }
 
