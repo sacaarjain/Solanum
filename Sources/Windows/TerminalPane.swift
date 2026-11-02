@@ -139,9 +139,13 @@ final class TerminalPane: TerminalDelegate, Groupable {
         guard let current = question else { return }
         question = nil
         if let text, Askpass.isPassword(current.prompt), AppSettings.shared.rememberSSHPasswords { rememberedPassword = ProtectedSecret(text) }
+        lastAnswerLength = text?.count
         current.reply(text)
         invalidate()
     }
+
+    /// How long the last answer was, never what it was: for tests to check what went to ssh.
+    private(set) var lastAnswerLength: Int?
 
     var hasQuestion: Bool { question != nil }
     var questionPrompt: String? { question?.prompt }

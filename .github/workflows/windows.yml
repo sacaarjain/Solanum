@@ -36,6 +36,14 @@ jobs:
           Start-Service sshd
           Get-Service sshd | Format-List Name, Status
           ssh -V
+          # The account on its own, through the same helper with a fixed answer, outside Solanum's window.
+          $env:SSH_ASKPASS = "$PWD\build\windows\Solanum-test.exe"
+          $env:SSH_ASKPASS_REQUIRE = 'force'
+          $env:SOLANUM_ASKPASS = '1'
+          $env:SOLANUM_ASKPASS_FIXED = 'Sol-anum-2026!'
+          ssh -o StrictHostKeyChecking=accept-new -o NumberOfPasswordPrompts=1 solanumtest@localhost 'echo account-ok; echo $SHELL; uname -a' 2>&1
+          Remove-Item Env:\SSH_ASKPASS, Env:\SSH_ASKPASS_REQUIRE, Env:\SOLANUM_ASKPASS, Env:\SOLANUM_ASKPASS_FIXED
+          Get-WinEvent -LogName 'OpenSSH/Operational' -MaxEvents 8 -ErrorAction SilentlyContinue | Format-Table TimeCreated, Message -Wrap
       - name: Window test
         env:
           SOLANUM_TEST_SSH_USER: solanumtest

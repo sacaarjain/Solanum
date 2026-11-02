@@ -40,6 +40,11 @@ enum Askpass {
     /// The helper: runs in the copy of Solanum that ssh starts. Exit code 0 with the answer on standard output, else 1.
     static func runHelper(prompt: String) -> Int32 {
         let env = ProcessInfo.processInfo.environment
+        // For checking an account outside the app, in tests: answers with this, whatever's asked.
+        if let fixed = env["SOLANUM_ASKPASS_FIXED"] {
+            print(fixed)
+            return 0
+        }
         guard let pipe = env["SOLANUM_ASKPASS_PIPE"], let token = env["SOLANUM_ASKPASS_TOKEN"] else { return 1 }
         let name = wide(pipe)
         var handle: HANDLE?

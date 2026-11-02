@@ -848,7 +848,8 @@ enum WindowSelfTest {
             steps.append(Step(name: "ssh: signs in with it", action: {
                 window.typeIntoWindow(password)
                 pane.pressEnter()
-            }, done: { !pane.hasQuestion && pane.sshHost == "localhost" }))
+            }, done: { !pane.hasQuestion && !pane.logicalText.contains("Permission denied") && pane.sshHost == "localhost" && pane.lastAnswerLength != nil }))
+            steps.append(Step(name: "ssh: the answer was the password's length", action: {}, done: { pane.lastAnswerLength == password.count }))
             steps.append(Step(name: "ssh: keeps the password for the sidebar", action: {}, done: { pane.hasRememberedPassword }))
             steps.append(Step(name: "ssh: the remote machine answers", action: {
                 pane.type("echo remote-ok")
