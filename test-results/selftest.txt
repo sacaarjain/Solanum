@@ -80,6 +80,32 @@ Window layout
   ✓ text: a program's title is the tab's
   ✓ text: a shell's own path isn't
   ✓ text: nor as administrator
+File tree
+  ✓ path: join
+  ✓ path: parent
+  ✓ path: name
+  ✓ tree: folders first, dots after, numbers in order
+  ✓ tree: asks for the root
+  ✓ tree: hides what's hidden
+  ✓ tree: or shows it
+  ✓ tree: opening asks for its contents
+  ✓ tree: contents go under it, indented
+  ✓ tree: the same listing changes nothing
+  ✓ tree: a new file shows
+  ✓ tree: arrow keys
+  ✓ tree: left goes to the folder holding it
+  ✓ tree: left closes a folder
+  ✓ tree: right opens one
+  ✓ tree: an unreadable folder shows empty, and doesn't lose the rest
+  ✓ tree: moving resets the view
+  ✓ tree: says when it can't read the root
+  ✓ sidesides: the terminal fits between them
+  ✓ sidesides: tabs start at the terminal
+  ✓ sidesides: found by position
+  ✓ sidesides: their borders can be grabbed
+  ✓ sidesides: switches in the status bar
+  ✓ sidesides: none when hidden
+  ✓ sidesides: rows from the top of the list
 Command palette
   ✓ palette: lists everything
   ✓ palette: fuzzy search
@@ -125,4 +151,4 @@ PowerShell hook
   ✓ powershell: Esc clears the line
   ✓ powershell: exits
   - pwsh.exe isn't installed
-All 120 checks passed.
+All 145 checks passed.

@@ -62,6 +62,29 @@
   ✓ palette: closes the tab
   ✓ palette: clicking outside closes it
   ✓ palette: typing reaches the shell again
+  ✓ sidebar: the terminal goes to a folder
+  ✓ sidebar: Ctrl+B shows it, on that folder
+  ✓ sidebar: the terminal makes room
+  ✓ sidebar: lists folders first
+  ✓ sidebar: clicking a folder opens it
+  ✓ sidebar: arrow keys move through it
+  ✓ sidebar: Enter opens a file
+  ✓ sidebar: a new file shows by itself
+  ✓ sidebar: Esc goes back to the terminal
+  ✓ sidebar: its border drags
+  ✓ sidebar: double-clicking a folder sends the terminal there
+  ✓ sidebar: and it follows
+  ✓ sidebar: the parent button goes up, and stays
+  ✓ sidebar: unpinning follows the terminal again
+  ✓ sidebar: the right one shows too
+  ✓ wrapped prompt: a sidebar's width leaves it whole
+  ✓ wrapped prompt: getting shorter leaves it whole
+  ✓ wrapped prompt: taller too
+  ✓ wrapped prompt: typing goes after it
+  ✓ wrapped prompt: clears
+  ✓ wrapped prompt: back to size
+  ✓ sidebar: both hide again
+  ✓ sidebar: typing reaches the terminal
   ✓ tabs: titled by folder, not the shell's path
   ✓ tabs: exit closes only its tab
   ✓ tabs: the x closes one
@@ -78,5 +101,5 @@
   ✓ box: delete across three rows: selects and acts
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
-Clipboard found busy 0 times; got through 79 of 79 steps.
-All 80 checks passed.
+Clipboard found busy 0 times; got through 102 of 102 steps.
+All 103 checks passed.
