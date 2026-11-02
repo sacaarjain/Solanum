@@ -355,7 +355,7 @@ enum WindowSelfTest {
         }
 
         var pane: TerminalPane { window.activePane }
-        func hasLine(_ text: String) -> Bool { pane.visibleText.contains("\n" + text) }
+        func hasLine(_ text: String) -> Bool { ("\n" + pane.logicalText).contains("\n" + text + "\n") || ("\n" + pane.logicalText).contains("\n" + text) }
         /// Selects text on the cursor's row by dragging over it.
         func select(_ text: String) {
             let row = pane.cursorRowText

@@ -713,6 +713,16 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// The row the cursor is on, as far as what's on screen goes.
     var cursorRowText: String { terminal.screen[terminal.cursorY].text() }
 
+    /// The text as it was written, with lines the window wrapped joined up again.
+    var logicalText: String {
+        var out = ""
+        for line in terminal.scrollback.toArray() + terminal.screen {
+            out += line.text(trim: !line.wrapped)
+            if !line.wrapped { out += "\n" }
+        }
+        return out
+    }
+
     var visibleText: String {
         (terminal.scrollback.toArray().map { $0.text() } + terminal.screen.map { $0.text() }).joined(separator: "\n")
     }
