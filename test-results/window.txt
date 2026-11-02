@@ -30,36 +30,7 @@
   ✓ window: colors from a real program
   ✓ tabs: the + button opens one
   ✓ tabs: typing goes to the new tab
-  ✗ tabs: clicking a tab shows it PS C:\Users\sacaa> echo in-tab-two
-in-tab-two
-PS C:\Users\sacaa>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+  ✓ tabs: clicking a tab shows it
   ✓ tabs: a command starts in the second tab
   ✓ tabs: it keeps running behind another
   ✓ tabs: all of them resize
@@ -202,4 +173,4 @@ PS C:\Users\sacaa>
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
 Clipboard found busy 0 times; got through 173 of 173 steps.
-1 of 174 checks FAILED.
+All 174 checks passed.
