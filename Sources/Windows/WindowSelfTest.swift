@@ -154,6 +154,16 @@ enum WindowSelfTest {
         let crumbs = WindowText.crumbPaths(#"C:\Users\me\Projects\Solanum"#, home: #"C:\Users\me"#)
         results.check("path: parts know their folders", crumbs.map(\.path) == [#"C:\Users\me"#, #"C:\Users\me\Projects"#, #"C:\Users\me\Projects\Solanum"#])
         results.check("path: from the drive", WindowText.crumbPaths(#"D:\work\x"#, home: nil).map(\.path) == [#"D:\"#, #"D:\work"#, #"D:\work\x"#])
+        let travelled = FileTree()
+        travelled.setRoot(#"C:\a"#)
+        travelled.receive(#"C:\a"#, [entry("x", folder: true, in: #"C:\a"#)])
+        travelled.toggle(#"C:\a\x"#)
+        travelled.selection = #"C:\a\x"#
+        let kept = travelled.place
+        travelled.setRoot(#"C:\b"#)
+        travelled.collapseAll()
+        travelled.restore(kept)
+        results.check("tree: a place comes back whole", travelled.root == #"C:\a"# && travelled.isExpanded(#"C:\a\x"#) && travelled.selection == #"C:\a\x"#)
         print("Menus")
         let area = UIRect(x: 0, y: 0, width: 1000, height: 640)
         let menuItems = [MenuItem(title: "One"), .separator, MenuItem(title: "Off", isEnabled: false), MenuItem(title: "Two")]
@@ -608,6 +618,23 @@ enum WindowSelfTest {
             return true
         }))
         steps.append(Step(name: "path: it gets there", action: {}, done: { pane.terminal.cwd?.hasSuffix("alpha") == true && pane.atPrompt && window.leftTree.root?.hasSuffix("alpha") == true }))
+        steps.append(Step(name: "path: the folder icon lists the first part's folders", action: { window.click(window.folderIconRect!) },
+                          done: { window.menuTitles.contains("Copy Path") }))
+        steps.append(Step(name: "path: and closes", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
+        // The pin belongs to the tab.
+        steps.append(Step(name: "per tab: pinned here", action: { window.click(window.leftButton(.pin)) }, done: { window.leftPinned != nil }))
+        var pinnedRoot: String?
+        steps.append(Step(name: "per tab: a new tab isn't", action: {
+            pinnedRoot = window.leftTree.root
+            window.newTab()
+        }, done: { window.leftPinned == nil && pane.atPrompt && window.leftTree.root?.lowercased() == pane.terminal.cwd?.lowercased() }))
+        steps.append(Step(name: "per tab: back again, it still is", action: { window.selectTab(window.activeIndex - 1) },
+                          done: { window.leftPinned != nil && window.leftTree.root == pinnedRoot }))
+        steps.append(Step(name: "per tab: and the other still isn't", action: { window.selectTab(window.activeIndex + 1) },
+                          done: { window.leftPinned == nil }))
+        steps.append(Step(name: "per tab: closing it returns to the pinned one", action: { press(0x57) },
+                          done: { window.leftPinned != nil && window.leftTree.root == pinnedRoot && window.panes.count == 2 }))
+        steps.append(Step(name: "per tab: unpinned", action: { window.click(window.leftButton(.pin)) }, done: { window.leftPinned == nil }))
         // Dragging tabs.
         steps.append(Step(name: "drag: a third tab to move", action: { window.newTab() }, done: { window.panes.count == 3 && pane.atPrompt }))
         var movedPane: UInt = 0

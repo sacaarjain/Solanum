@@ -17,6 +17,8 @@ final class TerminalPane: TerminalDelegate {
     private var selecting = false
     private(set) var scrollOffset = 0
     var focused = false
+    /// Where the sidebar was while this tab was showing. Nil until it has been.
+    var sidebarPlace: SidebarPlace?
     private var pendingSurrogate: UInt16?
     private var lastMouseCell: (Int, Int)?
     private var lastResize: Date?
