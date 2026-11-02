@@ -41,9 +41,8 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
   Control, and Fn can't be detected, so Ctrl stands in for Command where that costs little:
   - Programs always keep Ctrl+A, D, E, H, J, K, L, R, U and Z.
   - At a prompt, the app takes keys shells rarely need: Ctrl+T, N, B, F, O, S, Q, G and P, as each feature arrives.
-  - Ctrl+W closes the tab at a PowerShell prompt and in Claude Code, by choice over Claude Code's delete-word. It has no
-    confirmation yet. Other running programs keep it, and a bash tab will have to keep it at its prompt.
-  - Full-screen programs get every Ctrl key, and a running program such as Claude Code keeps the ones it uses.
+  - Ctrl+W always closes the tab, as the Mac's Command+W does, whatever's running and with no confirmation yet.
+  - Full-screen programs get every other Ctrl key, and a running program such as Claude Code keeps the ones it uses.
   - Ctrl+Shift+letter reaches the app from anywhere. Ctrl+Shift+P is the command palette and Ctrl+Shift+W closes a tab.
   - Ctrl+C copies when something's selected and interrupts otherwise; Ctrl+V pastes, except in full-screen programs and for
     an image going to Claude Code; Ctrl+X cuts a selection in the line being typed; Ctrl+1 to 9 pick a tab.

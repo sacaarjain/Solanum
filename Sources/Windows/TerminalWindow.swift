@@ -446,9 +446,8 @@ final class TerminalWindow {
             default: break
             }
         }
-        // Closes the tab at a PowerShell prompt, which has no use for the key, and in Claude Code, by choice over its
-        // delete-word. A bash tab will have to keep it at its prompt.
-        if ctrl && !shift && !alt && key == 0x57 && (activePane.atPrompt || activePane.agentInputActive) {
+        // Always closes the tab, whatever's running: nothing in the tab matters once it's closing. As the Mac's Command+W.
+        if ctrl && !shift && !alt && key == 0x57 {
             closeTab(activeIndex)
             return true
         }
