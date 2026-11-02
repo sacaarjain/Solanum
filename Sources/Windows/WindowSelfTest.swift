@@ -217,6 +217,42 @@ enum WindowSelfTest {
         results.check("aliases: valid ones become PowerShell", aliasScript.contains("Set-Alias -Name 'c'") && aliasScript.contains("{ claude @args }") && !aliasScript.contains("bad name"))
         results.check("aliases: a dot in a name is fine", aliasScript.contains("Set-Alias -Name 'g.l' -Value '__solanum_alias_g_l'"))
 
+        print("Tab groups")
+        final class Tab: Groupable {
+            let name: String
+            var group: TabGroup?
+            init(_ name: String) { self.name = name }
+        }
+        var strip = ["a", "b", "c", "d", "e"].map(Tab.init)
+        func names() -> String { strip.map { $0.name + ($0.group == nil ? "" : "*") }.joined(separator: " ") }
+        let firstGroup = TabGroupOps.addToNewGroup(&strip, picked: [strip[3], strip[1]])
+        results.check("groups: picked tabs gather where the first was", names() == "a b* d* c e", names())
+        results.check("groups: a new one gets the first free color", firstGroup?.color == .blue && TabGroupOps.nextColor(in: strip) == .red)
+        TabGroupOps.add(strip[4], to: firstGroup!, in: &strip)
+        results.check("groups: added tabs go to the end of the group", names() == "a b* d* e* c", names())
+        let second = TabGroupOps.addToNewGroup(&strip, picked: [strip[2]])
+        results.check("groups: a new group never lands inside another", names() == "a b* e* d* c" || names() == "a b* d* e* c", names())
+        _ = second
+        strip = ["a", "b", "c", "d"].map(Tab.init)
+        let g = TabGroupOps.addToNewGroup(&strip, picked: [strip[1], strip[2]])!
+        TabGroupOps.remove(strip[1], in: &strip)
+        results.check("groups: removing moves it past the group", names() == "a c* b d", names())
+        strip.swapAt(2, 3)
+        TabGroupOps.settle(strip[3], in: strip)
+        results.check("groups: a tab dragged away from its group leaves it", strip[3].group == nil || strip[3].group !== g || names().hasSuffix("b"))
+        let between = Tab("x")
+        strip.insert(between, at: 1)
+        strip[2].group = g
+        strip[0].group = g
+        TabGroupOps.settle(between, in: strip)
+        results.check("groups: a tab dropped inside a group joins it", between.group === g)
+        let named = TabGroup(color: .green)
+        results.check("groups: chip labels", named.chipLabel(count: 3) == "" && { named.collapsed = true; return named.chipLabel(count: 3) == "3" }() && { named.name = "web"; return named.chipLabel(count: 3) == "web  3" }())
+        let withChips = WindowLayout(width: 1200, height: 640, scale: 1, tabCount: 4, chips: [1: 60], hiddenTabs: [])
+        results.check("groups: a chip sits before its first tab", withChips.chip(1)!.maxX + 6 == withChips.tab(1).x && withChips.part(atX: withChips.chip(1)!.x + 5, y: withChips.chip(1)!.midY) == .chip(1))
+        let collapsedChips = WindowLayout(width: 1200, height: 640, scale: 1, tabCount: 4, chips: [1: 60], hiddenTabs: [1, 2])
+        results.check("groups: collapsed tabs take no room", collapsedChips.tab(1).width == 0 && collapsedChips.tab(3).x == collapsedChips.chip(1)!.maxX + 6)
+
         print("Command palette")
         var ran: [String] = []
         func item(_ title: String, _ category: String = "Shell") -> PaletteItem {
@@ -726,6 +762,39 @@ enum WindowSelfTest {
         }, done: { window.paletteSelection?.title == "Theme: Solanum Default" }))
         steps.append(Step(name: "themes: back to the default", action: { pane.pressEnter() },
                           done: { TerminalPalette.background == 0x111312 && !window.isPaletteOpen }))
+
+        // Tab groups.
+        steps.append(Step(name: "groups: tabs to group", action: { window.newTab(); window.newTab() },
+                          done: { window.panes.count == 4 && pane.atPrompt }))
+        steps.append(Step(name: "groups: Ctrl and Shift pick tabs", action: {
+            window.selectTab(1)
+            window.pickForTest(3, range: true)
+        }, done: { true }))
+        steps.append(Step(name: "groups: right-click offers to group them", action: { window.rightClick(window.currentLayout.tab(2)) },
+                          done: { window.menuTitles.contains("Add 3 Tabs to New Group") }))
+        steps.append(Step(name: "groups: grouping asks for a name", action: { window.click(window.menuRow("Add 3 Tabs to New Group")!) },
+                          done: { window.isNaming && window.groupNames.count == 1 }))
+        steps.append(Step(name: "groups: typing names it", action: {
+            window.typeIntoWindow("web")
+            pane.pressEnter()
+        }, done: { !window.isNaming && window.groupNames == ["web"] && window.chipRect(1) != nil }))
+        if let dir = snapshotDirectory {
+            steps.append(Step(name: "groups: snapshot", action: {}, done: { window.saveSnapshot(to: dir + "\\groups.png") }))
+        }
+        steps.append(Step(name: "groups: its chip collapses it", action: { window.click(window.chipRect(1)!) },
+                          done: { window.currentLayout.tab(2).width == 0 && window.activeIndex == 0 }))
+        if let dir = snapshotDirectory {
+            steps.append(Step(name: "groups: collapsed snapshot", action: {}, done: { window.saveSnapshot(to: dir + "\\groups-collapsed.png") }))
+        }
+        steps.append(Step(name: "groups: and expands it", action: { window.click(window.chipRect(1)!) }, done: { window.currentLayout.tab(2).width > 0 }))
+        steps.append(Step(name: "groups: the chip's menu", action: { window.rightClick(window.chipRect(1)!) },
+                          done: { window.menuTitles.contains("Ungroup") && window.menuTitles.contains("Purple") }))
+        steps.append(Step(name: "groups: ungroups", action: { window.click(window.menuRow("Ungroup")!) },
+                          done: { window.groupNames.isEmpty && !window.isMenuOpen }))
+        steps.append(Step(name: "groups: back to two tabs", action: {}, done: {
+            if window.panes.count > 2 && pane.atPrompt { press(0x57) }
+            return window.panes.count == 2
+        }))
 
         // Settings.
         let settingsWindow = SettingsWindow.shared

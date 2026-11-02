@@ -25,6 +25,13 @@ struct WindowChrome {
     var showsThemeIcon = true
     var themeHovered = false
     /// A tab being dragged, and where its left edge is.
+    /// Each group's chip, by its first tab, and the run of tabs it spans.
+    var chips: [Int: (label: String, color: UInt32, last: Int, collapsed: Bool)] = [:]
+    /// Tabs picked with Ctrl or Shift.
+    var picked: Set<Int> = []
+    /// A tab's or a chip's name being typed, in its place.
+    var editingTab: (index: Int, field: TextFieldState)?
+    var editingChip: (index: Int, field: TextFieldState)?
     var draggedTab: Int?
     var draggedX: Float = 0
     var hoveredCrumb: Int?
@@ -59,8 +66,9 @@ struct WindowChrome {
         sol_canvas_fill_rect(canvas.raw, 0, bar.maxY - 1, bar.width, 1, fg, 0.10)
         let v = layout.tabViewport
         sol_canvas_push_clip(canvas.raw, v.x, v.y, v.width, v.height)
-        for i in tabs.indices where i != draggedTab && layout.tab(i).maxX > v.x && layout.tab(i).x < v.maxX { drawTab(i) }
+        for i in tabs.indices where i != draggedTab && layout.tab(i).width > 0 && layout.tab(i).maxX > v.x && layout.tab(i).x < v.maxX { drawTab(i) }
         drawSeparators()
+        drawGroups()
         if let draggedTab { drawTab(draggedTab) }
         sol_canvas_pop_clip(canvas.raw)
         drawScrollArrows()
@@ -71,20 +79,51 @@ struct WindowChrome {
         drawCaptionButtons()
     }
 
+    /// Each group's chip, and a line in its color over its tabs.
+    private func drawGroups() {
+        for (first, group) in chips {
+            guard let r = layout.chip(first) else { continue }
+            let end = group.collapsed ? r.maxX : layout.tab(group.last).maxX
+            sol_canvas_fill_rounded(canvas.raw, r.x, (2 * scale).rounded(), max(end - r.x, r.width), 2 * scale, scale, group.color, 0.85)
+            let hover = hovered == .chip(first)
+            if let editing = editingChip, editing.index == first {
+                sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 6 * scale, group.color, 1)
+                let text = editing.field.text, pixels = 11.5 * scale, ink = HexColor(rgb: group.color).luminance > 0.6 ? UInt32(0x1A1A1A) : 0xFFFFFF
+                let inner = UIRect(x: r.x + 8 * scale, y: r.y, width: r.width - 16 * scale, height: r.height)
+                if text.isEmpty { label("Name this group", inner, pixels: pixels, semibold: true, color: ink, alpha: 0.55) } else { label(text, inner, pixels: pixels, semibold: true, color: ink) }
+                let caretX = inner.x + width(of: editing.field.beforeCaret, pixels: pixels, semibold: true)
+                sol_canvas_fill_rect(canvas.raw, caretX.rounded(), r.y + 4 * scale, max(scale.rounded(), 1), r.height - 8 * scale, ink, 1)
+                continue
+            }
+            if group.label.isEmpty {
+                sol_canvas_fill_ellipse(canvas.raw, r.x + r.width / 2, r.midY, 6 * scale, 6 * scale, group.color, 1)
+                if hover { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 6 * scale, fg, 0.12) }
+                continue
+            }
+            sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 6 * scale, group.color, hover ? 1 : 0.88)
+            let ink: UInt32 = HexColor(rgb: group.color).luminance > 0.6 ? 0x1A1A1A : 0xFFFFFF
+            let pixels = 11.5 * scale, textWidth = min(width(of: group.label, pixels: pixels, semibold: true), r.width - 12 * scale)
+            label(group.label, UIRect(x: r.x + (r.width - textWidth) / 2, y: r.y, width: textWidth + 1, height: r.height), pixels: pixels, semibold: true, color: ink)
+        }
+    }
+
     /// Lines between tabs at rest, as on the Mac: one before the first, one between each two and one after the last, but
     /// none beside the active or hovered tab, which stand out by themselves.
     private func drawSeparators() {
-        func quiet(_ i: Int) -> Bool { i == activeTab || i == draggedTab || hovered == .tab(i) || hovered == .tabClose(i) }
+        func quiet(_ i: Int) -> Bool { i == activeTab || i == draggedTab || picked.contains(i) || hovered == .tab(i) || hovered == .tabClose(i) }
         func line(atX x: Float, midY: Float) {
             let height = (16 * scale).rounded(), width = max(scale.rounded(), 1)
             sol_canvas_fill_rect(canvas.raw, x.rounded(), (midY - height / 2).rounded(), width, height, fg, 0.18)
         }
-        guard !tabs.isEmpty else { return }
-        if !quiet(0) { line(atX: layout.tab(0).x, midY: layout.tab(0).midY) }
-        for i in tabs.indices {
+        let shown = tabs.indices.filter { layout.tab($0).width > 0 }
+        guard let first = shown.first else { return }
+        if !quiet(first) && chips[first] == nil { line(atX: layout.tab(first).x, midY: layout.tab(first).midY) }
+        for (k, i) in shown.enumerated() {
             let r = layout.tab(i)
-            if i + 1 < tabs.count {
-                if !quiet(i) && !quiet(i + 1) { line(atX: r.maxX, midY: r.midY) }
+            if k + 1 < shown.count {
+                let next = shown[k + 1]
+                // None where a chip sits between them.
+                if next == i + 1, chips[next] == nil, !quiet(i), !quiet(next) { line(atX: r.maxX, midY: r.midY) }
             } else if !quiet(i) {
                 line(atX: r.maxX + 2 * scale, midY: r.midY)
             }
@@ -115,7 +154,7 @@ struct WindowChrome {
             sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height + radius * 2, radius, TerminalPalette.background, 1)
             sol_canvas_stroke_rounded(canvas.raw, r.x + 0.5, r.y + 0.5, r.width - 1, r.height + radius * 2, radius, fg, 0.10, 1)
             sol_canvas_pop_clip(canvas.raw)
-        } else if hover {
+        } else if hover || picked.contains(i) {
             let inset = 2 * scale
             sol_canvas_fill_rounded(canvas.raw, r.x + inset, r.y + inset, r.width - inset * 2, r.height - inset * 3, radius - 2,
                                     TerminalPalette.surface, 0.55)
@@ -127,7 +166,18 @@ struct WindowChrome {
         let titleX = promptX + 22 * scale
         let closes = (active || hover) && r.width >= 60 * scale && draggedTab == nil
         let room = closeRect(i).x - titleX - 4 * scale
-        label(tabs[i], UIRect(x: titleX, y: r.y, width: max(room, 0), height: r.height), pixels: 12.5 * scale, color: fg, alpha: textAlpha)
+        if let editing = editingTab, editing.index == i {
+            let box = UIRect(x: titleX - 4 * scale, y: r.y + 6 * scale, width: max(room + 4 * scale, 60 * scale), height: r.height - 12 * scale)
+            sol_canvas_fill_rounded(canvas.raw, box.x, box.y, box.width, box.height, 4 * scale, TerminalPalette.mix(0x000000, TerminalPalette.background, 0.3), 1)
+            sol_canvas_stroke_rounded(canvas.raw, box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1, 4 * scale, TerminalPalette.accent, 0.9, 1)
+            let text = editing.field.text
+            let inner = UIRect(x: titleX, y: r.y, width: max(room - 4 * scale, 0), height: r.height)
+            if text.isEmpty { label(tabs[i], inner, pixels: 12.5 * scale, alpha: 0.4) } else { label(text, inner, pixels: 12.5 * scale) }
+            let caretX = titleX + width(of: editing.field.beforeCaret, pixels: 12.5 * scale)
+            sol_canvas_fill_rect(canvas.raw, caretX.rounded(), box.y + 4 * scale, max(scale.rounded(), 1), box.height - 8 * scale, TerminalPalette.accent, 1)
+        } else {
+            label(tabs[i], UIRect(x: titleX, y: r.y, width: max(room, 0), height: r.height), pixels: 12.5 * scale, color: fg, alpha: textAlpha)
+        }
         if closes {
             let c = closeRect(i)
             if hovered == .tabClose(i) { sol_canvas_fill_rounded(canvas.raw, c.x, c.y, c.width, c.height, 4 * scale, fg, 0.12) }

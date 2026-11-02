@@ -13,6 +13,8 @@ struct UIRect: Equatable {
 /// What's at a point of the window.
 enum WindowPart: Equatable {
     case tab(Int), tabClose(Int), newTab, flower, scrollLeft, scrollRight
+    /// A group's chip, by the index of its first tab.
+    case chip(Int)
     case minimize, maximize, close
     /// The empty part of the tab bar, which drags the window.
     case titleBar
@@ -26,6 +28,10 @@ struct WindowLayout {
     let width: Float, height: Float, scale: Float, tabCount: Int
     /// How far the tabs are scrolled, when they don't all fit.
     var tabScroll: Float = 0
+    /// Group chips' widths, each by the index of the tab it comes before.
+    var chips: [Int: Float] = [:]
+    /// Tabs in collapsed groups, which take no room.
+    var hiddenTabs: Set<Int> = []
     /// How wide the sidebars are, 0 when hidden.
     var leftWidth: Float = 0
     var rightWidth: Float = 0
@@ -45,7 +51,7 @@ struct WindowLayout {
     }
     /// Right after the last tab, or pinned beside the flower when the tabs have to scroll.
     var newTab: UIRect {
-        let x = overflows ? newTabLimit : tabsStart + Float(tabCount) * tabWidth + (6 * scale).rounded()
+        let x = overflows ? newTabLimit : tabsStart + contentWidth + (6 * scale).rounded()
         return UIRect(x: x, y: (tabTop + (tabBarHeight - tabTop - newTabSide) / 2).rounded(), width: newTabSide, height: newTabSide)
     }
     private var newTabSide: Float { (28 * scale).rounded() }
@@ -54,10 +60,15 @@ struct WindowLayout {
     /// Tabs start where the terminal does, so the active one opens onto it.
     private var tabsStart: Float { max((8 * scale).rounded(), leftWidth) }
     private var minTabWidth: Float { (120 * scale).rounded() }
-    private var fittingTabWidth: Float { (newTabLimit - (6 * scale).rounded() - tabsStart) / Float(max(tabCount, 1)) }
+    private var chipGap: Float { (6 * scale).rounded() }
+    private var chipSpace: Float { chips.values.reduce(0) { $0 + $1 + chipGap } }
+    private var visibleCount: Int { tabCount - hiddenTabs.count }
+    private var fittingTabWidth: Float { (newTabLimit - (6 * scale).rounded() - tabsStart - chipSpace) / Float(max(visibleCount, 1)) }
+    /// Everything in the strip end to end: tabs and chips.
+    private var contentWidth: Float { Float(visibleCount) * tabWidth + chipSpace }
 
     /// More tabs than fit at their narrowest: they scroll between two arrows, as on the Mac.
-    var overflows: Bool { tabCount > 0 && fittingTabWidth < minTabWidth }
+    var overflows: Bool { tabCount > 0 && (visibleCount > 0 ? fittingTabWidth < minTabWidth : chipSpace > newTabLimit - tabsStart) }
 
     var tabWidth: Float {
         guard tabCount > 0 else { return 0 }
@@ -75,11 +86,31 @@ struct WindowLayout {
         return UIRect(x: x, y: 0, width: max(scrollRight.x - (2 * scale).rounded() - x, 0), height: tabBarHeight)
     }
 
-    var maxTabScroll: Float { overflows ? max(Float(tabCount) * tabWidth - tabViewport.width, 0) : 0 }
+    var maxTabScroll: Float { overflows ? max(contentWidth - tabViewport.width, 0) : 0 }
 
+    private var stripStart: Float { overflows ? tabViewport.x - tabScroll : tabsStart }
+
+    /// Where tab `i` starts: past the tabs and chips before it, and its own chip.
+    private func start(of i: Int) -> Float {
+        var x = stripStart
+        for k in 0..<i {
+            if let chip = chips[k] { x += chip + chipGap }
+            if !hiddenTabs.contains(k) { x += tabWidth }
+        }
+        if let chip = chips[i] { x += chip + chipGap }
+        return x
+    }
+
+    /// A tab, or an empty rectangle where a collapsed one would be.
     func tab(_ i: Int) -> UIRect {
-        let start = overflows ? tabViewport.x - tabScroll : tabsStart
-        return UIRect(x: start + Float(i) * tabWidth, y: tabTop, width: tabWidth, height: tabBarHeight - tabTop)
+        UIRect(x: start(of: i), y: tabTop, width: hiddenTabs.contains(i) ? 0 : tabWidth, height: tabBarHeight - tabTop)
+    }
+
+    /// The chip of the group starting at tab `i`.
+    func chip(_ i: Int) -> UIRect? {
+        guard let width = chips[i] else { return nil }
+        let height = (20 * scale).rounded(), mid = tabTop + (tabBarHeight - tabTop) / 2
+        return UIRect(x: start(of: i) - width - chipGap, y: (mid - height / 2).rounded(), width: width, height: height)
     }
 
     func tabClose(_ i: Int) -> UIRect {
@@ -130,6 +161,7 @@ struct WindowLayout {
             if scrollRight.contains(x, y) { return .scrollRight }
         }
         if tabViewport.contains(x, y) {
+            for i in chips.keys.sorted() where chip(i)?.contains(x, y) == true { return .chip(i) }
             for i in 0..<tabCount where tab(i).contains(x, y) {
                 return tabClose(i).contains(x, y) ? .tabClose(i) : .tab(i)
             }

@@ -5,7 +5,7 @@ import WinSDK
 /// One terminal: a shell, its emulator, and what's selected and being typed. A window shows one pane at a time, its tab's.
 /// Everything runs on the thread with the message loop, including the emulator: output is handed over from the reading
 /// thread, not fed from it.
-final class TerminalPane: TerminalDelegate {
+final class TerminalPane: TerminalDelegate, Groupable {
     private static var nextID: UInt = 1
     let id: UInt
     private(set) weak var host: TerminalWindow?
@@ -17,6 +17,9 @@ final class TerminalPane: TerminalDelegate {
     private var selecting = false
     private(set) var scrollOffset = 0
     var focused = false
+    var group: TabGroup?
+    /// A name given to the tab, in place of the one it would have.
+    var customTitle: String?
     /// Where the sidebar was while this tab was showing. Nil until it has been.
     var sidebarPlace: SidebarPlace?
     private var pendingSurrogate: UInt16?
@@ -86,7 +89,8 @@ final class TerminalPane: TerminalDelegate {
     }
 
     var tabTitle: String {
-        WindowText.tabTitle(title: terminal.title, folder: terminal.cwd, home: ProcessInfo.processInfo.environment["USERPROFILE"])
+        if let customTitle, !customTitle.isEmpty { return customTitle }
+        return WindowText.tabTitle(title: terminal.title, folder: terminal.cwd, home: ProcessInfo.processInfo.environment["USERPROFILE"])
     }
 
     /// Whether the shell is waiting at its prompt, with no program running that might want a key.

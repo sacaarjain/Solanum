@@ -14,7 +14,8 @@ struct MenuView {
             let units = Array(item.title.utf16)
             return sol_canvas_measure_label(canvas.raw, units, Int32(units.count), textPixels * scale, 0)
         }.max() ?? 0
-        return max(widest + 52 * scale, 160 * scale).rounded(.up)
+        let swatches: Float = items.contains { $0.swatch != nil } ? 18 * scale : 0
+        return max(widest + 52 * scale + swatches, 160 * scale).rounded(.up)
     }
 
     func draw() {
@@ -40,8 +41,13 @@ struct MenuView {
             if item.isChecked {
                 sol_canvas_draw_icon(canvas.raw, r.x, r.y, checkWidth, r.height, 0xE73E, 10 * scale, TerminalPalette.accent, 1)
             }
+            var textX = r.x + checkWidth
+            if let swatch = item.swatch {
+                sol_canvas_fill_ellipse(canvas.raw, textX + 5 * scale, r.midY, 5 * scale, 5 * scale, swatch, 1)
+                textX += 18 * scale
+            }
             let units = Array(item.title.utf16)
-            sol_canvas_draw_label(canvas.raw, r.x + checkWidth, r.y, r.width - checkWidth - 8 * scale, r.height, units, Int32(units.count),
+            sol_canvas_draw_label(canvas.raw, textX, r.y, r.maxX - textX - 8 * scale, r.height, units, Int32(units.count),
                                   MenuView.textPixels * scale, 0, fg, item.isEnabled ? 0.95 : 0.4)
         }
     }

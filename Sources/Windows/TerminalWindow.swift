@@ -33,6 +33,11 @@ final class TerminalWindow {
     private var runQueue: [() -> Void] = []
     private var lastLook = Date.distantPast
 
+    /// Tabs picked with Ctrl or Shift, by pane.
+    private var pickedTabs: Set<UInt> = []
+    /// A tab's or a group's name being typed in the tab bar.
+    private enum NameTarget { case tab(UInt), group(TabGroup) }
+    private var naming: (target: NameTarget, field: TextFieldState)?
     private var menu: MenuModel?
     private var hoveredCrumb: Int?
     private var themeHovered = false
@@ -152,6 +157,7 @@ final class TerminalWindow {
 
     private var layout: WindowLayout {
         WindowLayout(width: Float(clientWidth), height: Float(clientHeight), scale: scale, tabCount: panes.count, tabScroll: tabScroll,
+                     chips: chipWidths(), hiddenTabs: hiddenTabs,
                      leftWidth: left.isVisible ? sidebarWidth(left) : 0, rightWidth: rightIsShowing ? sidebarWidth(right) : 0, showsRightToggle: hasSplit)
     }
 
@@ -298,6 +304,17 @@ final class TerminalWindow {
         chrome.folder = panes.isEmpty ? nil : activePane.terminal.cwd
         chrome.home = ProcessInfo.processInfo.environment["USERPROFILE"]
         chrome.hoveredCrumb = hoveredCrumb
+        for (first, group) in groupStarts() {
+            let members = panes.indices.filter { panes[$0].group === group }
+            chrome.chips[first] = (group.chipLabel(count: members.count), group.color.rgb, members.last ?? first, group.collapsed)
+        }
+        chrome.picked = Set(panes.indices.filter { pickedTabs.contains(panes[$0].id) })
+        if let naming {
+            switch naming.target {
+            case .tab(let id): if let i = panes.firstIndex(where: { $0.id == id }) { chrome.editingTab = (i, naming.field) }
+            case .group(let g): if let first = panes.firstIndex(where: { $0.group === g }) { chrome.editingChip = (first, naming.field) }
+            }
+        }
         chrome.themeName = AppSettings.shared.themeName.uppercased()
         chrome.showsThemeIcon = AppSettings.shared.themeIcon
         chrome.themeHovered = themeHovered
@@ -460,6 +477,13 @@ final class TerminalWindow {
         case Win.WM_CHAR:
             if menu != nil {
                 // A menu takes no text.
+            } else if var current = naming {
+                let unit = UInt16(truncatingIfNeeded: wParam)
+                if unit >= 0x20, unit != 0x7F, let scalar = Unicode.Scalar(unit) {
+                    current.field.insert(String(Character(scalar)))
+                    naming = current
+                    invalidate()
+                }
             } else if palette != nil {
                 paletteTyped(UInt16(truncatingIfNeeded: wParam))
             } else if !panes.isEmpty {
@@ -622,9 +646,16 @@ final class TerminalWindow {
         case Win.WM_MOUSEMOVE:
             setHovered(part, nonClient: false)
         case Win.WM_LBUTTONDOWN:
+            if naming != nil { finishNaming(commit: true) }
             if case .tab(let i) = part {
-                selectTab(i)
-                tabPress = (i, x - layout.tab(i).x, x, false)
+                let ctrl = isDown(Win.VK_CONTROL), shift = isDown(Win.VK_SHIFT)
+                if ctrl || shift {
+                    pick(i, range: shift)
+                } else {
+                    clearPicked()
+                    selectTab(i)
+                    tabPress = (i, x - layout.tab(i).x, x, false)
+                }
             }
             if part == .scrollLeft { scrollTabs(by: -layout.tabViewport.width * 0.75) }
             if part == .scrollRight { scrollTabs(by: layout.tabViewport.width * 0.75) }
@@ -634,6 +665,7 @@ final class TerminalWindow {
                 switch part {
                 case .tabClose(let i): closeTab(i)
                 case .newTab: newTab()
+                case .chip(let first): if let g = panes[first].group { setCollapsed(g, !g.collapsed) }
                 case .flower: SettingsWindow.shared.show()
                 case .toggleLeft: toggleSidebar(left)
                 case .toggleRight: toggleSidebar(right)
@@ -643,6 +675,10 @@ final class TerminalWindow {
             pressed = nil
         case Win.WM_MBUTTONUP:
             if case .tab(let i) = part { closeTab(i) } else if case .tabClose(let i) = part { closeTab(i) }
+        case Win.WM_RBUTTONUP:
+            if case .tab(let i) = part { showTabMenu(i, at: x, y: y + 4 * scale) }
+            if case .tabClose(let i) = part { showTabMenu(i, at: x, y: y + 4 * scale) }
+            if case .chip(let first) = part, let g = panes[first].group { showGroupMenu(g, at: x, y: y + 4 * scale) }
         default: break
         }
         invalidate()
@@ -1070,7 +1106,10 @@ final class TerminalWindow {
             invalidate()
             return true
         case Win.WM_LBUTTONUP:
-            if press.dragging { ReleaseCapture() }
+            if press.dragging {
+                ReleaseCapture()
+                TabGroupOps.settle(panes[press.index], in: panes)
+            }
             tabPress = nil
             invalidate()
             return press.dragging
@@ -1155,12 +1194,219 @@ final class TerminalWindow {
         try? text.write(to: file, atomically: true, encoding: .utf8)
     }
 
+    // MARK: - Tab groups
+
+    /// Each group by the index of its first tab.
+    private func groupStarts() -> [(Int, TabGroup)] {
+        panes.indices.compactMap { i in
+            guard let g = panes[i].group, i == 0 || panes[i - 1].group !== g else { return nil }
+            return (i, g)
+        }
+    }
+
+    private var hiddenTabs: Set<Int> { Set(panes.indices.filter { panes[$0].group?.collapsed == true }) }
+
+    /// How wide each chip is: its label, or a dot for a group with no name, or room for the name being typed.
+    private func chipWidths() -> [Int: Float] {
+        guard canvas != nil else { return [:] }
+        var out: [Int: Float] = [:]
+        func measure(_ text: String) -> Float {
+            let units = Array(text.utf16)
+            return sol_canvas_measure_label(canvas.raw, units, Int32(units.count), 11.5 * scale, 1)
+        }
+        for (first, g) in groupStarts() {
+            if case .group(let named)? = naming?.target, named === g {
+                let text = naming!.field.text.isEmpty ? "Name this group" : naming!.field.text
+                out[first] = min(max(measure(text) + 26 * scale, 90 * scale), 200 * scale).rounded()
+                continue
+            }
+            let label = g.chipLabel(count: panes.filter { $0.group === g }.count)
+            out[first] = label.isEmpty ? (20 * scale).rounded() : min(measure(label) + 18 * scale, 160 * scale).rounded()
+        }
+        return out
+    }
+
+    private var pickedPanes: [TerminalPane] { panes.filter { pickedTabs.contains($0.id) } }
+
+    private func clearPicked() {
+        guard !pickedTabs.isEmpty else { return }
+        pickedTabs = []
+        invalidate()
+    }
+
+    /// Ctrl adds or takes out one tab; Shift picks everything between the active tab and this one.
+    private func pick(_ i: Int, range: Bool) {
+        if range {
+            let a = min(activeIndex, i), b = max(activeIndex, i)
+            pickedTabs = Set((a...b).filter { !hiddenTabs.contains($0) }.map { panes[$0].id })
+        } else {
+            if pickedTabs.isEmpty { pickedTabs.insert(activePane.id) }
+            if pickedTabs.remove(panes[i].id) == nil { pickedTabs.insert(panes[i].id) }
+        }
+        invalidate()
+    }
+
+    private func reorder(_ change: (inout [TerminalPane]) -> Void) {
+        let active = panes.isEmpty ? nil : activePane
+        change(&panes)
+        if let active, let i = panes.firstIndex(where: { $0 === active }) { activeIndex = i }
+        settleTabScroll()
+        invalidate()
+    }
+
+    func addToNewGroup(_ list: [TerminalPane]) {
+        var created: TabGroup?
+        reorder { created = TabGroupOps.addToNewGroup(&$0, picked: list) }
+        pickedTabs = []
+        // Named straight away, as on the Mac.
+        if let created { beginNaming(.group(created), text: "") }
+    }
+
+    private func add(_ list: [TerminalPane], to group: TabGroup) {
+        reorder { tabs in list.forEach { TabGroupOps.add($0, to: group, in: &tabs) } }
+        pickedTabs = []
+    }
+
+    private func removeFromGroup(_ list: [TerminalPane]) {
+        reorder { tabs in list.forEach { TabGroupOps.remove($0, in: &tabs) } }
+        pickedTabs = []
+    }
+
+    private func ungroup(_ group: TabGroup) {
+        group.collapsed = false
+        panes.filter { $0.group === group }.forEach { $0.group = nil }
+        settleTabScroll()
+        invalidate()
+    }
+
+    /// Collapsing the group the active tab is in moves to the nearest tab still showing, or a new one if there's none.
+    func setCollapsed(_ group: TabGroup, _ collapsed: Bool) {
+        group.collapsed = collapsed
+        if collapsed, activePane.group === group {
+            let order = panes.indices.sorted { abs($0 - activeIndex) < abs($1 - activeIndex) }
+            if let i = order.first(where: { panes[$0].group?.collapsed != true }) { selectTab(i) } else { addPane() }
+        }
+        settleTabScroll()
+        invalidate()
+    }
+
+    /// A new tab at the end of the active tab's group, in its folder.
+    func newTabInGroup() {
+        guard let group = activePane.group else { return newTab() }
+        let folder = activePane.terminal.cwd
+        let at = (panes.lastIndex { $0.group === group } ?? activeIndex) + 1
+        guard addPane(at: at, cwd: folder) else { return }
+        activePane.group = group
+        invalidate()
+    }
+
+    private func closeTabs(_ list: [TerminalPane]) {
+        list.compactMap { pane in panes.firstIndex { $0 === pane } }.sorted(by: >).forEach { closeTab($0) }
+        pickedTabs = []
+    }
+
+    private func beginNaming(_ target: NameTarget, text: String) {
+        naming = (target, TextFieldState(text))
+        invalidate()
+    }
+
+    private func finishNaming(commit: Bool) {
+        guard let current = naming else { return }
+        naming = nil
+        if commit {
+            let text = current.field.text.trimmingCharacters(in: .whitespaces)
+            switch current.target {
+            case .tab(let id): panes.first { $0.id == id }?.customTitle = text.isEmpty ? nil : text
+            case .group(let g): g.name = text
+            }
+        }
+        detailsChanged()
+    }
+
+    /// A key while a name is being typed. Characters come through as WM_CHAR.
+    private func namingKey(_ key: Int32, ctrl: Bool) -> Bool {
+        guard var current = naming else { return false }
+        switch key {
+        case Win.VK_RETURN, Win.VK_TAB: finishNaming(commit: true); return true
+        case Win.VK_ESCAPE: finishNaming(commit: false); return true
+        case Win.VK_BACK: current.field.deleteBackward(word: ctrl)
+        case Win.VK_DELETE: current.field.deleteForward()
+        case Win.VK_LEFT: current.field.move(by: -1)
+        case Win.VK_RIGHT: current.field.move(by: 1)
+        case Win.VK_HOME: current.field.move(to: 0)
+        case Win.VK_END: current.field.move(to: current.field.text.count)
+        case Win.VK_F4: return false
+        default: return true
+        }
+        naming = current
+        invalidate()
+        return true
+    }
+
+    private func groupItems(for list: [TerminalPane], verb: String) -> [MenuItem] {
+        TabGroupOps.groups(in: panes).filter { g in !list.allSatisfy { $0.group === g } }.map { g in
+            MenuItem(title: "\(verb) “\(g.displayName)”", swatch: g.color.rgb) { [weak self] in self?.add(list, to: g) }
+        }
+    }
+
+    private func showTabMenu(_ i: Int, at x: Float, y: Float) {
+        let pane = panes[i]
+        let picked = pickedPanes
+        if picked.count > 1 && picked.contains(where: { $0 === pane }) {
+            let n = picked.count
+            var items = [MenuItem(title: "Add \(n) Tabs to New Group") { [weak self] in self?.addToNewGroup(picked) }]
+            items += groupItems(for: picked, verb: "Add \(n) Tabs to")
+            if picked.contains(where: { $0.group != nil }) { items.append(MenuItem(title: "Remove from Group") { [weak self] in self?.removeFromGroup(picked) }) }
+            items += [.separator, MenuItem(title: "Close \(n) Tabs") { [weak self] in self?.closeTabs(picked) }]
+            openMenu(items, x: x, y: y, above: false)
+            return
+        }
+        clearPicked()
+        var items = [MenuItem(title: "Rename Tab…") { [weak self] in self?.beginNaming(.tab(pane.id), text: pane.customTitle ?? "") }]
+        if pane.customTitle != nil { items.append(MenuItem(title: "Reset Tab Name") { [weak self] in pane.customTitle = nil; self?.detailsChanged() }) }
+        items += [.separator, MenuItem(title: "Add Tab to New Group") { [weak self] in self?.addToNewGroup([pane]) }]
+        items += groupItems(for: [pane], verb: "Add Tab to")
+        if pane.group != nil { items.append(MenuItem(title: "Remove from Group") { [weak self] in self?.removeFromGroup([pane]) }) }
+        items += [.separator, MenuItem(title: "Close Tab") { [weak self] in self?.closeTabs([pane]) }]
+        if panes.count > 1 { items.append(MenuItem(title: "Close Other Tabs") { [weak self] in self.map { $0.closeTabs($0.panes.filter { $0 !== pane }) } }) }
+        if i < panes.count - 1 {
+            items.append(MenuItem(title: "Close Tabs to the Right") { [weak self] in
+                guard let self, let at = self.panes.firstIndex(where: { $0 === pane }) else { return }
+                self.closeTabs(Array(self.panes[(at + 1)...]))
+            })
+        }
+        openMenu(items, x: x, y: y, above: false)
+    }
+
+    private func showGroupMenu(_ group: TabGroup, at x: Float, y: Float) {
+        var items = [MenuItem(title: "Rename Group…") { [weak self] in self?.beginNaming(.group(group), text: group.name) }, .separator]
+        for color in TabGroupColor.allCases {
+            items.append(MenuItem(title: color.title, isChecked: group.color == color, swatch: color.rgb) { [weak self] in
+                group.color = color
+                self?.invalidate()
+            })
+        }
+        items += [.separator,
+                  MenuItem(title: "New Tab in Group") { [weak self] in
+                      guard let self, let last = self.panes.lastIndex(where: { $0.group === group }) else { return }
+                      if group.collapsed { group.collapsed = false }
+                      self.selectTab(last)
+                      self.newTabInGroup()
+                  },
+                  MenuItem(title: group.collapsed ? "Expand Group" : "Collapse Group") { [weak self] in self?.setCollapsed(group, !group.collapsed) },
+                  MenuItem(title: "Ungroup") { [weak self] in self?.ungroup(group) },
+                  MenuItem(title: "Close Group") { [weak self] in self.map { $0.closeTabs($0.panes.filter { $0.group === group }) } }]
+        openMenu(items, x: x, y: y, above: false)
+    }
+
     // MARK: - Shortcuts
 
     /// Every shortcut, as Settings › Shortcuts lists them. Ctrl stands in for the Mac's Command.
     static let shortcutGroups: [(title: String, items: [(title: String, keys: String)])] = [
         ("Solanum", [("Settings…", "Ctrl+,"), ("Command Palette…", "Ctrl+Shift+P")]),
-        ("Shell", [("New Tab", "Ctrl+T"), ("Reopen Closed Tab", "Ctrl+Shift+T"), ("Close Tab", "Ctrl+W"), ("Close Tab (also)", "Ctrl+Shift+W")]),
+        ("Shell", [("New Tab", "Ctrl+T"), ("New Tab in Group", "Ctrl+Alt+T"), ("Reopen Closed Tab", "Ctrl+Shift+T"), ("Close Tab", "Ctrl+W"),
+                   ("Close Tab (also)", "Ctrl+Shift+W"), ("Rename Tab…", "Ctrl+Shift+I"), ("Add Tab to New Group", "Ctrl+Alt+G")]),
+        ("Tabs", [("Pick another tab", "Ctrl+Click"), ("Pick the tabs between", "Shift+Click"), ("Collapse or expand a group", "Click its chip")]),
         ("Edit", [("Copy (with something selected)", "Ctrl+C"), ("Stop the program (with nothing selected)", "Ctrl+C"), ("Cut (in the line being typed)", "Ctrl+X"),
                   ("Paste", "Ctrl+V"), ("Paste (also)", "Shift+Insert"), ("Undo (PowerShell and Claude Code)", "Ctrl+Z")]),
         ("View", [("Toggle File Sidebar", "Ctrl+B"), ("Pin Sidebar Folder", "Ctrl+Shift+B"), ("Scroll Back a Page", "Shift+PageUp"), ("Scroll Forward a Page", "Shift+PageDown")]),
@@ -1193,6 +1439,10 @@ final class TerminalWindow {
                 self.map { $0.selectTab(($0.activeIndex + $0.panes.count - 1) % $0.panes.count) }
             },
             PaletteItem(title: "Paste", category: "Edit", shortcut: "Ctrl+V") { [weak self] in self?.activePane.paste() },
+            PaletteItem(title: "Rename Tab…", category: "Shell", shortcut: "Ctrl+Shift+I") { [weak self] in self.map { $0.beginNaming(.tab($0.activePane.id), text: $0.activePane.customTitle ?? "") } },
+            PaletteItem(title: "New Tab in Group", category: "Shell", shortcut: "Ctrl+Alt+T") { [weak self] in self?.newTabInGroup() },
+            PaletteItem(title: "Add Tab to New Group", category: "Shell", shortcut: "Ctrl+Alt+G") { [weak self] in self.map { $0.addToNewGroup([$0.activePane]) } },
+            PaletteItem(title: "Remove Tab from Group", category: "Shell") { [weak self] in self.map { $0.removeFromGroup([$0.activePane]) } },
             PaletteItem(title: "Toggle File Sidebar", category: "View", shortcut: "Ctrl+B") { [weak self] in self.map { $0.toggleSidebar($0.left) } },
             PaletteItem(title: "Pin Sidebar Folder", category: "View", shortcut: "Ctrl+Shift+B") { [weak self] in self.map { $0.togglePin($0.left) } },
             PaletteItem(title: "Show Hidden Files", category: "View") { [weak self] in self.map { $0.toggleHidden($0.left) } },
@@ -1338,6 +1588,11 @@ final class TerminalWindow {
 
     func keyDown(_ key: Int32, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
         if menu != nil { return menuKey(key) }
+        if naming != nil { return namingKey(key, ctrl: ctrl) }
+        // Ctrl+Alt+T and Ctrl+Alt+G, as the Mac's Command-Option-T and G: a new tab in this group, and a new group.
+        if ctrl && alt && !shift && key == 0x54 { newTabInGroup(); return true }
+        if ctrl && alt && !shift && key == 0x47 { addToNewGroup(pickedPanes.isEmpty ? [activePane] : pickedPanes); return true }
+        if ctrl && shift && !alt && key == 0x49 { beginNaming(.tab(activePane.id), text: activePane.customTitle ?? ""); return true }
         if ctrl && !shift && !alt && key == 0xBC {
             SettingsWindow.shared.show()
             return true
@@ -1408,6 +1663,16 @@ final class TerminalWindow {
     var fontCellHeight: Float { canvas.metrics.cellHeight }
 
     var isDraggingTab: Bool { tabPress != nil }
+    var groupNames: [String] { TabGroupOps.groups(in: panes).map(\.name) }
+    var isNaming: Bool { naming != nil }
+    func pickForTest(_ i: Int, range: Bool) { pick(i, range: range) }
+    func chipRect(_ first: Int) -> UIRect? { layout.chip(first) }
+    func rightClick(_ rect: UIRect) {
+        let position = LPARAM(Int(rect.x + rect.width / 2) & 0xFFFF) | (LPARAM(Int(rect.y + rect.height / 2) & 0xFFFF) << 16)
+        PostMessageW(hwnd, Win.WM_RBUTTONDOWN, 2, position)
+        PostMessageW(hwnd, Win.WM_RBUTTONUP, 0, position)
+    }
+    func typeIntoWindow(_ text: String) { for unit in text.utf16 { PostMessageW(hwnd, Win.WM_CHAR, WPARAM(unit), 0) } }
     var leftTree: FileTree { left.tree }
     var rightIsVisible: Bool { rightIsShowing }
     var leftIsVisible: Bool { left.isVisible }

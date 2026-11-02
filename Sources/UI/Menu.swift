@@ -6,6 +6,8 @@ struct MenuItem {
     var isChecked = false
     var isEnabled = true
     var isSeparator = false
+    /// A colored dot before the title, for a group's color.
+    var swatch: UInt32?
     var run: () -> Void = {}
 
     static var separator: MenuItem { MenuItem(isEnabled: false, isSeparator: true) }
