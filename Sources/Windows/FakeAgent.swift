@@ -86,6 +86,11 @@ enum FakeAgent {
                         text.insert(Character(scalar), at: position)
                         position += 1
                     }
+                    // A control key it isn't using: shown, so a test can tell it arrived.
+                    if unit >= 1, unit <= 26, let scalar = Unicode.Scalar(unit + 0x40) {
+                        text.insert(contentsOf: ["^", Character(scalar)], at: position)
+                        position += 2
+                    }
                 }
             }
             if running { draw() }

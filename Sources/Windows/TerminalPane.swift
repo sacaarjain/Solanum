@@ -189,6 +189,10 @@ final class TerminalPane: TerminalDelegate {
             case 0x58:
                 cutSelection()
                 return true
+            case 0x54, 0x57:
+                // The plain keys are the app's, so this is how a program gets them.
+                input([UInt8(key - 0x40)])
+                return true
             default: break
             }
         }

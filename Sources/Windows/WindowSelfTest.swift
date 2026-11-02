@@ -290,38 +290,23 @@ enum WindowSelfTest {
                           done: { window.activeIndex == 0 && window.panes[1].visibleText.contains("\nbackground-done") }))
         steps.append(Step(name: "tabs: all of them resize", action: { window.resizeWindow(toCols: 100, rows: 30) },
                           done: { window.panes[0].terminal.cols == 100 && window.panes[1].terminal.cols == 100 }))
-        steps.append(Step(name: "tabs: Ctrl+T opens one at a prompt", action: {
-            _ = window.keyDown(0x54, shift: false, ctrl: true, alt: false)
-        }, done: { window.panes.count == 3 && pane.terminal.cwd != nil && pane.atPrompt }))
-        steps.append(Step(name: "tabs: a running program keeps Ctrl+T", action: {
-            pane.type("Start-Sleep 3")
+        func press(_ key: Int32, shift: Bool = false) { _ = window.keyDown(key, shift: shift, ctrl: true, alt: false) }
+        steps.append(Step(name: "tabs: Ctrl+T opens one at a prompt", action: { press(0x54) },
+                          done: { window.panes.count == 3 && pane.atPrompt }))
+        steps.append(Step(name: "tabs: a program starts in it", action: {
+            pane.type(launch)
             pane.pressEnter()
-        }, done: {
-            guard pane.terminal.currentBlock?.state == .running else { return false }
-            _ = window.keyDown(0x54, shift: false, ctrl: true, alt: false)
-            return window.panes.count == 3
-        }))
-        steps.append(Step(name: "tabs: Ctrl+Shift+T opens one from anywhere", action: {
-            _ = window.keyDown(0x54, shift: true, ctrl: true, alt: false)
-        }, done: { window.panes.count == 4 }))
-        steps.append(Step(name: "tabs: Ctrl+Shift+W closes one", action: {
-            _ = window.keyDown(0x57, shift: true, ctrl: true, alt: false)
-        }, done: { window.panes.count == 3 }))
-        steps.append(Step(name: "tabs: Ctrl+W closes one at a prompt", action: {}, done: {
-            guard window.panes.count == 3, pane.atPrompt else { return window.panes.count == 2 }
-            _ = window.keyDown(0x57, shift: false, ctrl: true, alt: false)
-            return false
-        }))
-        steps.append(Step(name: "tabs: a tab with a program running", action: {
-            window.newTab()
-        }, done: { window.panes.count == 3 && pane.atPrompt }))
-        steps.append(Step(name: "tabs: the program starts", action: {
-            pane.type("Start-Sleep 60")
-            pane.pressEnter()
-        }, done: { pane.terminal.currentBlock?.state == .running }))
-        steps.append(Step(name: "tabs: Ctrl+W closes it, program and all", action: {
-            _ = window.keyDown(0x57, shift: false, ctrl: true, alt: false)
-        }, done: { window.panes.count == 2 }))
+        }, done: { cell(of: "❯ alpha") != nil && pane.terminal.currentBlock?.state == .running }))
+        steps.append(Step(name: "tabs: Ctrl+T opens one from a program too", action: { press(0x54) },
+                          done: { window.panes.count == 4 && window.activeIndex == 3 && pane.atPrompt }))
+        steps.append(Step(name: "tabs: Ctrl+W closes one at a prompt", action: { press(0x57) },
+                          done: { window.panes.count == 3 && window.activeIndex == 2 }))
+        steps.append(Step(name: "keys: Ctrl+Shift+T sends the program Ctrl+T", action: { press(0x54, shift: true) },
+                          done: { cell(of: "^T") != nil && window.panes.count == 3 }))
+        steps.append(Step(name: "keys: Ctrl+Shift+W sends the program Ctrl+W", action: { press(0x57, shift: true) },
+                          done: { cell(of: "^W") != nil && window.panes.count == 3 }))
+        steps.append(Step(name: "tabs: Ctrl+W closes one with a program running", action: { press(0x57) },
+                          done: { window.panes.count == 2 }))
         steps.append(Step(name: "tabs: titled by folder, not the shell's path", action: {},
                           done: { !window.panes[1].tabTitle.contains(".exe") && !window.panes[1].tabTitle.isEmpty }))
         steps.append(Step(name: "tabs: exit closes only its tab", action: {

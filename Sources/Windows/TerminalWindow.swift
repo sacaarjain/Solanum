@@ -436,31 +436,9 @@ final class TerminalWindow {
     }
 
     func keyDown(_ key: Int32, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
-        // Windows' Ctrl stands in for the Mac's Command where that costs little: at a prompt, for keys a shell rarely needs
-        // (see WINDOWS.md). A running program keeps them, and Ctrl+Shift reaches the app from anywhere.
-        if ctrl && !shift && !alt && activePane.atPrompt {
-            switch key {
-            case 0x54:
-                newTab()
-                return true
-            default: break
-            }
-        }
-        // Always closes the tab, whatever's running: nothing in the tab matters once it's closing. As the Mac's Command+W.
-        if ctrl && !shift && !alt && key == 0x57 {
-            closeTab(activeIndex)
-            return true
-        }
-        // Ctrl+1 to 9 pick a tab, with or without Shift. Shells and programs have no use for them.
-        if ctrl && !alt && (0x31...0x39).contains(key) {
-            selectTab(Int(key) - 0x31)
-            return true
-        }
-        if ctrl && !alt && key == Win.VK_TAB && panes.count > 1 {
-            selectTab((activeIndex + (shift ? panes.count - 1 : 1)) % panes.count)
-            return true
-        }
-        if ctrl && shift && !alt {
+        // Windows' Ctrl stands in for the Mac's Command: keys the app claims are the app's, whatever's running, and
+        // Ctrl+Shift sends a program the plain key instead (see WINDOWS.md).
+        if ctrl && !shift && !alt {
             switch key {
             case 0x54:
                 newTab()
@@ -470,6 +448,15 @@ final class TerminalWindow {
                 return true
             default: break
             }
+        }
+        // Ctrl+1 to 9 pick a tab, with or without Shift. Shells and programs have no use for them.
+        if ctrl && !alt && (0x31...0x39).contains(key) {
+            selectTab(Int(key) - 0x31)
+            return true
+        }
+        if ctrl && !alt && key == Win.VK_TAB && panes.count > 1 {
+            selectTab((activeIndex + (shift ? panes.count - 1 : 1)) % panes.count)
+            return true
         }
         return activePane.keyDown(key, shift: shift, ctrl: ctrl, alt: alt)
     }
