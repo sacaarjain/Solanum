@@ -65,7 +65,7 @@ final class TerminalWindow: TerminalDelegate {
     private static let clickTimer: UINT_PTR = 2
     private var afterSelectionDeleted: [[UInt8]]?
     private var selectionDeleteDeadline: Date?
-    private var quietWork: (() -> Void)?
+    private var quietWork: ((Bool) -> Void)?
     private var quietStart = Date.distantPast
     private var lastOutputAt = Date.distantPast
     private static let quietTimer: UINT_PTR = 3
@@ -604,7 +604,7 @@ final class TerminalWindow: TerminalDelegate {
             if Date() < giveUpAt { again(giveUpAt) }
         } else {
             sendArrows(target - terminal.cursorAbs, back: "A", forward: "B")
-            again(Date().addingTimeInterval(0.5))
+            again(Date().addingTimeInterval(2))
         }
     }
 
@@ -654,28 +654,35 @@ final class TerminalWindow: TerminalDelegate {
         }
         // In the queue from the start, so it goes even if the cursor can't be placed.
         afterSelectionDeleted = bytes.isEmpty ? [] : [bytes]
-        selectionDeleteDeadline = Date().addingTimeInterval(1.5)
+        selectionDeleteDeadline = Date().addingTimeInterval(6)
         placeAgentCursor(row: last - rows.lowerBound, col: endCol, sentVertical: false) { [weak self] in
             guard let self else { return }
             self.send(String(repeating: "\u{7f}", count: count))
             if first == last {
                 self.endDeletingSelection()
             } else {
-                self.whenOutputQuiet { self.backspaceAgentInput(toOffset: targetOffset, rounds: 0) }
+                // Only the breaks between rows can be left over, and only one each.
+                self.backspaceAgentInput(toOffset: targetOffset, atMost: last - first)
             }
         }
         return true
     }
 
-    /// Backspaces from the cursor back to `target` characters into the input. It re-wraps as characters go, so the gap
-    /// is measured again after each redraw (text before the target never moves) and topped up until it's reached.
-    private func backspaceAgentInput(toOffset target: Int, rounds: Int) {
-        guard rounds < 12, let block = terminal.currentBlock, let rows = terminal.agentInputRows(block),
-              rows.contains(terminal.cursorAbs) else { return endDeletingSelection() }
-        let remaining = terminal.agentInputOffset(rows, line: terminal.cursorAbs, col: terminal.cursorX) - target
-        guard remaining > 0 else { return endDeletingSelection() }
-        send(String(repeating: "\u{7f}", count: remaining))
-        whenOutputQuiet { [weak self] in self?.backspaceAgentInput(toOffset: target, rounds: rounds + 1) }
+    /// Tops up what the first backspaces left: from the cursor back to `target` characters into the input, measured
+    /// after each redraw, since it re-wraps as characters go (text before the target never moves). Measuring before
+    /// the program has answered would count everything again, so it waits for the answer, and `atMost` caps the total
+    /// so that a bad reading can't eat into the text before the selection.
+    private func backspaceAgentInput(toOffset target: Int, atMost: Int) {
+        whenOutputQuiet { [weak self] answered in
+            guard let self, self.afterSelectionDeleted != nil else { return }
+            guard answered, atMost > 0, let block = self.terminal.currentBlock, let rows = self.terminal.agentInputRows(block),
+                  rows.contains(self.terminal.cursorAbs) else { return self.endDeletingSelection() }
+            let left = self.terminal.agentInputOffset(rows, line: self.terminal.cursorAbs, col: self.terminal.cursorX) - target
+            guard left > 0 else { return self.endDeletingSelection() }
+            let count = min(left, atMost)
+            self.send(String(repeating: "\u{7f}", count: count))
+            self.backspaceAgentInput(toOffset: target, atMost: atMost - count)
+        }
     }
 
     private func endDeletingSelection() {
@@ -685,9 +692,9 @@ final class TerminalWindow: TerminalDelegate {
         waiting.forEach(write)
     }
 
-    /// Runs `work` once the program has stopped drawing for a moment, since it may take several frames to work through
-    /// a burst of keys. Gives up waiting after two seconds.
-    private func whenOutputQuiet(_ work: @escaping () -> Void) {
+    /// Runs `work` once the program has answered and stopped drawing for a moment, since it may take several frames to
+    /// work through a burst of keys. `work` gets false if nothing arrived within two seconds.
+    private func whenOutputQuiet(_ work: @escaping (Bool) -> Void) {
         quietWork = work
         quietStart = Date()
         _ = SetTimer(hwnd, Self.quietTimer, 20, nil)
@@ -695,11 +702,12 @@ final class TerminalWindow: TerminalDelegate {
 
     private func runQuietWork() {
         guard let work = quietWork else { return }
-        let idle = Date().timeIntervalSince(max(lastOutputAt, quietStart)) >= 0.06
-        guard (idle && terminal.cursorVisible) || Date().timeIntervalSince(quietStart) > 2 else { return }
+        let answered = lastOutputAt > quietStart && Date().timeIntervalSince(lastOutputAt) >= 0.15 && terminal.cursorVisible
+        let late = Date().timeIntervalSince(quietStart) > 2
+        guard answered || late else { return }
         quietWork = nil
         KillTimer(hwnd, Self.quietTimer)
-        work()
+        work(answered)
     }
 
     private func wordSelection(line: Int, col: Int) -> TerminalSelection? {

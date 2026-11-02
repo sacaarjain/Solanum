@@ -178,7 +178,7 @@ enum WindowSelfTest {
 
         // Selections in a Claude Code-like input box. Each run starts it afresh, selects from the start of one word to
         // the end of another, does `act`, then leaves it, and it prints what's left of its text.
-        let sampleText = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau"
+        let sampleText = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu pi rho sigma"
         var executable = [UInt16](repeating: 0, count: 1024)
         _ = GetModuleFileNameW(nil, &executable, DWORD(executable.count))
         let launch = "& '\(String(decodingCString: executable, as: UTF16.self))' --fake-agent \(sampleText)"
@@ -206,12 +206,12 @@ enum WindowSelfTest {
         }
         boxRun("replace on one row", from: "gamma", through: "gamma", act: { window.type("X") },
                leaves: sampleText.replacingOccurrences(of: "gamma", with: "X"))
-        boxRun("replace across two rows", from: "gamma", through: "lambda", act: { window.type("X") },
-               leaves: "alpha beta X mu nu xi omicron pi rho sigma tau")
-        boxRun("delete across two rows", from: "gamma", through: "lambda", act: { window.pressBackspace() },
-               leaves: "alpha beta  mu nu xi omicron pi rho sigma tau")
+        boxRun("replace across two rows", from: "gamma", through: "iota", act: { window.type("X") },
+               leaves: "alpha beta X kappa lambda mu nu pi rho sigma")
+        boxRun("delete across two rows", from: "gamma", through: "iota", act: { window.pressBackspace() },
+               leaves: "alpha beta  kappa lambda mu nu pi rho sigma")
         boxRun("delete across three rows", from: "epsilon", through: "rho", act: { window.pressBackspace() },
-               leaves: "alpha beta gamma delta  sigma tau")
+               leaves: "alpha beta gamma delta  sigma")
 
         var index = 0
         var deadline = Date().addingTimeInterval(45)

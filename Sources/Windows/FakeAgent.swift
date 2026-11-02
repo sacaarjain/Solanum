@@ -5,7 +5,7 @@ import WinSDK
 /// box between two rules, word-wraps its text the same way, and takes a moment to answer keys, as a real program does
 /// through ConPTY. Esc ends it, printing the text as "final=…".
 enum FakeAgent {
-    private static let width = 40
+    private static let width = 30
     private static let delay: TimeInterval = 0.2
 
     /// Rows as ranges of the text. A word-wrap swallows the space it breaks at.
