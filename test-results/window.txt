@@ -11,7 +11,10 @@
   ✓ window: typing after resizing stays on the prompt
   ✓ window: resizing keeps scrollback
   ✓ window: clears the line
+  ✓ window: a command to click into
+  ✓ window: clicking moves the cursor there
+  ✓ window: typing goes in at the click
   ✓ window: colors from a real program
   ✓ window: painted
   ✓ window: snapshot
-All 16 checks passed.
+All 19 checks passed.

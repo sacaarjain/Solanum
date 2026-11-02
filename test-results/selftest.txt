@@ -2,6 +2,15 @@
   ✓ console resize: growing leaves scrollback and rows alone
   ✓ console resize: shrinking keeps the cursor on screen
   ✓ console resize: width fits every row
+  ✓ agent turns
+  ✓ ED 2 keeps running block
+  ✓ click: in the command
+  ✓ click: past its end stays at the end
+  ✓ click: above the command is no place
+  ✓ click: finds Claude Code's input box
+  ✓ click: left in the input box
+  ✓ click: not past its text
+  ✓ click: not into the gutter
   ✓ agent session: by name, also a path or an .exe
 Solanum emulator self-test
   ✓ print + CRLF
@@ -61,4 +70,4 @@ PowerShell hook
   ✓ powershell: Esc clears the line
   ✓ powershell: exits
   - pwsh.exe isn't installed
-All 58 checks passed.
+All 67 checks passed.
