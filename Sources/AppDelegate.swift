@@ -409,7 +409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         _ = add(shell, "New Tab in Group", #selector(TerminalWindowController.newTabInGroup(_:)), "t", [.command, .option])
         _ = add(shell, "Reopen Closed Tab", #selector(TerminalWindowController.reopenClosedTab(_:)), "t", [.command, .shift])
         _ = add(shell, "Open Folder…", #selector(TerminalWindowController.openFolder(_:)), "o")
-        _ = add(shell, "Go to Folder…", #selector(TerminalWindowController.goToFolder(_:)), "")
+        _ = add(shell, "Go to Folder…", #selector(TerminalWindowController.goToFolder(_:)), "o", [.command, .shift])
         _ = add(shell, "Rename Tab…", #selector(TerminalWindowController.renameCurrentTab(_:)), "i", [.command, .shift])
         shell.addItem(.separator())
         _ = add(shell, "Add Tab to New Group", #selector(TerminalWindowController.addCurrentTabToNewGroup(_:)), "g", [.command, .option])
