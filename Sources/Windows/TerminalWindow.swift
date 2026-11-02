@@ -707,6 +707,7 @@ final class TerminalWindow {
             invalidate()
         }
         if sidebarMouse(message, part: part, x: x, y: y) { return }
+        if part == .terminal && !terminalHasMouse && lostBarMouse(message, x: x, y: y) { return }
         if message == Win.WM_LBUTTONDOWN || message == Win.WM_RBUTTONDOWN || message == Win.WM_MBUTTONDOWN || message == Win.WM_LBUTTONDBLCLK {
             terminalHasMouse = part == .terminal
             if part == .terminal { focusTerminal() }
@@ -1171,8 +1172,31 @@ final class TerminalWindow {
         }
         guard let i = panes.firstIndex(where: { $0.askpassToken == request.token }) else { return reply(nil) }
         if i != activeIndex { selectTab(i) }
-        panes[i].ask(request.prompt, reply: reply)
+        panes[i].answerForTerminal(request.prompt, reply: reply)
         invalidate()
+    }
+
+    /// The pane's "Lost connection" bar takes the clicks over it, not the terminal underneath.
+    private func lostBarMouse(_ message: UINT, x: Float, y: Float) -> Bool {
+        let pane = activePane
+        let button = pane.lostBarButton(atX: x, y: y)
+        if pane.hoveredLostButton != button {
+            pane.hoveredLostButton = button
+            invalidate()
+        }
+        guard pane.lostBarContains(x: x, y: y) else { return false }
+        if message == Win.WM_MOUSEMOVE { setHovered(.terminal, nonClient: false) }
+        if message == Win.WM_LBUTTONUP, let button {
+            switch button {
+            case .reconnect:
+                pane.reconnect()
+                focusTerminal()
+            case .close:
+                pane.dismissLost()
+                if let i = panes.firstIndex(where: { $0 === pane }) { closeTab(i) }
+            }
+        }
+        return true
     }
 
     /// Hosts from ~/.ssh/config and known_hosts, as on the Mac. A new tab connects; with Alt held, this one does.
@@ -1821,6 +1845,12 @@ final class TerminalWindow {
         let position = LPARAM(Int(rect.x + rect.width / 2) & 0xFFFF) | (LPARAM(Int(rect.y + rect.height / 2) & 0xFFFF) << 16)
         _ = SendMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, position)
         _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, position)
+    }
+
+    /// Clicks a button on the active tab's "Lost connection" bar.
+    func clickLostBar(_ button: TerminalPane.LostBarButton) {
+        guard let l = activePane.lostBarLayout() else { return }
+        click(button == .reconnect ? l.reconnect : l.close)
     }
 
     var currentLayout: WindowLayout { layout }

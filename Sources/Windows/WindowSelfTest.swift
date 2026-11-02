@@ -273,6 +273,8 @@ enum WindowSelfTest {
         results.check("remote: a listing's folders and files", remoteList.map(\.name) == ["docs", ".bashrc", "notes.txt"] && remoteList[0].isDirectory && remoteList[1].isHidden && remoteList[0].path == "/home/pi/docs")
         results.check("remote: quoting for sh", RemoteConnection.quote("it's") == "'it'\\''s'")
         results.check("paths: Unix ones", AnyPath.parent("/home/pi") == "/home" && AnyPath.parent("/home") == "/" && AnyPath.parent("/") == nil && AnyPath.join("/", "etc") == "/etc")
+        results.check("reconnect: words for PowerShell", ["-o", "StrictHostKeyChecking=accept-new", "pi@host", "a b", "it's", "@x"].map(TerminalPane.powerShellWord)
+                      == ["-o", "StrictHostKeyChecking=accept-new", "pi@host", "'a b'", "'it''s'", "'@x'"])
         results.check("paths: home is ~ on a host too", WindowText.crumbs("/home/pi/docs", home: "/home/pi") == ["~", "docs"])
 
         print("Command palette")
@@ -878,6 +880,21 @@ enum WindowSelfTest {
             if let dir = snapshotDirectory {
                 steps.append(Step(name: "ssh: snapshot of the sidebar on the host", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-sidebar.png") }))
             }
+            steps.append(Step(name: "ssh: a dropped connection shows the bar", action: {
+                pane.type("exit 255")
+                pane.pressEnter()
+            }, done: { pane.showsLostBar && pane.sshHost == nil && window.leftTree.root.map(AnyPath.isUnix) == false }))
+            if let dir = snapshotDirectory {
+                steps.append(Step(name: "ssh: snapshot of the bar", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-lost.png") }))
+            }
+            steps.append(Step(name: "ssh: Reconnect signs both back in without asking", action: { window.clickLostBar(.reconnect) }, done: {
+                pane.sshHost == "localhost" && !pane.hasQuestion && !pane.showsLostBar && window.leftTree.root.map(AnyPath.isUnix) == true
+                    && pane.lost == nil
+            }))
+            steps.append(Step(name: "ssh: back on the host", action: {
+                pane.type("echo again-ok")
+                pane.pressEnter()
+            }, done: { hasLine("again-ok") && !pane.hasQuestion }))
             steps.append(Step(name: "ssh: leaving forgets the password", action: {
                 pane.type("exit")
                 pane.pressEnter()

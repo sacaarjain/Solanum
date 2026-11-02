@@ -172,7 +172,7 @@ final class RemoteConnection {
     /// The folder's contents on the host, or nil if it can't be read.
     func list(_ folder: String, _ done: @escaping ([FileEntry]?) -> Void) {
         guard state == .ready else { return done(nil) }
-        run("cd -- \(Self.quote(folder)) 2>/dev/null && LC_ALL=C ls -1Ap 2>/dev/null") { text, code in
+        run("cd -- \(Self.quote(folder)) 2>/dev/null && LC_ALL=C ls -1ApL 2>/dev/null") { text, code in
             guard let text, code == 0 else { return done(nil) }
             done(Self.entries(fromListing: text, in: folder))
         }

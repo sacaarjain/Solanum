@@ -35,6 +35,16 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// Asks the window to look again, as the remote connection comes and goes.
     var onRemoteChange: (() -> Void)?
 
+    /// The session dropped (ssh's 255 after it had signed in): which host, and how to reach it again.
+    private(set) var lost: (host: String, command: String, block: Block?)?
+    /// Reconnect is on its way, so the bar stays hidden.
+    private(set) var reconnecting = false
+    /// The dropped session's password, kept (in memory, encrypted) so that Reconnect signs both connections back in
+    /// without asking. Gone once used, or when the bar goes.
+    private var reconnectPassword: ProtectedSecret?
+    /// Whether this session got as far as the sidebar's connection signing in, which a refused password never does.
+    private var sessionSignedIn = false
+
     /// A command to run once the shell first reaches its prompt.
     var pendingCommand: String?
 
@@ -98,6 +108,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
         question?.reply(nil)
         question = nil
         rememberedPassword = nil
+        reconnectPassword = nil
         remote?.close()
         remote = nil
         pty?.terminate()
@@ -204,6 +215,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
             remoteAttempts = 0
             remoteRetryAt = nil
             lastRemoteFailure = nil
+            sessionSignedIn = false
             onRemoteChange?()
         } else if sshStartedAt == nil {
             sshStartedAt = Date()
@@ -227,8 +239,14 @@ final class TerminalPane: TerminalDelegate, Groupable {
         remoteAttempts += 1
         guard let connection = RemoteConnection(arguments: args, askpassPipe: host.askpassPipeName, post: { [weak host] work in host?.runOnWindowThreadPublic(work) }) else { return }
         connection.onChange = { [weak self] in
-            if connection.state == .ready { self?.remoteAttempts = 0 }
-            self?.onRemoteChange?()
+            guard let self else { return }
+            if connection.state == .ready {
+                self.remoteAttempts = 0
+                self.sessionSignedIn = true
+                // Back in: whatever was lost is found.
+                self.clearLost()
+            }
+            self.onRemoteChange?()
         }
         remote = connection
         connection.start()
@@ -265,6 +283,116 @@ final class TerminalPane: TerminalDelegate, Groupable {
         ask("For the sidebar: " + prompt, reply: reply)
     }
 
+    /// ssh's own question for the terminal: answered with the dropped session's password straight after Reconnect,
+    /// else asked here.
+    func answerForTerminal(_ prompt: String, reply: @escaping (String?) -> Void) {
+        if Askpass.isPassword(prompt), let password = reconnectPassword {
+            reconnectPassword = nil
+            rememberedPassword = password
+            lastAnswerLength = nil
+            password.reveal { reply($0) }
+            return
+        }
+        ask(prompt, reply: reply)
+    }
+
+    // MARK: - Lost connection
+
+    func terminalSSHExited(_ t: Terminal, status: Int) {
+        let wasReconnecting = reconnecting
+        reconnecting = false
+        lost?.block = terminal.currentBlock
+        guard status == 255, sessionSignedIn || wasReconnecting, let args = sshArguments,
+              let target = RemoteConnection.connectionArguments(args) else {
+            if lost != nil { invalidate() }
+            return
+        }
+        lost = (sshHost ?? "the ssh host", "ssh " + target.map(Self.powerShellWord).joined(separator: " "), terminal.currentBlock)
+        if let password = rememberedPassword { reconnectPassword = password }
+        if !(host?.isFocused ?? false) { FlashWindow(hwnd, true) }
+        invalidate()
+    }
+
+    func terminalBlockFinished(_ t: Terminal, block: Block) {
+        // Something else run here since: the bar's question has gone away.
+        if let lost, block !== lost.block, terminal.sshControlPath == nil, !reconnecting, !block.command.isEmpty { clearLost() }
+    }
+
+    private func clearLost() {
+        guard lost != nil || reconnectPassword != nil else { return }
+        lost = nil
+        reconnecting = false
+        reconnectPassword = nil
+        invalidate()
+    }
+
+    /// A word for PowerShell, quoted when it needs to be.
+    static func powerShellWord(_ word: String) -> String {
+        let plain = !word.isEmpty && word.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) || "@._:=/-+,".unicodeScalars.contains($0) }
+        return plain && !word.hasPrefix("@") ? word : "'" + word.replacingOccurrences(of: "'", with: "''") + "'"
+    }
+
+    /// The bar's Reconnect: ssh again, at the prompt once the shell is at one.
+    func reconnect() {
+        guard let lost, terminal.sshControlPath == nil, !terminal.usingAlt else { return MessageBeep(UINT(bitPattern: -1)) }
+        reconnecting = true
+        pendingCommand = lost.command
+        invalidate()
+    }
+
+    /// The bar's Close: lets go of the kept password; the window closes the tab.
+    func dismissLost() { clearLost() }
+
+    var showsLostBar: Bool { lost != nil && terminal.sshControlPath == nil && !reconnecting }
+
+    enum LostBarButton { case reconnect, close }
+
+    /// Where the bar and its two buttons are: in the terminal's top right corner, as on the Mac.
+    func lostBarLayout() -> (box: UIRect, reconnect: UIRect, close: UIRect)? {
+        guard showsLostBar, let lost, let area = canvas.terminalArea else { return nil }
+        let s = Float(GetDpiForWindow(hwnd)) / 96
+        func width(_ text: String, _ semibold: Bool) -> Float {
+            let u = Array(text.utf16)
+            return sol_canvas_measure_label(canvas.raw, u, Int32(u.count), 12 * s, semibold ? 1 : 0).rounded(.up)
+        }
+        let reconnectW = width("Reconnect", true) + 12 * s, closeW = width("Close", true) + 12 * s
+        let labelW = min(width("Lost connection to \(lost.host)", true), 320 * s)
+        let w = min(32 * s + labelW + 8 * s + reconnectW + 4 * s + closeW + 8 * s, area.width - 24 * s), h = 32 * s
+        let box = UIRect(x: area.maxX - 12 * s - w, y: area.y + 10 * s, width: w, height: h)
+        let close = UIRect(x: box.maxX - 8 * s - closeW, y: box.y + 5 * s, width: closeW, height: h - 10 * s)
+        let reconnect = UIRect(x: close.x - 4 * s - reconnectW, y: close.y, width: reconnectW, height: close.height)
+        return (box, reconnect, close)
+    }
+
+    func lostBarButton(atX x: Float, y: Float) -> LostBarButton? {
+        guard let l = lostBarLayout(), l.box.contains(x, y) else { return nil }
+        if l.reconnect.contains(x, y) { return .reconnect }
+        if l.close.contains(x, y) { return .close }
+        return nil
+    }
+
+    func lostBarContains(x: Float, y: Float) -> Bool { lostBarLayout()?.box.contains(x, y) ?? false }
+
+    private func drawLostBar() {
+        guard let l = lostBarLayout(), let lost else { return }
+        let s = Float(GetDpiForWindow(hwnd)) / 96, fg = TerminalPalette.foreground, b = l.box
+        sol_canvas_fill_rounded(canvas.raw, b.x, b.y + 2 * s, b.width, b.height, 8 * s, 0x000000, 0.25)
+        sol_canvas_fill_rounded(canvas.raw, b.x, b.y, b.width, b.height, 8 * s, TerminalPalette.mix(TerminalPalette.surface, TerminalPalette.chrome, 0.75), 1)
+        sol_canvas_stroke_rounded(canvas.raw, b.x + 0.5, b.y + 0.5, b.width - 1, b.height - 1, 8 * s, TerminalPalette.foreground, 0.15, 1)
+        sol_canvas_draw_icon(canvas.raw, b.x + 8 * s, b.y, 20 * s, b.height, 0xE7BA, 12 * s, TerminalPalette.ansi[1], 1)
+        let text = Array("Lost connection to \(lost.host)".utf16)
+        sol_canvas_draw_label(canvas.raw, b.x + 32 * s, b.y, l.reconnect.x - b.x - 40 * s, b.height, text, Int32(text.count), 12 * s, 1, fg, 0.9)
+        for (title, r) in [("Reconnect", l.reconnect), ("Close", l.close)] {
+            if hoveredLostButton == (title == "Reconnect" ? .reconnect : .close) {
+                sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 5 * s, fg, 0.08)
+            }
+            let u = Array(title.utf16)
+            sol_canvas_draw_label(canvas.raw, r.x + 6 * s, r.y, r.width - 12 * s, r.height, u, Int32(u.count), 12 * s, 1, TerminalPalette.accent, 1)
+        }
+    }
+
+    var hoveredLostButton: LostBarButton?
+
     /// Timed work that doesn't depend on being the pane on screen.
     func tick() {
         manageRemote()
@@ -285,6 +413,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
         renderer.cursorShown = cursorShown
         renderer.cursorStyle = style
         renderer.drawContents()
+        drawLostBar()
         drawQuestion()
     }
 
@@ -940,7 +1069,6 @@ final class TerminalPane: TerminalDelegate, Groupable {
         if AppSettings.shared.audibleBell { MessageBeep(0) }
     }
 
-    func terminalBlockFinished(_ t: Terminal, block: Block) {}
     func terminalClipboardWrite(_ t: Terminal, text: String) { setClipboard(text) }
     func terminalScreenSwitched(_ t: Terminal) { scrollOffset = 0 }
     func terminalSyncEnded(_ t: Terminal) { invalidate() }
