@@ -599,6 +599,10 @@ final class StatusBarView: NSView {
     /// Lists the subfolder names of a folder on the pane's machine.
     var listFolders: ((String, @escaping ([String]) -> Void) -> Void)?
     var onNavigate: ((String) -> Void)?
+    /// The folder this column's sidebar is pinned to, if any.
+    var pinnedFolder: (() -> String?)?
+    /// Pins this column's sidebar to a folder in the path, opening the sidebar if it's closed; nil unpins it.
+    var onPin: ((String?) -> Void)?
     /// The ssh hosts button; the point is where to pop up its menu.
     var onShowHosts: ((NSPoint) -> Void)?
     /// The focused pane's repository, when its folder is in one.
@@ -1038,8 +1042,12 @@ final class StatusBarView: NSView {
             open.keyEquivalent = "o"
             open.keyEquivalentModifierMask = [.command]
             menu.addItem(open)
-            menu.addItem(ActionMenuItem("Go to Folder…") { [weak controller] in controller?.goToFolder(nil) })
+            let goTo = ActionMenuItem("Go to Folder…") { [weak controller] in controller?.goToFolder(nil) }
+            goTo.keyEquivalent = "o"
+            goTo.keyEquivalentModifierMask = [.command, .shift]
+            menu.addItem(goTo)
         }
+        menu.addItem(pinItem(folder))
         menu.addItem(copyPathItem(folder))
         menu.addItem(.separator())
         if folder != path {
@@ -1062,6 +1070,20 @@ final class StatusBarView: NSView {
         return menu
     }
 
+    /// Keeps the sidebar on this folder while the terminal goes elsewhere, or, when it's already there, lets it follow
+    /// the terminal again. ⇧⌘B shows beside it when that does the same: for the folder the sidebar would pin or has.
+    private func pinItem(_ folder: String) -> NSMenuItem {
+        let pinned = pinnedFolder?()
+        let unpins = pinned == folder
+        let item = ActionMenuItem(unpins ? "Unpin Sidebar" : "Pin in Sidebar") { [weak self] in self?.onPin?(unpins ? nil : folder) }
+        item.image = NSImage(systemSymbolName: unpins ? "pin.slash" : "pin", accessibilityDescription: nil)
+        if unpins || (pinned == nil && folder == path) {
+            item.keyEquivalent = "b"
+            item.keyEquivalentModifierMask = [.command, .shift]
+        }
+        return item
+    }
+
     private func copyPathItem(_ folder: String) -> NSMenuItem {
         ActionMenuItem("Copy Path") {
             NSPasteboard.general.clearContents()
@@ -1080,13 +1102,31 @@ final class StatusBarView: NSView {
         }
     }
 
-    /// Right-click (or ⌃-click) on a folder in the path: copy where it is.
+    /// Right-click (or ⌃-click) on a folder in the path: pin the sidebar to it, or copy where it is.
     override func menu(for event: NSEvent) -> NSMenu? {
         let p = convert(event.locationInWindow, from: nil)
         guard let crumb = crumbs.first(where: { $0.rect.contains(p) }) else { return nil }
+        return contextMenu(crumb.path)
+    }
+
+    private func contextMenu(_ folder: String) -> NSMenu {
         let menu = NSMenu()
-        menu.addItem(copyPathItem(crumb.path))
+        menu.addItem(pinItem(folder))
+        menu.addItem(copyPathItem(folder))
         return menu
+    }
+
+    /// Dev aid (DevTools crumb-context): the right-click menu of the crumb called `label` (the last one if nil),
+    /// printed, and the item called `run` chosen.
+    func devContextMenu(label: String?, run: String?) {
+        guard let crumb = label.flatMap({ l in crumbs.first { $0.label == l } }) ?? crumbs.last else { return }
+        let menu = contextMenu(crumb.path)
+        let titles = menu.items.map { item -> String in
+            let keys = item.keyEquivalent.isEmpty ? "" : " [\(item.keyEquivalentModifierMask.contains(.shift) ? "⇧" : "")⌘\(item.keyEquivalent.uppercased())]"
+            return item.title + keys
+        }
+        FileHandle.standardError.write("context menu: \(crumb.path) \(titles)\n".data(using: .utf8)!)
+        if let run, let i = menu.items.firstIndex(where: { $0.title == run }) { menu.performActionForItem(at: i) }
     }
 }
 
@@ -1642,6 +1682,15 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             guard let c = column(), let pane = c.activeTab?.focusedPane else { return }
             if pane.canChangeDirectory || pane.remote != nil { pane.changeDirectory(to: dir) } else { c.addTab(cwd: dir) }
         }
+        bar.pinnedFolder = { column()?.activeTab?.pinnedFolder?.path }
+        bar.onPin = { [weak self] dir in
+            guard let self, let tab = column()?.activeTab else { return }
+            let sidebar = i == 0 ? self.rootView.sidebar : self.rootView.rightSidebar
+            guard let dir else { return sidebar.unpin() }
+            if i == 0, !self.rootView.sidebarVisible { self.toggleFileSidebar(nil) }
+            if i == 1, !self.rootView.rightSidebarVisible { self.toggleRightSidebar(nil) }
+            sidebar.pin(dir, fs: tab.browseFS)
+        }
         bar.listFolders = { dir, done in
             guard let fs = column()?.activeTab?.browseFS else { return }
             fs.list(dir) { result in
@@ -1857,9 +1906,15 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     }
 
     /// Go to Folder's palette, for a folder whose path you know (see `CommandPalette.goToItems`).
+    /// ⇧⌘O. The field starts at the terminal's folder, which ⌘⌫ clears for typing a path afresh.
     @objc func goToFolder(_ sender: Any?) {
         guard let w = window else { return }
-        CommandPalette.showGoTo(in: w)
+        let remote = activeTab?.browseRemote.flatMap { $0.isReady ? $0 : nil }
+        guard let dir = remote != nil ? activeTab?.browseDirectory ?? remote?.home : focused.currentLocalFolder else {
+            return CommandPalette.showGoTo(in: w)
+        }
+        let shown = FilePaths.abbreviate(dir, home: remote?.home ?? NSHomeDirectory())
+        CommandPalette.showGoTo(in: w, path: shown + (shown.hasSuffix("/") ? "" : "/"))
     }
 
     /// The focused column's repository history, as a graph above its terminal.
