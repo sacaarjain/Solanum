@@ -99,13 +99,25 @@ File tree
   ✓ tree: an unreadable folder shows empty, and doesn't lose the rest
   ✓ tree: moving resets the view
   ✓ tree: says when it can't read the root
-  ✓ sidesides: the terminal fits between them
-  ✓ sidesides: tabs start at the terminal
-  ✓ sidesides: found by position
-  ✓ sidesides: their borders can be grabbed
-  ✓ sidesides: switches in the status bar
-  ✓ sidesides: none when hidden
-  ✓ sidesides: rows from the top of the list
+  ✓ sidebars: the terminal fits between them
+  ✓ sidebars: tabs start at the terminal
+  ✓ sidebars: found by position
+  ✓ sidebars: their borders can be grabbed
+  ✓ sidebars: the left switch is always there
+  ✓ sidebars: the right switch only in a split
+  ✓ path: parts know their folders
+  ✓ path: from the drive
+Menus
+  ✓ menu: opens below
+  ✓ menu: or above
+  ✓ menu: stays in the window
+  ✓ menu: finds its rows, not its lines
+  ✓ menu: arrows skip lines and what's off
+  ✓ menu: what's off can't be highlighted
+  ✓ menu: a long one fits and scrolls
+  ✓ menu: the highlighted row stays in view
+  ✓ sidebars: none when hidden
+  ✓ sidebars: rows from the top of the list
 Command palette
   ✓ palette: lists everything
   ✓ palette: fuzzy search
@@ -151,4 +163,4 @@ PowerShell hook
   ✓ powershell: Esc clears the line
   ✓ powershell: exits
   - pwsh.exe isn't installed
-All 145 checks passed.
+All 156 checks passed.
