@@ -38,7 +38,10 @@
   ✓ tabs: a running program keeps Ctrl+T
   ✓ tabs: Ctrl+Shift+T opens one from anywhere
   ✓ tabs: Ctrl+Shift+W closes one
-  ✓ tabs: and the third
+  ✓ tabs: Ctrl+W closes one at a prompt
+  ✓ tabs: a tab with a program running
+  ✓ tabs: the program starts
+  ✓ tabs: Ctrl+W closes it, program and all
   ✓ tabs: titled by folder, not the shell's path
   ✓ tabs: exit closes only its tab
   ✓ tabs: the x closes one
@@ -55,4 +58,4 @@
   ✓ box: delete across three rows: selects and acts
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
-All 57 checks passed.
+All 60 checks passed.
