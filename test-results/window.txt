@@ -34,6 +34,11 @@
   ✓ tabs: a command starts in the second tab
   ✓ tabs: it keeps running behind another
   ✓ tabs: all of them resize
+  ✓ tabs: Ctrl+T opens one at a prompt
+  ✓ tabs: a running program keeps Ctrl+T
+  ✓ tabs: Ctrl+Shift+T opens one from anywhere
+  ✓ tabs: Ctrl+Shift+W closes one
+  ✓ tabs: and the third
   ✓ tabs: titled by folder, not the shell's path
   ✓ tabs: exit closes only its tab
   ✓ tabs: the x closes one
@@ -50,4 +55,4 @@
   ✓ box: delete across three rows: selects and acts
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
-All 52 checks passed.
+All 57 checks passed.
