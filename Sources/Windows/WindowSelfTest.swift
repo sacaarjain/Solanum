@@ -307,19 +307,31 @@ enum WindowSelfTest {
         steps.append(Step(name: "tabs: Ctrl+Shift+W closes one", action: {
             _ = window.keyDown(0x57, shift: true, ctrl: true, alt: false)
         }, done: { window.panes.count == 3 }))
-        steps.append(Step(name: "tabs: a running program keeps Ctrl+W", action: {}, done: {
-            guard window.panes.count == 3, pane.terminal.currentBlock?.state == .running else { return !pane.atPrompt ? false : true }
+        steps.append(Step(name: "tabs: a running program keeps Ctrl+W", action: {
+            pane.type("Start-Sleep 4")
+            pane.pressEnter()
+        }, done: {
+            guard pane.terminal.currentBlock?.state == .running else { return false }
             _ = window.keyDown(0x57, shift: false, ctrl: true, alt: false)
             return window.panes.count == 3
         }))
-        var closing = false
+        var closedAtPrompt = false
         steps.append(Step(name: "tabs: Ctrl+W closes one at a prompt", action: {}, done: {
-            if !closing && pane.atPrompt {
-                closing = true
+            if !closedAtPrompt && pane.atPrompt {
+                closedAtPrompt = true
                 _ = window.keyDown(0x57, shift: false, ctrl: true, alt: false)
             }
             return window.panes.count == 2
         }))
+        steps.append(Step(name: "tabs: a tab for Claude Code's box", action: { window.newTab() },
+                          done: { window.panes.count == 3 && pane.atPrompt }))
+        steps.append(Step(name: "tabs: the box opens", action: {
+            pane.type(launch)
+            pane.pressEnter()
+        }, done: { cell(of: "❯ alpha") != nil && pane.agentInputActive }))
+        steps.append(Step(name: "tabs: Ctrl+W closes it from Claude Code's box", action: {
+            _ = window.keyDown(0x57, shift: false, ctrl: true, alt: false)
+        }, done: { window.panes.count == 2 }))
         steps.append(Step(name: "tabs: titled by folder, not the shell's path", action: {},
                           done: { !window.panes[1].tabTitle.contains(".exe") && !window.panes[1].tabTitle.isEmpty }))
         steps.append(Step(name: "tabs: exit closes only its tab", action: {

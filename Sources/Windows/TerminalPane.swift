@@ -467,7 +467,7 @@ final class TerminalPane: TerminalDelegate {
     // MARK: - Replacing selected input
 
     /// Whether the cursor is in Claude Code's input box.
-    private var agentInputActive: Bool {
+    var agentInputActive: Bool {
         guard !terminal.usingAlt, let block = terminal.currentBlock, block.state == .running,
               let rows = terminal.agentInputRows(block) else { return false }
         return rows.contains(terminal.cursorAbs)

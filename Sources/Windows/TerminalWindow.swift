@@ -443,12 +443,14 @@ final class TerminalWindow {
             case 0x54:
                 newTab()
                 return true
-            case 0x57:
-                // PowerShell has no use for it. A bash tab will have to keep it, where it deletes a word.
-                closeTab(activeIndex)
-                return true
             default: break
             }
+        }
+        // Closes the tab at a PowerShell prompt, which has no use for the key, and in Claude Code, by choice over its
+        // delete-word. A bash tab will have to keep it at its prompt.
+        if ctrl && !shift && !alt && key == 0x57 && (activePane.atPrompt || activePane.agentInputActive) {
+            closeTab(activeIndex)
+            return true
         }
         // Ctrl+1 to 9 pick a tab, with or without Shift. Shells and programs have no use for them.
         if ctrl && !alt && (0x31...0x39).contains(key) {
