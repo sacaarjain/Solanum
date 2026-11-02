@@ -54,7 +54,7 @@ struct WindowLayout {
 
     var tabWidth: Float {
         guard tabCount > 0 else { return 0 }
-        return overflows ? minTabWidth : min(fittingTabWidth, 240 * scale).rounded()
+        return overflows ? minTabWidth : min(fittingTabWidth, 230 * scale).rounded()
     }
 
     private var arrowWidth: Float { (22 * scale).rounded() }

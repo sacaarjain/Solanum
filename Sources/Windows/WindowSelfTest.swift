@@ -120,10 +120,10 @@ enum WindowSelfTest {
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
             results.check("chrome: saves", canvas.savePNG(to: dir + "\\chrome.png"))
         }
-        var crowded = WindowLayout(width: 1200, height: 420, scale: 1, tabCount: 22)
-        crowded.tabScroll = crowded.scroll(showing: 15)
+        var pastFitting = WindowLayout(width: 1200, height: 420, scale: 1, tabCount: 22)
+        pastFitting.tabScroll = pastFitting.scroll(showing: 15)
         guard sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
-        WindowChrome(canvas: canvas, layout: crowded, tabs: (1...22).map { "tab \($0)" }, activeTab: 15).draw()
+        WindowChrome(canvas: canvas, layout: pastFitting, tabs: (1...22).map { "tab \($0)" }, activeTab: 15).draw()
         results.check("chrome: draws with too many tabs", sol_canvas_end(canvas.raw) >= 0)
         if let dir = snapshotDirectory { results.check("chrome: saves that too", canvas.savePNG(to: dir + "\\chrome-overflow.png")) }
     }
