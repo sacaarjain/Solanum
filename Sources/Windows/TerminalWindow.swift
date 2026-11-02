@@ -37,6 +37,8 @@ final class TerminalWindow {
 
     private var menu: MenuModel?
     private var hoveredCrumb: Int?
+    /// A new tab's opening has already kept the old tab's sidebar place, so switching to it doesn't again.
+    private var sidebarPlaceSaved = false
     /// A press on a tab, which may turn into dragging it.
     private var tabPress: (index: Int, grab: Float, startX: Float, dragging: Bool)?
     private var draggedX: Float = 0
@@ -152,10 +154,15 @@ final class TerminalWindow {
     }
 
     @discardableResult
-    private func addPane(at index: Int? = nil, cwd: String? = nil, restoring text: String? = nil) -> Bool {
+    private func addPane(at index: Int? = nil, cwd: String? = nil, restoring text: String? = nil, place: SidebarPlace? = nil) -> Bool {
         let grid = clientWidth > 0 ? gridSize() : (cols: 110, rows: 32)
         guard let pane = TerminalPane(host: self, commandLine: commandLine, cols: grid.cols, rows: grid.rows, cwd: cwd, restoring: text) else { return false }
-        if panes.indices.contains(activeIndex) { panes[activeIndex].setFocused(false) }
+        if panes.indices.contains(activeIndex) {
+            panes[activeIndex].setFocused(false)
+            saveSidebarPlace(to: panes[activeIndex])
+            sidebarPlaceSaved = true
+        }
+        pane.sidebarPlace = place
         let at = min(index ?? panes.count, panes.count)
         panes.insert(pane, at: at)
         activate(at)
@@ -165,13 +172,14 @@ final class TerminalWindow {
     /// What's needed to bring a closed tab back, most recent last.
     private struct ClosedTab {
         let index: Int, folder: String?, text: String
+        let place: SidebarPlace?
     }
     private var closedTabs: [ClosedTab] = []
 
     /// The last tab closed, in its place and folder, with what it showed in its scrollback.
     func reopenClosedTab() {
         guard let closed = closedTabs.popLast() else { return }
-        addPane(at: closed.index, cwd: closed.folder, restoring: closed.text)
+        addPane(at: closed.index, cwd: closed.folder, restoring: closed.text, place: closed.place)
     }
 
     func newTab() { addPane() }
@@ -182,8 +190,13 @@ final class TerminalWindow {
     }
 
     private func activate(_ i: Int) {
-        if panes.indices.contains(activeIndex) { panes[activeIndex].setFocused(false) }
+        if panes.indices.contains(activeIndex) {
+            panes[activeIndex].setFocused(false)
+            if !sidebarPlaceSaved { saveSidebarPlace(to: panes[activeIndex]) }
+        }
+        sidebarPlaceSaved = false
         activeIndex = i
+        restoreSidebarPlace(from: panes[i])
         panes[i].setFocused(isFocused && !sidebarHasFocus)
         settleTabScroll()
         detailsChanged()
@@ -193,7 +206,8 @@ final class TerminalWindow {
     func closeTab(_ i: Int) {
         guard panes.indices.contains(i) else { return }
         let terminal = panes[i].terminal
-        closedTabs.append(ClosedTab(index: i, folder: terminal.cwd, text: terminal.restorableText(maxLines: 5000)))
+        if i == activeIndex { saveSidebarPlace(to: panes[i]) }
+        closedTabs.append(ClosedTab(index: i, folder: terminal.cwd, text: terminal.restorableText(maxLines: 5000), place: panes[i].sidebarPlace))
         if closedTabs.count > 25 { closedTabs.removeFirst() }
         panes[i].terminate()
     }
@@ -208,7 +222,10 @@ final class TerminalWindow {
             return
         }
         if i < activeIndex || activeIndex >= panes.count { activeIndex = max(activeIndex - 1, 0) }
-        if wasActive { panes[activeIndex].setFocused(isFocused) }
+        if wasActive {
+            panes[activeIndex].setFocused(isFocused && !sidebarHasFocus)
+            restoreSidebarPlace(from: panes[activeIndex])
+        }
         hovered = nil
         settleTabScroll()
         detailsChanged()
@@ -636,6 +653,22 @@ final class TerminalWindow {
         for sidebar in [left, right] where sidebar.isVisible { sidebar.tree.refresh() }
     }
 
+    private func saveSidebarPlace(to pane: TerminalPane) {
+        pane.sidebarPlace = SidebarPlace(tree: left.tree.place, pinned: left.pinned, followed: left.followed)
+    }
+
+    /// Puts the left sidebar where this tab had it. A tab that hasn't had it yet starts unpinned, following its terminal.
+    private func restoreSidebarPlace(from pane: TerminalPane) {
+        guard let place = pane.sidebarPlace else {
+            left.pinned = nil
+            left.followed = nil
+            return
+        }
+        left.pinned = place.pinned
+        left.followed = place.followed
+        left.tree.restore(place.tree)
+    }
+
     private func toggleSidebar(_ sidebar: FileSidebar) {
         sidebar.isVisible.toggle()
         if !sidebar.isVisible && sidebar.isFocused { focusTerminal() }
@@ -865,7 +898,7 @@ final class TerminalWindow {
     }
 
     /// The folders in one of the path's parts, with what else there is to do with it.
-    private func showCrumbMenu(_ crumb: (label: String, path: String, rect: UIRect), copyOnly: Bool) {
+    private func showCrumbMenu(_ crumb: (label: String, path: String, rect: UIRect, hit: UIRect), copyOnly: Bool) {
         let current = activePane.terminal.cwd
         let copy = MenuItem(title: "Copy Path") { [weak self] in self?.activePane.setClipboard(crumb.path) }
         guard !copyOnly else {
@@ -895,7 +928,7 @@ final class TerminalWindow {
     /// The status bar's folder parts under the pointer. True if it dealt with the mouse.
     private func statusBarMouse(_ message: UINT, x: Float, y: Float) -> Bool {
         let spots = chrome(on: canvas, layout: layout).crumbSpots()
-        let hit = spots.firstIndex { $0.rect.contains(x, y) }
+        let hit = spots.firstIndex { $0.hit.contains(x, y) }
         switch message {
         case Win.WM_MOUSEMOVE:
             if hit != hoveredCrumb {
@@ -915,6 +948,12 @@ final class TerminalWindow {
     /// The rectangle of a part of the path in the status bar, for clicking it.
     func crumbRect(_ label: String) -> UIRect? {
         chrome(on: canvas, layout: layout).crumbSpots().first { $0.label == label }?.rect
+    }
+
+    /// The folder icon at the start of the path.
+    var folderIconRect: UIRect? {
+        guard let first = chrome(on: canvas, layout: layout).crumbSpots().first else { return nil }
+        return UIRect(x: first.hit.x + 2, y: first.hit.y, width: 8 * scale, height: first.hit.height)
     }
 
     // MARK: - Dragging tabs

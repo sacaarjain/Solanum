@@ -16,6 +16,13 @@ enum SidebarButton: Int, CaseIterable {
     }
 }
 
+/// What a tab remembers about the left sidebar, as on the Mac: a pin in one tab says nothing about the others.
+struct SidebarPlace {
+    var tree = FileTree.Place()
+    var pinned: String?
+    var followed: String?
+}
+
 /// A file sidebar: one tree, and where it is. There are two, on the left and right of a window.
 final class FileSidebar {
     let tree = FileTree()

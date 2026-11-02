@@ -66,6 +66,30 @@ final class FileTree {
         path.lowercased().hasPrefix((folder.hasSuffix("\\") ? folder : folder + "\\").lowercased())
     }
 
+    /// Where a tree is, which each tab keeps for itself: the folder shown, what's open in it and what's selected.
+    struct Place {
+        var root: String?
+        var expanded: Set<String> = []
+        var selection: String?
+        var scrollTop = 0
+    }
+
+    var place: Place { Place(root: root, expanded: expanded, selection: selection, scrollTop: scrollTop) }
+
+    func restore(_ place: Place) {
+        expanded = place.expanded
+        if let folder = place.root, folder != root {
+            root = folder
+            rebuild()
+            onNeedsListing?(folder)
+        } else {
+            rebuild()
+        }
+        for folder in expanded where listings[folder] == nil { onNeedsListing?(folder) }
+        selection = place.selection
+        scrollTop = place.scrollTop
+    }
+
     /// True if what's listed has changed.
     @discardableResult
     func receive(_ path: String, _ entries: [FileEntry]?) -> Bool {

@@ -174,20 +174,24 @@ struct WindowChrome {
     }
 
     /// Where the folder's parts go in the status bar, and what each stands for. For drawing them and for clicks.
-    func crumbSpots() -> [(label: String, path: String, rect: UIRect)] {
+    func crumbSpots() -> [(label: String, path: String, rect: UIRect, hit: UIRect)] {
         let themeWidth = width(of: themeName, pixels: 10.5 * scale, semibold: true)
         let themeX = (layout.showsRightToggle ? layout.toggleRight.x - 8 * scale : layout.statusBar.maxX - 10 * scale) - themeWidth
         return crumbSpots(themeX: themeX)
     }
 
-    private func crumbSpots(themeX: Float) -> [(label: String, path: String, rect: UIRect)] {
+    private func crumbSpots(themeX: Float) -> [(label: String, path: String, rect: UIRect, hit: UIRect)] {
         guard let folder else { return [] }
         let bar = layout.statusBar, pixels = 12 * scale, limit = themeX - 34 * scale
+        let iconX = layout.toggleLeft.maxX + 6 * scale
         var x = layout.toggleLeft.maxX + 8 * scale + 21 * scale
-        var out: [(label: String, path: String, rect: UIRect)] = []
-        for crumb in WindowText.crumbPaths(folder, home: home) {
+        var out: [(label: String, path: String, rect: UIRect, hit: UIRect)] = []
+        for (i, crumb) in WindowText.crumbPaths(folder, home: home).enumerated() {
             let w = min(width(of: crumb.label, pixels: pixels), max(limit - x, 0))
-            out.append((crumb.label, crumb.path, UIRect(x: x, y: bar.y, width: w, height: bar.height)))
+            // The first takes in the folder icon, and each a little either side, so that a short one like ~ is easy to hit.
+            let start = i == 0 ? iconX : x - 4 * scale
+            let hit = UIRect(x: start, y: bar.y, width: x + w + 4 * scale - start, height: bar.height)
+            out.append((crumb.label, crumb.path, UIRect(x: x, y: bar.y, width: w, height: bar.height), hit))
             x += w + 13 * scale
         }
         return out
@@ -217,12 +221,12 @@ struct WindowChrome {
 
         // The folder on the left: the icon, then each part, which opens a menu of what's in it.
         let spots = crumbSpots(themeX: themeX)
-        icon(Icon.folder, UIRect(x: layout.toggleLeft.maxX + 8 * scale, y: bar.y, width: 16 * scale, height: bar.height), pixels: 12 * scale, alpha: 0.75)
         for (i, spot) in spots.enumerated() {
             let last = i == spots.count - 1
-            if hoveredCrumb == i { sol_canvas_fill_rounded(canvas.raw, spot.rect.x - 3 * scale, spot.rect.y + 3 * scale, spot.rect.width + 6 * scale, spot.rect.height - 6 * scale, 4 * scale, fg, 0.10) }
+            if hoveredCrumb == i { sol_canvas_fill_rounded(canvas.raw, spot.hit.x, spot.hit.y + 3 * scale, spot.hit.width, spot.hit.height - 6 * scale, 4 * scale, fg, 0.10) }
             label(spot.label, UIRect(x: spot.rect.x, y: bar.y, width: spot.rect.width + 1, height: bar.height), pixels: pixels, alpha: last || hoveredCrumb == i ? 0.85 : 0.55)
             if !last { label("›", UIRect(x: spot.rect.maxX + 3 * scale, y: bar.y, width: 8 * scale, height: bar.height), pixels: pixels, alpha: 0.4) }
         }
+        icon(Icon.folder, UIRect(x: layout.toggleLeft.maxX + 8 * scale, y: bar.y, width: 16 * scale, height: bar.height), pixels: 12 * scale, alpha: 0.75)
     }
 }
