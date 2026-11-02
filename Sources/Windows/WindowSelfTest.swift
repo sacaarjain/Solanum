@@ -530,8 +530,8 @@ enum WindowSelfTest {
         let sampleFolder = NSTemporaryDirectory() + "solanum-sidebar-\(GetCurrentProcessId())"
         let windowsFolder = sampleFolder.replacingOccurrences(of: "/", with: "\\")
         try? FileManager.default.createDirectory(atPath: windowsFolder + "\\alpha", withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: windowsFolder + "\\alpha\\inner.txt", contents: Data())
-        FileManager.default.createFile(atPath: windowsFolder + "\\zeta.txt", contents: Data())
+        _ = FileManager.default.createFile(atPath: windowsFolder + "\\alpha\\inner.txt", contents: Data())
+        _ = FileManager.default.createFile(atPath: windowsFolder + "\\zeta.txt", contents: Data())
         var openedFile: String?
         window.onOpenFile = { openedFile = $0 }
         var colsWithoutSidebar = 0
@@ -553,7 +553,7 @@ enum WindowSelfTest {
         steps.append(Step(name: "sidebar: Enter opens a file", action: { _ = window.keyDown(Int32(0x0D), shift: false, ctrl: false, alt: false) },
                           done: { openedFile?.hasSuffix("inner.txt") == true }))
         steps.append(Step(name: "sidebar: a new file shows by itself", action: {
-            FileManager.default.createFile(atPath: windowsFolder + "\\late.txt", contents: Data())
+            _ = FileManager.default.createFile(atPath: windowsFolder + "\\late.txt", contents: Data())
         }, done: { window.leftRow(named: "late.txt") != nil }))
         steps.append(Step(name: "sidebar: Esc goes back to the terminal", action: { _ = window.keyDown(Int32(0x1B), shift: false, ctrl: false, alt: false) },
                           done: { !window.leftHasFocus }))
