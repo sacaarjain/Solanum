@@ -52,6 +52,23 @@ Drawing
   ✓ selection: backwards still orders
   ✓ selection: text
   ✓ selection: spans lines
+Window layout
+  ✓ layout: window buttons at the right end
+  ✓ layout: tabs clear of the + button
+  ✓ layout: the terminal is between the bars
+  ✓ layout: finds a tab
+  ✓ layout: finds its close button
+  ✓ layout: finds the window buttons
+  ✓ layout: the rest of the bar drags
+  ✓ layout: below the bars is the terminal
+  ✓ layout: many tabs still fit
+  ✓ layout: scales with the display
+  ✓ text: home is ~
+  ✓ text: not home
+  ✓ text: a program's title is the tab's
+  ✓ text: a shell's own path isn't
+  ✓ text: nor as administrator
+  ✓ chrome: draws
 ConPTY
   ✓ conpty: output reaches the emulator
   ✓ conpty: exit code
@@ -74,4 +91,4 @@ PowerShell hook
   ✓ powershell: Esc clears the line
   ✓ powershell: exits
   - pwsh.exe isn't installed
-All 71 checks passed.
+All 87 checks passed.

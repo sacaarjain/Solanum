@@ -21,6 +21,15 @@
   ✓ window: paste replaces the selection
   ✓ window: the edited command runs
   ✓ window: colors from a real program
+  ✓ tabs: the + button opens one
+  ✓ tabs: typing goes to the new tab
+  ✓ tabs: clicking a tab shows it
+  ✓ tabs: a command starts in the second tab
+  ✓ tabs: it keeps running behind another
+  ✓ tabs: all of them resize
+  ✓ tabs: titled by folder, not the shell's path
+  ✓ tabs: exit closes only its tab
+  ✓ tabs: the x closes one
   ✓ box: replace on one row: starts
   ✓ box: replace on one row: selects and acts
   ✓ box: replace on one row: leaves the right text
@@ -34,5 +43,4 @@
   ✓ box: delete across three rows: selects and acts
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
-  ✓ window: snapshot
-All 37 checks passed.
+All 45 checks passed.
