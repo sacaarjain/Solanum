@@ -1735,8 +1735,8 @@ final class TerminalWindow {
     /// Clicks a part of the tab bar, as the mouse would.
     func click(_ rect: UIRect) {
         let position = LPARAM(Int(rect.x + rect.width / 2) & 0xFFFF) | (LPARAM(Int(rect.y + rect.height / 2) & 0xFFFF) << 16)
-        PostMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, position)
-        PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, position)
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, position)
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, position)
     }
 
     var currentLayout: WindowLayout { layout }
@@ -1756,8 +1756,8 @@ final class TerminalWindow {
     func chipRect(_ first: Int) -> UIRect? { layout.chip(first) }
     func rightClick(_ rect: UIRect) {
         let position = LPARAM(Int(rect.x + rect.width / 2) & 0xFFFF) | (LPARAM(Int(rect.y + rect.height / 2) & 0xFFFF) << 16)
-        PostMessageW(hwnd, Win.WM_RBUTTONDOWN, 2, position)
-        PostMessageW(hwnd, Win.WM_RBUTTONUP, 0, position)
+        _ = SendMessageW(hwnd, Win.WM_RBUTTONDOWN, 2, position)
+        _ = SendMessageW(hwnd, Win.WM_RBUTTONUP, 0, position)
     }
     func typeIntoWindow(_ text: String) { for unit in text.utf16 { PostMessageW(hwnd, Win.WM_CHAR, WPARAM(unit), 0) } }
     var leftTree: FileTree { left.tree }
@@ -1777,19 +1777,19 @@ final class TerminalWindow {
 
     func doubleClick(_ rect: UIRect) {
         let position = LPARAM(Int(rect.x + rect.width / 2) & 0xFFFF) | (LPARAM(Int(rect.y + rect.height / 2) & 0xFFFF) << 16)
-        PostMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, position)
-        PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, position)
-        PostMessageW(hwnd, Win.WM_LBUTTONDBLCLK, 1, position)
-        PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, position)
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, position)
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, position)
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONDBLCLK, 1, position)
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, position)
     }
 
     /// Drags the border of the left sidebar to a position.
     func dragLeftEdge(to x: Float) {
         let y = Int(layout.terminal.midY)
         func at(_ px: Int) -> LPARAM { LPARAM(px & 0xFFFF) | (LPARAM(y & 0xFFFF) << 16) }
-        PostMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, at(Int(layout.leftWidth)))
-        PostMessageW(hwnd, Win.WM_MOUSEMOVE, 1, at(Int(x)))
-        PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, at(Int(x)))
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, at(Int(layout.leftWidth)))
+        _ = SendMessageW(hwnd, Win.WM_MOUSEMOVE, 1, at(Int(x)))
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, at(Int(x)))
     }
 
     /// A sideways swipe over the tab bar, as a touchpad sends it.

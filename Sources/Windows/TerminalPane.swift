@@ -682,8 +682,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
         let m = canvas.metrics
         let x = Int(canvas.contentX + (Float(col) + 0.1) * m.cellWidth), y = Int(canvas.contentY + (Float(row) + 0.5) * m.cellHeight)
         let position = LPARAM(x & 0xFFFF) | (LPARAM(y & 0xFFFF) << 16)
-        PostMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, position)
-        PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, position)
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, position)
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, position)
     }
 
     /// Drags the mouse from one cell to another, selecting what's between.
@@ -693,9 +693,9 @@ final class TerminalPane: TerminalDelegate, Groupable {
             let x = Int(canvas.contentX + (Float(col) + 0.1) * m.cellWidth), y = Int(canvas.contentY + (Float(row) + 0.5) * m.cellHeight)
             return LPARAM(x & 0xFFFF) | (LPARAM(y & 0xFFFF) << 16)
         }
-        PostMessageW(hwnd, Win.WM_LBUTTONDOWN, Win.MK_LBUTTON, position(fromCol, fromRow))
-        PostMessageW(hwnd, Win.WM_MOUSEMOVE, Win.MK_LBUTTON, position(toCol, toRow))
-        PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, position(toCol, toRow))
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONDOWN, Win.MK_LBUTTON, position(fromCol, fromRow))
+        _ = SendMessageW(hwnd, Win.WM_MOUSEMOVE, Win.MK_LBUTTON, position(toCol, toRow))
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, position(toCol, toRow))
     }
 
     func drag(fromCol: Int, toCol: Int, row: Int) { drag(fromCol: fromCol, fromRow: row, toCol: toCol, toRow: row) }
