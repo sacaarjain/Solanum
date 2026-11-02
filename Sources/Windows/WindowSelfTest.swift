@@ -206,6 +206,17 @@ enum WindowSelfTest {
         results.check("settings: writes it back, keeping keys it doesn't know", written.contains("font-size = 15") && written.contains("mac-only = keep me") && written.contains("# Font"))
         results.check("settings: and reads what it wrote", SettingsFile(text: written)["mac-only"] == "keep me")
 
+        var field = TextFieldState("hello world")
+        field.deleteBackward(word: true)
+        field.insert("there")
+        results.check("field: typing and deleting words", field.text == "hello there")
+        field.move(to: 0)
+        field.deleteForward()
+        results.check("field: Delete at the start", field.text == "ello there" && field.caret == 0)
+        let aliasScript = CommandAlias.powerShell([CommandAlias(name: "c", command: "claude"), CommandAlias(name: "bad name", command: "x"), CommandAlias(name: "g.l", command: "git log")])
+        results.check("aliases: valid ones become PowerShell", aliasScript.contains("Set-Alias -Name 'c'") && aliasScript.contains("{ claude @args }") && !aliasScript.contains("bad name"))
+        results.check("aliases: a dot in a name is fine", aliasScript.contains("Set-Alias -Name 'g.l' -Value '__solanum_alias_g_l'"))
+
         print("Command palette")
         var ran: [String] = []
         func item(_ title: String, _ category: String = "Shell") -> PaletteItem {
@@ -715,6 +726,90 @@ enum WindowSelfTest {
         }, done: { window.paletteSelection?.title == "Theme: Solanum Default" }))
         steps.append(Step(name: "themes: back to the default", action: { pane.pressEnter() },
                           done: { TerminalPalette.background == 0x111312 && !window.isPaletteOpen }))
+
+        // Settings.
+        let settingsWindow = SettingsWindow.shared
+        steps.append(Step(name: "settings: the flower opens it", action: { window.click(window.currentLayout.flower) },
+                          done: { settingsWindow.isOpen }))
+        for page in SettingsWindow.Page.allCases {
+            steps.append(Step(name: "settings: \(page.title)", action: { settingsWindow.showPage(page) }, done: {
+                guard let dir = snapshotDirectory else { return true }
+                return settingsWindow.saveSnapshot(to: dir + "\\settings-\(page.rawValue)-\(page.title.replacingOccurrences(of: " & ", with: "-")).png")
+            }))
+        }
+        steps.append(Step(name: "settings: a toggle", action: {
+            settingsWindow.showPage(.text)
+        }, done: {
+            guard let r = settingsWindow.controlRect(forRow: "Copy on select") else { return false }
+            settingsWindow.click(r)
+            return true
+        }))
+        steps.append(Step(name: "settings: turns its setting on", action: {}, done: { AppSettings.shared.copyOnSelect }))
+        steps.append(Step(name: "settings: and off", action: { settingsWindow.click(settingsWindow.controlRect(forRow: "Copy on select")!) },
+                          done: { !AppSettings.shared.copyOnSelect }))
+        steps.append(Step(name: "settings: a choice opens its menu", action: {
+            settingsWindow.showPage(.preferences)
+        }, done: {
+            guard let r = settingsWindow.controlRect(forRow: "New tabs open in") else { return false }
+            settingsWindow.click(r)
+            return true
+        }))
+        steps.append(Step(name: "settings: and picks", action: {}, done: {
+            guard let row = settingsWindow.menuRow("Home Folder") else { return false }
+            settingsWindow.click(row)
+            return true
+        }))
+        steps.append(Step(name: "settings: new tabs open at home now", action: {}, done: { AppSettings.shared.newTabFolder == "home" }))
+        steps.append(Step(name: "settings: back to the current folder", action: { AppSettings.shared.set("new-tab-folder", "current") },
+                          done: { AppSettings.shared.newTabFolder == "current" }))
+        var cellBefore: Float = 0
+        steps.append(Step(name: "settings: a field takes typing", action: {
+            cellBefore = window.fontCellHeight
+            settingsWindow.showPage(.text)
+        }, done: {
+            guard let r = settingsWindow.controlRect(forRow: "Size") else { return false }
+            settingsWindow.click(r)
+            settingsWindow.pressKey(0x08)
+            settingsWindow.pressKey(0x08)
+            settingsWindow.type("15")
+            settingsWindow.pressKey(0x0D)
+            return true
+        }))
+        steps.append(Step(name: "settings: and the text gets bigger", action: {},
+                          done: { AppSettings.shared.fontSize == 15 && window.fontCellHeight > cellBefore }))
+        steps.append(Step(name: "settings: back to its size", action: { AppSettings.shared.set("font-size", "11") }, done: { abs(window.fontCellHeight - cellBefore) < 0.5 }))
+        steps.append(Step(name: "settings: a theme card", action: { settingsWindow.showPage(.appearance) }, done: {
+            guard let r = settingsWindow.themeRect("Giant's Deep") else { return false }
+            settingsWindow.click(r)
+            return true
+        }))
+        steps.append(Step(name: "settings: switches the theme", action: {}, done: { AppSettings.shared.themeName == "Giant's Deep" && TerminalPalette.background == 0x0B3328 }))
+        steps.append(Step(name: "settings: back to the default theme", action: { AppSettings.shared.set("theme", ThemeSpecs.defaultName) },
+                          done: { TerminalPalette.background == 0x111312 }))
+        var aliasesBefore: [CommandAlias] = []
+        steps.append(Step(name: "aliases: Add Alias makes a row to type in", action: {
+            aliasesBefore = AliasFile.load()
+            settingsWindow.showPage(.aliases)
+        }, done: {
+            guard let r = settingsWindow.linkRect("Add Alias") else { return false }
+            settingsWindow.click(r)
+            settingsWindow.type("hey")
+            settingsWindow.pressKey(0x0D)
+            return true
+        }))
+        steps.append(Step(name: "aliases: it's kept", action: {}, done: { AliasFile.load().last?.name == "hey" && settingsWindow.aliasCount == aliasesBefore.count + 1 }))
+        steps.append(Step(name: "aliases: reach the shell at its next prompt", action: {
+            AliasFile.save(aliasesBefore + [CommandAlias(name: "hey", command: "echo alias-works")])
+            pane.pressEnter()
+        }, done: { pane.atPrompt }))
+        steps.append(Step(name: "aliases: and run", action: {
+            pane.type("hey")
+            pane.pressEnter()
+        }, done: { hasLine("alias-works") }))
+        steps.append(Step(name: "settings: closes", action: {
+            AliasFile.save(aliasesBefore)
+            settingsWindow.close()
+        }, done: { !settingsWindow.isOpen }))
 
         steps.append(Step(name: "tabs: titled by folder, not the shell's path", action: {},
                           done: { !window.panes[1].tabTitle.contains(".exe") && !window.panes[1].tabTitle.isEmpty }))

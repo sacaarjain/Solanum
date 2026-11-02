@@ -49,13 +49,14 @@ final class TerminalPane: TerminalDelegate {
         terminal = Terminal(cols: cols, rows: rows, scrollbackLimit: AppSettings.shared.scrollback)
         terminal.delegate = self
         terminal.repaintedByConsole = true
+        if !FileManager.default.fileExists(atPath: AliasFile.scriptURL.path) { AliasFile.save(AliasFile.load()) }
         if let text, !text.isEmpty {
             // Moved up into scrollback, since the console is about to draw on a screen it thinks is empty.
             Array((text + String(repeating: "\r\n", count: rows)).utf8).withUnsafeBufferPointer { terminal.feed($0) }
             terminal.scrollbackPushes = 0
         }
         let home = ProcessInfo.processInfo.environment["USERPROFILE"]
-        let environment = ["TERM": "xterm-256color", "COLORTERM": "truecolor", "TERM_PROGRAM": "Solanum"]
+        let environment = ["TERM": "xterm-256color", "COLORTERM": "truecolor", "TERM_PROGRAM": "Solanum", "SOLANUM_ALIASES": AliasFile.scriptURL.path]
         guard let pty = ConPTY(commandLine: commandLine, extraEnvironment: environment, cwd: cwd ?? home, cols: cols, rows: rows) else { return nil }
         self.pty = pty
         let target = UInt(bitPattern: hwnd), id = id

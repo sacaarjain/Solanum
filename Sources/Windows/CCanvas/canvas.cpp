@@ -179,6 +179,21 @@ struct SolCanvas {
         return format.Get();
     }
 
+    std::map<std::pair<int, int>, ComPtr<IDWriteTextFormat>> paragraphFormats;
+
+    IDWriteTextFormat *paragraphFormat(float pixels, int semibold) {
+        auto key = std::make_pair(static_cast<int>(pixels * 10), semibold);
+        auto found = paragraphFormats.find(key);
+        if (found != paragraphFormats.end()) return found->second.Get();
+        ComPtr<IDWriteTextFormat> format;
+        auto weight = semibold ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
+        if (FAILED(dwrite->CreateTextFormat(L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                            pixels, L"", &format))) return nullptr;
+        format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        paragraphFormats[key] = format;
+        return format.Get();
+    }
+
     IDWriteTextFormat *iconFormat(float pixels) {
         int key = static_cast<int>(pixels * 10);
         auto found = iconFormats.find(key);
@@ -432,6 +447,21 @@ float sol_canvas_measure_label(SolCanvas *canvas, const uint16_t *text, int32_t 
     DWRITE_TEXT_METRICS metrics = {};
     if (FAILED(layout->GetMetrics(&metrics))) return 0;
     return metrics.widthIncludingTrailingWhitespace;
+}
+
+float sol_canvas_paragraph(SolCanvas *canvas, float x, float y, float width, const uint16_t *text, int32_t length, float pixels,
+                           int32_t semibold, uint32_t rgb, float alpha, int32_t measureOnly) {
+    auto *format = canvas->paragraphFormat(pixels, semibold);
+    if (!format || length <= 0 || width <= 0) return 0;
+    ComPtr<IDWriteTextLayout> layout;
+    if (FAILED(canvas->dwrite->CreateTextLayout(reinterpret_cast<const WCHAR *>(text), static_cast<UINT32>(length), format, width, 10000, &layout))) return 0;
+    DWRITE_TEXT_METRICS metrics = {};
+    layout->GetMetrics(&metrics);
+    if (!measureOnly) {
+        canvas->brush->SetColor(color(rgb, alpha));
+        canvas->target->DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), canvas->brush.Get());
+    }
+    return metrics.height;
 }
 
 void sol_canvas_draw_icon(SolCanvas *canvas, float x, float y, float width, float height, uint16_t glyph, float pixels, uint32_t rgb, float alpha) {

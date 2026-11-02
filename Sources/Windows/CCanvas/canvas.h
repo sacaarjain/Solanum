@@ -70,6 +70,10 @@ void sol_canvas_draw_label(SolCanvas *canvas, float x, float y, float width, flo
                            float pixels, int32_t semibold, uint32_t color, float alpha);
 float sol_canvas_measure_label(SolCanvas *canvas, const uint16_t *text, int32_t length, float pixels, int32_t semibold);
 
+/// Text in the interface font, wrapped to `width`. Returns the height it takes; draws nothing when measuring.
+float sol_canvas_paragraph(SolCanvas *canvas, float x, float y, float width, const uint16_t *text, int32_t length, float pixels,
+                           int32_t semibold, uint32_t color, float alpha, int32_t measureOnly);
+
 /// A glyph of the system icon font (Segoe Fluent Icons, or Segoe MDL2 Assets before Windows 11), centered in the rectangle.
 void sol_canvas_draw_icon(SolCanvas *canvas, float x, float y, float width, float height, uint16_t glyph, float pixels, uint32_t color, float alpha);
 

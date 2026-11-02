@@ -634,6 +634,7 @@ final class TerminalWindow {
                 switch part {
                 case .tabClose(let i): closeTab(i)
                 case .newTab: newTab()
+                case .flower: SettingsWindow.shared.show()
                 case .toggleLeft: toggleSidebar(left)
                 case .toggleRight: toggleSidebar(right)
                 default: break
@@ -1154,6 +1155,18 @@ final class TerminalWindow {
         try? text.write(to: file, atomically: true, encoding: .utf8)
     }
 
+    // MARK: - Shortcuts
+
+    /// Every shortcut, as Settings › Shortcuts lists them. Ctrl stands in for the Mac's Command.
+    static let shortcutGroups: [(title: String, items: [(title: String, keys: String)])] = [
+        ("Solanum", [("Settings…", "Ctrl+,"), ("Command Palette…", "Ctrl+Shift+P")]),
+        ("Shell", [("New Tab", "Ctrl+T"), ("Reopen Closed Tab", "Ctrl+Shift+T"), ("Close Tab", "Ctrl+W"), ("Close Tab (also)", "Ctrl+Shift+W")]),
+        ("Edit", [("Copy (with something selected)", "Ctrl+C"), ("Stop the program (with nothing selected)", "Ctrl+C"), ("Cut (in the line being typed)", "Ctrl+X"),
+                  ("Paste", "Ctrl+V"), ("Paste (also)", "Shift+Insert"), ("Undo (PowerShell and Claude Code)", "Ctrl+Z")]),
+        ("View", [("Toggle File Sidebar", "Ctrl+B"), ("Pin Sidebar Folder", "Ctrl+Shift+B"), ("Scroll Back a Page", "Shift+PageUp"), ("Scroll Forward a Page", "Shift+PageDown")]),
+        ("Window", [("Next Tab", "Ctrl+Tab"), ("Previous Tab", "Ctrl+Shift+Tab"), ("Go to Tab 1 to 9", "Ctrl+1"), ("Close Window", "Alt+F4")]),
+    ]
+
     // MARK: - Command palette
 
     var isPaletteOpen: Bool { palette != nil }
@@ -1190,6 +1203,7 @@ final class TerminalWindow {
             },
             PaletteItem(title: "Scroll to Top", category: "View") { [weak self] in self?.activePane.scrollToTop() },
             PaletteItem(title: "Scroll to Bottom", category: "View") { [weak self] in self?.activePane.scrollToBottom() },
+            PaletteItem(title: "Settings…", category: "Solanum", shortcut: "Ctrl+,") { SettingsWindow.shared.show() },
             PaletteItem(title: "Open Config File", category: "Solanum") {
                 guard let url = AppSettings.fileURL else { return }
                 _ = wide(url.path).withUnsafeBufferPointer { ShellExecuteW(nil, nil, $0.baseAddress, nil, nil, 1) }
@@ -1324,6 +1338,10 @@ final class TerminalWindow {
 
     func keyDown(_ key: Int32, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
         if menu != nil { return menuKey(key) }
+        if ctrl && !shift && !alt && key == 0xBC {
+            SettingsWindow.shared.show()
+            return true
+        }
         if ctrl && shift && !alt && key == 0x50 {
             togglePalette()
             return true
@@ -1387,6 +1405,7 @@ final class TerminalWindow {
     }
 
     var currentLayout: WindowLayout { layout }
+    var fontCellHeight: Float { canvas.metrics.cellHeight }
 
     var isDraggingTab: Bool { tabPress != nil }
     var leftTree: FileTree { left.tree }

@@ -20,6 +20,14 @@ enum PowerShellIntegration {
         function global:prompt {
             $ok = $?
             $code = $global:LASTEXITCODE
+            # Settings › Aliases, read again whenever they've changed, so edits reach open tabs.
+            if ($env:SOLANUM_ALIASES -and (Test-Path -LiteralPath $env:SOLANUM_ALIASES)) {
+                $at = (Get-Item -LiteralPath $env:SOLANUM_ALIASES).LastWriteTimeUtc
+                if ($at -ne $global:__solanum_aliases_at) {
+                    $global:__solanum_aliases_at = $at
+                    try { Invoke-Expression (Get-Content -Raw -LiteralPath $env:SOLANUM_ALIASES) } catch {}
+                }
+            }
             $marks = ''
             if ($global:__solanum_running) {
                 $status = if ($ok) { 0 } elseif ($code) { $code } else { 1 }
