@@ -358,8 +358,8 @@ enum WindowSelfTest {
             }, done: { hasLine("line 60") && pane.terminal.currentBlock?.state == .prompt }),
             Step(name: "window: shrinks", action: { window.resizeWindow(toCols: 90, rows: 12) },
                  done: { pane.terminal.rows == 12 && !pane.isSettlingResize }),
-            Step(name: "window: grows again", action: { window.resizeWindow(toCols: 90, rows: 40) },
-                 done: { pane.terminal.rows == 40 && !pane.isSettlingResize }),
+            Step(name: "window: grows again", action: { window.resizeWindow(toCols: 90, rows: 30) },
+                 done: { pane.terminal.rows == 30 && !pane.isSettlingResize }),
             Step(name: "window: typing after resizing stays on the prompt", action: { pane.type("claud") },
                  // Newer PSReadLine adds a suggestion from its history after what's typed.
                  done: { pane.cursorRowText.hasPrefix("PS ") && pane.cursorRowText.contains("> claud") }),
