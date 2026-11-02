@@ -271,8 +271,8 @@ enum WindowSelfTest {
         results.check("remote: arguments for the sidebar's connection", RemoteConnection.connectionArguments(["-t", "-p", "2222", "pi@host", "htop"]) == ["-p", "2222", "pi@host"])
         let remoteList = RemoteConnection.entries(fromListing: "docs/\n.bashrc\nnotes.txt\r\n./\n", in: "/home/pi")
         results.check("remote: a listing's folders and files", remoteList.map(\.name) == ["docs", ".bashrc", "notes.txt"] && remoteList[0].isDirectory && remoteList[1].isHidden && remoteList[0].path == "/home/pi/docs")
-        results.check("hidden process: arguments quoted for Windows", [#"plain"#, #"a b"#, #"say "hi""#, #"C:\dir\"#, #"a\b"#, ""].map(HiddenProcess.quote)
-                      == [#"plain"#, #""a b""#, #""say \"hi\"""#, #""C:\dir\\""#, #"a\b"#, #""""#])
+        results.check("hidden process: arguments quoted for Windows", [#"plain"#, #"a b"#, #"say "hi""#, #"C:\my dir\"#, #"C:\dir\"#, ""].map(HiddenProcess.quote)
+                      == [#"plain"#, #""a b""#, #""say \"hi\"""#, #""C:\my dir\\""#, #"C:\dir\"#, #""""#])
         results.check("remote: quoting for sh", RemoteConnection.quote("it's") == "'it'\\''s'")
         results.check("paths: Unix ones", AnyPath.parent("/home/pi") == "/home" && AnyPath.parent("/home") == "/" && AnyPath.parent("/") == nil && AnyPath.join("/", "etc") == "/etc")
         results.check("reconnect: words for PowerShell", ["-o", "StrictHostKeyChecking=accept-new", "pi@host", "a b", "it's", "@x"].map(TerminalPane.powerShellWord)
@@ -876,7 +876,9 @@ enum WindowSelfTest {
                 for line in pane.remoteDiagnostics { print("    " + line.replacingOccurrences(of: "\n", with: " | ")) }
             }, done: { true }))
             steps.append(Step(name: "ssh: and shows what's made there", action: {
-                pane.type("touch from-remote.txt")
+                // Led by a space, which bash ignores: the test machine's Git bash sometimes drops the first key typed as
+                // another login of the same user (the sidebar's) starts.
+                pane.type(" touch from-remote.txt")
                 pane.pressEnter()
             }, done: { window.leftRow(named: "from-remote.txt") != nil }))
             if let dir = snapshotDirectory {
