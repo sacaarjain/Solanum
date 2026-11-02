@@ -29,6 +29,29 @@ enum WindowsPath {
     }
 }
 
+/// Paths of either kind: a Windows one on this machine, or a Unix one ("/home/pi") on an ssh host.
+enum AnyPath {
+    static func isUnix(_ path: String) -> Bool { path.hasPrefix("/") }
+
+    static func join(_ folder: String, _ name: String) -> String {
+        guard isUnix(folder) else { return WindowsPath.join(folder, name) }
+        return folder.hasSuffix("/") ? folder + name : folder + "/" + name
+    }
+
+    static func parent(_ path: String) -> String? {
+        guard isUnix(path) else { return WindowsPath.parent(path) }
+        guard path != "/" else { return nil }
+        let trimmed = path.hasSuffix("/") ? String(path.dropLast()) : path
+        guard let slash = trimmed.lastIndex(of: "/") else { return nil }
+        return slash == trimmed.startIndex ? "/" : String(trimmed[..<slash])
+    }
+
+    static func name(_ path: String) -> String {
+        guard isUnix(path) else { return WindowsPath.name(path) }
+        return path.split(separator: "/").last.map(String.init) ?? "/"
+    }
+}
+
 /// What a file tree shows, with nothing about drawing or the disk: which folders are open and what's in them. Whoever
 /// owns it lists a folder when `onNeedsListing` asks and hands back the result with `receive`.
 final class FileTree {
@@ -63,7 +86,8 @@ final class FileTree {
     }
 
     private func isUnder(_ path: String, _ folder: String) -> Bool {
-        path.lowercased().hasPrefix((folder.hasSuffix("\\") ? folder : folder + "\\").lowercased())
+        let separator = AnyPath.isUnix(folder) ? "/" : "\\"
+        return path.lowercased().hasPrefix((folder.hasSuffix(separator) ? folder : folder + separator).lowercased())
     }
 
     /// Where a tree is, which each tab keeps for itself: the folder shown, what's open in it and what's selected.
@@ -168,7 +192,7 @@ final class FileTree {
         let entry = rows[i].entry
         if entry.isDirectory && expanded.contains(entry.path) {
             toggle(entry.path)
-        } else if let parent = WindowsPath.parent(entry.path), rows.contains(where: { $0.entry.path == parent }) {
+        } else if let parent = AnyPath.parent(entry.path), rows.contains(where: { $0.entry.path == parent }) {
             selection = parent
         }
     }

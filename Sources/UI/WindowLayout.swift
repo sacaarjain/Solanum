@@ -178,7 +178,8 @@ enum WindowText {
     static func crumbs(_ path: String, home: String?) -> [String] {
         var rest = path
         var parts: [String] = []
-        if let home, !home.isEmpty, rest.lowercased() == home.lowercased() || rest.lowercased().hasPrefix(home.lowercased() + "\\") {
+        let separator = AnyPath.isUnix(path) ? "/" : "\\"
+        if let home, !home.isEmpty, rest.lowercased() == home.lowercased() || rest.lowercased().hasPrefix(home.lowercased() + separator) {
             parts.append("~")
             rest = String(rest.dropFirst(home.count))
         }

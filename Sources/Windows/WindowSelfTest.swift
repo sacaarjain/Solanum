@@ -268,6 +268,13 @@ enum WindowSelfTest {
         let secret = ProtectedSecret("hunter2 ✦")
         results.check("secret: comes back as it went in", secret.reveal { $0 } == "hunter2 ✦")
 
+        results.check("remote: arguments for the sidebar's connection", RemoteConnection.connectionArguments(["-t", "-p", "2222", "pi@host", "htop"]) == ["-p", "2222", "pi@host"])
+        let remoteList = RemoteConnection.entries(fromListing: "docs/\n.bashrc\nnotes.txt\r\n./\n", in: "/home/pi")
+        results.check("remote: a listing's folders and files", remoteList.map(\.name) == ["docs", ".bashrc", "notes.txt"] && remoteList[0].isDirectory && remoteList[1].isHidden && remoteList[0].path == "/home/pi/docs")
+        results.check("remote: quoting for sh", RemoteConnection.quote("it's") == "'it'\\''s'")
+        results.check("paths: Unix ones", AnyPath.parent("/home/pi") == "/home" && AnyPath.parent("/home") == "/" && AnyPath.parent("/") == nil && AnyPath.join("/", "etc") == "/etc")
+        results.check("paths: home is ~ on a host too", WindowText.crumbs("/home/pi/docs", home: "/home/pi") == ["~", "docs"])
+
         print("Command palette")
         var ran: [String] = []
         func item(_ title: String, _ category: String = "Shell") -> PaletteItem {
@@ -858,10 +865,23 @@ enum WindowSelfTest {
             if let dir = snapshotDirectory {
                 steps.append(Step(name: "ssh: snapshot connected", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-connected.png") }))
             }
+            steps.append(Step(name: "ssh: the sidebar signs in with the same password", action: { press(0x42) }, done: {
+                window.leftIsVisible && window.leftTree.root.map(AnyPath.isUnix) == true && !window.leftTree.rows.isEmpty
+            }))
+            steps.append(Step(name: "ssh: and shows what's made there", action: {
+                pane.type("touch from-remote.txt")
+                pane.pressEnter()
+            }, done: { window.leftRow(named: "from-remote.txt") != nil }))
+            if let dir = snapshotDirectory {
+                steps.append(Step(name: "ssh: snapshot of the sidebar on the host", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-sidebar.png") }))
+            }
             steps.append(Step(name: "ssh: leaving forgets the password", action: {
                 pane.type("exit")
                 pane.pressEnter()
             }, done: { pane.sshHost == nil && !pane.hasRememberedPassword && pane.atPrompt }))
+            steps.append(Step(name: "ssh: the sidebar comes back to this machine", action: {},
+                              done: { window.leftTree.root.map(AnyPath.isUnix) == false && pane.remoteStatus == nil }))
+            steps.append(Step(name: "ssh: the sidebar hides", action: { press(0x42) }, done: { !window.leftIsVisible }))
         }
         // Settings.
         let settingsWindow = SettingsWindow.shared

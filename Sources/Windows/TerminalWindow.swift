@@ -243,6 +243,12 @@ final class TerminalWindow {
     private func addPane(at index: Int? = nil, cwd: String? = nil, restoring text: String? = nil, place: SidebarPlace? = nil) -> Bool {
         let grid = clientWidth > 0 ? gridSize() : (cols: 110, rows: 32)
         guard let pane = TerminalPane(host: self, commandLine: commandLine, cols: grid.cols, rows: grid.rows, cwd: cwd, restoring: text) else { return false }
+        pane.onRemoteChange = { [weak self, weak pane] in
+            guard let self, let pane, !self.panes.isEmpty, pane === self.activePane else { return }
+            self.left.followed = nil
+            self.followTerminalFolder()
+            self.invalidate()
+        }
         if panes.indices.contains(activeIndex) {
             panes[activeIndex].setFocused(false)
             saveSidebarPlace(to: panes[activeIndex])
@@ -771,13 +777,20 @@ final class TerminalWindow {
     private func drawSidebars(on target: Canvas, layout l: WindowLayout) {
         let home = ProcessInfo.processInfo.environment["USERPROFILE"]
         let folder = panes.isEmpty ? nil : activePane.terminal.cwd
+        let remote = panes.isEmpty ? nil : activePane
+        let remoteHome = remote?.remote?.home, sshHost = remote?.sshHost, status = remote?.remoteStatus
         for (sidebar, visible, area, edge) in [(left, l.leftSidebar, leftSidebarArea, l.leftWidth - 1), (right, l.rightSidebar, l.rightSidebar, l.width - l.rightWidth)] where visible.width > 0 {
             sol_canvas_push_clip(target.raw, visible.x, visible.y, visible.width, visible.height)
-            SidebarView(canvas: target, sidebar: sidebar, layout: SidebarLayout(area: area, scale: scale), terminalFolder: folder, home: home).draw()
+            let onHost = sidebar.tree.root.map(AnyPath.isUnix) ?? false
+            let showsStatus = sidebar === left && sidebar.pinned == nil && status != nil
+            SidebarView(canvas: target, sidebar: sidebar, layout: SidebarLayout(area: area, scale: scale), terminalFolder: folder,
+                        home: onHost ? remoteHome : home, host: onHost || showsStatus ? sshHost : nil, status: showsStatus ? status : nil).draw()
             sol_canvas_pop_clip(target.raw)
             sol_canvas_fill_rect(target.raw, edge, visible.y, 1, visible.height, TerminalPalette.foreground, 0.10)
         }
     }
+
+    func runOnWindowThreadPublic(_ work: @escaping () -> Void) { runOnWindowThread(work) }
 
     /// Runs `work` on the thread with the message loop. From any thread.
     private func runOnWindowThread(_ work: @escaping () -> Void) {
@@ -788,6 +801,17 @@ final class TerminalWindow {
     }
 
     private func listInBackground(_ folder: String, for sidebar: FileSidebar) {
+        // A folder on an ssh host is listed over the tab's own connection to it.
+        if AnyPath.isUnix(folder) {
+            guard let remote = panes.isEmpty ? nil : activePane.remote else { return }
+            remote.list(folder) { [weak self, weak sidebar] entries in
+                self?.runOnWindowThread {
+                    guard let self, let sidebar else { return }
+                    if sidebar.tree.receive(folder, entries) { self.invalidate() }
+                }
+            }
+            return
+        }
         Thread.detachNewThread { [weak self, weak sidebar] in
             let entries = FileSidebar.list(folder)
             self?.runOnWindowThread {
@@ -800,8 +824,9 @@ final class TerminalWindow {
     /// Shows the terminal's folder in the sidebars that aren't pinned.
     private func followTerminalFolder() {
         guard !panes.isEmpty else { return }
-        let folder = activePane.terminal.cwd ?? ProcessInfo.processInfo.environment["USERPROFILE"]
-        guard let folder else { return }
+        // Over ssh, the host's folder once the sidebar's connection is up; this machine's otherwise.
+        let local = activePane.sshArguments == nil ? activePane.terminal.cwd ?? ProcessInfo.processInfo.environment["USERPROFILE"] : nil
+        guard let folder = activePane.remoteFolder ?? local else { return }
         for sidebar in [left, right] where sidebar.isVisible && sidebar.pinned == nil {
             guard folder != sidebar.followed || sidebar.tree.root == nil else { continue }
             sidebar.followed = folder
@@ -879,7 +904,7 @@ final class TerminalWindow {
 
     private func goToParent(_ sidebar: FileSidebar) {
         // Not a pin: it stays here only until the terminal moves (see `followTerminalFolder`).
-        guard let root = sidebar.tree.root, let up = WindowsPath.parent(root) else { return }
+        guard let root = sidebar.tree.root, let up = AnyPath.parent(root) else { return }
         sidebar.tree.setRoot(up)
         invalidate()
     }
@@ -904,7 +929,7 @@ final class TerminalWindow {
 
     /// A folder opens or closes, and a file goes to its app on a double click or Enter.
     private func activate(_ entry: FileEntry, in sidebar: FileSidebar) {
-        if entry.isDirectory { sidebar.tree.toggle(entry.path) } else { onOpenFile(entry.path) }
+        if entry.isDirectory { sidebar.tree.toggle(entry.path) } else if !AnyPath.isUnix(entry.path) { onOpenFile(entry.path) }
     }
 
     /// Takes the mouse when it's on a sidebar or its edge. Otherwise false, and it's someone else's.
@@ -964,11 +989,14 @@ final class TerminalWindow {
             guard let row else { break }
             sidebar.tree.selection = row.entry.path
             if row.entry.isDirectory {
-                // Back to how it was before this double click's first click, then the terminal goes there, as on the Mac.
+                // Back to how it was before this double click's first click, then the terminal goes there, as on the Mac. Not on
+                // an ssh host: the terminal there is a shell Solanum can't safely type into.
                 sidebar.tree.toggle(row.entry.path)
-                activePane.changeDirectory(to: row.entry.path)
-                focusTerminal()
-            } else {
+                if !AnyPath.isUnix(row.entry.path) {
+                    activePane.changeDirectory(to: row.entry.path)
+                    focusTerminal()
+                }
+            } else if !AnyPath.isUnix(row.entry.path) {
                 onOpenFile(row.entry.path)
             }
             invalidate()
@@ -1136,6 +1164,11 @@ final class TerminalWindow {
 
     /// A question from ssh in one of this window's tabs: that tab shows it, coming to the front if it isn't already.
     private func answerAskpass(_ request: Askpass.Request, _ reply: @escaping (String?) -> Void) {
+        if let pane = panes.first(where: { $0.remote?.token == request.token }) {
+            pane.answerForRemote(request.prompt, reply: reply)
+            invalidate()
+            return
+        }
         guard let i = panes.firstIndex(where: { $0.askpassToken == request.token }) else { return reply(nil) }
         if i != activeIndex { selectTab(i) }
         panes[i].ask(request.prompt, reply: reply)

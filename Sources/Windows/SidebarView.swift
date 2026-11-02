@@ -66,6 +66,10 @@ struct SidebarView {
     /// The terminal's folder, whose row is picked out.
     var terminalFolder: String?
     var home: String?
+    /// The ssh host it's showing, if it isn't this machine.
+    var host: String?
+    /// What it's waiting for, or why it can't show anything, instead of the list.
+    var status: String?
 
     private var scale: Float { layout.scale }
     private var fg: UInt32 { TerminalPalette.foreground }
@@ -94,12 +98,16 @@ struct SidebarView {
             if sidebar.hoveredButton == button { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 4 * scale, fg, 0.10) }
             icon(button.glyph, r, pixels: 12 * scale, color: on ? TerminalPalette.accent : nil, alpha: on ? 1 : 0.7)
         }
-        let path = crumbs.joined(separator: "\\")
-        label((sidebar.pinned != nil ? "Pinned · " : "") + path, layout.subtitle, pixels: 11 * scale, alpha: 0.5)
+        let path = folder.map { AnyPath.isUnix($0) ? (crumbs.first == "~" ? "~/" + crumbs.dropFirst().joined(separator: "/") : $0) : crumbs.joined(separator: "\\") } ?? ""
+        label((sidebar.pinned != nil ? "Pinned · " : "") + (host.map { $0 + ":" } ?? "") + path, layout.subtitle, pixels: 11 * scale, alpha: 0.5)
 
         let list = layout.list
         sol_canvas_push_clip(canvas.raw, list.x, list.y, list.width, list.height)
         defer { sol_canvas_pop_clip(canvas.raw) }
+        if let status {
+            label(status, UIRect(x: a.x + 12 * scale, y: list.y + 4 * scale, width: a.width - 24 * scale, height: 22 * scale), pixels: 12.5 * scale, alpha: 0.5)
+            return
+        }
         if tree.rootFailed {
             label("Can't read this folder", UIRect(x: a.x + 12 * scale, y: list.y + 4 * scale, width: a.width - 24 * scale, height: 22 * scale), pixels: 12.5 * scale, alpha: 0.5)
             return

@@ -24,6 +24,14 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// The password this tab's ssh session signed in with, for the sidebar's own connection. Only in memory, encrypted,
     /// and dropped when the session ends.
     private(set) var rememberedPassword: ProtectedSecret?
+    /// The sidebar's own connection to the host this tab is ssh'd into.
+    private(set) var remote: RemoteConnection?
+    private var sshStartedAt: Date?
+    private var remoteAttempts = 0
+    private var remoteRetryAt: Date?
+    /// Asks the window to look again, as the remote connection comes and goes.
+    var onRemoteChange: (() -> Void)?
+
     /// A command to run once the shell first reaches its prompt.
     var pendingCommand: String?
 
@@ -87,6 +95,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
         question?.reply(nil)
         question = nil
         rememberedPassword = nil
+        remote?.close()
+        remote = nil
         pty?.terminate()
     }
 
@@ -138,7 +148,9 @@ final class TerminalPane: TerminalDelegate, Groupable {
     private func answer(_ text: String?) {
         guard let current = question else { return }
         question = nil
-        if let text, Askpass.isPassword(current.prompt), AppSettings.shared.rememberSSHPasswords { rememberedPassword = ProtectedSecret(text) }
+        if let text, Askpass.isPassword(current.prompt), !current.prompt.hasPrefix("For the sidebar: "), AppSettings.shared.rememberSSHPasswords {
+            rememberedPassword = ProtectedSecret(text)
+        }
         lastAnswerLength = text?.count
         current.reply(text)
         invalidate()
@@ -177,16 +189,76 @@ final class TerminalPane: TerminalDelegate, Groupable {
         invalidate()
     }
 
-    /// The session has started or ended. Ending it forgets its password, and any question it left unanswered.
+    /// The session has started or ended. Ending it forgets its password, closes the sidebar's connection, and drops any
+    /// question it left unanswered.
     private func sshChanged() {
         if terminal.sshControlPath == nil {
             rememberedPassword = nil
             if question != nil { answer(nil) }
+            remote?.close()
+            remote = nil
+            sshStartedAt = nil
+            remoteAttempts = 0
+            remoteRetryAt = nil
+            onRemoteChange?()
+        } else if sshStartedAt == nil {
+            sshStartedAt = Date()
         }
+    }
+
+    /// Opens the sidebar's connection once the terminal has signed in: straight after a password is answered, or a few
+    /// seconds in when there was no question (a key). A failed one is tried again a couple of times, quietly.
+    private func manageRemote() {
+        guard let args = sshArguments, let started = sshStartedAt, let host else { return }
+        if let remote, case .failed = remote.state {
+            self.remote = nil
+            remoteRetryAt = remoteAttempts < 3 ? Date().addingTimeInterval(5) : nil
+            onRemoteChange?()
+        }
+        guard remote == nil, !hasQuestion else { return }
+        let signedIn = rememberedPassword != nil || Date().timeIntervalSince(started) > 3
+        guard signedIn, remoteAttempts < 3, Date() >= (remoteRetryAt ?? .distantPast) else { return }
+        remoteAttempts += 1
+        guard let connection = RemoteConnection(arguments: args, askpassPipe: host.askpassPipeName, post: { [weak host] work in host?.runOnWindowThreadPublic(work) }) else { return }
+        connection.onChange = { [weak self] in
+            if connection.state == .ready { self?.remoteAttempts = 0 }
+            self?.onRemoteChange?()
+        }
+        remote = connection
+        connection.start()
+        onRemoteChange?()
+    }
+
+    /// Where the sidebar should go on the host: the remote shell's folder when it says, else home.
+    var remoteFolder: String? {
+        guard let remote, remote.state == .ready else { return nil }
+        return terminal.remoteCwd ?? remote.home
+    }
+
+    /// What the sidebar says while there's nothing to list from the host.
+    var remoteStatus: String? {
+        guard sshArguments != nil, let host = sshHost else { return nil }
+        switch remote?.state {
+        case .ready: return nil
+        case .failed(let why)?: return why
+        case .connecting?: return "Connecting to \(host)…"
+        case nil: return remoteAttempts >= 3 ? "Couldn't connect to \(host) for the sidebar." : "Connecting to \(host)…"
+        }
+    }
+
+    /// An answer for the sidebar's connection: the remembered password, when that's what it asks for. Anything else (a
+    /// one-time code) is asked here, marked as for the sidebar.
+    func answerForRemote(_ prompt: String, reply: @escaping (String?) -> Void) {
+        if Askpass.isPassword(prompt), let password = rememberedPassword {
+            password.reveal { reply($0) }
+            return
+        }
+        ask("For the sidebar: " + prompt, reply: reply)
     }
 
     /// Timed work that doesn't depend on being the pane on screen.
     func tick() {
+        manageRemote()
         if let command = pendingCommand, atPrompt {
             pendingCommand = nil
             write(Array((command + "\r").utf8))
