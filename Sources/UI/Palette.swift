@@ -13,6 +13,15 @@ struct PaletteItem {
     /// What Ctrl+Enter runs instead (Go to Folder: a new tab).
     var alternate: (() -> Void)?
 
+    // Written out, so a trailing closure is always `run`: the memberwise one would give it to `alternate`.
+    init(title: String, category: String = "", shortcut: String = "", isHeader: Bool = false, run: @escaping () -> Void = {}) {
+        self.title = title
+        self.category = category
+        self.shortcut = shortcut
+        self.isHeader = isHeader
+        self.run = run
+    }
+
     static func header(_ title: String) -> PaletteItem { PaletteItem(title: title, isHeader: true) }
 
     /// Tells a command from others of the same name, for remembering what was run.
