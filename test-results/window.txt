@@ -1,91 +1,120 @@
-﻿.\build\windows\Solanum-test.exe : 
-At line:5 char:1
-+ .\build\windows\Solanum-test.exe --window-test *>&1 | Out-File -Encod ...
-+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
-*** Exception c000001d: Backtracing from 0x7ff694e64699... done ***
-
-*** Program crashed: Illegal instruction at 0x00007ff694e64699 ***
-
-Platform: x86_64 Windows 11.0 build 26200
-
-Thread 0 crashed:
-
- 0      0x00007ff694e64699 <unknown> in Solanum-test.exe
- 1 [ra] 0x00007ff694e664ac <unknown> in Solanum-test.exe
- 2 [ra] 0x00007ff694e4d964 <unknown> in Solanum-test.exe
- 3 [ra] 0x00007ffd966b52e6 <unknown> in USER32.dll
- 4 [ra] 0x00007ffd966b5dbd <unknown> in USER32.dll
- 5 [ra] 0x00007ff694e95b3b <unknown> in Solanum-test.exe
- 6 [ra] 0x00007ff694e26cbc <unknown> in Solanum-test.exe
- 7 [ra] 0x00007ff694e2154f <unknown> in Solanum-test.exe
- 8 [ra] 0x00007ff694e9b470 <unknown> in Solanum-test.exe
- 9 [ra] 0x00007ffd97fadda7 <unknown> in KERNEL32.DLL
-10 [ra] 0x00007ffd9895ee4c <unknown> in ntdll.dll
-
-Thread 1:
-
-0  null
-
-Thread 2:
-
-0  null
-
-Thread 3:
-
-0  null
-
-Thread 4:
-
-0  null
-
-Thread 5:
-
-0  null
-
-Thread 6:
-
-0  null
-
-Thread 7:
-
-0  null
-
-
-Registers:
-
-rax 0x0000000000000000  0
-rdx 0x0000000000000000  0
-rcx 0x54656d706c617401  6081387201455813633
-rbx 0x00000232ed93bd00  70 1d df e8 32 02 00 00 10 b2 a7 ed 32 02 00 00  p·ßè2····²§í2···
-rsi 0x00007ff694e56e80  56 57 48 83 ec 28 f3 0f 59 15 72 08 06 00 f3 0f  VWH·ì(ó·Y·r···ó·
-rdi 0x00000232e8e4b9d0  60 42 eb 94 f6 7f 00 00 03 00 00 00 02 00 00 00  `Bë·ö···········
-rbp 0x00000232e4a2b450  68 09 ec 94 f6 7f 00 00 4e 6e 1a 5d 46 00 00 c0  h·ì·ö···Nn·]F··À
-rsp 0x000000abfcd3f070  f0 bc e4 e8 32 02 00 00 a0 f1 d3 fc ab 00 00 00  ð¼äè2··· ñÓü«···
- r8 0x616c706861000000  7020109512770060288
- r9 0xe500000000000000  16501189034685497344
-r10 0x0000000000000000  0
-r11 0x0000000000000005  5
-r12 0x000000abfcd3f1a0  6a 01 00 00 00 00 00 30 40 72 96 ed 32 02 00 00  j······0@r·í2···
-r13 0x00000232e4a2b450  68 09 ec 94 f6 7f 00 00 4e 6e 1a 5d 46 00 00 c0  h·ì·ö···Nn·]F··À
-r14 0xe100000000000000  16212958658533785600
-r15 0x000000abfcd3f180  98 72 98 a6 fc 7f 00 00 05 00 00 00 01 00 00 00  ·r·¦ü···········
-rip 0x00007ff694e64699  0f 0b 0f 1f 44 00 00 56 57 53 48 83 ec 20 49 8b  ····D··VWSH·ì I·
-
-rflags 0x0000000000010246  ZF PF
-
-cs 0x0033  fs 0x0053  gs 0x002b
-
-
-Images (71 omitted):
-
-0x00007ff694e20000–0x00007ff694e9c200 <no build ID>                            Solanum-test.exe 
-C:\Users\sacaa\Documents\Personal\Projects\Solanum\Solanum\build\windows\Solanum-test.exe
-0x00007ffd966a0000–0x00007ffd9675b000 ee56bff0780a7449d49a58173a7cbc7e01000000 USER32.dll       C:\WINDOWS\System32\USER32.dll
-0x00007ffd97f80000–0x00007ffd98008000 8ca4c3e87eac0db68781d8c10020c44f01000000 KERNEL32.DLL     C:\WINDOWS\System32\KERNEL32.DLL
-0x00007ffd988e0000–0x00007ffd98a54000 5bd431c0a10d6e8a74d06ed6ab2dd9e101000000 ntdll.dll        C:\WINDOWS\SYSTEM32\ntdll.dll
-
-Backtrace took 0.14s
-
+﻿  ✓ window: shell reaches its prompt
+  ✓ window: typing runs a command
+  ✓ window: paste
+  ✓ window: a long-running program starts
+  ✓ window: Ctrl+C reaches the program
+  ✓ window: the shell comes back after Ctrl+C
+  ✓ window: resize reaches the emulator and the program
+  ✓ window: output fills the screen
+  ✓ window: shrinks
+  ✓ window: grows again
+  ✓ window: typing after resizing stays on the prompt
+  ✓ window: resizing keeps scrollback
+  ✓ window: clears the line
+  ✓ window: a command to click into
+  ✓ window: clicking moves the cursor there
+  ✓ window: typing goes in at the click
+  ✓ window: a command to edit
+  ✓ window: typing replaces the selection
+  ✓ window: Ctrl+Z undoes all of it
+  ✓ window: Backspace deletes the selection
+  ✓ window: paste replaces the selection
+  ✓ window: the edited command runs
+  ✓ keys: a command for the clipboard keys
+  ✓ keys: Ctrl+C copies a selection and clears it
+  ✓ keys: Ctrl+C with a selection doesn't interrupt
+  ✓ keys: Ctrl+V pastes
+  ✓ keys: Ctrl+X cuts a selection
+  ✓ keys: and it's on the clipboard, gone from the line
+  ✓ keys: Ctrl+C with nothing selected interrupts
+  ✓ window: colors from a real program
+  ✓ tabs: the + button opens one
+  ✓ tabs: typing goes to the new tab
+  ✓ tabs: clicking a tab shows it
+  ✓ tabs: a command starts in the second tab
+  ✓ tabs: it keeps running behind another
+  ✓ tabs: all of them resize
+  ✓ tabs: Ctrl+T opens one at a prompt
+  ✓ tabs: a program starts in it
+  ✓ tabs: Ctrl+T opens one from a program too
+  ✓ tabs: Ctrl+W closes one at a prompt
+  ✓ tabs: Ctrl+W closes one with a program running
+  ✓ reopen: a tab with a folder and some output
+  ✓ reopen: it gets them
+  ✓ reopen: closed
+  ✓ reopen: Ctrl+Shift+T brings it back
+  ✓ reopen: with what it showed
+  ✓ reopen: typing works in it
+  ✓ tabs: Ctrl+Shift+W closes one too
+  ✓ overflow: opening tabs past what fits
+  ✓ overflow: the new tab is in view
+  ✓ overflow: the left arrow scrolls
+  ✓ overflow: a sideways swipe scrolls right
+  ✓ overflow: and left
+  ✓ overflow: closing them ends it
+  ✓ palette: Ctrl+Shift+P opens it
+  ✓ palette: typing filters it
+  ✓ palette: what's typed stays out of the shell
+  ✓ palette: Enter runs it and closes
+  ✓ palette: lists the tabs
+  ✓ palette: Esc closes it
+  ✓ palette: and Close Tab works from it
+  ✓ palette: closes the tab
+  ✓ palette: clicking outside closes it
+  ✓ palette: typing reaches the shell again
+  ✓ sidebar: the terminal goes to a folder
+  ✓ sidebar: Ctrl+B shows it, on that folder
+  ✓ sidebar: the terminal makes room
+  ✓ sidebar: lists folders first
+  ✓ sidebar: clicking a folder opens it
+  ✓ sidebar: arrow keys move through it
+  ✓ sidebar: Enter opens a file
+  ✓ sidebar: a new file shows by itself
+  ✓ sidebar: Esc goes back to the terminal
+  ✓ sidebar: its border drags
+  ✓ sidebar: double-clicking a folder sends the terminal there
+  ✓ sidebar: and it follows
+  ✓ sidebar: the parent button goes up without pinning
+  ✓ sidebar: and it follows once the terminal moves
+  ✓ sidebar: back into the folder
+  ✓ sidebar: the pin holds it
+  ✓ sidebar: while the terminal moves
+  ✓ sidebar: unpinning catches up
+  ✓ sidebar: the ... button opens its menu
+  ✓ sidebar: a menu row works
+  ✓ sidebar: and off again
+  ✓ sidebar: hidden files are off
+  ✓ sidebar: the right one stays away without a split
+  ✓ path: clicking a part lists its folders
+  ✓ path: Esc closes the menu
+  ✓ path: choosing a folder sends the terminal there
+  ✓ path: it gets there
+  ✓ drag: a third tab to move
+  ✓ drag: past its neighbor, they trade places
+  ✓ drag: a short drag is only a click
+  ✓ drag: closes the extra tab
+  ✓ wrapped prompt: a sidebar's width leaves it whole
+  ✓ wrapped prompt: getting shorter leaves it whole
+  ✓ wrapped prompt: taller too
+  ✓ wrapped prompt: typing goes after it
+  ✓ wrapped prompt: clears
+  ✓ wrapped prompt: back to size
+  ✓ sidebar: typing reaches the terminal
+  ✓ tabs: titled by folder, not the shell's path
+  ✓ tabs: exit closes only its tab
+  ✓ tabs: the x closes one
+  ✓ box: replace on one row: starts
+  ✓ box: replace on one row: selects and acts
+  ✓ box: replace on one row: leaves the right text
+  ✓ box: replace across two rows: starts
+  ✓ box: replace across two rows: selects and acts
+  ✓ box: replace across two rows: leaves the right text
+  ✓ box: delete across two rows: starts
+  ✓ box: delete across two rows: selects and acts
+  ✓ box: delete across two rows: leaves the right text
+  ✓ box: delete across three rows: starts
+  ✓ box: delete across three rows: selects and acts
+  ✓ box: delete across three rows: leaves the right text
+  ✓ window: painted
+Clipboard found busy 0 times; got through 117 of 117 steps.
+All 118 checks passed.
