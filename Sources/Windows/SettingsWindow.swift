@@ -586,13 +586,10 @@ final class SettingsWindow {
     private func drawThemeCard(_ spec: ThemeSpec, _ r: UIRect, on target: Canvas) {
         let s = scale, colors = ThemeColors(spec), current = AppSettings.shared.themeName == spec.name
         let radius = 10 * s, strip = (40 * s).rounded()
-        sol_canvas_push_clip(target.raw, r.x, r.y, r.width, r.height)
-        sol_canvas_fill_rounded(target.raw, r.x, r.y, r.width, r.height, radius, colors.background, 1)
+        // The whole card in the name strip's color, rounded all round; then the preview over its top, rounded only there.
+        sol_canvas_fill_rounded(target.raw, r.x, r.y, r.width, r.height, radius, TerminalPalette.surface, 1)
+        sol_canvas_fill_rounded(target.raw, r.x, r.y, r.width, r.height - strip, radius, colors.background, 1)
         sol_canvas_fill_gradient(target.raw, r.x, r.y + radius, r.width, r.height - strip - radius, colors.background, colors.backgroundBottom)
-        sol_canvas_fill_rect(target.raw, r.x, r.maxY - strip, r.width, strip, TerminalPalette.foreground, 0.08)
-        sol_canvas_fill_rounded(target.raw, r.x, r.maxY - strip, r.width, strip, radius, TerminalPalette.surface, 1)
-        sol_canvas_fill_rect(target.raw, r.x, r.maxY - strip, r.width, radius, TerminalPalette.surface, 1)
-        sol_canvas_pop_clip(target.raw)
         let x = r.x + 18 * s
         for (k, color) in [colors.ansi[1], colors.ansi[3], colors.ansi[2]].enumerated() {
             sol_canvas_fill_ellipse(target.raw, x + 5 * s + Float(k) * 18 * s, r.y + 20 * s, 5 * s, 5 * s, color, 1)
