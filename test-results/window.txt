@@ -108,6 +108,48 @@
   ✓ wrapped prompt: clears
   ✓ wrapped prompt: back to size
   ✓ sidebar: typing reaches the terminal
+  ✓ new tab: opens in the current tab's folder
+  ✓ new tab: closes
+  ✓ themes: the status bar's theme opens the menu
+  ✓ themes: choosing one changes everything
+  ✓ resize: no errors from re-anchoring
+  ✓ themes: and back from the palette
+  ✓ themes: back to the default
+  ✓ groups: tabs to group
+  ✓ groups: Ctrl and Shift pick tabs
+  ✓ groups: right-click offers to group them
+  ✓ groups: grouping asks for a name
+  ✓ groups: typing names it
+  ✓ groups: its chip collapses it
+  ✓ groups: and expands it
+  ✓ groups: the chip's menu
+  ✓ groups: ungroups
+  ✓ groups: back to two tabs
+  ✓ settings: the flower opens it
+  ✓ settings: System
+  ✓ settings: Preferences
+  ✓ settings: Appearance
+  ✓ settings: Text & Size
+  ✓ settings: Shortcuts
+  ✓ settings: Aliases
+  ✓ settings: a toggle
+  ✓ settings: turns its setting on
+  ✓ settings: and off
+  ✓ settings: a choice opens its menu
+  ✓ settings: and picks
+  ✓ settings: new tabs open at home now
+  ✓ settings: back to the current folder
+  ✓ settings: a field takes typing
+  ✓ settings: and the text gets bigger
+  ✓ settings: back to its size
+  ✓ settings: a theme card
+  ✓ settings: switches the theme
+  ✓ settings: back to the default theme
+  ✓ aliases: Add Alias makes a row to type in
+  ✓ aliases: it's kept
+  ✓ aliases: reach the shell at its next prompt
+  ✓ aliases: and run
+  ✓ settings: closes
   ✓ tabs: titled by folder, not the shell's path
   ✓ tabs: exit closes only its tab
   ✓ tabs: the x closes one
@@ -124,5 +166,5 @@
   ✓ box: delete across three rows: selects and acts
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
-Clipboard found busy 1 times; got through 125 of 125 steps.
-All 126 checks passed.
+Clipboard found busy 0 times; got through 167 of 167 steps.
+All 168 checks passed.

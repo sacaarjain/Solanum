@@ -119,6 +119,34 @@ Menus
   ✓ menu: the highlighted row stays in view
   ✓ sidebars: none when hidden
   ✓ sidebars: rows from the top of the list
+Themes and settings
+  ✓ themes: all fourteen
+  ✓ hex: six digits
+  ✓ hex: with alpha
+  ✓ hex: three digits
+  ✓ theme: Solanum Default's chrome
+  ✓ theme: a light one
+  ✓ theme: a see-through selection is mixed into the background
+  ✓ theme: from a Mac theme file
+  ✓ settings: reads the file
+  ✓ settings: numbers kept in range
+  ✓ settings: writes it back, keeping keys it doesn't know
+  ✓ settings: and reads what it wrote
+  ✓ field: typing and deleting words
+  ✓ field: Delete at the start
+  ✓ aliases: valid ones become PowerShell
+  ✓ aliases: a dot in a name is fine
+Tab groups
+  ✓ groups: picked tabs gather where the first was
+  ✓ groups: a new one gets the first free color
+  ✓ groups: added tabs go to the end of the group
+  ✓ groups: a new group never lands inside another
+  ✓ groups: removing moves it past the group
+  ✓ groups: a tab dragged away from its group leaves it
+  ✓ groups: a tab dropped inside a group joins it
+  ✓ groups: chip labels
+  ✓ groups: a chip sits before its first tab
+  ✓ groups: collapsed tabs take no room
 Command palette
   ✓ palette: lists everything
   ✓ palette: fuzzy search
@@ -164,4 +192,4 @@ PowerShell hook
   ✓ powershell: Esc clears the line
   ✓ powershell: exits
   - pwsh.exe isn't installed
-All 157 checks passed.
+All 183 checks passed.
