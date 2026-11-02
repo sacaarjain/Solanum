@@ -163,14 +163,14 @@ final class RemoteConnection {
     /// tell), or failing that the only login shell on a terminal. Nil when there's no telling, as on a host without /proc.
     func shellFolder(session: String, _ done: @escaping (String?) -> Void) {
         guard state == .ready, session.allSatisfy({ $0.isHexDigit }) else { return done(nil) }
-        run(Self.shellFolderScript.replacingOccurrences(of: "SESSION", with: session)) { text, _ in
+        run(Self.shellFolderScript.replacingOccurrences(of: "@SESSION@", with: session)) { text, _ in
             let line = text?.split(separator: "\n").last.map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             done(line.flatMap { $0.hasPrefix("/") ? $0 : nil })
         }
     }
 
     static let shellFolderScript = #"""
-    t='LC_SOLANUM_SESSION=SESSION'; best=; bestp=; only=; n=0
+    t='LC_SOLANUM_SESSION=@SESSION@'; best=; bestp=; only=; n=0
     for d in /proc/[0-9]*; do
       [ -O "$d" ] || continue
       case $(readlink "$d/fd/0" 2>/dev/null) in /dev/pts/*|/dev/pty*|/dev/cons*) ;; *) continue ;; esac
