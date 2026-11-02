@@ -254,7 +254,8 @@ struct WindowChrome {
         // Over ssh, after the host's name.
         if let sshHost { x = layout.hostsButton.maxX + 10 * scale + (14 * scale).rounded() + 5 * scale + width(of: sshHost, pixels: pixels) + 14 * scale }
         var out: [(label: String, path: String, rect: UIRect, hit: UIRect)] = []
-        for (i, crumb) in WindowText.crumbPaths(folder, home: home).enumerated() {
+        // The whole path, never shortened to ~, so that every folder above is a click away.
+        for (i, crumb) in WindowText.crumbPaths(folder, home: nil).enumerated() {
             let w = min(width(of: crumb.label, pixels: pixels), max(limit - x, 0))
             // The first takes in the folder icon, and each a little either side, so that a short one like ~ is easy to hit.
             let start = i == 0 && sshHost == nil ? iconX : x - 4 * scale

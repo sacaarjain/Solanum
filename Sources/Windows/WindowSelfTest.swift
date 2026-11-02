@@ -891,12 +891,14 @@ enum WindowSelfTest {
                     for line in (text ?? "(nothing)").split(separator: "\n") { print("    proc: " + line) }
                 }
             }, done: { pane.remoteShellFolder != nil }))
-            steps.append(Step(name: "ssh: the status bar shows the host's folder", action: {}, done: { window.crumbRect("~") != nil }))
+            steps.append(Step(name: "ssh: the status bar shows the host's whole path", action: {}, done: {
+                window.crumbRect("/") != nil && window.crumbRect("solanumtest") != nil && window.crumbRect("~") == nil
+            }))
             steps.append(Step(name: "ssh: double-clicking a folder sends the terminal there", action: {
                 if let row = window.leftRow(named: "Documents") { window.doubleClick(row) }
             }, done: { pane.remoteShellFolder?.hasSuffix("/Documents") == true && window.leftTree.root?.hasSuffix("/Documents") == true }))
-            steps.append(Step(name: "ssh: the path's ~ lists the host's folders", action: {
-                if let r = window.crumbRect("~") { window.click(r) }
+            steps.append(Step(name: "ssh: the path's home part lists the host's folders", action: {
+                if let r = window.crumbRect("solanumtest") { window.click(r) }
             }, done: { window.menuTitles.contains("Desktop") && window.menuTitles.contains("Copy Path") }))
             steps.append(Step(name: "ssh: choosing one sends the terminal there", action: {
                 if let row = window.menuRow("Desktop") { window.click(row) }
