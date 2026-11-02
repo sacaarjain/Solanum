@@ -354,6 +354,15 @@ enum WindowSelfTest {
         }))
         steps.append(Step(name: "overflow: the left arrow scrolls", action: { window.click(window.currentLayout.scrollLeft) },
                           done: { window.currentLayout.tabScroll < window.currentLayout.maxTabScroll }))
+        var beforeSwipe: Float = 0
+        steps.append(Step(name: "overflow: a sideways swipe scrolls right", action: {
+            beforeSwipe = window.currentLayout.tabScroll
+            window.swipeTabs(delta: 60)
+        }, done: { window.currentLayout.tabScroll > beforeSwipe }))
+        steps.append(Step(name: "overflow: and left", action: {
+            beforeSwipe = window.currentLayout.tabScroll
+            window.swipeTabs(delta: -60)
+        }, done: { window.currentLayout.tabScroll < beforeSwipe }))
         steps.append(Step(name: "overflow: closing them ends it", action: {}, done: {
             if window.panes.count > 2 && pane.atPrompt { press(0x57) }
             return window.panes.count == 2 && !window.currentLayout.overflows && window.currentLayout.tabScroll == 0

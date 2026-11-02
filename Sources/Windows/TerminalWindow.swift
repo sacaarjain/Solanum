@@ -339,6 +339,13 @@ final class TerminalWindow {
              Win.WM_RBUTTONDOWN, Win.WM_RBUTTONUP, Win.WM_MBUTTONDOWN, Win.WM_MBUTTONUP:
             clientMouse(message, wParam, lParam)
             return 0
+        case Win.WM_MOUSEHWHEEL:
+            // A touchpad's sideways swipe or a tilting wheel, which moves the tabs. It's in small steps on a touchpad, so
+            // in proportion. Positive is to the right.
+            guard !panes.isEmpty, screenPoint(lParam).y < layout.tabBarHeight else { return 0 }
+            let swiped = Float(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Float(Win.WHEEL_DELTA)
+            scrollTabs(by: swiped * layout.tabWidth)
+            return 1
         case Win.WM_MOUSEWHEEL:
             guard !panes.isEmpty else { return 0 }
             let (_, y) = screenPoint(lParam)
@@ -525,6 +532,14 @@ final class TerminalWindow {
     }
 
     var currentLayout: WindowLayout { layout }
+
+    /// A sideways swipe over the tab bar, as a touchpad sends it.
+    func swipeTabs(delta: Int) {
+        var point = POINT(x: LONG(clientWidth / 2), y: LONG(layout.tabBarHeight / 2))
+        ClientToScreen(hwnd, &point)
+        let position = LPARAM(Int(point.x) & 0xFFFF) | (LPARAM(Int(point.y) & 0xFFFF) << 16)
+        PostMessageW(hwnd, Win.WM_MOUSEHWHEEL, WPARAM(UInt16(truncatingIfNeeded: delta)) << 16, position)
+    }
 
     // MARK: - The app
 
