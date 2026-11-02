@@ -39,8 +39,9 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
 - **Local scripts:** Git for Windows' `sh.exe` runs the same git and search scripts the Mac uses.
 - **Shortcuts:** Mac Option is Alt and Shift is Shift. Windows has one Ctrl for what the Mac splits between Command and
   Control, and Fn can't be detected, so Ctrl stands in for Command where that costs little:
-  - Programs always keep Ctrl+A, D, E, H, J, K, L, R, U, W and Z.
-  - At a prompt, the app takes keys shells rarely need: Ctrl+T, N, B, F, O, S, Q, G and P, as each feature arrives.
+  - Programs always keep Ctrl+A, D, E, H, J, K, L, R, U and Z.
+  - At a prompt, the app takes keys shells rarely need: Ctrl+T, N, B, F, O, S, Q, G and P, as each feature arrives. Ctrl+W
+    closes the tab at a PowerShell prompt, but has to stay with a bash tab, where it deletes a word.
   - Full-screen programs get every Ctrl key, and a running program such as Claude Code keeps the ones it uses.
   - Ctrl+Shift+letter reaches the app from anywhere. Ctrl+Shift+P is the command palette and Ctrl+Shift+W closes a tab.
   - Ctrl+C copies when something's selected and interrupts otherwise; Ctrl+V pastes, except in full-screen programs and for

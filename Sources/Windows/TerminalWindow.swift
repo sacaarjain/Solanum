@@ -438,9 +438,17 @@ final class TerminalWindow {
     func keyDown(_ key: Int32, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
         // Windows' Ctrl stands in for the Mac's Command where that costs little: at a prompt, for keys a shell rarely needs
         // (see WINDOWS.md). A running program keeps them, and Ctrl+Shift reaches the app from anywhere.
-        if ctrl && !shift && !alt && activePane.atPrompt && key == 0x54 {
-            newTab()
-            return true
+        if ctrl && !shift && !alt && activePane.atPrompt {
+            switch key {
+            case 0x54:
+                newTab()
+                return true
+            case 0x57:
+                // PowerShell has no use for it. A bash tab will have to keep it, where it deletes a word.
+                closeTab(activeIndex)
+                return true
+            default: break
+            }
         }
         // Ctrl+1 to 9 pick a tab, with or without Shift. Shells and programs have no use for them.
         if ctrl && !alt && (0x31...0x39).contains(key) {

@@ -307,7 +307,19 @@ enum WindowSelfTest {
         steps.append(Step(name: "tabs: Ctrl+Shift+W closes one", action: {
             _ = window.keyDown(0x57, shift: true, ctrl: true, alt: false)
         }, done: { window.panes.count == 3 }))
-        steps.append(Step(name: "tabs: and the third", action: { window.closeTab(2) }, done: { window.panes.count == 2 }))
+        steps.append(Step(name: "tabs: a running program keeps Ctrl+W", action: {}, done: {
+            guard window.panes.count == 3, pane.terminal.currentBlock?.state == .running else { return !pane.atPrompt ? false : true }
+            _ = window.keyDown(0x57, shift: false, ctrl: true, alt: false)
+            return window.panes.count == 3
+        }))
+        var closing = false
+        steps.append(Step(name: "tabs: Ctrl+W closes one at a prompt", action: {}, done: {
+            if !closing && pane.atPrompt {
+                closing = true
+                _ = window.keyDown(0x57, shift: false, ctrl: true, alt: false)
+            }
+            return window.panes.count == 2
+        }))
         steps.append(Step(name: "tabs: titled by folder, not the shell's path", action: {},
                           done: { !window.panes[1].tabTitle.contains(".exe") && !window.panes[1].tabTitle.isEmpty }))
         steps.append(Step(name: "tabs: exit closes only its tab", action: {
