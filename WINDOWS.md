@@ -46,6 +46,7 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
   - Ctrl+C copies when something's selected and interrupts otherwise; Ctrl+V pastes, except in full-screen programs and for
     an image going to Claude Code; Ctrl+X cuts a selection in the line being typed; Ctrl+1 to 9 pick a tab.
   - Ctrl+Shift+P is the command palette, which stands in for the Mac's menu bar.
+  - Ctrl+B and Ctrl+Alt+B show the left and right sidebars, and Ctrl+Shift+B pins the left one to its folder.
 - **Art:** `Tools/MakeWindowsArt.swift` renders the Mac's flower, tab prompt and app icon into `Sources/Windows/ArtData.swift`
   and `Support/Windows/Solanum.ico`, until the drawing itself is shared.
 - **Closing the last window:** it saves the session and exits, and the next launch restores it.

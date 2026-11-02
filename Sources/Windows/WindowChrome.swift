@@ -6,6 +6,7 @@ private enum Icon {
     static let minimize: UInt16 = 0xE921, maximize: UInt16 = 0xE922, restore: UInt16 = 0xE923, close: UInt16 = 0xE8BB
     static let add: UInt16 = 0xE710, folder: UInt16 = 0xE8B7
     static let chevronLeft: UInt16 = 0xE76B, chevronRight: UInt16 = 0xE76C
+    static let dockLeft: UInt16 = 0xE90C, dockRight: UInt16 = 0xE90D
 }
 
 /// The tab bar and status bar. One function for the window and for snapshots.
@@ -163,13 +164,20 @@ struct WindowChrome {
         // The theme's name on the right, with its flower.
         let themePixels = 10.5 * scale
         let themeWidth = width(of: themeName, pixels: themePixels, semibold: true)
-        let themeX = bar.maxX - 10 * scale - themeWidth
+        let themeX = layout.toggleRight.x - 8 * scale - themeWidth
         label(themeName, UIRect(x: themeX, y: bar.y, width: themeWidth + 2, height: bar.height), pixels: themePixels, semibold: true, alpha: 0.55)
         let side = (16 * scale).rounded()
         canvas.drawArt("flowerOutline", UIRect(x: themeX - side - 5 * scale, y: (bar.midY - side / 2).rounded(), width: side, height: side), scale: scale)
 
+        // The sidebars' switches, at either end.
+        for (part, r, glyph, on) in [(WindowPart.toggleLeft, layout.toggleLeft, Icon.dockLeft, layout.leftWidth > 0),
+                                     (.toggleRight, layout.toggleRight, Icon.dockRight, layout.rightWidth > 0)] {
+            if hovered == part { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 4 * scale, fg, 0.10) }
+            icon(glyph, r, pixels: 12 * scale, color: on ? TerminalPalette.accent : nil, alpha: on ? 1 : 0.75)
+        }
+
         // The folder on the left.
-        var x = 12 * scale
+        var x = layout.toggleLeft.maxX + 8 * scale
         icon(Icon.folder, UIRect(x: x, y: bar.y, width: 16 * scale, height: bar.height), pixels: 12 * scale, alpha: 0.75)
         x += 21 * scale
         guard let folder else { return }

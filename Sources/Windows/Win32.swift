@@ -17,6 +17,8 @@ enum Win {
     static let WM_OUTPUT: UINT = 0x8001
     /// The program ended.
     static let WM_EXITED: UINT = 0x8002
+    /// Work handed over from another thread.
+    static let WM_RUN: UINT = 0x8003
 
     static let VK_BACK: Int32 = 0x08, VK_TAB: Int32 = 0x09, VK_RETURN: Int32 = 0x0D, VK_SHIFT: Int32 = 0x10
     static let VK_CONTROL: Int32 = 0x11, VK_MENU: Int32 = 0x12, VK_ESCAPE: Int32 = 0x1B, VK_SPACE: Int32 = 0x20
@@ -43,6 +45,7 @@ enum Win {
     static let SW_MINIMIZE: Int32 = 6, SW_MAXIMIZE: Int32 = 3, SW_RESTORE: Int32 = 9
     static let TME_LEAVE: DWORD = 0x02, TME_NONCLIENT: DWORD = 0x10
     static let arrowCursor = UnsafePointer<WCHAR>(bitPattern: 32512)
+    static let resizeCursor = UnsafePointer<WCHAR>(bitPattern: 32644)
     /// Resource 1 in Support/Windows/Solanum.rc.
     static let appIcon = UnsafePointer<WCHAR>(bitPattern: 1)
     static let SWP_NOSIZE: UINT = 0x0001, SWP_FRAMECHANGED: UINT = 0x0020

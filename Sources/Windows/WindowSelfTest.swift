@@ -103,6 +103,56 @@ enum WindowSelfTest {
         results.check("text: a shell's own path isn't", WindowText.tabTitle(title: #"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"#, folder: #"C:\Users\me\Solanum"#, home: #"C:\Users\me"#) == "Solanum")
         results.check("text: nor as administrator", WindowText.tabTitle(title: #"Administrator: C:\Windows\system32\cmd.exe"#, folder: #"C:\Users\me"#, home: #"C:\Users\me"#) == "~")
 
+        print("File tree")
+        results.check("path: join", WindowsPath.join(#"C:\a"#, "b") == #"C:\a\b"# && WindowsPath.join(#"C:\"#, "b") == #"C:\b"#)
+        results.check("path: parent", WindowsPath.parent(#"C:\a\b"#) == #"C:\a"# && WindowsPath.parent(#"C:\a"#) == #"C:\"# && WindowsPath.parent(#"C:\"#) == nil)
+        results.check("path: name", WindowsPath.name(#"C:\a\b.txt"#) == "b.txt")
+        func entry(_ name: String, folder: Bool = false, hidden: Bool = false, in parent: String = #"C:\r"#) -> FileEntry {
+            FileEntry(name: name, path: WindowsPath.join(parent, name), isDirectory: folder, isHidden: hidden)
+        }
+        let sorted = FileTree.sortedForDisplay([entry("b.txt"), entry("file10"), entry("file2"), entry(".cfg", folder: true), entry("zed", folder: true), entry("Apps", folder: true)])
+        results.check("tree: folders first, dots after, numbers in order", sorted.map(\.name) == ["Apps", "zed", ".cfg", "b.txt", "file2", "file10"], "\(sorted.map(\.name))")
+        let tree = FileTree()
+        var asked: [String] = []
+        tree.onNeedsListing = { asked.append($0) }
+        tree.setRoot(#"C:\r"#)
+        results.check("tree: asks for the root", asked == [#"C:\r"#] && tree.isLoadingRoot)
+        tree.receive(#"C:\r"#, [entry("sub", folder: true), entry("a.txt"), entry("secret", hidden: true)])
+        results.check("tree: hides what's hidden", tree.rows.map(\.entry.name) == ["sub", "a.txt"] && !tree.isLoadingRoot)
+        tree.showHidden = true
+        results.check("tree: or shows it", tree.rows.count == 3)
+        tree.showHidden = false
+        tree.toggle(#"C:\r\sub"#)
+        results.check("tree: opening asks for its contents", asked.last == #"C:\r\sub"# && tree.isExpanded(#"C:\r\sub"#))
+        tree.receive(#"C:\r\sub"#, [entry("in.txt", in: #"C:\r\sub"#)])
+        results.check("tree: contents go under it, indented", tree.rows.map(\.entry.name) == ["sub", "in.txt", "a.txt"] && tree.rows[1].depth == 1)
+        results.check("tree: the same listing changes nothing", !tree.receive(#"C:\r\sub"#, [entry("in.txt", in: #"C:\r\sub"#)]))
+        results.check("tree: a new file shows", tree.receive(#"C:\r"#, [entry("sub", folder: true), entry("a.txt"), entry("c.txt"), entry("secret", hidden: true)]) && tree.rows.count == 4)
+        tree.selection = #"C:\r\sub"#
+        tree.moveSelection(by: 1)
+        results.check("tree: arrow keys", tree.selection == #"C:\r\sub\in.txt"#)
+        tree.stepOut()
+        results.check("tree: left goes to the folder holding it", tree.selection == #"C:\r\sub"#)
+        tree.stepOut()
+        results.check("tree: left closes a folder", !tree.isExpanded(#"C:\r\sub"#) && tree.rows.count == 3)
+        tree.stepIn()
+        results.check("tree: right opens one", tree.isExpanded(#"C:\r\sub"#))
+        tree.receive(#"C:\r\sub"#, nil)
+        results.check("tree: an unreadable folder shows empty, and doesn't lose the rest", tree.rows.map(\.entry.name) == ["sub", "a.txt", "c.txt"])
+        tree.setRoot(#"C:\other"#)
+        results.check("tree: moving resets the view", tree.selection == nil && tree.scrollTop == 0 && tree.rows.isEmpty)
+        tree.receive(#"C:\other"#, nil)
+        results.check("tree: says when it can't read the root", tree.rootFailed)
+        let bars = WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 2, leftWidth: 240, rightWidth: 200)
+        results.check("sidebars: the terminal fits between them", bars.terminal.x == 240 && bars.terminal.maxX == 800)
+        results.check("sidebars: tabs start at the terminal", bars.tab(0).x == 240)
+        results.check("sidebars: found by position", bars.part(atX: 100, y: 200) == .leftSidebar && bars.part(atX: 900, y: 200) == .rightSidebar && bars.part(atX: 500, y: 200) == .terminal)
+        results.check("sidebars: their borders can be grabbed", bars.part(atX: 240, y: 200) == .leftEdge && bars.part(atX: 800, y: 200) == .rightEdge)
+        results.check("sidebars: switches in the status bar", bars.part(atX: bars.toggleLeft.x + 2, y: bars.toggleLeft.midY) == .toggleLeft && bars.part(atX: bars.toggleRight.x + 2, y: bars.toggleRight.midY) == .toggleRight)
+        results.check("sidebars: none when hidden", WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 2).part(atX: 3, y: 200) == .terminal)
+        let shape = SidebarLayout(area: bars.leftSidebar, scale: 1)
+        results.check("sidebars: rows from the top of the list", shape.visibleRow(atY: shape.list.y + 1) == 0 && shape.visibleRow(atY: shape.list.y + shape.rowHeight + 1) == 1 && shape.visibleRow(atY: shape.list.y - 1) == nil)
+
         print("Command palette")
         var ran: [String] = []
         func item(_ title: String, _ category: String = "Shell") -> PaletteItem {
@@ -149,9 +199,9 @@ enum WindowSelfTest {
         let longList = PaletteModel(items: (0..<30).map { item("Command \($0)") })
         for _ in 0..<15 { longList.moveSelection(by: 1) }
         results.check("palette: the selection stays in view", longList.scrollTop > 0 && longList.selected < longList.scrollTop + PaletteModel.maxRows)
-        let shape = PaletteLayout(windowWidth: 1000, windowHeight: 700, scale: 1, rowCount: 3)
-        results.check("palette: centered, and stays put as it shrinks", shape.panel.x == 190 && shape.panel.y == PaletteLayout(windowWidth: 1000, windowHeight: 700, scale: 1, rowCount: 10).panel.y)
-        results.check("palette: finds a row", shape.visibleRow(atX: 500, y: shape.row(1).midY) == 1 && shape.visibleRow(atX: 10, y: 10) == nil)
+        let paletteShape = PaletteLayout(windowWidth: 1000, windowHeight: 700, scale: 1, rowCount: 3)
+        results.check("palette: centered, and stays put as it shrinks", paletteShape.panel.x == 190 && paletteShape.panel.y == PaletteLayout(windowWidth: 1000, windowHeight: 700, scale: 1, rowCount: 10).panel.y)
+        results.check("palette: finds a row", paletteShape.visibleRow(atX: 500, y: paletteShape.row(1).midY) == 1 && paletteShape.visibleRow(atX: 10, y: 10) == nil)
         results.check("palette: fits a small window", PaletteLayout(windowWidth: 400, windowHeight: 300, scale: 1, rowCount: 3).panel.maxX <= 400)
 
         guard let canvas = Canvas(width: 1200, height: 420, fontPixels: 15) else { return }
@@ -452,6 +502,67 @@ enum WindowSelfTest {
             pane.type("echo after-palette")
             pane.pressEnter()
         }, done: { hasLine("after-palette") }))
+
+        // Sidebars, on a folder made for the purpose.
+        let sampleFolder = NSTemporaryDirectory() + "solanum-sidebar-\(GetCurrentProcessId())"
+        let windowsFolder = sampleFolder.replacingOccurrences(of: "/", with: "\\")
+        try? FileManager.default.createDirectory(atPath: windowsFolder + "\\alpha", withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: windowsFolder + "\\alpha\\inner.txt", contents: Data())
+        FileManager.default.createFile(atPath: windowsFolder + "\\zeta.txt", contents: Data())
+        var openedFile: String?
+        window.onOpenFile = { openedFile = $0 }
+        var colsWithoutSidebar = 0
+        steps.append(Step(name: "sidebar: the terminal goes to a folder", action: {
+            colsWithoutSidebar = pane.terminal.cols
+            pane.type("cd '\(windowsFolder)'")
+            pane.pressEnter()
+        }, done: { pane.terminal.cwd?.hasSuffix(WindowsPath.name(windowsFolder)) == true && pane.atPrompt }))
+        steps.append(Step(name: "sidebar: Ctrl+B shows it, on that folder", action: { press(0x42) }, done: {
+            window.leftIsVisible && window.leftTree.root?.lowercased() == pane.terminal.cwd?.lowercased() && window.leftRow(named: "alpha") != nil
+        }))
+        steps.append(Step(name: "sidebar: the terminal makes room", action: {}, done: { pane.terminal.cols < colsWithoutSidebar }))
+        steps.append(Step(name: "sidebar: lists folders first", action: {},
+                          done: { window.leftTree.rows.map(\.entry.name) == ["alpha", "zeta.txt"] }))
+        steps.append(Step(name: "sidebar: clicking a folder opens it", action: { window.click(window.leftRow(named: "alpha")!) },
+                          done: { window.leftRow(named: "inner.txt") != nil && window.leftHasFocus }))
+        steps.append(Step(name: "sidebar: arrow keys move through it", action: { press(0x28); _ = window.keyDown(Int32(0x28), shift: false, ctrl: false, alt: false) },
+                          done: { window.leftTree.selection?.hasSuffix("inner.txt") == true }))
+        steps.append(Step(name: "sidebar: Enter opens a file", action: { _ = window.keyDown(Int32(0x0D), shift: false, ctrl: false, alt: false) },
+                          done: { openedFile?.hasSuffix("inner.txt") == true }))
+        steps.append(Step(name: "sidebar: a new file shows by itself", action: {
+            FileManager.default.createFile(atPath: windowsFolder + "\\late.txt", contents: Data())
+        }, done: { window.leftRow(named: "late.txt") != nil }))
+        steps.append(Step(name: "sidebar: Esc goes back to the terminal", action: { _ = window.keyDown(Int32(0x1B), shift: false, ctrl: false, alt: false) },
+                          done: { !window.leftHasFocus }))
+        var widthBefore: Float = 0
+        steps.append(Step(name: "sidebar: its border drags", action: {
+            widthBefore = window.leftWidthNow
+            window.dragLeftEdge(to: widthBefore + 60)
+        }, done: { abs(window.leftWidthNow - widthBefore - 60) <= 2 }))
+        steps.append(Step(name: "sidebar: double-clicking a folder sends the terminal there", action: {
+            window.doubleClick(window.leftRow(named: "alpha")!)
+        }, done: { pane.terminal.cwd?.hasSuffix("alpha") == true && pane.atPrompt }))
+        steps.append(Step(name: "sidebar: and it follows", action: {}, done: { window.leftTree.root?.hasSuffix("alpha") == true && window.leftRow(named: "inner.txt") != nil }))
+        steps.append(Step(name: "sidebar: the parent button goes up, and stays", action: { window.click(window.leftButton(.parent)) },
+                          done: { window.leftTree.root?.hasSuffix(WindowsPath.name(windowsFolder)) == true && window.leftPinned != nil }))
+        steps.append(Step(name: "sidebar: unpinning follows the terminal again", action: { window.click(window.leftButton(.pin)) },
+                          done: { window.leftPinned == nil && window.leftTree.root?.hasSuffix("alpha") == true }))
+        steps.append(Step(name: "sidebar: the right one shows too", action: { _ = window.keyDown(0x42, shift: false, ctrl: true, alt: true) },
+                          done: { window.rightIsVisible }))
+        if let dir = snapshotDirectory {
+            steps.append(Step(name: "sidebar: snapshot", action: {}, done: {
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                return window.saveSnapshot(to: dir + "\\sidebars.png")
+            }))
+        }
+        steps.append(Step(name: "sidebar: both hide again", action: {
+            _ = window.keyDown(0x42, shift: false, ctrl: true, alt: true)
+            press(0x42)
+        }, done: { !window.rightIsVisible && !window.leftIsVisible && pane.terminal.cols >= colsWithoutSidebar }))
+        steps.append(Step(name: "sidebar: typing reaches the terminal", action: {
+            pane.type("echo after-sidebar")
+            pane.pressEnter()
+        }, done: { hasLine("after-sidebar") }))
 
         steps.append(Step(name: "tabs: titled by folder, not the shell's path", action: {},
                           done: { !window.panes[1].tabTitle.contains(".exe") && !window.panes[1].tabTitle.isEmpty }))

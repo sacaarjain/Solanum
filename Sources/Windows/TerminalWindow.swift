@@ -24,6 +24,17 @@ final class TerminalWindow {
     private var terminalHasMouse = false
     private var clientWidth = 0, clientHeight = 0
     private var tabScroll: Float = 0
+    private let left: FileSidebar
+    private let right: FileSidebar
+    private var draggingEdge: WindowPart?
+    /// A file opened from a sidebar: hands it to its default app, until there's an editor. Tests look without opening.
+    var onOpenFile: ((String) -> Void) = { path in
+        _ = wide(path).withUnsafeBufferPointer { ShellExecuteW(nil, nil, $0.baseAddress, nil, nil, 1) }
+    }
+    private let runLock = NSLock()
+    private var runQueue: [() -> Void] = []
+    private var lastLook = Date.distantPast
+
     private var palettePendingSurrogate: UInt16?
     private var palette: PaletteModel?
     private var hoveredPaletteRow: Int?
@@ -60,6 +71,11 @@ final class TerminalWindow {
     /// Shows the window with a shell in it. Nil, with `failure` set, if it can't.
     init?(commandLine: String, cols: Int = 110, rows: Int = 32, activate: Bool = true, failure: inout String) {
         self.commandLine = commandLine
+        let saved = Self.loadSidebarSettings()
+        left = FileSidebar(visible: saved.leftVisible, width: saved.leftWidth)
+        right = FileSidebar(visible: saved.rightVisible, width: saved.rightWidth)
+        left.tree.showHidden = saved.showHidden
+        right.tree.showHidden = saved.showHidden
         let created = Self.className.withUnsafeBufferPointer { name in
             wide("Solanum").withUnsafeBufferPointer { title in
                 CreateWindowExW(0, name.baseAddress, title.baseAddress, Win.WS_OVERLAPPEDWINDOW, Win.CW_USEDEFAULT,
@@ -80,6 +96,12 @@ final class TerminalWindow {
         self.canvas = canvas
         canvas.padding = scaledPadding()
         Self.windows[created] = self
+        for sidebar in [left, right] {
+            sidebar.tree.onNeedsListing = { [weak self, weak sidebar] folder in
+                guard let sidebar else { return }
+                self?.listInBackground(folder, for: sidebar)
+            }
+        }
         sizeWindow(toCols: cols, rows: rows)
         // Takes the title bar's place out of the frame, now that it's listening.
         SetWindowPos(created, nil, 0, 0, 0, 0, Win.SWP_NOMOVE | Win.SWP_NOSIZE | Win.SWP_NOZORDER | Win.SWP_NOACTIVATE | Win.SWP_FRAMECHANGED)
@@ -99,13 +121,15 @@ final class TerminalWindow {
     private func scaledPadding() -> Float { (6 * scale).rounded() }
 
     private var layout: WindowLayout {
-        WindowLayout(width: Float(clientWidth), height: Float(clientHeight), scale: scale, tabCount: panes.count, tabScroll: tabScroll)
+        WindowLayout(width: Float(clientWidth), height: Float(clientHeight), scale: scale, tabCount: panes.count, tabScroll: tabScroll,
+                     leftWidth: left.isVisible ? sidebarWidth(left) : 0, rightWidth: right.isVisible ? sidebarWidth(right) : 0)
     }
 
     private func sizeWindow(toCols cols: Int, rows: Int) {
         let m = canvas.metrics, bars = WindowLayout(width: 0, height: 0, scale: scale, tabCount: 0)
+        let sides = (left.isVisible ? sidebarWidth(left) : 0) + (right.isVisible ? sidebarWidth(right) : 0)
         var rect = RECT(left: 0, top: 0,
-                        right: LONG(Float(cols) * m.cellWidth + canvas.padding * 2 + 5),
+                        right: LONG(Float(cols) * m.cellWidth + canvas.padding * 2 + 5 + sides),
                         bottom: LONG(Float(rows) * m.cellHeight + canvas.padding * 2 + bars.tabBarHeight + bars.statusBarHeight))
         _ = AdjustWindowRectExForDpi(&rect, Win.WS_OVERLAPPEDWINDOW, false, 0, GetDpiForWindow(hwnd))
         // The frame's top edge isn't added to the client area's height here: the title bar it stands for is gone.
@@ -151,7 +175,7 @@ final class TerminalWindow {
     private func activate(_ i: Int) {
         if panes.indices.contains(activeIndex) { panes[activeIndex].setFocused(false) }
         activeIndex = i
-        panes[i].setFocused(isFocused)
+        panes[i].setFocused(isFocused && !sidebarHasFocus)
         settleTabScroll()
         detailsChanged()
     }
@@ -185,6 +209,7 @@ final class TerminalWindow {
     func paneDetailsChanged(_ pane: TerminalPane) { detailsChanged() }
 
     private func detailsChanged() {
+        followTerminalFolder()
         if !panes.isEmpty {
             _ = wide(activePane.tabTitle + " — Solanum").withUnsafeBufferPointer { SetWindowTextW(hwnd, $0.baseAddress) }
         }
@@ -233,6 +258,7 @@ final class TerminalWindow {
         guard !panes.isEmpty, sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
         chrome(on: canvas, layout: layout).draw()
         activePane.draw()
+        drawSidebars(on: canvas, layout: layout)
         drawPalette(on: canvas)
         _ = sol_canvas_end(canvas.raw)
         paints += 1
@@ -249,6 +275,7 @@ final class TerminalWindow {
         var renderer = TerminalRenderer(canvas: bitmap, terminal: activePane.terminal)
         renderer.scrollOffset = activePane.scrollOffset
         renderer.drawContents()
+        drawSidebars(on: bitmap, layout: layout)
         drawPalette(on: bitmap)
         guard sol_canvas_end(bitmap.raw) >= 0 else { return false }
         return bitmap.savePNG(to: path)
@@ -324,6 +351,13 @@ final class TerminalWindow {
         case Win.WM_EXITED:
             paneExited(id: UInt(wParam))
             return 0
+        case Win.WM_RUN:
+            runLock.lock()
+            let work = runQueue
+            runQueue = []
+            runLock.unlock()
+            work.forEach { $0() }
+            return 0
         case Win.WM_TIMER:
             if panes.isEmpty { return 0 }
             if wParam == WPARAM(TerminalPane.clickTimer) {
@@ -332,6 +366,7 @@ final class TerminalWindow {
                 activePane.runQuietWork()
             } else {
                 panes.forEach { $0.tick() }
+                lookForChanges()
                 onTick?()
             }
             return 0
@@ -359,8 +394,14 @@ final class TerminalWindow {
         case Win.WM_MOUSEWHEEL:
             guard !panes.isEmpty else { return 0 }
             let (_, y) = screenPoint(lParam)
+            let (x, _) = screenPoint(lParam)
+            let part = layout.part(atX: x, y: y)
             if let palette {
                 palette.scroll(by: Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF) > 0 ? -2 : 2)
+                invalidate()
+            } else if part == .leftSidebar || part == .rightSidebar {
+                let sidebar = part == .leftSidebar ? left : right
+                sidebar.tree.scroll(by: Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF) > 0 ? -3 : 3, rowsShowing: sidebarLayout(sidebar).rowsShowing)
                 invalidate()
             } else if y < layout.tabBarHeight {
                 let notches = Float(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Float(Win.WHEEL_DELTA)
@@ -414,8 +455,10 @@ final class TerminalWindow {
         var point = POINT()
         GetCursorPos(&point)
         ScreenToClient(hwnd, &point)
-        let onTerminal = palette == nil && layout.part(atX: Float(point.x), y: Float(point.y)) == .terminal
-        SetCursor(LoadCursorW(nil, onTerminal ? Win.ibeamCursor : Win.arrowCursor))
+        let part = layout.part(atX: Float(point.x), y: Float(point.y))
+        let onEdge = palette == nil && (part == .leftEdge || part == .rightEdge) || draggingEdge != nil
+        let onTerminal = palette == nil && part == .terminal
+        SetCursor(LoadCursorW(nil, onEdge ? Win.resizeCursor : onTerminal ? Win.ibeamCursor : Win.arrowCursor))
         return 1
     }
 
@@ -460,8 +503,10 @@ final class TerminalWindow {
             return
         }
         let part = layout.part(atX: x, y: y)
+        if sidebarMouse(message, part: part, x: x, y: y) { return }
         if message == Win.WM_LBUTTONDOWN || message == Win.WM_RBUTTONDOWN || message == Win.WM_MBUTTONDOWN || message == Win.WM_LBUTTONDBLCLK {
             terminalHasMouse = part == .terminal
+            if part == .terminal { focusTerminal() }
         }
         if terminalHasMouse || (part == .terminal && message != Win.WM_MBUTTONUP && message != Win.WM_LBUTTONUP) {
             if message == Win.WM_MOUSEMOVE { setHovered(.terminal, nonClient: false) }
@@ -482,6 +527,8 @@ final class TerminalWindow {
                 switch part {
                 case .tabClose(let i): closeTab(i)
                 case .newTab: newTab()
+                case .toggleLeft: toggleSidebar(left)
+                case .toggleRight: toggleSidebar(right)
                 default: break
                 }
             }
@@ -491,6 +538,266 @@ final class TerminalWindow {
         default: break
         }
         invalidate()
+    }
+
+    // MARK: - Sidebars
+
+    /// A sidebar's width: what it's been dragged to, up to what leaves the terminal some room.
+    private func sidebarWidth(_ sidebar: FileSidebar) -> Float {
+        let other = sidebar === left ? right : left
+        let taken = other.isVisible ? other.width * scale : 0
+        let room = max(Float(clientWidth) - taken - 300 * scale, 160 * scale)
+        return min(sidebar.width * scale, room).rounded()
+    }
+
+    private func sidebarLayout(_ sidebar: FileSidebar) -> SidebarLayout {
+        SidebarLayout(area: sidebar === left ? layout.leftSidebar : layout.rightSidebar, scale: scale)
+    }
+
+    private func drawSidebars(on target: Canvas, layout l: WindowLayout) {
+        let home = ProcessInfo.processInfo.environment["USERPROFILE"]
+        let folder = panes.isEmpty ? nil : activePane.terminal.cwd
+        for (sidebar, area, edge) in [(left, l.leftSidebar, l.leftWidth - 1), (right, l.rightSidebar, l.width - l.rightWidth)] where sidebar.isVisible {
+            SidebarView(canvas: target, sidebar: sidebar, layout: SidebarLayout(area: area, scale: scale), terminalFolder: folder, home: home).draw()
+            sol_canvas_fill_rect(target.raw, edge, area.y, 1, area.height, TerminalPalette.foreground, 0.10)
+        }
+    }
+
+    /// Runs `work` on the thread with the message loop. From any thread.
+    private func runOnWindowThread(_ work: @escaping () -> Void) {
+        runLock.lock()
+        runQueue.append(work)
+        runLock.unlock()
+        PostMessageW(hwnd, Win.WM_RUN, 0, 0)
+    }
+
+    private func listInBackground(_ folder: String, for sidebar: FileSidebar) {
+        Thread.detachNewThread { [weak self, weak sidebar] in
+            let entries = FileSidebar.list(folder)
+            self?.runOnWindowThread {
+                guard let self, let sidebar else { return }
+                if sidebar.tree.receive(folder, entries) { self.invalidate() }
+            }
+        }
+    }
+
+    /// Shows the terminal's folder in the sidebars that aren't pinned.
+    private func followTerminalFolder() {
+        guard !panes.isEmpty else { return }
+        let folder = activePane.terminal.cwd ?? ProcessInfo.processInfo.environment["USERPROFILE"]
+        guard let folder else { return }
+        for sidebar in [left, right] where sidebar.isVisible && sidebar.pinned == nil { sidebar.tree.setRoot(folder) }
+    }
+
+    /// Files change behind the sidebars' backs, so they look again every few seconds while they're showing.
+    private func lookForChanges() {
+        guard Date().timeIntervalSince(lastLook) > 3 else { return }
+        lastLook = Date()
+        for sidebar in [left, right] where sidebar.isVisible { sidebar.tree.refresh() }
+    }
+
+    private func toggleSidebar(_ sidebar: FileSidebar) {
+        sidebar.isVisible.toggle()
+        if !sidebar.isVisible && sidebar.isFocused { focusTerminal() }
+        layoutChanged()
+        if sidebar.isVisible {
+            if let pinned = sidebar.pinned { sidebar.tree.setRoot(pinned) } else { followTerminalFolder() }
+            sidebar.tree.refresh()
+        }
+        saveSidebarSettings()
+    }
+
+    /// The bars have moved, so the terminal's area and grid have changed.
+    private func layoutChanged() {
+        guard clientWidth > 0 else { return }
+        canvas.terminalArea = layout.terminal
+        let grid = gridSize()
+        panes.forEach { $0.resize(cols: grid.cols, rows: grid.rows) }
+        settleTabScroll()
+        invalidate()
+    }
+
+    private func togglePin(_ sidebar: FileSidebar) {
+        if !sidebar.isVisible { toggleSidebar(sidebar) }
+        sidebar.pinned = sidebar.pinned == nil ? sidebar.tree.root : nil
+        followTerminalFolder()
+        invalidate()
+    }
+
+    private func toggleHidden(_ sidebar: FileSidebar) {
+        let on = !sidebar.tree.showHidden
+        left.tree.showHidden = on
+        right.tree.showHidden = on
+        saveSidebarSettings()
+        invalidate()
+    }
+
+    private func goToParent(_ sidebar: FileSidebar) {
+        guard let root = sidebar.tree.root, let up = WindowsPath.parent(root) else { return }
+        // Browsing elsewhere means not following the terminal, until it's unpinned.
+        sidebar.pinned = up
+        sidebar.tree.setRoot(up)
+        invalidate()
+    }
+
+    private var focusedSidebar: FileSidebar? { left.isFocused ? left : right.isFocused ? right : nil }
+    private var sidebarHasFocus: Bool { focusedSidebar != nil }
+
+    private func focus(_ sidebar: FileSidebar) {
+        left.isFocused = sidebar === left
+        right.isFocused = sidebar === right
+        if !panes.isEmpty { activePane.setFocused(false) }
+        invalidate()
+    }
+
+    private func focusTerminal() {
+        guard sidebarHasFocus else { return }
+        left.isFocused = false
+        right.isFocused = false
+        if !panes.isEmpty { activePane.setFocused(isFocused) }
+        invalidate()
+    }
+
+    /// A folder opens or closes, and a file goes to its app on a double click or Enter.
+    private func activate(_ entry: FileEntry, in sidebar: FileSidebar) {
+        if entry.isDirectory { sidebar.tree.toggle(entry.path) } else { onOpenFile(entry.path) }
+    }
+
+    /// Takes the mouse when it's on a sidebar or its edge. Otherwise false, and it's someone else's.
+    private func sidebarMouse(_ message: UINT, part: WindowPart, x: Float, y: Float) -> Bool {
+        if let edge = draggingEdge {
+            switch message {
+            case Win.WM_MOUSEMOVE:
+                let sidebar = edge == .leftEdge ? left : right
+                let wanted = edge == .leftEdge ? x : Float(clientWidth) - x
+                sidebar.width = min(max(wanted / scale, 160), 640)
+                layoutChanged()
+            case Win.WM_LBUTTONUP:
+                draggingEdge = nil
+                ReleaseCapture()
+                saveSidebarSettings()
+            default: break
+            }
+            return true
+        }
+        if message == Win.WM_LBUTTONDOWN && (part == .leftEdge || part == .rightEdge) {
+            draggingEdge = part
+            SetCapture(hwnd)
+            return true
+        }
+        if terminalHasMouse { return false }
+        guard part == .leftSidebar || part == .rightSidebar else {
+            if left.hoveredRow != nil || right.hoveredRow != nil || left.hoveredButton != nil || right.hoveredButton != nil {
+                [left, right].forEach { $0.hoveredRow = nil; $0.hoveredButton = nil }
+                invalidate()
+            }
+            return false
+        }
+        let sidebar = part == .leftSidebar ? left : right
+        let l = sidebarLayout(sidebar)
+        let button = SidebarButton.allCases.first { l.button($0.rawValue).contains(x, y) }
+        let visible = l.visibleRow(atY: y)
+        let index = visible.map { $0 + sidebar.tree.scrollTop }
+        let row = index.flatMap { sidebar.tree.rows.indices.contains($0) ? sidebar.tree.rows[$0] : nil }
+        switch message {
+        case Win.WM_MOUSEMOVE:
+            setHovered(part, nonClient: false)
+            if sidebar.hoveredRow != visible || sidebar.hoveredButton != button {
+                sidebar.hoveredRow = row == nil ? nil : visible
+                sidebar.hoveredButton = button
+                invalidate()
+            }
+        case Win.WM_LBUTTONDOWN:
+            focus(sidebar)
+            if let button { press(button, sidebar) }
+            if let row {
+                sidebar.tree.selection = row.entry.path
+                if row.entry.isDirectory { sidebar.tree.toggle(row.entry.path) }
+            }
+            invalidate()
+        case Win.WM_LBUTTONDBLCLK:
+            guard let row else { break }
+            sidebar.tree.selection = row.entry.path
+            if row.entry.isDirectory {
+                // Back to how it was before this double click's first click, then the terminal goes there, as on the Mac.
+                sidebar.tree.toggle(row.entry.path)
+                activePane.changeDirectory(to: row.entry.path)
+            } else {
+                onOpenFile(row.entry.path)
+            }
+            invalidate()
+        default: break
+        }
+        return true
+    }
+
+    private func press(_ button: SidebarButton, _ sidebar: FileSidebar) {
+        switch button {
+        case .pin: togglePin(sidebar)
+        case .parent: goToParent(sidebar)
+        case .refresh: sidebar.tree.refresh()
+        case .hidden: toggleHidden(sidebar)
+        }
+    }
+
+    /// Keys while a sidebar has the focus. False hands the key on, and typing goes back to the terminal.
+    private func sidebarKey(_ key: Int32, _ sidebar: FileSidebar, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
+        let tree = sidebar.tree
+        switch key {
+        case Win.VK_UP: tree.moveSelection(by: -1)
+        case Win.VK_DOWN: tree.moveSelection(by: 1)
+        case Win.VK_PRIOR: tree.moveSelection(by: -max(sidebarLayout(sidebar).rowsShowing - 1, 1))
+        case Win.VK_NEXT: tree.moveSelection(by: max(sidebarLayout(sidebar).rowsShowing - 1, 1))
+        case Win.VK_RIGHT: tree.stepIn()
+        case Win.VK_LEFT: tree.stepOut()
+        case Win.VK_RETURN, Win.VK_SPACE:
+            if let i = tree.selectedIndex { activate(tree.rows[i].entry, in: sidebar) }
+        case Win.VK_ESCAPE:
+            focusTerminal()
+        default:
+            focusTerminal()
+            return false
+        }
+        tree.keepSelectionVisible(rowsShowing: sidebarLayout(sidebar).rowsShowing)
+        invalidate()
+        return true
+    }
+
+    // Sidebars' shape is kept between launches. Tests start with them hidden, and leave a person's settings alone.
+    private struct SidebarSettings {
+        var leftVisible = true, rightVisible = false, showHidden = false
+        var leftWidth: Float = 240, rightWidth: Float = 240
+    }
+
+    private static var sidebarSettingsFile: URL? {
+        guard !CommandLine.arguments.contains("--window-test"), let appData = ProcessInfo.processInfo.environment["APPDATA"] else { return nil }
+        return URL(fileURLWithPath: appData).appendingPathComponent("Solanum").appendingPathComponent("sidebars.txt")
+    }
+
+    private static func loadSidebarSettings() -> SidebarSettings {
+        guard !CommandLine.arguments.contains("--window-test") else { return SidebarSettings(leftVisible: false) }
+        var settings = SidebarSettings()
+        guard let file = sidebarSettingsFile, let text = try? String(contentsOf: file, encoding: .utf8) else { return settings }
+        for line in text.split(separator: "\n") {
+            let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { continue }
+            switch parts[0] {
+            case "left": settings.leftVisible = parts[1] == "1"
+            case "right": settings.rightVisible = parts[1] == "1"
+            case "hidden": settings.showHidden = parts[1] == "1"
+            case "leftWidth": settings.leftWidth = Float(parts[1]) ?? 240
+            case "rightWidth": settings.rightWidth = Float(parts[1]) ?? 240
+            default: break
+            }
+        }
+        return settings
+    }
+
+    private func saveSidebarSettings() {
+        guard let file = Self.sidebarSettingsFile else { return }
+        let text = "left=\(left.isVisible ? 1 : 0)\nright=\(right.isVisible ? 1 : 0)\nhidden=\(left.tree.showHidden ? 1 : 0)\nleftWidth=\(left.width)\nrightWidth=\(right.width)\n"
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? text.write(to: file, atomically: true, encoding: .utf8)
     }
 
     // MARK: - Command palette
@@ -519,6 +826,15 @@ final class TerminalWindow {
                 self.map { $0.selectTab(($0.activeIndex + $0.panes.count - 1) % $0.panes.count) }
             },
             PaletteItem(title: "Paste", category: "Edit", shortcut: "Ctrl+V") { [weak self] in self?.activePane.paste() },
+            PaletteItem(title: "Toggle File Sidebar", category: "View", shortcut: "Ctrl+B") { [weak self] in self.map { $0.toggleSidebar($0.left) } },
+            PaletteItem(title: "Toggle Right Sidebar", category: "View", shortcut: "Ctrl+Alt+B") { [weak self] in self.map { $0.toggleSidebar($0.right) } },
+            PaletteItem(title: "Pin Sidebar Folder", category: "View", shortcut: "Ctrl+Shift+B") { [weak self] in self.map { $0.togglePin($0.left) } },
+            PaletteItem(title: "Show Hidden Files", category: "View") { [weak self] in self.map { $0.toggleHidden($0.left) } },
+            PaletteItem(title: "Collapse All Folders", category: "View") { [weak self] in
+                self?.left.tree.collapseAll()
+                self?.right.tree.collapseAll()
+                self?.invalidate()
+            },
             PaletteItem(title: "Scroll to Top", category: "View") { [weak self] in self?.activePane.scrollToTop() },
             PaletteItem(title: "Scroll to Bottom", category: "View") { [weak self] in self?.activePane.scrollToBottom() },
             PaletteItem(title: "Minimize", category: "Window") { [weak self] in self?.pressCaptionButton(.minimize) },
@@ -651,6 +967,12 @@ final class TerminalWindow {
             return true
         }
         if palette != nil { return paletteKey(key, ctrl: ctrl) }
+        // Ctrl+B and Ctrl+Alt+B show and hide the sidebars, and Ctrl+Shift+B pins the left one to its folder.
+        if ctrl && key == 0x42 {
+            if alt { toggleSidebar(right) } else if shift { togglePin(left) } else { toggleSidebar(left) }
+            return true
+        }
+        if let sidebar = focusedSidebar, sidebarKey(key, sidebar, shift: shift, ctrl: ctrl, alt: alt) { return true }
         // Windows' Ctrl stands in for the Mac's Command, and Shift is Shift: keys the app claims are the app's, whatever's
         // running (see WINDOWS.md).
         if ctrl && !alt {
@@ -697,6 +1019,38 @@ final class TerminalWindow {
     }
 
     var currentLayout: WindowLayout { layout }
+
+    var leftTree: FileTree { left.tree }
+    var rightIsVisible: Bool { right.isVisible }
+    var leftIsVisible: Bool { left.isVisible }
+    var leftPinned: String? { left.pinned }
+    var leftHasFocus: Bool { left.isFocused }
+    var leftWidthNow: Float { layout.leftWidth }
+
+    /// The rectangle of a row of the left sidebar, for clicking it.
+    func leftRow(named name: String) -> UIRect? {
+        guard let i = left.tree.rows.firstIndex(where: { $0.entry.name == name }) else { return nil }
+        return sidebarLayout(left).row(i - left.tree.scrollTop)
+    }
+
+    func leftButton(_ button: SidebarButton) -> UIRect { sidebarLayout(left).button(button.rawValue) }
+
+    func doubleClick(_ rect: UIRect) {
+        let position = LPARAM(Int(rect.x + rect.width / 2) & 0xFFFF) | (LPARAM(Int(rect.y + rect.height / 2) & 0xFFFF) << 16)
+        PostMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, position)
+        PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, position)
+        PostMessageW(hwnd, Win.WM_LBUTTONDBLCLK, 1, position)
+        PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, position)
+    }
+
+    /// Drags the border of the left sidebar to a position.
+    func dragLeftEdge(to x: Float) {
+        let y = Int(layout.terminal.midY)
+        func at(_ px: Int) -> LPARAM { LPARAM(px & 0xFFFF) | (LPARAM(y & 0xFFFF) << 16) }
+        PostMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, at(Int(layout.leftWidth)))
+        PostMessageW(hwnd, Win.WM_MOUSEMOVE, 1, at(Int(x)))
+        PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, at(Int(x)))
+    }
 
     /// A sideways swipe over the tab bar, as a touchpad sends it.
     func swipeTabs(delta: Int) {

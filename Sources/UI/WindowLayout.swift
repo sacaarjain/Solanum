@@ -17,6 +17,7 @@ enum WindowPart: Equatable {
     /// The empty part of the tab bar, which drags the window.
     case titleBar
     case statusBar, terminal
+    case leftSidebar, rightSidebar, leftEdge, rightEdge, toggleLeft, toggleRight
 }
 
 /// Where everything in a window goes: the tab bar along the top, with the window's buttons at its right end as Windows
@@ -25,6 +26,9 @@ struct WindowLayout {
     let width: Float, height: Float, scale: Float, tabCount: Int
     /// How far the tabs are scrolled, when they don't all fit.
     var tabScroll: Float = 0
+    /// How wide the sidebars are, 0 when hidden.
+    var leftWidth: Float = 0
+    var rightWidth: Float = 0
 
     var tabBarHeight: Float { (38 * scale).rounded() }
     var statusBarHeight: Float { (26 * scale).rounded() }
@@ -45,7 +49,8 @@ struct WindowLayout {
     private var newTabSide: Float { (28 * scale).rounded() }
     private var newTabLimit: Float { flower.x - newTabSide - (2 * scale).rounded() }
     private var tabTop: Float { (5 * scale).rounded() }
-    private var tabsStart: Float { (8 * scale).rounded() }
+    /// Tabs start where the terminal does, so the active one opens onto it.
+    private var tabsStart: Float { max((8 * scale).rounded(), leftWidth) }
     private var minTabWidth: Float { (120 * scale).rounded() }
     private var fittingTabWidth: Float { (newTabLimit - (6 * scale).rounded() - tabsStart) / Float(max(tabCount, 1)) }
 
@@ -89,11 +94,30 @@ struct WindowLayout {
     }
 
     var statusBar: UIRect { UIRect(x: 0, y: height - statusBarHeight, width: width, height: statusBarHeight) }
-    var terminal: UIRect { UIRect(x: 0, y: tabBarHeight, width: width, height: max(height - tabBarHeight - statusBarHeight, 0)) }
+    var terminal: UIRect {
+        UIRect(x: leftWidth, y: tabBarHeight, width: max(width - leftWidth - rightWidth, 0), height: max(height - tabBarHeight - statusBarHeight, 0))
+    }
+    var leftSidebar: UIRect { UIRect(x: 0, y: tabBarHeight, width: leftWidth, height: terminal.height) }
+    var rightSidebar: UIRect { UIRect(x: width - rightWidth, y: tabBarHeight, width: rightWidth, height: terminal.height) }
+    private var toggleSide: Float { (22 * scale).rounded() }
+    var toggleLeft: UIRect { UIRect(x: (8 * scale).rounded(), y: statusBar.y + 2 * scale, width: toggleSide, height: statusBarHeight - 4 * scale) }
+    var toggleRight: UIRect { UIRect(x: width - toggleSide - (8 * scale).rounded(), y: statusBar.y + 2 * scale, width: toggleSide, height: statusBarHeight - 4 * scale) }
 
     func part(atX x: Float, y: Float) -> WindowPart {
-        if statusBar.contains(x, y) { return .statusBar }
-        guard y < tabBarHeight else { return .terminal }
+        if statusBar.contains(x, y) {
+            if toggleLeft.contains(x, y) { return .toggleLeft }
+            if toggleRight.contains(x, y) { return .toggleRight }
+            return .statusBar
+        }
+        guard y < tabBarHeight else {
+            // A few pixels either side of each sidebar's border drag it.
+            let grab = 3 * scale
+            if leftWidth > 0 && abs(x - leftWidth) <= grab { return .leftEdge }
+            if rightWidth > 0 && abs(x - (width - rightWidth)) <= grab { return .rightEdge }
+            if leftWidth > 0 && x < leftWidth { return .leftSidebar }
+            if rightWidth > 0 && x >= width - rightWidth { return .rightSidebar }
+            return .terminal
+        }
         if close.contains(x, y) { return .close }
         if maximize.contains(x, y) { return .maximize }
         if minimize.contains(x, y) { return .minimize }

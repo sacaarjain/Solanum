@@ -397,6 +397,13 @@ final class TerminalPane: TerminalDelegate {
         }
     }
 
+    /// Sends the shell to a folder, when it's waiting at its prompt. Quotes are doubled, the way PowerShell escapes them.
+    func changeDirectory(to path: String) {
+        guard atPrompt else { return }
+        selection = nil
+        write(Array("cd -LiteralPath '\(path.replacingOccurrences(of: "'", with: "''"))'\r".utf8))
+    }
+
     func scrollToTop() {
         scrollOffset = terminal.usingAlt ? 0 : terminal.scrollback.count
         invalidate()
