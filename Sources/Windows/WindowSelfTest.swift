@@ -880,13 +880,17 @@ enum WindowSelfTest {
             if let dir = snapshotDirectory {
                 steps.append(Step(name: "ssh: snapshot of the sidebar on the host", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-sidebar.png") }))
             }
+            // ssh's escape for ending the connection from this end, which is what a dropped one looks like: ssh exits 255.
             steps.append(Step(name: "ssh: a dropped connection shows the bar", action: {
-                pane.type("exit 255")
                 pane.pressEnter()
+                pane.type("~.")
             }, done: { pane.showsLostBar && pane.sshHost == nil && window.leftTree.root.map(AnyPath.isUnix) == false }))
             if let dir = snapshotDirectory {
                 steps.append(Step(name: "ssh: snapshot of the bar", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-lost.png") }))
             }
+            steps.append(Step(name: "ssh: how it ended", action: {
+                for line in pane.remoteDiagnostics.suffix(2) { print("    " + line) }
+            }, done: { true }))
             steps.append(Step(name: "ssh: Reconnect signs both back in without asking", action: { window.clickLostBar(.reconnect) }, done: {
                 pane.sshHost == "localhost" && !pane.hasQuestion && !pane.showsLostBar && window.leftTree.root.map(AnyPath.isUnix) == true
                     && pane.lost == nil

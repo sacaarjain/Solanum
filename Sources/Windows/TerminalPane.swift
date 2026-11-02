@@ -299,6 +299,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
     // MARK: - Lost connection
 
     func terminalSSHExited(_ t: Terminal, status: Int) {
+        remoteDiagnostics.append("ssh exited \(status), signed in: \(sessionSignedIn), arguments: \(sshArguments ?? [])")
         let wasReconnecting = reconnecting
         reconnecting = false
         lost?.block = terminal.currentBlock
