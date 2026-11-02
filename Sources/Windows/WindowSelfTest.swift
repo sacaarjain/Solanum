@@ -81,6 +81,15 @@ enum WindowSelfTest {
         }
 
         func hasLine(_ text: String) -> Bool { window.visibleText.contains("\n" + text) }
+        /// Selects text on the cursor's row by dragging over it.
+        func select(_ text: String) {
+            let row = window.cursorRowText
+            guard let found = row.range(of: text) else { return }
+            let col = row.distance(from: row.startIndex, to: found.lowerBound)
+            window.drag(fromCol: col, toCol: col + text.count, row: window.terminal.cursorY)
+        }
+        /// Pasting reads the selection at once, so it waits for the posted drag to arrive first.
+        var pasteSoon = false
         struct Step {
             let name: String
             let action: () -> Void
@@ -141,6 +150,25 @@ enum WindowSelfTest {
                 window.type("X")
                 window.pressEnter()
             }, done: { hasLine("abXcdef") }),
+            Step(name: "window: a command to edit", action: { window.type("echo mnopqr") },
+                 done: { window.cursorRowText.contains("echo mnopqr") }),
+            Step(name: "window: typing replaces the selection", action: {
+                select("op")
+                window.type("X")
+            }, done: { window.cursorRowText.contains("echo mnXqr") }),
+            Step(name: "window: Ctrl+Z undoes all of it", action: { window.type("\u{1a}") },
+                 done: { window.cursorRowText.contains("echo mnopqr") }),
+            Step(name: "window: Backspace deletes the selection", action: {
+                select("op")
+                window.pressBackspace()
+            }, done: { window.cursorRowText.contains("echo mnqr") && !window.cursorRowText.contains("op") }),
+            Step(name: "window: paste replaces the selection", action: {
+                window.setClipboard("ZZ")
+                select("qr")
+                pasteSoon = true
+            }, done: { window.cursorRowText.contains("echo mnZZ") }),
+            Step(name: "window: the edited command runs", action: { window.pressEnter() },
+                 done: { hasLine("mnZZ") }),
             Step(name: "window: colors from a real program", action: {
                 window.type("Write-Host hello -ForegroundColor Green; Write-Host '✦ unicode typed'")
                 window.pressEnter()
@@ -152,6 +180,10 @@ enum WindowSelfTest {
         steps[0].action()
         window.onTick = {
             guard index < steps.count else { return }
+            if pasteSoon {
+                pasteSoon = false
+                window.paste()
+            }
             let step = steps[index]
             let passed = step.done()
             guard passed || Date() > deadline else { return }

@@ -94,6 +94,11 @@ enum CoreSelfTest {
                   "\(String(describing: t.shellCursorArrows(b, line: t.cursorAbs - 1, col: 3)))")
             check("click: past its end stays at the end", t.shellCursorArrows(b, line: t.cursorAbs, col: 15) == 0)
             check("click: above the command is no place", t.shellCursorArrows(b, line: t.cursorAbs + 3, col: 1) == nil)
+            let picked = t.shellSelection(b, start: (t.cursorAbs - 1, 8), end: (t.cursorAbs - 1, 13))
+            check("selection: offsets in the command", picked?.from == 6 && picked?.to == 11 && picked?.cursor == 20, "\(String(describing: picked))")
+            let clipped = t.shellSelection(b, start: (t.cursorAbs - 1, 16), end: (t.cursorAbs + 2, 0))
+            check("selection: clipped to the command", clipped?.from == 14 && clipped?.to == 20, "\(String(describing: clipped))")
+            check("selection: outside the command", t.shellSelection(b, start: (t.cursorAbs + 1, 0), end: (t.cursorAbs + 2, 3)) == nil)
             let (a, _) = make(30, 8)
             feed(a, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}claude\r\n\u{1b}]133;C\u{07}")
             let rule = String(repeating: "─", count: 30)
@@ -103,6 +108,7 @@ enum CoreSelfTest {
             check("click: left in the input box", a.agentCursorArrows(toCol: 4) == -9, "\(a.agentCursorArrows(toCol: 4)) \(a.cursorX)")
             check("click: not past its text", a.agentCursorArrows(toCol: 25) == 0)
             check("click: not into the gutter", a.agentCursorArrows(toCol: 0) == -11)
+            check("selection: offsets in Claude Code's input", rows.map { a.agentInputOffset($0, line: $0.lowerBound, col: 8) } == 6)
         }
         do {
             check("agent session: by name, also a path or an .exe", Block.namesAgentSession("claude --resume")

@@ -63,6 +63,12 @@ final class TerminalWindow: TerminalDelegate {
     private var pendingClickDeadline = Date.distantPast
     private var awaitingCursorEcho = false
     private static let clickTimer: UINT_PTR = 2
+    private var afterSelectionDeleted: [[UInt8]]?
+    private var selectionDeleteDeadline: Date?
+    private var quietWork: (() -> Void)?
+    private var quietStart = Date.distantPast
+    private var lastOutputAt = Date.distantPast
+    private static let quietTimer: UINT_PTR = 3
     private(set) var exitCode: Int32?
 
     /// Output waiting for the message loop.
@@ -183,6 +189,7 @@ final class TerminalWindow: TerminalDelegate {
         outputPosted = false
         inboxLock.unlock()
         bytes.withUnsafeBufferPointer { terminal.feed($0) }
+        lastOutputAt = Date()
         awaitingCursorEcho = false
         runPendingClick()
         if scrollOffset > 0 { scrollOffset += terminal.scrollbackPushes }
@@ -246,6 +253,12 @@ final class TerminalWindow: TerminalDelegate {
                 runPendingClick()
                 return 0
             }
+            if wParam == WPARAM(Self.quietTimer) {
+                runQuietWork()
+                return 0
+            }
+            // Should the cursor never get there (the box closed, say), what's waiting still goes.
+            if let deadline = selectionDeleteDeadline, Date() > deadline { endDeletingSelection() }
             reanchorIfSettled()
             onTick?()
             return 0
@@ -310,6 +323,9 @@ final class TerminalWindow: TerminalDelegate {
             case 0x56:
                 paste()
                 return true
+            case 0x58:
+                cutSelection()
+                return true
             default: break
             }
         }
@@ -324,6 +340,14 @@ final class TerminalWindow: TerminalDelegate {
                 return true
             default: break
             }
+        }
+
+        // Backspace or Delete takes out text selected in the line being typed, whatever else is held.
+        if (key == Win.VK_BACK || key == Win.VK_DELETE) && selection != nil && replaceSelectedInput(with: []) { return true }
+        // PSReadLine undoes on Ctrl+Z itself. Claude Code's undo is Ctrl+_.
+        if key == 0x5A && ctrl && !shift && !alt && agentInputActive {
+            input([0x1F])
+            return true
         }
 
         let mod = 1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0)
@@ -375,15 +399,26 @@ final class TerminalWindow: TerminalDelegate {
         var units = [unit]
         if let lead = pendingSurrogate, UTF16.isTrailSurrogate(unit) { units = [lead, unit] }
         pendingSurrogate = nil
-        input((meta ? [0x1B] : []) + Array(String(decoding: units, as: UTF16.self).utf8))
+        // Anything that prints replaces a selection, space included. Control characters go through as usual.
+        let prints = !meta && unit >= 0x20 && unit != 0x7F
+        input((meta ? [0x1B] : []) + Array(String(decoding: units, as: UTF16.self).utf8), replacesSelection: prints)
     }
 
     /// Input from the person: shows the live screen again, as typing does in any terminal.
-    private func input(_ bytes: [UInt8]) {
-        selection = nil
+    private func input(_ bytes: [UInt8], replacesSelection: Bool = false) {
         scrollOffset = 0
-        pty?.write(terminal.win32InputMode ? Win32Input.encode(bytes) : bytes)
         invalidate()
+        if afterSelectionDeleted != nil {
+            // Keys typed while a selection is still going follow it, in order.
+            afterSelectionDeleted?.append(bytes)
+        } else if !replacesSelection || !replaceSelectedInput(with: bytes) {
+            selection = nil
+            write(bytes)
+        }
+    }
+
+    private func write(_ bytes: [UInt8]) {
+        pty?.write(terminal.win32InputMode ? Win32Input.encode(bytes) : bytes)
     }
 
     private func send(_ text: String) { pty?.write(Array(text.utf8)) }
@@ -446,7 +481,12 @@ final class TerminalWindow: TerminalDelegate {
             }
         case Win.WM_RBUTTONUP:
             // As in Windows consoles: right-click copies a selection, and pastes when there isn't one.
-            if selection != nil { copySelection() } else { paste() }
+            if selection != nil {
+                copySelection()
+                selection = nil
+            } else {
+                paste()
+            }
         default:
             return
         }
@@ -543,11 +583,11 @@ final class TerminalWindow: TerminalDelegate {
 
     /// Claude Code word-wraps its input box itself, so cells don't map linearly to text. Up or down to the row first
     /// (it moves by visual row), wait for the redraw, then fix the column.
-    private func placeAgentCursor(row: Int, col: Int, sentVertical: Bool, giveUpAt: Date = .distantFuture) {
+    private func placeAgentCursor(row: Int, col: Int, sentVertical: Bool, giveUpAt: Date = .distantFuture, then: (() -> Void)? = nil) {
         guard let block = terminal.currentBlock, block.state == .running else { return }
         func again(_ deadline: Date) {
             awaitingCursorEcho = true
-            whenCursorSettled { [weak self] in self?.placeAgentCursor(row: row, col: col, sentVertical: true, giveUpAt: deadline) }
+            whenCursorSettled { [weak self] in self?.placeAgentCursor(row: row, col: col, sentVertical: true, giveUpAt: deadline, then: then) }
         }
         guard let rows = terminal.agentInputRows(block), rows.contains(terminal.cursorAbs) else {
             // Caught partway through a redraw after our arrows, with the box not all there: look again in a moment.
@@ -558,6 +598,7 @@ final class TerminalWindow: TerminalDelegate {
         guard rows.contains(target) else { return }
         if terminal.cursorAbs == target {
             sendArrows(terminal.agentCursorArrows(toCol: col), back: "D", forward: "C")
+            then?()
         } else if sentVertical {
             // An unrelated redraw (the spinner, say) can land before the echo of our arrows: wait for the next one.
             if Date() < giveUpAt { again(giveUpAt) }
@@ -565,6 +606,100 @@ final class TerminalWindow: TerminalDelegate {
             sendArrows(target - terminal.cursorAbs, back: "A", forward: "B")
             again(Date().addingTimeInterval(0.5))
         }
+    }
+
+    // MARK: - Replacing selected input
+
+    /// Whether the cursor is in Claude Code's input box.
+    private var agentInputActive: Bool {
+        guard !terminal.usingAlt, let block = terminal.currentBlock, block.state == .running,
+              let rows = terminal.agentInputRows(block) else { return false }
+        return rows.contains(terminal.cursorAbs)
+    }
+
+    /// Replaces the selection, when it's in the line being typed, with `bytes` (nothing: just takes it out), as a text
+    /// box does. False when it isn't, and nothing has happened.
+    @discardableResult
+    private func replaceSelectedInput(with bytes: [UInt8]) -> Bool {
+        guard let chosen = selection, !chosen.isEmpty, !terminal.usingAlt, terminal.mouseMode == .none,
+              let block = terminal.currentBlock else { return false }
+        let (start, end) = chosen.trimmed(cols: terminal.cols)
+        if let picked = terminal.shellSelection(block, start: start, end: end) {
+            // Selecting with PSReadLine's own Shift+Left, rather than backspacing, makes it one step for Ctrl+Z.
+            sendArrows(picked.to - picked.cursor, back: "D", forward: "C")
+            send(String(repeating: "\u{1b}[1;2D", count: picked.to - picked.from))
+            write(bytes.isEmpty ? [0x7F] : bytes)
+        } else if !replaceAgentSelection(block, start: start, end: end, with: bytes) {
+            return false
+        }
+        selection = nil
+        invalidate()
+        return true
+    }
+
+    /// Any number of rows of Claude Code's input box, the selection clipped to the box's text. Keys are worked through
+    /// in order, so within a row arrows, backspaces and the replacement could all go at once. Across rows it re-wraps
+    /// as characters go, and the breaks between rows may or may not be characters, so those are counted and topped up
+    /// after it's redrawn. Anything typed meanwhile waits in `afterSelectionDeleted`.
+    private func replaceAgentSelection(_ block: Block, start: (line: Int, col: Int), end: (line: Int, col: Int), with bytes: [UInt8]) -> Bool {
+        guard block.state == .running, let rows = terminal.agentInputRows(block), rows.contains(terminal.cursorAbs),
+              end.line >= rows.lowerBound, start.line <= rows.upperBound else { return false }
+        let first = max(start.line, rows.lowerBound), last = min(end.line, rows.upperBound)
+        let startCol = first == start.line ? max(2, min(start.col, terminal.agentTextEnd(first))) : 2
+        let endCol = last == end.line ? min(end.col, terminal.agentTextEnd(last)) : terminal.agentTextEnd(last)
+        guard last > first || endCol > startCol else { return false }
+        let targetOffset = terminal.agentInputOffset(rows, line: first, col: startCol)
+        let count = (first...last).reduce(0) { n, a in
+            n + terminal.charCount(a, from: a == first ? startCol : 2, to: a == last ? endCol : terminal.agentTextEnd(a))
+        }
+        // In the queue from the start, so it goes even if the cursor can't be placed.
+        afterSelectionDeleted = bytes.isEmpty ? [] : [bytes]
+        selectionDeleteDeadline = Date().addingTimeInterval(1.5)
+        placeAgentCursor(row: last - rows.lowerBound, col: endCol, sentVertical: false) { [weak self] in
+            guard let self else { return }
+            self.send(String(repeating: "\u{7f}", count: count))
+            if first == last {
+                self.endDeletingSelection()
+            } else {
+                self.whenOutputQuiet { self.backspaceAgentInput(toOffset: targetOffset, rounds: 0) }
+            }
+        }
+        return true
+    }
+
+    /// Backspaces from the cursor back to `target` characters into the input. It re-wraps as characters go, so the gap
+    /// is measured again after each redraw (text before the target never moves) and topped up until it's reached.
+    private func backspaceAgentInput(toOffset target: Int, rounds: Int) {
+        guard rounds < 12, let block = terminal.currentBlock, let rows = terminal.agentInputRows(block),
+              rows.contains(terminal.cursorAbs) else { return endDeletingSelection() }
+        let remaining = terminal.agentInputOffset(rows, line: terminal.cursorAbs, col: terminal.cursorX) - target
+        guard remaining > 0 else { return endDeletingSelection() }
+        send(String(repeating: "\u{7f}", count: remaining))
+        whenOutputQuiet { [weak self] in self?.backspaceAgentInput(toOffset: target, rounds: rounds + 1) }
+    }
+
+    private func endDeletingSelection() {
+        guard let waiting = afterSelectionDeleted else { return }
+        afterSelectionDeleted = nil
+        selectionDeleteDeadline = nil
+        waiting.forEach(write)
+    }
+
+    /// Runs `work` once the program has stopped drawing for a moment, since it may take several frames to work through
+    /// a burst of keys. Gives up waiting after two seconds.
+    private func whenOutputQuiet(_ work: @escaping () -> Void) {
+        quietWork = work
+        quietStart = Date()
+        _ = SetTimer(hwnd, Self.quietTimer, 20, nil)
+    }
+
+    private func runQuietWork() {
+        guard let work = quietWork else { return }
+        let idle = Date().timeIntervalSince(max(lastOutputAt, quietStart)) >= 0.06
+        guard (idle && terminal.cursorVisible) || Date().timeIntervalSince(quietStart) > 2 else { return }
+        quietWork = nil
+        KillTimer(hwnd, Self.quietTimer)
+        work()
     }
 
     private func wordSelection(line: Int, col: Int) -> TerminalSelection? {
@@ -585,9 +720,14 @@ final class TerminalWindow: TerminalDelegate {
 
     private func copySelection() {
         guard let selection, !selection.isEmpty else { return }
+        // It stays selected, as in a text box: what's typed or pasted next can replace it.
         setClipboard(selection.text(in: terminal))
-        self.selection = nil
-        invalidate()
+    }
+
+    private func cutSelection() {
+        guard let selection, !selection.isEmpty else { return }
+        let text = selection.text(in: terminal)
+        if replaceSelectedInput(with: []) { setClipboard(text) }
     }
 
     func setClipboard(_ text: String) {
@@ -615,7 +755,7 @@ final class TerminalWindow: TerminalDelegate {
         text = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
         // Pasted text could otherwise end the bracketing early, and run what follows.
         text = text.replacingOccurrences(of: "\u{1b}", with: "")
-        input(Array((terminal.bracketedPaste ? "\u{1b}[200~" + text + "\u{1b}[201~" : text).utf8))
+        input(Array((terminal.bracketedPaste ? "\u{1b}[200~" + text + "\u{1b}[201~" : text).utf8), replacesSelection: true)
     }
 
     // MARK: - For tests
@@ -632,6 +772,20 @@ final class TerminalWindow: TerminalDelegate {
         PostMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, position)
         PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, position)
     }
+
+    /// Drags the mouse across cells of one row, selecting them.
+    func drag(fromCol: Int, toCol: Int, row: Int) {
+        let m = canvas.metrics
+        func position(_ col: Int) -> LPARAM {
+            let x = Int(canvas.padding + (Float(col) + 0.1) * m.cellWidth), y = Int(canvas.padding + (Float(row) + 0.5) * m.cellHeight)
+            return LPARAM(x & 0xFFFF) | (LPARAM(y & 0xFFFF) << 16)
+        }
+        PostMessageW(hwnd, Win.WM_LBUTTONDOWN, Win.MK_LBUTTON, position(fromCol))
+        PostMessageW(hwnd, Win.WM_MOUSEMOVE, Win.MK_LBUTTON, position(toCol))
+        PostMessageW(hwnd, Win.WM_LBUTTONUP, 0, position(toCol))
+    }
+
+    func pressBackspace() { PostMessageW(hwnd, Win.WM_KEYDOWN, WPARAM(Win.VK_BACK), 0) }
 
     func pressEnter() { PostMessageW(hwnd, Win.WM_KEYDOWN, WPARAM(Win.VK_RETURN), 0) }
 

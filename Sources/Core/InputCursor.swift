@@ -36,6 +36,25 @@ extension Terminal {
         return min(input.index(clicked, col), max(textEnd, cursor)) - cursor
     }
 
+    /// A selection from `start` up to `end` as character offsets in the command being typed, clipped to its text, with
+    /// the cursor's offset. Nil when none of it is in the command.
+    func shellSelection(_ b: Block, start: (line: Int, col: Int), end: (line: Int, col: Int)) -> (from: Int, to: Int, cursor: Int)? {
+        guard let input = shellInput(b), end.line >= input.start, start.line <= input.last else { return nil }
+        let textEnd = input.index(input.last, line(abs: input.last)?.trimmedLength ?? 0)
+        let from = min(input.index(start.line, start.col), textEnd)
+        let to = end.line > input.last ? textEnd : min(input.index(end.line, end.col), textEnd)
+        guard to > from else { return nil }
+        return (from, to, input.index(cursorAbs, cursorX))
+    }
+
+    /// Characters from the start of Claude Code's input text to a cell: each row's text plus one per row break (the
+    /// space a word-wrap swallowed, or a typed line break; only a word too long for a row breaks without one).
+    func agentInputOffset(_ rows: ClosedRange<Int>, line target: Int, col: Int) -> Int {
+        var n = 0
+        for a in rows.lowerBound..<target { n += charCount(a, from: 2, to: agentTextEnd(a)) + 1 }
+        return n + charCount(target, from: 2, to: col)
+    }
+
     /// Where the text actually typed on a row of Claude Code's input box ends. Its suggestions (a placeholder
     /// like Try "…", or a completion after what's typed) are drawn dim, the first character inverted as its
     /// cursor. They aren't text yet: arrowing into them accepts the suggestion, so clicks stop short of them.
