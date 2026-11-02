@@ -108,7 +108,8 @@ struct TerminalSelection: Equatable {
     /// `ordered`, with an end at the very start of a row moved back to the end of the row above.
     func trimmed(cols: Int) -> (start: (line: Int, col: Int), end: (line: Int, col: Int)) {
         let (start, end) = ordered
-        return end.col == 0 && end.line > start.line ? (start, (end.line - 1, cols)) : (start, end)
+        if end.col == 0 && end.line > start.line { return (start: start, end: (line: end.line - 1, col: cols)) }
+        return (start: start, end: end)
     }
 
     @inline(__always) func contains(line: Int, col: Int) -> Bool {
