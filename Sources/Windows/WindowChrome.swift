@@ -31,7 +31,7 @@ struct WindowChrome {
     var picked: Set<Int> = []
     /// A tab's or a chip's name being typed, in its place.
     var editingTab: (index: Int, field: TextFieldState)?
-    var editingChip: (index: Int, field: TextFieldState)?
+    var editingChip: (index: Int, field: TextFieldState, placeholder: String)?
     var draggedTab: Int?
     var draggedX: Float = 0
     var hoveredCrumb: Int?
@@ -73,6 +73,10 @@ struct WindowChrome {
         sol_canvas_pop_clip(canvas.raw)
         drawScrollArrows()
         drawNewTabButton()
+        if hovered == .flower {
+            let side = (26 * scale).rounded(), f = layout.flower
+            sol_canvas_fill_rounded(canvas.raw, f.x + ((f.width - side) / 2).rounded(), ((layout.tabBarHeight - side) / 2).rounded(), side, side, 6 * scale, TerminalPalette.surface, 0.7)
+        }
         let flower = (22 * scale).rounded()
         canvas.drawArt("flower", UIRect(x: layout.flower.x + ((layout.flower.width - flower) / 2).rounded(),
                                         y: ((layout.tabBarHeight - flower) / 2).rounded(), width: flower, height: flower), scale: scale)
@@ -90,7 +94,7 @@ struct WindowChrome {
                 sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 6 * scale, group.color, 1)
                 let text = editing.field.text, pixels = 11.5 * scale, ink = HexColor(rgb: group.color).luminance > 0.6 ? UInt32(0x1A1A1A) : 0xFFFFFF
                 let inner = UIRect(x: r.x + 8 * scale, y: r.y, width: r.width - 16 * scale, height: r.height)
-                if text.isEmpty { label("Name this group", inner, pixels: pixels, semibold: true, color: ink, alpha: 0.55) } else { label(text, inner, pixels: pixels, semibold: true, color: ink) }
+                if text.isEmpty { label(editing.placeholder, inner, pixels: pixels, semibold: true, color: ink, alpha: 0.55) } else { label(text, inner, pixels: pixels, semibold: true, color: ink) }
                 let caretX = inner.x + width(of: editing.field.beforeCaret, pixels: pixels, semibold: true)
                 sol_canvas_fill_rect(canvas.raw, caretX.rounded(), r.y + 4 * scale, max(scale.rounded(), 1), r.height - 8 * scale, ink, 1)
                 continue

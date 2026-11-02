@@ -774,10 +774,23 @@ enum WindowSelfTest {
                           done: { window.menuTitles.contains("Add 3 Tabs to New Group") }))
         steps.append(Step(name: "groups: grouping asks for a name", action: { window.click(window.menuRow("Add 3 Tabs to New Group")!) },
                           done: { window.isNaming && window.groupNames.count == 1 }))
-        steps.append(Step(name: "groups: typing names it", action: {
+        steps.append(Step(name: "groups: keys pressed while naming go on to be typed", action: {},
+                          done: { window.isNaming && !window.keyDown(0x41, shift: false, ctrl: false, alt: false) && window.isNaming }))
+        steps.append(Step(name: "groups: Enter keeps the suggested name", action: { pane.pressEnter() },
+                          done: { !window.isNaming && window.groupNames == ["Project 1"] }))
+        steps.append(Step(name: "groups: Rename Group… from its chip", action: { window.rightClick(window.chipRect(1)!) }, done: {
+            guard let row = window.menuRow("Rename Group…") else { return false }
+            window.click(row)
+            return true
+        }))
+        steps.append(Step(name: "groups: typing names it", action: {}, done: {
+            guard window.isNaming else { return false }
+            for _ in 0..<12 { _ = window.keyDown(0x08, shift: false, ctrl: false, alt: false) }
             window.typeIntoWindow("web")
             pane.pressEnter()
-        }, done: { !window.isNaming && window.groupNames == ["web"] && window.chipRect(1) != nil }))
+            return true
+        }))
+        steps.append(Step(name: "groups: and it's named", action: {}, done: { !window.isNaming && window.groupNames == ["web"] && window.chipRect(1) != nil }))
         if let dir = snapshotDirectory {
             steps.append(Step(name: "groups: snapshot", action: {}, done: { window.saveSnapshot(to: dir + "\\groups.png") }))
         }
@@ -796,6 +809,8 @@ enum WindowSelfTest {
             return window.panes.count == 2
         }))
 
+        steps.append(Step(name: "flower: highlights under the pointer", action: { window.hover(window.currentLayout.flower) },
+                          done: { window.hoveredPart == .flower }))
         // Settings.
         let settingsWindow = SettingsWindow.shared
         steps.append(Step(name: "settings: the flower opens it", action: { window.click(window.currentLayout.flower) },

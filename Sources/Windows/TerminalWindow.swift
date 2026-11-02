@@ -37,7 +37,7 @@ final class TerminalWindow {
     private var pickedTabs: Set<UInt> = []
     /// A tab's or a group's name being typed in the tab bar.
     private enum NameTarget { case tab(UInt), group(TabGroup) }
-    private var naming: (target: NameTarget, field: TextFieldState)?
+    private var naming: (target: NameTarget, field: TextFieldState, placeholder: String)?
     private var menu: MenuModel?
     private var hoveredCrumb: Int?
     private var themeHovered = false
@@ -312,7 +312,8 @@ final class TerminalWindow {
         if let naming {
             switch naming.target {
             case .tab(let id): if let i = panes.firstIndex(where: { $0.id == id }) { chrome.editingTab = (i, naming.field) }
-            case .group(let g): if let first = panes.firstIndex(where: { $0.group === g }) { chrome.editingChip = (first, naming.field) }
+            case .group(let g):
+                if let first = panes.firstIndex(where: { $0.group === g }) { chrome.editingChip = (first, naming.field, naming.placeholder) }
             }
         }
         chrome.themeName = AppSettings.shared.themeName.uppercased()
@@ -576,7 +577,9 @@ final class TerminalWindow {
         let part = layout.part(atX: Float(point.x), y: Float(point.y))
         let onEdge = palette == nil && (part == .leftEdge || part == .rightEdge) || draggingEdge != nil
         let onTerminal = palette == nil && part == .terminal
-        SetCursor(LoadCursorW(nil, onEdge ? Win.resizeCursor : onTerminal ? Win.ibeamCursor : Win.arrowCursor))
+        // A pointing hand over the flower, which opens Settings, as on the Mac.
+        let onFlower = palette == nil && menu == nil && part == .flower
+        SetCursor(LoadCursorW(nil, onEdge ? Win.resizeCursor : onTerminal ? Win.ibeamCursor : onFlower ? Win.handCursor : Win.arrowCursor))
         return 1
     }
 
@@ -1216,7 +1219,7 @@ final class TerminalWindow {
         }
         for (first, g) in groupStarts() {
             if case .group(let named)? = naming?.target, named === g {
-                let text = naming!.field.text.isEmpty ? "Name this group" : naming!.field.text
+                let text = naming!.field.text.isEmpty ? naming!.placeholder : naming!.field.text
                 out[first] = min(max(measure(text) + 26 * scale, 90 * scale), 200 * scale).rounded()
                 continue
             }
@@ -1306,8 +1309,18 @@ final class TerminalWindow {
     }
 
     private func beginNaming(_ target: NameTarget, text: String) {
-        naming = (target, TextFieldState(text))
+        var placeholder = ""
+        if case .group = target { placeholder = nextProjectName() }
+        naming = (target, TextFieldState(text), placeholder)
         invalidate()
+    }
+
+    /// The suggestion a group's empty name field shows: the first "Project N" no group has, as on the Mac.
+    private func nextProjectName() -> String {
+        let names = Set(TabGroupOps.groups(in: panes).map(\.name))
+        var n = 1
+        while names.contains("Project \(n)") { n += 1 }
+        return "Project \(n)"
     }
 
     private func finishNaming(commit: Bool) {
@@ -1317,7 +1330,8 @@ final class TerminalWindow {
             let text = current.field.text.trimmingCharacters(in: .whitespaces)
             switch current.target {
             case .tab(let id): panes.first { $0.id == id }?.customTitle = text.isEmpty ? nil : text
-            case .group(let g): g.name = text
+            // Enter on a new group's empty field keeps the suggestion. Clearing a name leaves it unnamed.
+            case .group(let g): g.name = text.isEmpty && g.name.isEmpty ? current.placeholder : text
             }
         }
         detailsChanged()
@@ -1335,8 +1349,8 @@ final class TerminalWindow {
         case Win.VK_RIGHT: current.field.move(by: 1)
         case Win.VK_HOME: current.field.move(to: 0)
         case Win.VK_END: current.field.move(to: current.field.text.count)
-        case Win.VK_F4: return false
-        default: return true
+        // Everything else goes on to become a character (WM_CHAR), which is what's typed.
+        default: return false
         }
         naming = current
         invalidate()
@@ -1665,6 +1679,11 @@ final class TerminalWindow {
     var isDraggingTab: Bool { tabPress != nil }
     var groupNames: [String] { TabGroupOps.groups(in: panes).map(\.name) }
     var isNaming: Bool { naming != nil }
+    var hoveredPart: WindowPart? { hovered }
+    func hover(_ rect: UIRect) {
+        let position = LPARAM(Int(rect.x + rect.width / 2) & 0xFFFF) | (LPARAM(Int(rect.y + rect.height / 2) & 0xFFFF) << 16)
+        PostMessageW(hwnd, Win.WM_MOUSEMOVE, 0, position)
+    }
     func pickForTest(_ i: Int, range: Bool) { pick(i, range: range) }
     func chipRect(_ first: Int) -> UIRect? { layout.chip(first) }
     func rightClick(_ rect: UIRect) {
