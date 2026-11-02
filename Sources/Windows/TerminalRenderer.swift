@@ -7,6 +7,11 @@ enum TerminalPalette {
     static let foreground: UInt32 = 0xD7D3C7
     static let cursor: UInt32 = 0xD7D3C7
     static let selection: UInt32 = 0x3A3550
+    static let backgroundBottom: UInt32 = 0x050606
+    static let accent: UInt32 = 0xA584E8
+    /// A faint wash of purple over the background, for the tab bar and status bar (`Theme.tabBarTint`).
+    static let chrome: UInt32 = mix(0x17082B, background, 0.32)
+    static let surface: UInt32 = mix(0xFFFFFF, background, 0.08)
     static let ansi: [UInt32] = [0x272B28, 0xE3573F, 0x8BA47B, 0xE9B54D, 0x6F90A9, 0xA98CC1, 0x8FB9B1, 0xBCB7A9,
                                  0x5A5F5A, 0xF47A63, 0xA4BC95, 0xF5C86F, 0x8DA8BE, 0xC0A6D4, 0xA9CEC7, 0xECE8DC]
 
@@ -50,6 +55,10 @@ final class Canvas {
     private(set) var metrics: SolMetrics
     /// Empty space around the terminal, in pixels: 6 at 100% display scaling.
     var padding: Float = 6
+    /// The part of the canvas the terminal has, before padding: all of it unless a window's chrome takes some.
+    var terminalArea: UIRect?
+    var contentX: Float { (terminalArea?.x ?? 0) + padding }
+    var contentY: Float { (terminalArea?.y ?? 0) + padding }
 
     private init(raw: OpaquePointer) {
         self.raw = raw
@@ -145,7 +154,8 @@ struct TerminalRenderer {
 
     /// Grid size for a client area of this many pixels.
     static func grid(width: Int, height: Int, canvas: Canvas) -> (cols: Int, rows: Int) {
-        let w = max(Float(width) - canvas.padding * 2, 0), h = max(Float(height) - canvas.padding * 2, 0)
+        let w = max((canvas.terminalArea?.width ?? Float(width)) - canvas.padding * 2, 0)
+        let h = max((canvas.terminalArea?.height ?? Float(height)) - canvas.padding * 2, 0)
         return (max(Int(w / canvas.metrics.cellWidth), 2), max(Int(h / canvas.metrics.cellHeight), 1))
     }
 
@@ -154,13 +164,18 @@ struct TerminalRenderer {
     func draw() -> Int32 {
         let begun = sol_canvas_begin(canvas.raw, TerminalPalette.background)
         guard begun >= 0 else { return begun }
+        drawContents()
+        return sol_canvas_end(canvas.raw)
+    }
+
+    /// The terminal, within a frame someone else has begun.
+    func drawContents() {
         let top = terminal.screenTopAbs - scrollOffset
         for row in 0..<terminal.rows {
             if let line = terminal.line(abs: top + row) { draw(line, abs: top + row, row: row) }
         }
         drawCursor(top: top)
         drawScrollPosition()
-        return sol_canvas_end(canvas.raw)
     }
 
     private func colors(_ cell: Cell, selected: Bool) -> (fg: UInt32, bg: UInt32) {
@@ -179,7 +194,7 @@ struct TerminalRenderer {
 
     private func draw(_ line: Line, abs: Int, row: Int) {
         let m = canvas.metrics
-        let y = canvas.padding + Float(row) * m.cellHeight
+        let y = canvas.contentY + Float(row) * m.cellHeight
         let cols = terminal.cols
 
         // Backgrounds first, in runs, so that a glyph overhanging its cell isn't cut off by its neighbor's.
@@ -190,7 +205,7 @@ struct TerminalRenderer {
             col += 1
             while col < cols, colors(line.cell(col), selected: selection?.contains(line: abs, col: col) ?? false).bg == bg { col += 1 }
             if bg != TerminalPalette.background {
-                sol_canvas_fill_rect(canvas.raw, canvas.padding + Float(start) * m.cellWidth, y,
+                sol_canvas_fill_rect(canvas.raw, canvas.contentX + Float(start) * m.cellWidth, y,
                                      Float(col - start) * m.cellWidth, m.cellHeight, bg, 1)
             }
         }
@@ -200,7 +215,7 @@ struct TerminalRenderer {
         var runStart = 0, runColor: UInt32 = 0, runStyle: Int32 = 0
         func flush() {
             guard !scalars.isEmpty else { return }
-            sol_canvas_draw_cells(canvas.raw, canvas.padding + Float(runStart) * m.cellWidth, y, scalars, widths,
+            sol_canvas_draw_cells(canvas.raw, canvas.contentX + Float(runStart) * m.cellWidth, y, scalars, widths,
                                   Int32(scalars.count), runColor, runStyle)
             scalars.removeAll(keepingCapacity: true)
             widths.removeAll(keepingCapacity: true)
@@ -221,7 +236,7 @@ struct TerminalRenderer {
             if let extras, let base = Unicode.Scalar(cell.ch) {
                 flush()
                 let text = Array((String(Character(base)) + extras).utf16)
-                sol_canvas_draw_text(canvas.raw, canvas.padding + Float(col) * m.cellWidth, y, Int32(cell.width), text,
+                sol_canvas_draw_text(canvas.raw, canvas.contentX + Float(col) * m.cellWidth, y, Int32(cell.width), text,
                                      Int32(text.count), fg, cellStyle)
                 continue
             }
@@ -240,7 +255,7 @@ struct TerminalRenderer {
     private func drawDecorations(_ cell: Cell, col: Int, y: Float, color: UInt32) {
         guard !cell.flags.isDisjoint(with: [.underline, .doubleUnderline, .curlyUnderline, .strike]) else { return }
         let m = canvas.metrics
-        let x = canvas.padding + Float(col) * m.cellWidth
+        let x = canvas.contentX + Float(col) * m.cellWidth
         let width = m.cellWidth * Float(max(cell.width, 1))
         if !cell.flags.isDisjoint(with: CellFlags.anyUnderline) {
             sol_canvas_fill_rect(canvas.raw, x, y + m.underlineY, width, m.lineThickness, color, 1)
@@ -259,8 +274,8 @@ struct TerminalRenderer {
         let col = min(terminal.cursorX, terminal.cols - 1)
         let line = terminal.line(abs: top + terminal.cursorY)
         let cell = line?.cell(col) ?? Cell()
-        let x = canvas.padding + Float(col) * m.cellWidth
-        let y = canvas.padding + Float(terminal.cursorY) * m.cellHeight
+        let x = canvas.contentX + Float(col) * m.cellWidth
+        let y = canvas.contentY + Float(terminal.cursorY) * m.cellHeight
         let width = m.cellWidth * Float(max(cell.width, 1))
         guard focused else {
             sol_canvas_stroke_rect(canvas.raw, x, y, width, m.cellHeight, TerminalPalette.cursor, m.lineThickness)
@@ -289,7 +304,7 @@ struct TerminalRenderer {
         let total = Float(terminal.scrollback.count + terminal.rows)
         let thumb = max(height * Float(terminal.rows) / total, 16)
         let position = 1 - Float(scrollOffset) / Float(max(terminal.scrollback.count, 1))
-        let x = canvas.padding + Float(terminal.cols) * m.cellWidth + 1
-        sol_canvas_fill_rect(canvas.raw, x, canvas.padding + (height - thumb) * position, 3, thumb, TerminalPalette.foreground, 0.4)
+        let x = canvas.contentX + Float(terminal.cols) * m.cellWidth + 1
+        sol_canvas_fill_rect(canvas.raw, x, canvas.contentY + (height - thumb) * position, 3, thumb, TerminalPalette.foreground, 0.4)
     }
 }

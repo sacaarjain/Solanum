@@ -8,6 +8,7 @@ Work happens on the `windows-compat` branch. The Mac app keeps building and pass
 | --- | --- | --- |
 | `Sources/Core` | Logic with no drawing. Foundation only. | Both |
 | `Sources` | The Mac app, which moves into the other folders piece by piece. | Mac |
+| `Sources/UI` | Interface logic with no drawing calls, such as where the tab bar's parts go. | Windows, and the Mac later |
 | `Sources/Windows` | The Windows app. | Windows |
 
 Each system compiles its folders into one module with `swiftc` (`build.sh`, `build.ps1`). Staying in one module means
@@ -31,6 +32,8 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
 
 ## Choices so far
 
+- **Moving the Mac over:** the tab bar and status bar are drawn on Windows first. The Mac keeps its own until it can move
+  across with snapshots to compare, so the app in daily use isn't put at risk along the way.
 - **Interface:** Win32, Direct2D and DirectWrite through Swift's `WinSDK` module, with no WinUI dependency. Menus and
   flyouts are drawn by Solanum to match Windows 11, using the sizes and colors from the mock-ups.
 - **Local scripts:** Git for Windows' `sh.exe` runs the same git and search scripts the Mac uses.

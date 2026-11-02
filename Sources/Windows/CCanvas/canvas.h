@@ -53,6 +53,23 @@ void sol_canvas_draw_cells(SolCanvas *canvas, float x, float y, const uint32_t *
 void sol_canvas_draw_text(SolCanvas *canvas, float x, float y, int32_t cells, const uint16_t *text, int32_t length,
                           uint32_t color, int32_t style);
 
+// Interface drawing, antialiased, as opposed to the terminal's exact cells.
+void sol_canvas_fill_gradient(SolCanvas *canvas, float x, float y, float width, float height, uint32_t top, uint32_t bottom);
+void sol_canvas_fill_rounded(SolCanvas *canvas, float x, float y, float width, float height, float radius, uint32_t color, float alpha);
+void sol_canvas_stroke_rounded(SolCanvas *canvas, float x, float y, float width, float height, float radius, uint32_t color, float alpha, float thickness);
+void sol_canvas_fill_ellipse(SolCanvas *canvas, float cx, float cy, float rx, float ry, uint32_t color, float alpha);
+void sol_canvas_line(SolCanvas *canvas, float x1, float y1, float x2, float y2, uint32_t color, float alpha, float thickness);
+void sol_canvas_push_clip(SolCanvas *canvas, float x, float y, float width, float height);
+void sol_canvas_pop_clip(SolCanvas *canvas);
+
+/// Text in the system interface font, vertically centered in the rectangle, cut with "…" if it doesn't fit.
+void sol_canvas_draw_label(SolCanvas *canvas, float x, float y, float width, float height, const uint16_t *text, int32_t length,
+                           float pixels, int32_t semibold, uint32_t color, float alpha);
+float sol_canvas_measure_label(SolCanvas *canvas, const uint16_t *text, int32_t length, float pixels, int32_t semibold);
+
+/// A glyph of the system icon font (Segoe Fluent Icons, or Segoe MDL2 Assets before Windows 11), centered in the rectangle.
+void sol_canvas_draw_icon(SolCanvas *canvas, float x, float y, float width, float height, uint16_t glyph, float pixels, uint32_t color, float alpha);
+
 /// Bitmap canvases only. `path` is NUL-terminated UTF-16.
 int32_t sol_canvas_save_png(SolCanvas *canvas, const uint16_t *path);
 

@@ -28,7 +28,7 @@ if ($LASTEXITCODE -ne 0) { Write-Error 'The canvas failed to compile (the errors
 Write-Host '> Compiling Swift...'
 # As in build.sh: release skips the runtime exclusivity checks, which are costly in the emulator's per-byte loops.
 $opt = if ($Debug) { '-Onone', '-g' } else { '-O', '-enforce-exclusivity=unchecked' }
-$sources = Get-ChildItem 'Sources\Core\*.swift', 'Sources\Windows\*.swift' | ForEach-Object { $_.FullName }
+$sources = Get-ChildItem 'Sources\Core\*.swift', 'Sources\UI\*.swift', 'Sources\Windows\*.swift' | ForEach-Object { $_.FullName }
 & swiftc @opt -swift-version 5 -module-name Solanum -wmo -c -I 'Sources\Windows\CCanvas' @sources -o $swiftObject
 if ($LASTEXITCODE -ne 0) { Write-Error 'Swift failed to compile (the errors are above).' }
 

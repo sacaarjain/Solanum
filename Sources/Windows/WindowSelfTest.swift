@@ -1,3 +1,4 @@
+import CCanvas
 import Foundation
 import WinSDK
 
@@ -67,6 +68,45 @@ enum WindowSelfTest {
                       selection.text(in: terminal))
     }
 
+    static func runChrome(_ results: CoreSelfTest.Results) {
+        print("Window layout")
+        let layout = WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 3)
+        results.check("layout: window buttons at the right end", layout.close.maxX == 1000 && layout.maximize.maxX == layout.close.x && layout.minimize.maxX == layout.maximize.x)
+        results.check("layout: tabs clear of the + button", layout.tab(2).maxX <= layout.newTab.x)
+        results.check("layout: the terminal is between the bars", layout.terminal.y == layout.tabBarHeight && layout.terminal.maxY == layout.statusBar.y)
+        results.check("layout: finds a tab", layout.part(atX: layout.tab(1).x + 20, y: 20) == .tab(1))
+        results.check("layout: finds its close button", layout.part(atX: layout.tabClose(1).x + 5, y: layout.tabClose(1).y + 5) == .tabClose(1))
+        results.check("layout: finds the window buttons", layout.part(atX: 990, y: 10) == .close && layout.part(atX: layout.maximize.x + 2, y: 10) == .maximize && layout.part(atX: layout.minimize.x + 2, y: 10) == .minimize)
+        results.check("layout: the rest of the bar drags", WindowLayout(width: 1800, height: 640, scale: 1, tabCount: 2).part(atX: 1000, y: 10) == .titleBar)
+        results.check("layout: below the bars is the terminal", layout.part(atX: 500, y: 300) == .terminal && layout.part(atX: 500, y: 630) == .statusBar)
+        results.check("layout: many tabs still fit", WindowLayout(width: 1000, height: 640, scale: 2, tabCount: 4).tabWidth >= 144)
+        results.check("layout: scales with the display", WindowLayout(width: 1000, height: 640, scale: 2, tabCount: 1).tabBarHeight == 76)
+        results.check("text: home is ~", WindowText.crumbs(#"C:\Users\me\Projects\Solanum"#, home: #"C:\Users\me"#) == ["~", "Projects", "Solanum"])
+        results.check("text: not home", WindowText.crumbs(#"C:\Users\medium"#, home: #"C:\Users\me"#) == ["C:", "Users", "medium"])
+        results.check("text: a program's title is the tab's", WindowText.tabTitle(title: "vim notes.txt", folder: #"C:\x"#, home: nil) == "vim notes.txt")
+        results.check("text: a shell's own path isn't", WindowText.tabTitle(title: #"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"#, folder: #"C:\Users\me\Solanum"#, home: #"C:\Users\me"#) == "Solanum")
+        results.check("text: nor as administrator", WindowText.tabTitle(title: #"Administrator: C:\Windows\system32\cmd.exe"#, folder: #"C:\Users\me"#, home: #"C:\Users\me"#) == "~")
+
+        guard let canvas = Canvas(width: 1200, height: 420, fontPixels: 15) else { return }
+        let bars = WindowLayout(width: 1200, height: 420, scale: 1, tabCount: 3)
+        canvas.terminalArea = bars.terminal
+        let grid = TerminalRenderer.grid(width: 1200, height: 420, canvas: canvas)
+        let terminal = Terminal(cols: grid.cols, rows: grid.rows, scrollbackLimit: 100)
+        Array("PS C:\\Users\\dev\\Projects\\Solanum> ".utf8).withUnsafeBufferPointer { terminal.feed($0) }
+        guard sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
+        var chrome = WindowChrome(canvas: canvas, layout: bars, tabs: ["~", "Solanum", "a long tab title that has to be cut short somewhere"], activeTab: 1)
+        chrome.hovered = .tab(2)
+        chrome.folder = #"C:\Users\dev\Projects\Solanum"#
+        chrome.home = #"C:\Users\dev"#
+        chrome.draw()
+        TerminalRenderer(canvas: canvas, terminal: terminal).drawContents()
+        results.check("chrome: draws", sol_canvas_end(canvas.raw) >= 0)
+        if let dir = snapshotDirectory {
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            results.check("chrome: saves", canvas.savePNG(to: dir + "\\chrome.png"))
+        }
+    }
+
     /// A real window with a real shell, in the order someone would try it. Exit code 0 if it all works.
     static func runWindow() -> Int32 {
         let results = CoreSelfTest.Results()
@@ -81,13 +121,14 @@ enum WindowSelfTest {
             return 1
         }
 
-        func hasLine(_ text: String) -> Bool { window.visibleText.contains("\n" + text) }
+        var pane: TerminalPane { window.activePane }
+        func hasLine(_ text: String) -> Bool { pane.visibleText.contains("\n" + text) }
         /// Selects text on the cursor's row by dragging over it.
         func select(_ text: String) {
-            let row = window.cursorRowText
+            let row = pane.cursorRowText
             guard let found = row.range(of: text) else { return }
             let col = row.distance(from: row.startIndex, to: found.lowerBound)
-            window.drag(fromCol: col, toCol: col + text.count, row: window.terminal.cursorY)
+            pane.drag(fromCol: col, toCol: col + text.count, row: pane.terminal.cursorY)
         }
         /// Pasting reads the selection at once, so it waits for the posted drag to arrive first.
         var pasteSoon = false
@@ -98,81 +139,81 @@ enum WindowSelfTest {
         }
         var widthBefore = 0
         var steps = [
-            Step(name: "window: shell reaches its prompt", action: {}, done: { window.terminal.cwd != nil }),
+            Step(name: "window: shell reaches its prompt", action: {}, done: { pane.terminal.cwd != nil }),
             Step(name: "window: typing runs a command", action: {
-                window.type("echo window-ok")
-                window.pressEnter()
+                pane.type("echo window-ok")
+                pane.pressEnter()
             }, done: { hasLine("window-ok") }),
             Step(name: "window: paste", action: {
-                window.setClipboard("echo paste-ok")
-                window.paste()
-                window.pressEnter()
+                pane.setClipboard("echo paste-ok")
+                pane.paste()
+                pane.pressEnter()
             }, done: { hasLine("paste-ok") }),
             Step(name: "window: a long-running program starts", action: {
-                window.type("ping -t 127.0.0.1")
-                window.pressEnter()
-            }, done: { window.visibleText.contains("Reply from") || window.visibleText.contains("Pinging") }),
-            Step(name: "window: Ctrl+C reaches the program", action: { window.type("\u{03}") },
+                pane.type("ping -t 127.0.0.1")
+                pane.pressEnter()
+            }, done: { pane.visibleText.contains("Reply from") || pane.visibleText.contains("Pinging") }),
+            Step(name: "window: Ctrl+C reaches the program", action: { pane.type("\u{03}") },
                  // Ctrl+C throws away input already waiting, so wait for the prompt, as someone at the keyboard would.
-                 done: { window.visibleText.contains("Control-C") && window.terminal.currentBlock?.state == .prompt }),
+                 done: { pane.visibleText.contains("Control-C") && pane.terminal.currentBlock?.state == .prompt }),
             Step(name: "window: the shell comes back after Ctrl+C", action: {
-                window.type("echo after-ctrlc")
-                window.pressEnter()
+                pane.type("echo after-ctrlc")
+                pane.pressEnter()
             }, done: { hasLine("after-ctrlc") }),
             Step(name: "window: resize reaches the emulator and the program", action: {
-                widthBefore = window.terminal.cols
+                widthBefore = pane.terminal.cols
                 window.resizeWindow(toCols: widthBefore - 20, rows: 25)
-                window.type("echo ('width=' + $Host.UI.RawUI.WindowSize.Width)")
-                window.pressEnter()
-            }, done: { window.terminal.cols == widthBefore - 20 && hasLine("width=\(widthBefore - 20)") }),
+                pane.type("echo ('width=' + $Host.UI.RawUI.WindowSize.Width)")
+                pane.pressEnter()
+            }, done: { pane.terminal.cols == widthBefore - 20 && hasLine("width=\(widthBefore - 20)") }),
             Step(name: "window: output fills the screen", action: {
-                window.type("1..60 | % { 'line ' + $_ }")
-                window.pressEnter()
-            }, done: { hasLine("line 60") && window.terminal.currentBlock?.state == .prompt }),
+                pane.type("1..60 | % { 'line ' + $_ }")
+                pane.pressEnter()
+            }, done: { hasLine("line 60") && pane.terminal.currentBlock?.state == .prompt }),
             Step(name: "window: shrinks", action: { window.resizeWindow(toCols: 90, rows: 12) },
-                 done: { window.terminal.rows == 12 && !window.isSettlingResize }),
+                 done: { pane.terminal.rows == 12 && !pane.isSettlingResize }),
             Step(name: "window: grows again", action: { window.resizeWindow(toCols: 90, rows: 40) },
-                 done: { window.terminal.rows == 40 && !window.isSettlingResize }),
-            Step(name: "window: typing after resizing stays on the prompt", action: { window.type("claud") },
+                 done: { pane.terminal.rows == 40 && !pane.isSettlingResize }),
+            Step(name: "window: typing after resizing stays on the prompt", action: { pane.type("claud") },
                  // Newer PSReadLine adds a suggestion from its history after what's typed.
-                 done: { window.cursorRowText.hasPrefix("PS ") && window.cursorRowText.contains("> claud") }),
+                 done: { pane.cursorRowText.hasPrefix("PS ") && pane.cursorRowText.contains("> claud") }),
             Step(name: "window: resizing keeps scrollback", action: {},
-                 done: { window.visibleText.contains("\nline 1\n") }),
-            Step(name: "window: clears the line", action: { window.type("\u{1b}") },
-                 done: { !window.cursorRowText.contains("claud") }),
-            Step(name: "window: a command to click into", action: { window.type("echo abcdef") },
-                 done: { window.cursorRowText.contains("echo abcdef") }),
+                 done: { pane.visibleText.contains("\nline 1\n") }),
+            Step(name: "window: clears the line", action: { pane.type("\u{1b}") },
+                 done: { !pane.cursorRowText.contains("claud") }),
+            Step(name: "window: a command to click into", action: { pane.type("echo abcdef") },
+                 done: { pane.cursorRowText.contains("echo abcdef") }),
             Step(name: "window: clicking moves the cursor there", action: {
-                let promptEnd = window.cursorRowText.range(of: "echo abcdef")!.lowerBound
-                let col = window.cursorRowText.distance(from: window.cursorRowText.startIndex, to: promptEnd) + "echo ab".count
-                window.click(col: col, row: window.terminal.cursorY)
-            }, done: { window.terminal.cursorX == window.cursorRowText.distance(from: window.cursorRowText.startIndex, to: window.cursorRowText.range(of: "echo abcdef")!.lowerBound) + "echo ab".count }),
+                let promptEnd = pane.cursorRowText.range(of: "echo abcdef")!.lowerBound
+                let col = pane.cursorRowText.distance(from: pane.cursorRowText.startIndex, to: promptEnd) + "echo ab".count
+                pane.click(col: col, row: pane.terminal.cursorY)
+            }, done: { pane.terminal.cursorX == pane.cursorRowText.distance(from: pane.cursorRowText.startIndex, to: pane.cursorRowText.range(of: "echo abcdef")!.lowerBound) + "echo ab".count }),
             Step(name: "window: typing goes in at the click", action: {
-                window.type("X")
-                window.pressEnter()
+                pane.type("X")
+                pane.pressEnter()
             }, done: { hasLine("abXcdef") }),
-            Step(name: "window: a command to edit", action: { window.type("echo mnopqr") },
-                 done: { window.cursorRowText.contains("echo mnopqr") }),
+            Step(name: "window: a command to edit", action: { pane.type("echo mnopqr") },
+                 done: { pane.cursorRowText.contains("echo mnopqr") }),
             Step(name: "window: typing replaces the selection", action: {
                 select("op")
-                window.type("X")
-            }, done: { window.cursorRowText.contains("echo mnXqr") }),
-            Step(name: "window: Ctrl+Z undoes all of it", action: { window.type("\u{1a}") },
-                 done: { window.cursorRowText.contains("echo mnopqr") }),
+                pane.type("X")
+            }, done: { pane.cursorRowText.contains("echo mnXqr") }),
+            Step(name: "window: Ctrl+Z undoes all of it", action: { pane.type("\u{1a}") },
+                 done: { pane.cursorRowText.contains("echo mnopqr") }),
             Step(name: "window: Backspace deletes the selection", action: {
                 select("op")
-                window.pressBackspace()
-            }, done: { window.cursorRowText.contains("echo mnqr") && !window.cursorRowText.contains("op") }),
+                pane.pressBackspace()
+            }, done: { pane.cursorRowText.contains("echo mnqr") && !pane.cursorRowText.contains("op") }),
             Step(name: "window: paste replaces the selection", action: {
-                window.setClipboard("ZZ")
+                pane.setClipboard("ZZ")
                 select("qr")
                 pasteSoon = true
-            }, done: { window.cursorRowText.contains("echo mnZZ") }),
-            Step(name: "window: the edited command runs", action: { window.pressEnter() },
+            }, done: { pane.cursorRowText.contains("echo mnZZ") }),
+            Step(name: "window: the edited command runs", action: { pane.pressEnter() },
                  done: { hasLine("mnZZ") }),
             Step(name: "window: colors from a real program", action: {
-                window.type("Write-Host hello -ForegroundColor Green; Write-Host '✦ unicode typed'")
-                window.pressEnter()
+                pane.type("Write-Host hello -ForegroundColor Green; Write-Host '✦ unicode typed'")
+                pane.pressEnter()
             }, done: { hasLine("✦ unicode typed") }),
         ]
 
@@ -183,7 +224,7 @@ enum WindowSelfTest {
         _ = GetModuleFileNameW(nil, &executable, DWORD(executable.count))
         let launch = "& '\(String(decodingCString: executable, as: UTF16.self))' --fake-agent \(sampleText)"
         func cell(of word: String) -> (col: Int, row: Int)? {
-            for (row, line) in window.terminal.screen.enumerated() {
+            for (row, line) in pane.terminal.screen.enumerated() {
                 let text = line.text()
                 if let found = text.range(of: word) { return (text.distance(from: text.startIndex, to: found.lowerBound), row) }
             }
@@ -192,25 +233,54 @@ enum WindowSelfTest {
         func boxRun(_ name: String, from: String, through: String, act: @escaping () -> Void, leaves expected: String) {
             var acted = Date.distantFuture
             steps.append(Step(name: "box: \(name): starts", action: {
-                window.type(launch)
-                window.pressEnter()
-            }, done: { cell(of: "❯ alpha") != nil && window.terminal.currentBlock?.state == .running }))
+                pane.type(launch)
+                pane.pressEnter()
+            }, done: { cell(of: "❯ alpha") != nil && pane.terminal.currentBlock?.state == .running }))
             steps.append(Step(name: "box: \(name): selects and acts", action: {
                 guard let a = cell(of: from), let b = cell(of: through) else { return }
-                window.drag(fromCol: a.col, fromRow: a.row, toCol: b.col + through.count, toRow: b.row)
+                pane.drag(fromCol: a.col, fromRow: a.row, toCol: b.col + through.count, toRow: b.row)
                 act()
                 acted = Date()
             }, done: { Date().timeIntervalSince(acted) > 3 }))
-            steps.append(Step(name: "box: \(name): leaves the right text", action: { window.pressEscape() },
-                              done: { hasLine("final=" + expected) && window.terminal.currentBlock?.state == .prompt }))
+            steps.append(Step(name: "box: \(name): leaves the right text", action: { pane.pressEscape() },
+                              done: { hasLine("final=" + expected) && pane.terminal.currentBlock?.state == .prompt }))
         }
-        boxRun("replace on one row", from: "gamma", through: "gamma", act: { window.type("X") },
+        // Tabs. Each has its own shell, and what's typed goes to the one on screen.
+        steps.append(Step(name: "tabs: the + button opens one", action: { window.click(window.currentLayout.newTab) },
+                          done: { window.panes.count == 2 && window.activeIndex == 1 && pane.terminal.cwd != nil }))
+        steps.append(Step(name: "tabs: typing goes to the new tab", action: {
+            pane.type("echo in-tab-two")
+            pane.pressEnter()
+        }, done: { hasLine("in-tab-two") }))
+        steps.append(Step(name: "tabs: clicking a tab shows it", action: { window.click(window.currentLayout.tab(0)) },
+                          done: { window.activeIndex == 0 && !pane.visibleText.contains("in-tab-two") }))
+        steps.append(Step(name: "tabs: a background tab keeps running", action: {
+            window.selectTab(1)
+            pane.type("Start-Sleep 1; echo background-done")
+            pane.pressEnter()
+            window.selectTab(0)
+        }, done: { window.panes[1].visibleText.contains("\nbackground-done") }))
+        steps.append(Step(name: "tabs: all of them resize", action: { window.resizeWindow(toCols: 80, rows: 30) },
+                          done: { window.panes[0].terminal.cols == 80 && window.panes[1].terminal.cols == 80 }))
+        steps.append(Step(name: "tabs: titled by folder, not the shell's path", action: {},
+                          done: { !window.panes[1].tabTitle.contains(".exe") && !window.panes[1].tabTitle.isEmpty }))
+        steps.append(Step(name: "tabs: exit closes only its tab", action: {
+            window.selectTab(1)
+            pane.type("exit")
+            pane.pressEnter()
+        }, done: { window.panes.count == 1 && window.activeIndex == 0 }))
+        steps.append(Step(name: "tabs: the x closes one", action: {
+            window.newTab()
+            window.click(window.currentLayout.tabClose(1))
+        }, done: { window.panes.count == 1 }))
+
+        boxRun("replace on one row", from: "gamma", through: "gamma", act: { pane.type("X") },
                leaves: sampleText.replacingOccurrences(of: "gamma", with: "X"))
-        boxRun("replace across two rows", from: "gamma", through: "iota", act: { window.type("X") },
+        boxRun("replace across two rows", from: "gamma", through: "iota", act: { pane.type("X") },
                leaves: "alpha beta X kappa lambda mu nu pi rho sigma")
-        boxRun("delete across two rows", from: "gamma", through: "iota", act: { window.pressBackspace() },
+        boxRun("delete across two rows", from: "gamma", through: "iota", act: { pane.pressBackspace() },
                leaves: "alpha beta  kappa lambda mu nu pi rho sigma")
-        boxRun("delete across three rows", from: "epsilon", through: "rho", act: { window.pressBackspace() },
+        boxRun("delete across three rows", from: "epsilon", through: "rho", act: { pane.pressBackspace() },
                leaves: "alpha beta gamma delta  sigma")
 
         var index = 0
@@ -220,17 +290,18 @@ enum WindowSelfTest {
             guard index < steps.count else { return }
             if pasteSoon {
                 pasteSoon = false
-                window.paste()
+                pane.paste()
             }
             let step = steps[index]
             let passed = step.done()
             guard passed || Date() > deadline else { return }
-            results.check(step.name, passed, window.visibleText.suffix(600).description)
+            results.check(step.name, passed, pane.visibleText.suffix(600).description)
             index += 1
             guard index < steps.count else {
                 results.check("window: painted", window.paints > 0, "\(window.paints)")
-                if let canvas = Canvas(width: 1000, height: 640, fontPixels: 15) {
-                    results.check("window: snapshot", snapshot(window.terminal, name: "window", canvas: canvas))
+                if let dir = snapshotDirectory {
+                    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                    results.check("window: snapshot", window.saveSnapshot(to: dir + "\\window.png"))
                 }
                 window.close()
                 return

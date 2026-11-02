@@ -9,6 +9,7 @@ if CommandLine.arguments.contains("--selftest") {
     let results = CoreSelfTest.Results()
     CoreSelfTest.run(results)
     WindowSelfTest.runDrawing(results)
+    WindowSelfTest.runChrome(results)
     ConPTYSelfTest.run(results)
     exit(results.finish() ? 0 : 1)
 }

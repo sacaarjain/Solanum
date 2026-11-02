@@ -8,6 +8,8 @@
 #include <wrl/client.h>
 
 #include <cmath>
+#include <map>
+#include <utility>
 #include <vector>
 
 #pragma comment(lib, "d2d1.lib")
@@ -49,6 +51,9 @@ struct SolCanvas {
     SolMetrics metrics = {};
     float fontPixels = 0;
     float emScale = 0;
+
+    std::map<std::pair<int, int>, ComPtr<IDWriteTextFormat>> labelFormats;
+    std::map<int, ComPtr<IDWriteTextFormat>> iconFormats;
 
     std::vector<UINT16> glyphs;
     std::vector<FLOAT> advances;
@@ -141,6 +146,49 @@ struct SolCanvas {
                                  reinterpret_cast<IUnknown **>(dwrite.GetAddressOf()));
         if (FAILED(hr)) return hr;
         return loadFonts(pixels);
+    }
+
+    IDWriteTextFormat *labelFormat(float pixels, int semibold) {
+        auto key = std::make_pair(static_cast<int>(pixels * 10), semibold);
+        auto found = labelFormats.find(key);
+        if (found != labelFormats.end()) return found->second.Get();
+        ComPtr<IDWriteTextFormat> format;
+        auto weight = semibold ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
+        if (FAILED(dwrite->CreateTextFormat(L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                            pixels, L"", &format))) return nullptr;
+        format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        ComPtr<IDWriteInlineObject> ellipsis;
+        dwrite->CreateEllipsisTrimmingSign(format.Get(), &ellipsis);
+        DWRITE_TRIMMING trimming = {DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
+        format->SetTrimming(&trimming, ellipsis.Get());
+        labelFormats[key] = format;
+        return format.Get();
+    }
+
+    IDWriteTextFormat *iconFormat(float pixels) {
+        int key = static_cast<int>(pixels * 10);
+        auto found = iconFormats.find(key);
+        if (found != iconFormats.end()) return found->second.Get();
+        ComPtr<IDWriteFontCollection> fonts;
+        if (FAILED(dwrite->GetSystemFontCollection(&fonts))) return nullptr;
+        UINT32 index = 0;
+        BOOL exists = FALSE;
+        fonts->FindFamilyName(L"Segoe Fluent Icons", &index, &exists);
+        ComPtr<IDWriteTextFormat> format;
+        if (FAILED(dwrite->CreateTextFormat(exists ? L"Segoe Fluent Icons" : L"Segoe MDL2 Assets", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, pixels, L"", &format))) return nullptr;
+        format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        iconFormats[key] = format;
+        return format.Get();
+    }
+
+    /// Runs `draw` with shapes antialiased, then goes back to the terminal's exact cell edges.
+    template <typename Draw> void smooth(Draw draw) {
+        target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        draw();
+        target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
     }
 
     void drawRun(float x, float y, int style) {
@@ -301,6 +349,73 @@ void sol_canvas_draw_text(SolCanvas *canvas, float x, float y, int32_t cells, co
     if (length <= 0) return;
     canvas->brush->SetColor(color(rgb));
     canvas->drawFallback(x, y, cells, reinterpret_cast<const WCHAR *>(text), static_cast<UINT32>(length), style & 3);
+}
+
+void sol_canvas_fill_gradient(SolCanvas *canvas, float x, float y, float width, float height, uint32_t top, uint32_t bottom) {
+    D2D1_GRADIENT_STOP stops[2] = {{0, color(top)}, {1, color(bottom)}};
+    ComPtr<ID2D1GradientStopCollection> collection;
+    if (FAILED(canvas->target->CreateGradientStopCollection(stops, 2, &collection))) return;
+    ComPtr<ID2D1LinearGradientBrush> gradient;
+    auto line = D2D1::LinearGradientBrushProperties(D2D1::Point2F(x, y), D2D1::Point2F(x, y + height));
+    if (FAILED(canvas->target->CreateLinearGradientBrush(line, collection.Get(), &gradient))) return;
+    canvas->target->FillRectangle(D2D1::RectF(x, y, x + width, y + height), gradient.Get());
+}
+
+void sol_canvas_fill_rounded(SolCanvas *canvas, float x, float y, float width, float height, float radius, uint32_t rgb, float alpha) {
+    canvas->brush->SetColor(color(rgb, alpha));
+    canvas->smooth([&] {
+        canvas->target->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x, y, x + width, y + height), radius, radius), canvas->brush.Get());
+    });
+}
+
+void sol_canvas_stroke_rounded(SolCanvas *canvas, float x, float y, float width, float height, float radius, uint32_t rgb, float alpha, float thickness) {
+    canvas->brush->SetColor(color(rgb, alpha));
+    canvas->smooth([&] {
+        canvas->target->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x, y, x + width, y + height), radius, radius), canvas->brush.Get(), thickness);
+    });
+}
+
+void sol_canvas_fill_ellipse(SolCanvas *canvas, float cx, float cy, float rx, float ry, uint32_t rgb, float alpha) {
+    canvas->brush->SetColor(color(rgb, alpha));
+    canvas->smooth([&] { canvas->target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rx, ry), canvas->brush.Get()); });
+}
+
+void sol_canvas_line(SolCanvas *canvas, float x1, float y1, float x2, float y2, uint32_t rgb, float alpha, float thickness) {
+    canvas->brush->SetColor(color(rgb, alpha));
+    canvas->smooth([&] { canvas->target->DrawLine(D2D1::Point2F(x1, y1), D2D1::Point2F(x2, y2), canvas->brush.Get(), thickness); });
+}
+
+void sol_canvas_push_clip(SolCanvas *canvas, float x, float y, float width, float height) {
+    canvas->target->PushAxisAlignedClip(D2D1::RectF(x, y, x + width, y + height), D2D1_ANTIALIAS_MODE_ALIASED);
+}
+
+void sol_canvas_pop_clip(SolCanvas *canvas) { canvas->target->PopAxisAlignedClip(); }
+
+void sol_canvas_draw_label(SolCanvas *canvas, float x, float y, float width, float height, const uint16_t *text, int32_t length,
+                           float pixels, int32_t semibold, uint32_t rgb, float alpha) {
+    auto *format = canvas->labelFormat(pixels, semibold);
+    if (!format || length <= 0 || width <= 0) return;
+    canvas->brush->SetColor(color(rgb, alpha));
+    canvas->target->DrawText(reinterpret_cast<const WCHAR *>(text), static_cast<UINT32>(length), format,
+                             D2D1::RectF(x, y, x + width, y + height), canvas->brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+}
+
+float sol_canvas_measure_label(SolCanvas *canvas, const uint16_t *text, int32_t length, float pixels, int32_t semibold) {
+    auto *format = canvas->labelFormat(pixels, semibold);
+    if (!format || length <= 0) return 0;
+    ComPtr<IDWriteTextLayout> layout;
+    if (FAILED(canvas->dwrite->CreateTextLayout(reinterpret_cast<const WCHAR *>(text), static_cast<UINT32>(length), format, 10000, 1000, &layout))) return 0;
+    DWRITE_TEXT_METRICS metrics = {};
+    if (FAILED(layout->GetMetrics(&metrics))) return 0;
+    return metrics.widthIncludingTrailingWhitespace;
+}
+
+void sol_canvas_draw_icon(SolCanvas *canvas, float x, float y, float width, float height, uint16_t glyph, float pixels, uint32_t rgb, float alpha) {
+    auto *format = canvas->iconFormat(pixels);
+    if (!format) return;
+    canvas->brush->SetColor(color(rgb, alpha));
+    WCHAR text = static_cast<WCHAR>(glyph);
+    canvas->target->DrawText(&text, 1, format, D2D1::RectF(x, y, x + width, y + height), canvas->brush.Get());
 }
 
 int32_t sol_canvas_save_png(SolCanvas *canvas, const uint16_t *path) {
