@@ -21,6 +21,18 @@
   ✓ window: paste replaces the selection
   ✓ window: the edited command runs
   ✓ window: colors from a real program
+  ✓ box: replace on one row: starts
+  ✓ box: replace on one row: selects and acts
+  ✓ box: replace on one row: leaves the right text
+  ✓ box: replace across two rows: starts
+  ✓ box: replace across two rows: selects and acts
+  ✓ box: replace across two rows: leaves the right text
+  ✓ box: delete across two rows: starts
+  ✓ box: delete across two rows: selects and acts
+  ✓ box: delete across two rows: leaves the right text
+  ✓ box: delete across three rows: starts
+  ✓ box: delete across three rows: selects and acts
+  ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
   ✓ window: snapshot
-All 25 checks passed.
+All 37 checks passed.
