@@ -46,7 +46,7 @@ final class TerminalPane: TerminalDelegate {
         Self.nextID += 1
         self.host = host
         hwnd = host.hwnd
-        terminal = Terminal(cols: cols, rows: rows, scrollbackLimit: 10000)
+        terminal = Terminal(cols: cols, rows: rows, scrollbackLimit: AppSettings.shared.scrollback)
         terminal.delegate = self
         terminal.repaintedByConsole = true
         if let text, !text.isEmpty {
@@ -98,11 +98,13 @@ final class TerminalPane: TerminalDelegate {
         reanchorIfSettled()
     }
 
-    func draw() {
+    func draw(cursorShown: Bool = true, style: Int = 6) {
         var renderer = TerminalRenderer(canvas: canvas, terminal: terminal)
         renderer.scrollOffset = scrollOffset
         renderer.selection = selection
         renderer.focused = focused
+        renderer.cursorShown = cursorShown
+        renderer.cursorStyle = style
         renderer.drawContents()
     }
 
@@ -279,6 +281,7 @@ final class TerminalPane: TerminalDelegate {
     /// Input from the person: shows the live screen again, as typing does in any terminal.
     private func input(_ bytes: [UInt8], replacesSelection: Bool = false) {
         scrollOffset = 0
+        host?.restartBlink()
         invalidate()
         if afterSelectionDeleted != nil {
             // Keys typed while a selection is still going follow it, in order.
@@ -340,6 +343,7 @@ final class TerminalPane: TerminalDelegate {
             guard selecting else { return }
             selecting = false
             ReleaseCapture()
+            if let chosen = selection, !chosen.isEmpty, AppSettings.shared.copyOnSelect { setClipboard(chosen.text(in: terminal)) }
             if selection?.isEmpty == true {
                 selection = nil
                 whenCursorSettled { [weak self] in self?.placeCursor(line: abs, col: col) }
@@ -718,6 +722,7 @@ final class TerminalPane: TerminalDelegate {
 
     func terminalBell(_ t: Terminal) {
         if !(host?.isFocused ?? false) { FlashWindow(hwnd, true) }
+        if AppSettings.shared.audibleBell { MessageBeep(0) }
     }
 
     func terminalBlockFinished(_ t: Terminal, block: Block) {}

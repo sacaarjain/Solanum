@@ -1,19 +1,20 @@
 import CCanvas
 import Foundation
 
-/// Solanum Default's terminal colors, until themes move into the shared core. All 0xRRGGBB.
+/// The terminal's and the chrome's colors, from the current theme. All 0xRRGGBB.
 enum TerminalPalette {
-    static let background: UInt32 = 0x111312
-    static let foreground: UInt32 = 0xD7D3C7
-    static let cursor: UInt32 = 0xD7D3C7
-    static let selection: UInt32 = 0x3A3550
-    static let backgroundBottom: UInt32 = 0x050606
-    static let accent: UInt32 = 0xA584E8
-    /// A faint wash of purple over the background, for the tab bar and status bar (`Theme.tabBarTint`).
-    static let chrome: UInt32 = mix(0x17082B, background, 0.32)
-    static let surface: UInt32 = mix(0xFFFFFF, background, 0.08)
-    static let ansi: [UInt32] = [0x272B28, 0xE3573F, 0x8BA47B, 0xE9B54D, 0x6F90A9, 0xA98CC1, 0x8FB9B1, 0xBCB7A9,
-                                 0x5A5F5A, 0xF47A63, 0xA4BC95, 0xF5C86F, 0x8DA8BE, 0xC0A6D4, 0xA9CEC7, 0xECE8DC]
+    static var current = ThemeColors(ThemeSpecs.solanumDefault)
+    static var boldIsBright = false
+
+    static var background: UInt32 { current.background }
+    static var backgroundBottom: UInt32 { current.backgroundBottom }
+    static var foreground: UInt32 { current.foreground }
+    static var cursor: UInt32 { current.cursor }
+    static var selection: UInt32 { current.selection }
+    static var accent: UInt32 { current.accent }
+    static var chrome: UInt32 { current.chrome }
+    static var surface: UInt32 { current.surface }
+    static var ansi: [UInt32] { current.ansi }
 
     static func indexed(_ i: Int) -> UInt32 {
         if i < 16 { return ansi[i] }
@@ -92,6 +93,10 @@ final class Canvas {
         if sol_canvas_set_font_pixels(raw, pixels) >= 0 { metrics = sol_canvas_metrics(raw) }
     }
 
+    func setFont(family: String, pixels: Float, lineHeight: Float) {
+        if sol_canvas_set_font(raw, Array(family.utf16) + [0], pixels, lineHeight) >= 0 { metrics = sol_canvas_metrics(raw) }
+    }
+
     private var loadedArt: [String: Int32] = [:]
 
     /// Draws a piece of Solanum's art (`ArtData`) into a rectangle, from the rendering made for this display scale.
@@ -165,6 +170,10 @@ struct TerminalRenderer {
     var scrollOffset = 0
     var selection: TerminalSelection?
     var focused = true
+    /// Off for the dark half of a blink.
+    var cursorShown = true
+    /// The DECSCUSR shape to use when the program hasn't asked for one: 2 block, 4 underline, 6 bar.
+    var cursorStyle = 6
 
     /// Grid size for a client area of this many pixels.
     static func grid(width: Int, height: Int, canvas: Canvas) -> (cols: Int, rows: Int) {
@@ -193,7 +202,10 @@ struct TerminalRenderer {
     }
 
     private func colors(_ cell: Cell, selected: Bool) -> (fg: UInt32, bg: UInt32) {
-        var fg = TerminalPalette.resolve(cell.fg, default: TerminalPalette.foreground)
+        var fgPacked = cell.fg
+        // Bold in one of the first eight colors takes its bright one, as older terminals did, when asked for.
+        if TerminalPalette.boldIsBright, cell.flags.contains(.bold), fgPacked >> 24 == 1, fgPacked & 0xFF < 8 { fgPacked += 8 }
+        var fg = TerminalPalette.resolve(fgPacked, default: TerminalPalette.foreground)
         var bg = TerminalPalette.resolve(cell.bg, default: TerminalPalette.background)
         if cell.flags.contains(.inverse) != terminal.reverseVideo { swap(&fg, &bg) }
         if selected { bg = TerminalPalette.selection }
@@ -283,7 +295,7 @@ struct TerminalRenderer {
     }
 
     private func drawCursor(top: Int) {
-        guard terminal.cursorVisible, scrollOffset == 0 else { return }
+        guard terminal.cursorVisible, scrollOffset == 0, cursorShown || !focused else { return }
         let m = canvas.metrics
         let col = min(terminal.cursorX, terminal.cols - 1)
         let line = terminal.line(abs: top + terminal.cursorY)
@@ -295,7 +307,7 @@ struct TerminalRenderer {
             sol_canvas_stroke_rect(canvas.raw, x, y, width, m.cellHeight, TerminalPalette.cursor, m.lineThickness)
             return
         }
-        switch terminal.cursorShape ?? 5 {
+        switch terminal.cursorShape.flatMap({ $0 == 0 ? nil : $0 }) ?? cursorStyle {
         case 1, 2:
             sol_canvas_fill_rect(canvas.raw, x, y, width, m.cellHeight, TerminalPalette.cursor, 1)
             if cell.ch != 0, cell.ch != 32 {

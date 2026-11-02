@@ -186,6 +186,26 @@ enum WindowSelfTest {
         let shape = SidebarLayout(area: sides.leftSidebar, scale: 1)
         results.check("sidebars: rows from the top of the list", shape.visibleRow(atY: shape.list.y + 1) == 0 && shape.visibleRow(atY: shape.list.y + shape.rowHeight + 1) == 1 && shape.visibleRow(atY: shape.list.y - 1) == nil)
 
+        print("Themes and settings")
+        results.check("themes: all fourteen", ([ThemeSpecs.solanumDefault] + ThemeSpecs.outerWilds + ThemeSpecs.vsCode).count == 14)
+        results.check("hex: six digits", HexColor("#A584E8")?.rgb == 0xA584E8 && HexColor("#A584E8")?.alpha == 1)
+        results.check("hex: with alpha", HexColor("#FFFFFF66")?.rgb == 0xFFFFFF && abs((HexColor("#FFFFFF66")?.alpha ?? 0) - 0.4) < 0.01)
+        results.check("hex: three digits", HexColor("#fa0")?.rgb == 0xFFAA00 && HexColor("nope") == nil)
+        let standard = ThemeColors(ThemeSpecs.solanumDefault)
+        results.check("theme: Solanum Default's chrome", standard.isDark && standard.chrome == ThemeColors.mix(0x17082B, 0x111312, 0.32) && standard.background == 0x111312)
+        let light = ThemeColors(ThemeSpecs.vsCode.first { $0.name == "Light+" }!)
+        results.check("theme: a light one", !light.isDark && light.background == 0xFFFFFF)
+        results.check("theme: a see-through selection is mixed into the background", ThemeColors(ThemeSpecs.vsCode.last!).selection == ThemeColors.mix(0xFFFFFF, 0x000000, 0.4))
+        let json = #"{"name": "Mine", "background": "#101010", "foreground": "#EEEEEE", "accent": "#FF0000", "ansi": ["#000000"]}"#
+        results.check("theme: from a Mac theme file", ThemeColors.spec(fromJSON: Data(json.utf8))?.name == "Mine")
+        var settingsFile = SettingsFile(text: "# hello\ntheme = Hourglass\nfont-size = 14\nmac-only = keep me\ncursor-blink = no\n")
+        results.check("settings: reads the file", settingsFile["theme"] == "Hourglass" && settingsFile.number("font-size", 11, in: 6...40) == 14 && !settingsFile.bool("cursor-blink", true))
+        results.check("settings: numbers kept in range", settingsFile.number("font-size", 11, in: 6...12) == 12)
+        settingsFile["font-size"] = "15"
+        let written = settingsFile.text(header: "# top", sections: [("Font", ["font-size", "theme"])])
+        results.check("settings: writes it back, keeping keys it doesn't know", written.contains("font-size = 15") && written.contains("mac-only = keep me") && written.contains("# Font"))
+        results.check("settings: and reads what it wrote", SettingsFile(text: written)["mac-only"] == "keep me")
+
         print("Command palette")
         var ran: [String] = []
         func item(_ title: String, _ category: String = "Shell") -> PaletteItem {
@@ -673,6 +693,26 @@ enum WindowSelfTest {
             pane.type("echo after-sidebar")
             pane.pressEnter()
         }, done: { hasLine("after-sidebar") }))
+
+        // A new tab opens in the current tab's folder, which Settings makes the default.
+        steps.append(Step(name: "new tab: opens in the current tab's folder", action: { press(0x54) }, done: {
+            window.panes.count == 3 && pane.atPrompt && pane.terminal.cwd?.lowercased() == window.panes[window.activeIndex - 1].terminal.cwd?.lowercased()
+        }))
+        steps.append(Step(name: "new tab: closes", action: { press(0x57) }, done: { window.panes.count == 2 }))
+        // Themes.
+        steps.append(Step(name: "themes: the status bar's theme opens the menu", action: { window.click(window.themeSpotRect) },
+                          done: { window.menuTitles.contains("Quantum Moon") && window.menuTitles.contains("Dark+") }))
+        steps.append(Step(name: "themes: choosing one changes everything", action: { window.click(window.menuRow("Quantum Moon")!) },
+                          done: { TerminalPalette.background == 0x202125 && AppSettings.shared.themeName == "Quantum Moon" }))
+        if let dir = snapshotDirectory {
+            steps.append(Step(name: "themes: snapshot", action: {}, done: { window.saveSnapshot(to: dir + "\\theme.png") }))
+        }
+        steps.append(Step(name: "themes: and back from the palette", action: {
+            press(0x50, shift: true)
+            pane.type("theme solanum default")
+        }, done: { window.paletteSelection?.title == "Theme: Solanum Default" }))
+        steps.append(Step(name: "themes: back to the default", action: { pane.pressEnter() },
+                          done: { TerminalPalette.background == 0x111312 && !window.isPaletteOpen }))
 
         steps.append(Step(name: "tabs: titled by folder, not the shell's path", action: {},
                           done: { !window.panes[1].tabTitle.contains(".exe") && !window.panes[1].tabTitle.isEmpty }))

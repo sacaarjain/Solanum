@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include <map>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -50,6 +51,8 @@ struct SolCanvas {
     ComPtr<IDWriteTextFormat> formats[4];
     SolMetrics metrics = {};
     float fontPixels = 0;
+    std::wstring preferredFamily;
+    float lineHeight = 0;
     float emScale = 0;
 
     std::map<std::pair<int, int>, ComPtr<IDWriteTextFormat>> labelFormats;
@@ -94,7 +97,10 @@ struct SolCanvas {
         if (FAILED(hr)) return hr;
         ComPtr<IDWriteFontFamily> family;
         const wchar_t *familyName = nullptr;
-        for (const wchar_t *name : kFontFamilies) {
+        std::vector<const wchar_t *> names;
+        if (!preferredFamily.empty()) names.push_back(preferredFamily.c_str());
+        for (const wchar_t *name : kFontFamilies) names.push_back(name);
+        for (const wchar_t *name : names) {
             UINT32 index = 0;
             BOOL exists = FALSE;
             if (SUCCEEDED(fonts->FindFamilyName(name, &index, &exists)) && exists &&
@@ -133,8 +139,10 @@ struct SolCanvas {
 
         fontPixels = pixels;
         metrics.cellWidth = std::round(sampleMetrics.advanceWidth * emScale);
-        metrics.cellHeight = std::round((m.ascent + m.descent + m.lineGap) * emScale);
-        metrics.baseline = std::round((m.ascent + m.lineGap / 2.0f) * emScale);
+        float natural = (m.ascent + m.descent + m.lineGap) * emScale;
+        metrics.cellHeight = std::round(lineHeight > 0 ? std::fmax(pixels * lineHeight, (m.ascent + m.descent) * emScale) : natural);
+        // The extra height is shared above and below the text.
+        metrics.baseline = std::round(m.ascent * emScale + (metrics.cellHeight - (m.ascent + m.descent) * emScale) / 2.0f);
         metrics.lineThickness = std::fmax(1.0f, std::round(m.underlineThickness * emScale));
         metrics.underlineY = metrics.baseline - std::round(m.underlinePosition * emScale);
         metrics.strikeY = metrics.baseline - std::round(m.strikethroughPosition * emScale);
@@ -275,6 +283,12 @@ void sol_canvas_destroy(SolCanvas *canvas) { delete canvas; }
 SolMetrics sol_canvas_metrics(SolCanvas *canvas) { return canvas->metrics; }
 
 int32_t sol_canvas_set_font_pixels(SolCanvas *canvas, float fontPixels) { return canvas->loadFonts(fontPixels); }
+
+int32_t sol_canvas_set_font(SolCanvas *canvas, const uint16_t *family, float fontPixels, float lineHeight) {
+    canvas->preferredFamily = family ? std::wstring(reinterpret_cast<const wchar_t *>(family)) : std::wstring();
+    canvas->lineHeight = lineHeight;
+    return canvas->loadFonts(fontPixels);
+}
 
 void sol_canvas_resize(SolCanvas *canvas, int32_t width, int32_t height) {
     canvas->width = static_cast<UINT32>(width);

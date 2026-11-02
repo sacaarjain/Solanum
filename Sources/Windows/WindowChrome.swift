@@ -21,7 +21,9 @@ struct WindowChrome {
     var focused = true
     var folder: String?
     var home: String?
-    var themeName = "SOLANUM DEFAULT"
+    var themeName = ThemeSpecs.defaultName.uppercased()
+    var showsThemeIcon = true
+    var themeHovered = false
     /// A tab being dragged, and where its left edge is.
     var draggedTab: Int?
     var draggedX: Float = 0
@@ -173,6 +175,14 @@ struct WindowChrome {
         }
     }
 
+    /// The theme's name and icon in the status bar, which open the theme menu.
+    func themeSpot() -> UIRect {
+        let themeWidth = width(of: themeName, pixels: 10.5 * scale, semibold: true)
+        let right = layout.showsRightToggle ? layout.toggleRight.x - 8 * scale : layout.statusBar.maxX - 10 * scale
+        let left = right - themeWidth - (showsThemeIcon ? 24 * scale : 4 * scale)
+        return UIRect(x: left, y: layout.statusBar.y, width: right - left + 4 * scale, height: layout.statusBar.height)
+    }
+
     /// Where the folder's parts go in the status bar, and what each stands for. For drawing them and for clicks.
     func crumbSpots() -> [(label: String, path: String, rect: UIRect, hit: UIRect)] {
         let themeWidth = width(of: themeName, pixels: 10.5 * scale, semibold: true)
@@ -207,9 +217,13 @@ struct WindowChrome {
         let themePixels = 10.5 * scale
         let themeWidth = width(of: themeName, pixels: themePixels, semibold: true)
         let themeX = (layout.showsRightToggle ? layout.toggleRight.x - 8 * scale : bar.maxX - 10 * scale) - themeWidth
-        label(themeName, UIRect(x: themeX, y: bar.y, width: themeWidth + 2, height: bar.height), pixels: themePixels, semibold: true, alpha: 0.55)
-        let side = (16 * scale).rounded()
-        canvas.drawArt("flowerOutline", UIRect(x: themeX - side - 5 * scale, y: (bar.midY - side / 2).rounded(), width: side, height: side), scale: scale)
+        let spot = themeSpot()
+        if themeHovered { sol_canvas_fill_rounded(canvas.raw, spot.x, spot.y + 3 * scale, spot.width, spot.height - 6 * scale, 4 * scale, fg, 0.10) }
+        label(themeName, UIRect(x: themeX, y: bar.y, width: themeWidth + 2, height: bar.height), pixels: themePixels, semibold: true, alpha: themeHovered ? 0.9 : 0.55)
+        if showsThemeIcon {
+            let side = (16 * scale).rounded()
+            canvas.drawArt("flowerOutline", UIRect(x: themeX - side - 5 * scale, y: (bar.midY - side / 2).rounded(), width: side, height: side), scale: scale)
+        }
 
         // The sidebars' switches, at either end.
         var switches = [(WindowPart.toggleLeft, layout.toggleLeft, Icon.dockLeft, layout.leftWidth > 0)]

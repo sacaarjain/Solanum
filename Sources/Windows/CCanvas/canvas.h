@@ -35,6 +35,9 @@ void sol_canvas_destroy(SolCanvas *canvas);
 
 SolMetrics sol_canvas_metrics(SolCanvas *canvas);
 int32_t sol_canvas_set_font_pixels(SolCanvas *canvas, float fontPixels);
+/// A family to try before the defaults (NUL-terminated UTF-16, empty for none), its size, and the line height as a
+/// multiple of the size (0 for the font's own).
+int32_t sol_canvas_set_font(SolCanvas *canvas, const uint16_t *family, float fontPixels, float lineHeight);
 void sol_canvas_resize(SolCanvas *canvas, int32_t width, int32_t height);
 
 /// Returns a negative HRESULT when nothing can be drawn right now; don't draw or call `end` then.

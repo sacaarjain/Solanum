@@ -8,8 +8,6 @@ import WinSDK
 final class TerminalWindow {
     private static let className = wide("SolanumTerminalWindow")
     private static var windows: [HWND: TerminalWindow] = [:]
-    /// Points at 96 DPI: 11pt, about what Windows Terminal starts with.
-    private static let fontPoints: Float = 11
 
     private(set) var hwnd: HWND!
     private(set) var canvas: Canvas!
@@ -37,6 +35,7 @@ final class TerminalWindow {
 
     private var menu: MenuModel?
     private var hoveredCrumb: Int?
+    private var themeHovered = false
     /// A new tab's opening has already kept the old tab's sidebar place, so switching to it doesn't again.
     private var sidebarPlaceSaved = false
     /// A press on a tab, which may turn into dragging it.
@@ -101,7 +100,11 @@ final class TerminalWindow {
             return nil
         }
         self.canvas = canvas
+        TerminalPalette.current = ThemeColors(AppSettings.shared.theme)
+        TerminalPalette.boldIsBright = AppSettings.shared.boldIsBright
+        applyFont(to: canvas)
         canvas.padding = scaledPadding()
+        AppSettings.shared.onChange.append { [weak self] in self?.settingsChanged() }
         Self.windows[created] = self
         for sidebar in [left, right] {
             sidebar.tree.onNeedsListing = { [weak self, weak sidebar] folder in
@@ -128,8 +131,24 @@ final class TerminalWindow {
 
     private var dpi: Float { Float(GetDpiForWindow(hwnd)) }
     private var scale: Float { dpi / 96 }
-    private func fontPixels() -> Float { Self.fontPoints * dpi / 72 }
-    private func scaledPadding() -> Float { (6 * scale).rounded() }
+    private func fontPixels() -> Float { Float(AppSettings.shared.fontSize) * dpi / 72 }
+    private func scaledPadding() -> Float { (Float(AppSettings.shared.padding) * scale).rounded() }
+
+    private func applyFont(to target: Canvas) {
+        target.setFont(family: AppSettings.shared.fontFamily, pixels: fontPixels(), lineHeight: Float(AppSettings.shared.lineHeight))
+    }
+
+    /// Settings have changed, here or in the file: everything that depends on them follows.
+    private func settingsChanged() {
+        let settings = AppSettings.shared
+        TerminalPalette.current = ThemeColors(settings.theme)
+        TerminalPalette.boldIsBright = settings.boldIsBright
+        applyFont(to: canvas)
+        canvas.padding = scaledPadding()
+        panes.forEach { $0.terminal.setScrollbackLimit(settings.scrollback) }
+        layoutChanged()
+        detailsChanged()
+    }
 
     private var layout: WindowLayout {
         WindowLayout(width: Float(clientWidth), height: Float(clientHeight), scale: scale, tabCount: panes.count, tabScroll: tabScroll,
@@ -182,7 +201,11 @@ final class TerminalWindow {
         addPane(at: closed.index, cwd: closed.folder, restoring: closed.text, place: closed.place)
     }
 
-    func newTab() { addPane() }
+    /// In the current tab's folder, unless Settings says the home folder.
+    func newTab() {
+        let here = AppSettings.shared.newTabFolder == "current" && !panes.isEmpty ? activePane.terminal.cwd : nil
+        addPane(cwd: here)
+    }
 
     func selectTab(_ i: Int) {
         guard panes.indices.contains(i), i != activeIndex else { return }
@@ -275,11 +298,40 @@ final class TerminalWindow {
         chrome.folder = panes.isEmpty ? nil : activePane.terminal.cwd
         chrome.home = ProcessInfo.processInfo.environment["USERPROFILE"]
         chrome.hoveredCrumb = hoveredCrumb
+        chrome.themeName = AppSettings.shared.themeName.uppercased()
+        chrome.showsThemeIcon = AppSettings.shared.themeIcon
+        chrome.themeHovered = themeHovered
         if let press = tabPress, press.dragging {
             chrome.draggedTab = press.index
             chrome.draggedX = draggedX
         }
         return chrome
+    }
+
+    /// When the cursor last showed fresh: typing or clicking restarts its blink, as in other terminals.
+    private var blinkStart = Date()
+    private var cursorShown = true
+
+    func restartBlink() {
+        blinkStart = Date()
+        if !cursorShown { cursorShown = true; invalidate() }
+    }
+
+    private func updateBlink() {
+        let blinking = AppSettings.shared.cursorBlink && isFocused && palette == nil && !sidebarHasFocus
+        let shown = !blinking || Int(Date().timeIntervalSince(blinkStart) / 0.53) % 2 == 0
+        if shown != cursorShown {
+            cursorShown = shown
+            invalidate()
+        }
+    }
+
+    private var cursorStyleCode: Int {
+        switch AppSettings.shared.cursorStyle {
+        case "block": return 2
+        case "underline": return 4
+        default: return 6
+        }
     }
 
     private func paint() {
@@ -288,7 +340,7 @@ final class TerminalWindow {
         defer { EndPaint(hwnd, &ps) }
         guard !panes.isEmpty, sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
         chrome(on: canvas, layout: layout).draw()
-        activePane.draw()
+        activePane.draw(cursorShown: cursorShown, style: cursorStyleCode)
         drawSidebars(on: canvas, layout: layout)
         drawPalette(on: canvas)
         if let menu { MenuView(canvas: canvas, menu: menu).draw() }
@@ -300,6 +352,7 @@ final class TerminalWindow {
     /// What the window shows, to a PNG. For tests.
     func saveSnapshot(to path: String) -> Bool {
         guard let bitmap = Canvas(width: clientWidth, height: clientHeight, fontPixels: fontPixels()) else { return false }
+        applyFont(to: bitmap)
         bitmap.padding = canvas.padding
         bitmap.terminalArea = canvas.terminalArea
         guard sol_canvas_begin(bitmap.raw, TerminalPalette.background) >= 0 else { return false }
@@ -367,7 +420,7 @@ final class TerminalWindow {
             resized(width: Int(lParam & 0xFFFF), height: Int((lParam >> 16) & 0xFFFF))
             return 0
         case Win.WM_DPICHANGED:
-            canvas.setFontPixels(fontPixels())
+            applyFont(to: canvas)
             canvas.padding = scaledPadding()
             let suggested = UnsafePointer<RECT>(bitPattern: Int(lParam))!.pointee
             SetWindowPos(hwnd, nil, suggested.left, suggested.top, suggested.right - suggested.left,
@@ -400,6 +453,7 @@ final class TerminalWindow {
             } else {
                 panes.forEach { $0.tick() }
                 lookForChanges()
+                updateBlink()
                 onTick?()
             }
             return 0
@@ -651,6 +705,7 @@ final class TerminalWindow {
         guard Date().timeIntervalSince(lastLook) > 3 else { return }
         lastLook = Date()
         for sidebar in [left, right] where sidebar.isVisible { sidebar.tree.refresh() }
+        AppSettings.shared.reloadIfChanged()
     }
 
     private func saveSidebarPlace(to pane: TerminalPane) {
@@ -927,15 +982,21 @@ final class TerminalWindow {
 
     /// The status bar's folder parts under the pointer. True if it dealt with the mouse.
     private func statusBarMouse(_ message: UINT, x: Float, y: Float) -> Bool {
-        let spots = chrome(on: canvas, layout: layout).crumbSpots()
+        let bar = chrome(on: canvas, layout: layout)
+        let spots = bar.crumbSpots()
         let hit = spots.firstIndex { $0.hit.contains(x, y) }
+        let onTheme = bar.themeSpot().contains(x, y)
         switch message {
         case Win.WM_MOUSEMOVE:
-            if hit != hoveredCrumb {
+            if hit != hoveredCrumb || onTheme != themeHovered {
                 hoveredCrumb = hit
+                themeHovered = onTheme
                 invalidate()
             }
             return false
+        case Win.WM_LBUTTONUP where onTheme:
+            showThemeMenu(above: bar.themeSpot())
+            return true
         case Win.WM_LBUTTONUP, Win.WM_RBUTTONUP:
             guard let hit else { return false }
             showCrumbMenu(spots[hit], copyOnly: message == Win.WM_RBUTTONUP)
@@ -955,6 +1016,25 @@ final class TerminalWindow {
         guard let first = chrome(on: canvas, layout: layout).crumbSpots().first else { return nil }
         return UIRect(x: first.hit.x + 2, y: first.hit.y, width: 8 * scale, height: first.hit.height)
     }
+
+    // MARK: - Themes
+
+    private func useTheme(_ name: String) { AppSettings.shared.set("theme", name) }
+
+    /// Every theme, Solanum's first, with the current one checked.
+    private func showThemeMenu(above spot: UIRect) {
+        let settings = AppSettings.shared, current = settings.themeName
+        func items(_ specs: [ThemeSpec]) -> [MenuItem] {
+            specs.map { spec in MenuItem(title: spec.name, isChecked: spec.name == current) { [weak self] in self?.useTheme(spec.name) } }
+        }
+        var all = items([ThemeSpecs.solanumDefault] + ThemeSpecs.outerWilds)
+        if !settings.customThemes.isEmpty { all += [.separator] + items(settings.customThemes) }
+        all += [.separator] + items(ThemeSpecs.vsCode)
+        let width = MenuView.width(for: all, canvas: canvas, scale: scale)
+        openMenu(all, x: spot.maxX - width, y: spot.y - 2 * scale, above: true)
+    }
+
+    var themeSpotRect: UIRect { chrome(on: canvas, layout: layout).themeSpot() }
 
     // MARK: - Dragging tabs
 
@@ -1110,10 +1190,18 @@ final class TerminalWindow {
             },
             PaletteItem(title: "Scroll to Top", category: "View") { [weak self] in self?.activePane.scrollToTop() },
             PaletteItem(title: "Scroll to Bottom", category: "View") { [weak self] in self?.activePane.scrollToBottom() },
-            PaletteItem(title: "Minimize", category: "Window") { [weak self] in self?.pressCaptionButton(.minimize) },
+            PaletteItem(title: "Open Config File", category: "Solanum") {
+                guard let url = AppSettings.fileURL else { return }
+                _ = wide(url.path).withUnsafeBufferPointer { ShellExecuteW(nil, nil, $0.baseAddress, nil, nil, 1) }
+            },
+            PaletteItem(title: "Reload Config", category: "Solanum") { AppSettings.shared.reloadIfChanged() },
+                        PaletteItem(title: "Minimize", category: "Window") { [weak self] in self?.pressCaptionButton(.minimize) },
             PaletteItem(title: IsZoomed(hwnd) ? "Restore" : "Maximize", category: "Window") { [weak self] in self?.pressCaptionButton(.maximize) },
             PaletteItem(title: "Close Window", category: "Window", shortcut: "Alt+F4") { [weak self] in self?.pressCaptionButton(.close) },
         ]
+        for spec in AppSettings.shared.allThemes {
+            items.append(PaletteItem(title: "Theme: \(spec.name)", category: "Appearance") { [weak self] in self?.useTheme(spec.name) })
+        }
         for (i, pane) in panes.enumerated() {
             items.append(PaletteItem(title: "Go to Tab: \(pane.tabTitle)", category: "Tabs", shortcut: i < 9 ? "Ctrl+\(i + 1)" : "") { [weak self] in self?.selectTab(i) })
         }
@@ -1361,7 +1449,10 @@ final class TerminalWindow {
     static func runApp() -> Int32 {
         var failure = "Couldn't register the window class."
         var window: TerminalWindow?
-        if prepare() { window = TerminalWindow(commandLine: PowerShellIntegration.commandLine(), failure: &failure) }
+        let settings = AppSettings.shared
+        if prepare() {
+            window = TerminalWindow(commandLine: settings.shellCommandLine, cols: settings.windowColumns, rows: settings.windowRows, failure: &failure)
+        }
         guard window != nil else {
             _ = wide(failure).withUnsafeBufferPointer { text in
                 wide("Solanum").withUnsafeBufferPointer { title in

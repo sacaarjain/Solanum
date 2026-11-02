@@ -1,0 +1,124 @@
+import Foundation
+
+/// Solanum's settings on Windows, in %APPDATA%\Solanum\config, in the Mac's format. Tests use them without the file.
+final class AppSettings {
+    static let shared = AppSettings()
+
+    private(set) var file = SettingsFile()
+    private var fileDate: Date?
+    private(set) var customThemes: [ThemeSpec] = []
+    /// Called after any change, from the file or from Settings.
+    var onChange: [() -> Void] = []
+
+    static var folder: URL? {
+        guard !CommandLine.arguments.contains("--window-test"), let appData = ProcessInfo.processInfo.environment["APPDATA"] else { return nil }
+        return URL(fileURLWithPath: appData).appendingPathComponent("Solanum")
+    }
+    static var fileURL: URL? { folder?.appendingPathComponent("config") }
+    static var themesFolder: URL? { folder?.appendingPathComponent("themes") }
+
+    private init() { load() }
+
+    // MARK: Values
+
+    var themeName: String { file["theme"].flatMap { name in allThemes.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.name } ?? ThemeSpecs.defaultName }
+    var fontFamily: String { file["font-family"].flatMap { $0.isEmpty || $0 == "System Mono" ? nil : $0 } ?? "" }
+    /// Points at 100% display scaling.
+    var fontSize: Double { file.number("font-size", 11, in: 6...40) }
+    var lineHeight: Double { file.number("line-height", 1.2, in: 0.9...2.0) }
+    var padding: Double { file.number("padding", 6, in: 0...60) }
+    var cursorStyle: String { ["bar", "block", "underline"].contains(file["cursor-style"]?.lowercased() ?? "") ? file["cursor-style"]!.lowercased() : "bar" }
+    var cursorBlink: Bool { file.bool("cursor-blink", true) }
+    var audibleBell: Bool { file.bool("audible-bell", false) }
+    var boldIsBright: Bool { file.bool("bold-is-bright", false) }
+    var copyOnSelect: Bool { file.bool("copy-on-select", false) }
+    var scrollback: Int { Int(file.number("scrollback-lines", 10000, in: 100...200_000)) }
+    var shell: String { file["shell"] ?? "" }
+    var shellIntegration: Bool { file.bool("shell-integration", true) }
+    var themeIcon: Bool { file.bool("theme-icon", true) }
+    /// "current": a new tab opens in the current tab's folder. "home": in the home folder.
+    var newTabFolder: String { file["new-tab-folder"]?.lowercased() == "home" ? "home" : "current" }
+    var windowColumns: Int { Int(file.number("window-columns", 110, in: 40...400)) }
+    var windowRows: Int { Int(file.number("window-rows", 32, in: 10...200)) }
+
+    var theme: ThemeSpec { allThemes.first { $0.name == themeName } ?? ThemeSpecs.solanumDefault }
+    var allThemes: [ThemeSpec] { [ThemeSpecs.solanumDefault] + ThemeSpecs.outerWilds + customThemes + ThemeSpecs.vsCode }
+
+    /// The command a new tab runs: the configured shell, else PowerShell with Solanum's hook.
+    var shellCommandLine: String {
+        let configured = shell.trimmingCharacters(in: .whitespaces)
+        let exe = configured.isEmpty ? PowerShellIntegration.executable() : configured
+        let isPowerShell = ["powershell", "powershell.exe", "pwsh", "pwsh.exe"].contains((exe.split(separator: "\\").last.map(String.init) ?? exe).lowercased())
+        if isPowerShell && shellIntegration { return PowerShellIntegration.commandLine(executable: exe) }
+        return isPowerShell ? "\(exe) -NoLogo" : configured
+    }
+
+    // MARK: Changing them
+
+    func set(_ key: String, _ value: String) {
+        guard file[key] != value else { return }
+        file[key] = value
+        save()
+        onChange.forEach { $0() }
+    }
+
+    func set(_ key: String, _ value: Bool) { set(key, value ? "true" : "false") }
+
+    // MARK: The file
+
+    /// Reads the file again if it's changed since, as when it's edited by hand. Cheap enough for a timer.
+    func reloadIfChanged() {
+        guard let url = Self.fileURL, let date = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
+              date != fileDate else { return }
+        load()
+        onChange.forEach { $0() }
+    }
+
+    func load() {
+        customThemes = []
+        if let dir = Self.themesFolder, let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) {
+            customThemes = names.filter { $0.lowercased().hasSuffix(".json") }.compactMap { name in
+                (try? Data(contentsOf: dir.appendingPathComponent(name))).flatMap(ThemeColors.spec(fromJSON:))
+            }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+        guard let url = Self.fileURL else { return }
+        if let text = try? String(contentsOf: url, encoding: .utf8) {
+            file = SettingsFile(text: text)
+            fileDate = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+        } else {
+            save()
+        }
+    }
+
+    private func save() {
+        guard let url = Self.fileURL else { return }
+        var full = file
+        for (key, value) in Self.defaults where full[key] == nil { full[key] = value }
+        let text = full.text(header: "# Solanum configuration. Edit here or in Settings (the flower). Changes apply live.\n# Custom themes: JSON files in the themes folder beside this one, as on the Mac.", sections: Self.sections)
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+        fileDate = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+    }
+
+    static let defaults: [String: String] = [
+        "theme": ThemeSpecs.defaultName, "font-family": "", "font-size": "11", "line-height": "1.2", "padding": "6",
+        "cursor-style": "bar", "cursor-blink": "true", "audible-bell": "false", "bold-is-bright": "false", "copy-on-select": "false",
+        "scrollback-lines": "10000", "shell": "", "shell-integration": "true", "theme-icon": "true", "new-tab-folder": "current",
+        "window-columns": "110", "window-rows": "32", "notify-after-seconds": "10", "keep-awake-seconds": "28800",
+        "confirm-quit": "true", "restore-session": "true", "restore-scrollback": "true", "continue-agents": "true",
+        "check-for-updates": "true", "minimum-contrast": "true",
+    ]
+
+    static let sections: [(comment: String?, keys: [String])] = [
+        (nil, ["theme"]),
+        ("Font: any monospaced font installed (empty for Cascadia Mono, else Consolas). Size in points.", ["font-family", "font-size", "line-height", "padding"]),
+        ("The flower or planet beside the theme's name in the status bar.", ["theme-icon"]),
+        ("bar | block | underline", ["cursor-style", "cursor-blink"]),
+        ("Play the alert sound when a program rings the bell (it always flashes the taskbar).", ["audible-bell", "bold-is-bright", "minimum-contrast", "copy-on-select", "scrollback-lines"]),
+        ("Leave empty for PowerShell. A full command line works too, such as cmd.exe.", ["shell", "shell-integration"]),
+        ("Where Ctrl+T opens a new tab: current (the current tab's folder) | home", ["new-tab-folder"]),
+        ("Notify when a command in a background tab takes at least this long (0 = off). Keep Awake's length in seconds.", ["notify-after-seconds", "keep-awake-seconds"]),
+        ("Reopen windows and tabs on launch, with recent output, continuing coding agents.", ["restore-session", "restore-scrollback", "continue-agents", "confirm-quit", "check-for-updates"]),
+        ("A new window's size, in columns and rows.", ["window-columns", "window-rows"]),
+    ]
+}
