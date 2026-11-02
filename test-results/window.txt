@@ -46,6 +46,10 @@
   ✓ reopen: with what it showed
   ✓ reopen: typing works in it
   ✓ tabs: Ctrl+Shift+W closes one too
+  ✓ overflow: opening tabs past what fits
+  ✓ overflow: the new tab is in view
+  ✓ overflow: the left arrow scrolls
+  ✓ overflow: closing them ends it
   ✓ tabs: titled by folder, not the shell's path
   ✓ tabs: exit closes only its tab
   ✓ tabs: the x closes one
@@ -62,5 +66,5 @@
   ✓ box: delete across three rows: selects and acts
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
-Clipboard found busy 0 times; got through 63 of 63 steps.
-All 64 checks passed.
+Clipboard found busy 0 times; got through 67 of 67 steps.
+All 68 checks passed.

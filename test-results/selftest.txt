@@ -53,6 +53,7 @@ Drawing
   ✓ selection: text
   ✓ selection: spans lines
 Window layout
+  ✓ app: has its icon
   ✓ layout: window buttons at the right end
   ✓ layout: tabs clear of the + button
   ✓ layout: the + button follows the last tab
@@ -65,6 +66,14 @@ Window layout
   ✓ layout: the rest of the bar drags
   ✓ layout: below the bars is the terminal
   ✓ layout: many tabs still fit
+  ✓ overflow: the arrows, tabs and + don't overlap
+  ✓ overflow: + stays beside the flower, not over the buttons
+  ✓ overflow: finds the arrows
+  ✓ overflow: tabs out of view can't be clicked
+  ✓ overflow: a tab in view can
+  ✓ overflow: scrolls to show a tab past the end
+  ✓ overflow: and back to the first
+  ✓ overflow: not when they fit
   ✓ layout: scales with the display
   ✓ text: home is ~
   ✓ text: not home
@@ -72,6 +81,7 @@ Window layout
   ✓ text: a shell's own path isn't
   ✓ text: nor as administrator
   ✓ chrome: draws
+  ✓ chrome: draws with too many tabs
 ConPTY
   ✓ conpty: output reaches the emulator
   ✓ conpty: exit code
@@ -94,4 +104,4 @@ PowerShell hook
   ✓ powershell: Esc clears the line
   ✓ powershell: exits
   - pwsh.exe isn't installed
-All 90 checks passed.
+All 100 checks passed.
