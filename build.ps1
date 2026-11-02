@@ -48,9 +48,11 @@ $sources = Get-ChildItem 'Sources\Core\*.swift', 'Sources\UI\*.swift', 'Sources\
 if ($LASTEXITCODE -ne 0) { Write-Error 'Swift failed to compile (the errors are above).' }
 
 Write-Host '> Linking...'
-& swiftc -module-name Solanum $swiftObject $canvasObject @linkIcon -o "$out\Solanum-test.exe"
+# The linker announces the import library it makes for each program, which nothing here uses.
+function Link-Program { & swiftc -module-name Solanum $swiftObject $canvasObject @linkIcon @args 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -notmatch 'Creating library' } | Write-Host }
+Link-Program -o "$out\Solanum-test.exe"
 if ($LASTEXITCODE -ne 0) { Write-Error 'Linking Solanum-test.exe failed.' }
-& swiftc -module-name Solanum $swiftObject $canvasObject @linkIcon -o "$out\Solanum.exe" -Xlinker /SUBSYSTEM:WINDOWS -Xlinker /ENTRY:mainCRTStartup
+Link-Program -o "$out\Solanum.exe" -Xlinker /SUBSYSTEM:WINDOWS -Xlinker /ENTRY:mainCRTStartup
 if ($LASTEXITCODE -ne 0) { Write-Error 'Linking Solanum.exe failed.' }
 
 Write-Host "Built $out\Solanum.exe and $out\Solanum-test.exe"
