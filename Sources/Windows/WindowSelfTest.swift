@@ -351,10 +351,11 @@ enum WindowSelfTest {
                 window.close()
                 return
             }
-            deadline = Date().addingTimeInterval(45)
+            deadline = Date().addingTimeInterval(25)
             steps[index].action()
         }
         TerminalWindow.runLoop()
+        print("Clipboard found busy \(TerminalPane.clipboardBusyCount) times; got through \(index) of \(steps.count) steps.")
         return results.finish() && index == steps.count ? 0 : 1
     }
 }

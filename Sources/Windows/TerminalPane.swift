@@ -598,10 +598,24 @@ final class TerminalPane: TerminalDelegate {
         if replaceSelectedInput(with: []) { setClipboard(text) }
     }
 
+    /// How many times the clipboard was found busy, for the window test to report.
+    private(set) static var clipboardBusyCount = 0
+
+    /// Only one program can have the clipboard open at a time, and others look at it the moment it changes: clipboard
+    /// history, cloud clipboards, password managers. So a failure is usually only a moment's wait.
+    private func openClipboard() -> Bool {
+        for attempt in 0..<20 {
+            if OpenClipboard(hwnd) { return true }
+            if attempt == 0 { Self.clipboardBusyCount += 1 }
+            Sleep(10)
+        }
+        return false
+    }
+
     func setClipboard(_ text: String) {
         let units = wide(text)
         let bytes = units.count * MemoryLayout<UInt16>.size
-        guard OpenClipboard(hwnd) else { return }
+        guard openClipboard() else { return }
         defer { CloseClipboard() }
         EmptyClipboard()
         guard let memory = GlobalAlloc(Win.GMEM_MOVEABLE, SIZE_T(bytes)), let pointer = GlobalLock(memory) else { return }
@@ -611,7 +625,7 @@ final class TerminalPane: TerminalDelegate {
     }
 
     func clipboardText() -> String? {
-        guard OpenClipboard(hwnd) else { return nil }
+        guard openClipboard() else { return nil }
         defer { CloseClipboard() }
         guard let memory = GetClipboardData(Win.CF_UNICODETEXT), let pointer = GlobalLock(memory) else { return nil }
         defer { GlobalUnlock(memory) }
