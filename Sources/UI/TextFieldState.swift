@@ -60,11 +60,12 @@ struct CommandAlias: Codable, Equatable {
     /// can stand in for one of PowerShell's own aliases and still pass on its arguments.
     static func powerShell(_ aliases: [CommandAlias]) -> String {
         let valid = aliases.filter { isValidName($0.name) && !$0.command.trimmingCharacters(in: .whitespaces).isEmpty }
-        var out = "foreach ($n in @($global:__solanum_alias_names)) { if ($n) { Remove-Item \\"Alias:\\\\$n\\" -Force -ErrorAction SilentlyContinue } }\n"
-        out += "$global:__solanum_alias_names = @(" + valid.map { "'\\($0.name)'" }.joined(separator: ", ") + ")\n"
+        var out = #"foreach ($n in @($global:__solanum_alias_names)) { if ($n) { Remove-Item "Alias:\$n" -Force -ErrorAction SilentlyContinue } }"# + "\n"
+        out += "$global:__solanum_alias_names = @(" + valid.map { "'\($0.name)'" }.joined(separator: ", ") + ")\n"
         for a in valid {
-            out += "function global:__solanum_alias_\\(a.name.replacingOccurrences(of: ".", with: "_").replacingOccurrences(of: "-", with: "_")) { \\(a.command) @args }\n"
-            out += "Set-Alias -Name '\\(a.name)' -Value '__solanum_alias_\\(a.name.replacingOccurrences(of: ".", with: "_").replacingOccurrences(of: "-", with: "_"))' -Scope Global -Option AllScope -Force\n"
+            let function = "__solanum_alias_" + a.name.replacingOccurrences(of: ".", with: "_").replacingOccurrences(of: "-", with: "_")
+            out += "function global:\(function) { \(a.command) @args }\n"
+            out += "Set-Alias -Name '\(a.name)' -Value '\(function)' -Scope Global -Option AllScope -Force\n"
         }
         return out
     }
