@@ -707,6 +707,8 @@ enum WindowSelfTest {
         if let dir = snapshotDirectory {
             steps.append(Step(name: "themes: snapshot", action: {}, done: { window.saveSnapshot(to: dir + "\\theme.png") }))
         }
+        steps.append(Step(name: "resize: no errors from re-anchoring", action: {},
+                          done: { !pane.visibleText.contains("exception occurred in custom key handler") }))
         steps.append(Step(name: "themes: and back from the palette", action: {
             press(0x50, shift: true)
             pane.type("theme solanum default")
