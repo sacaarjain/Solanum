@@ -35,6 +35,8 @@ if CommandLine.arguments.contains("--resize-probe") {
 }
 
 if CommandLine.arguments.contains("--window-test") {
+    // Unbuffered, so that whatever happens the log shows how far it got.
+    setvbuf(stdout, nil, _IONBF, 0)
     exit(WindowSelfTest.runWindow())
 }
 
