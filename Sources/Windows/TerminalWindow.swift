@@ -45,6 +45,7 @@ final class TerminalWindow {
         }
         info.hInstance = GetModuleHandleW(nil)
         info.hCursor = LoadCursorW(nil, Win.arrowCursor)
+        info.hIcon = LoadIconW(GetModuleHandleW(nil), Win.appIcon)
         return className.withUnsafeBufferPointer { name in
             info.lpszClassName = name.baseAddress
             return RegisterClassExW(&info) != 0

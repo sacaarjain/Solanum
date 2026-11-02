@@ -1,7 +1,8 @@
 import AppKit
 
-// Renders Solanum's flower and tab prompt from the Mac's own drawing (Sources/SolanumArt.swift) into
-// Sources/Windows/ArtData.swift, so Windows shows exactly the same art until the drawing itself is shared.
+// Renders Solanum's flower, tab prompt and app icon from the Mac's own drawing (Sources/SolanumArt.swift) into
+// Sources/Windows/ArtData.swift and Support/Windows/Solanum.ico, so Windows shows exactly the same art until the drawing
+// itself is shared.
 //
 //   swiftc -parse-as-library Tools/MakeWindowsArt.swift Sources/SolanumArt.swift -o build/makeart && build/makeart
 //
@@ -19,6 +20,30 @@ enum MakeWindowsArt {
         draw(context.cgContext, CGRect(origin: .zero, size: points))
         NSGraphicsContext.restoreGraphicsState()
         return rep.representation(using: .png, properties: [:])!
+    }
+
+    /// The Mac's app icon as a Windows .ico. The Mac leaves a wide margin around its icons that Windows doesn't, where it
+    /// would just look small, so the margin is trimmed to what the shadow needs.
+    static func windowsIcon() -> Data {
+        let sizes = [16, 20, 24, 32, 40, 48, 64, 128, 256]
+        let margin: CGFloat = 56
+        let images = sizes.map { size in
+            png(points: CGSize(width: size, height: size), scale: 1) { ctx, _ in
+                let scale = CGFloat(size) / (1024 - margin * 2)
+                ctx.scaleBy(x: scale, y: scale)
+                ctx.translateBy(x: -margin, y: -margin)
+                SolanumArt.drawIcon(in: ctx)
+            }
+        }
+        func little<T: FixedWidthInteger>(_ value: T) -> Data { withUnsafeBytes(of: value.littleEndian) { Data($0) } }
+        var file = little(UInt16(0)) + little(UInt16(1)) + little(UInt16(sizes.count))
+        var offset = 6 + 16 * sizes.count
+        for (size, image) in zip(sizes, images) {
+            let side = UInt8(size >= 256 ? 0 : size)
+            file += Data([side, side, 0, 0]) + little(UInt16(1)) + little(UInt16(32)) + little(UInt32(image.count)) + little(UInt32(offset))
+            offset += image.count
+        }
+        return images.reduce(file, +)
     }
 
     static func main() {
@@ -40,5 +65,6 @@ enum MakeWindowsArt {
         }
         out += "    ]\n}\n"
         try! out.write(toFile: "Sources/Windows/ArtData.swift", atomically: true, encoding: .utf8)
+        try! windowsIcon().write(to: URL(fileURLWithPath: "Support/Windows/Solanum.ico"))
     }
 }

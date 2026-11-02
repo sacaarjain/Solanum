@@ -70,6 +70,7 @@ enum WindowSelfTest {
 
     static func runChrome(_ results: CoreSelfTest.Results) {
         print("Window layout")
+        results.check("app: has its icon", LoadIconW(GetModuleHandleW(nil), Win.appIcon) != nil)
         let layout = WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 3)
         results.check("layout: window buttons at the right end", layout.close.maxX == 1000 && layout.maximize.maxX == layout.close.x && layout.minimize.maxX == layout.maximize.x)
         results.check("layout: tabs clear of the + button", layout.tab(2).maxX <= layout.newTab.x)

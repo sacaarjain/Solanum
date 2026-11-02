@@ -46,8 +46,8 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
   - Ctrl+C copies when something's selected and interrupts otherwise; Ctrl+V pastes, except in full-screen programs and for
     an image going to Claude Code; Ctrl+X cuts a selection in the line being typed; Ctrl+1 to 9 pick a tab.
   - Ctrl+Shift+P is planned as the command palette.
-- **Art:** `Tools/MakeWindowsArt.swift` renders the Mac's flower and tab prompt into `Sources/Windows/ArtData.swift`, until the
-  drawing itself is shared.
+- **Art:** `Tools/MakeWindowsArt.swift` renders the Mac's flower, tab prompt and app icon into `Sources/Windows/ArtData.swift`
+  and `Support/Windows/Solanum.ico`, until the drawing itself is shared.
 - **Closing the last window:** it saves the session and exits, and the next launch restores it.
 - **Shells:** Solanum finds PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and each WSL distribution, and
   also takes a custom command. New Tab opens the default shell, a menu beside it opens any other, and Settings picks the

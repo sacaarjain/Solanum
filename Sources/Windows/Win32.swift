@@ -43,6 +43,8 @@ enum Win {
     static let SW_MINIMIZE: Int32 = 6, SW_MAXIMIZE: Int32 = 3, SW_RESTORE: Int32 = 9
     static let TME_LEAVE: DWORD = 0x02, TME_NONCLIENT: DWORD = 0x10
     static let arrowCursor = UnsafePointer<WCHAR>(bitPattern: 32512)
+    /// Resource 1 in Support/Windows/Solanum.rc.
+    static let appIcon = UnsafePointer<WCHAR>(bitPattern: 1)
     static let SWP_NOSIZE: UINT = 0x0001, SWP_FRAMECHANGED: UINT = 0x0020
 }
 
