@@ -682,17 +682,11 @@ final class StatusBarView: NSView {
         NSRect(x: x, y: centerY + font.capHeight / 2 - font.ascender, width: width, height: ceil(font.ascender - font.descender) + 1)
     }
 
-    /// (label, full path) for each folder from the top of `path` down.
+    /// (label, full path) for each folder from the top of `path` down: always from /, never shortened to ~, so that every
+    /// folder above is a click away.
     private func segments(_ path: String) -> [(String, String)] {
-        var out: [(String, String)] = []
-        var rest: Substring
-        if let home, home != "/", path == home || path.hasPrefix(home + "/") {
-            out.append(("~", home))
-            rest = path.dropFirst(home.count)
-        } else {
-            out.append(("/", "/"))
-            rest = Substring(path)
-        }
+        var out: [(String, String)] = [("/", "/")]
+        let rest = Substring(path)
         var cur = out[0].1
         for c in rest.split(separator: "/") {
             cur = FilePaths.join(cur, String(c))
