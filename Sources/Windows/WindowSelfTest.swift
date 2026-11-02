@@ -196,7 +196,7 @@ enum WindowSelfTest {
         let light = ThemeColors(ThemeSpecs.vsCode.first { $0.name == "Light+" }!)
         results.check("theme: a light one", !light.isDark && light.background == 0xFFFFFF)
         results.check("theme: a see-through selection is mixed into the background", ThemeColors(ThemeSpecs.vsCode.last!).selection == ThemeColors.mix(0xFFFFFF, 0x000000, 0.4))
-        let json = #"{"name": "Mine", "background": "#101010", "foreground": "#EEEEEE", "accent": "#FF0000", "ansi": ["#000000"]}"#
+        let json = ##"{"name": "Mine", "background": "#101010", "foreground": "#EEEEEE", "accent": "#FF0000", "ansi": ["#000000"]}"##
         results.check("theme: from a Mac theme file", ThemeColors.spec(fromJSON: Data(json.utf8))?.name == "Mine")
         var settingsFile = SettingsFile(text: "# hello\ntheme = Hourglass\nfont-size = 14\nmac-only = keep me\ncursor-blink = no\n")
         results.check("settings: reads the file", settingsFile["theme"] == "Hourglass" && settingsFile.number("font-size", 11, in: 6...40) == 14 && !settingsFile.bool("cursor-blink", true))
