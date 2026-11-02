@@ -880,10 +880,9 @@ enum WindowSelfTest {
             if let dir = snapshotDirectory {
                 steps.append(Step(name: "ssh: snapshot of the sidebar on the host", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-sidebar.png") }))
             }
-            // ssh's escape for ending the connection from this end, which is what a dropped one looks like: ssh exits 255.
+            // The terminal's ssh ends as it does when the connection drops: with 255.
             steps.append(Step(name: "ssh: a dropped connection shows the bar", action: {
-                pane.pressEnter()
-                pane.type("~.")
+                print("    ended ssh: \(endChildSSH(of: pane.shellProcessID))")
             }, done: { pane.showsLostBar && pane.sshHost == nil && window.leftTree.root.map(AnyPath.isUnix) == false }))
             if let dir = snapshotDirectory {
                 steps.append(Step(name: "ssh: snapshot of the bar", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-lost.png") }))
@@ -891,9 +890,13 @@ enum WindowSelfTest {
             steps.append(Step(name: "ssh: how it ended", action: {
                 for line in pane.remoteDiagnostics.suffix(2) { print("    " + line) }
             }, done: { true }))
-            steps.append(Step(name: "ssh: Reconnect signs both back in without asking", action: { window.clickLostBar(.reconnect) }, done: {
-                pane.sshHost == "localhost" && !pane.hasQuestion && !pane.showsLostBar && window.leftTree.root.map(AnyPath.isUnix) == true
-                    && pane.lost == nil
+            var remoteBefore: RemoteConnection?
+            steps.append(Step(name: "ssh: Reconnect signs both back in without asking", action: {
+                remoteBefore = pane.remote
+                window.clickLostBar(.reconnect)
+            }, done: {
+                pane.reconnectedCount > 0 && pane.sshHost == "localhost" && !pane.hasQuestion && !pane.showsLostBar && pane.lost == nil
+                    && pane.remote != nil && pane.remote !== remoteBefore && pane.remote?.state == .ready && window.leftTree.root.map(AnyPath.isUnix) == true
             }))
             steps.append(Step(name: "ssh: back on the host", action: {
                 pane.type("echo again-ok")
@@ -1042,4 +1045,24 @@ enum WindowSelfTest {
         print("Clipboard found busy \(TerminalPane.clipboardBusyCount) times; got through \(index) of \(steps.count) steps.")
         return results.finish() && index == steps.count ? 0 : 1
     }
+}
+
+/// Ends the ssh.exe the shell `parent` started, with ssh's own exit code for a lost connection. For tests.
+func endChildSSH(of parent: DWORD) -> Bool {
+    let snapshot = CreateToolhelp32Snapshot(DWORD(TH32CS_SNAPPROCESS), 0)
+    guard let snapshot, snapshot != INVALID_HANDLE_VALUE else { return false }
+    defer { CloseHandle(snapshot) }
+    var entry = PROCESSENTRY32W()
+    entry.dwSize = DWORD(MemoryLayout<PROCESSENTRY32W>.size)
+    var more = Process32FirstW(snapshot, &entry)
+    var ended = false
+    while more {
+        let name = withUnsafeBytes(of: entry.szExeFile) { String(decoding: $0.bindMemory(to: UInt16.self).prefix { $0 != 0 }, as: UTF16.self) }
+        if entry.th32ParentProcessID == parent, name.lowercased() == "ssh.exe", let process = OpenProcess(DWORD(PROCESS_TERMINATE), false, entry.th32ProcessID) {
+            ended = TerminateProcess(process, 255) || ended
+            CloseHandle(process)
+        }
+        more = Process32NextW(snapshot, &entry)
+    }
+    return ended
 }

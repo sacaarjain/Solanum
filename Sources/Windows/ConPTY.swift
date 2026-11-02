@@ -13,6 +13,8 @@ final class ConPTY {
     private var inputWrite: HANDLE?
     private var outputRead: HANDLE?
     private var process: HANDLE?
+    /// The shell's process ID, for tests.
+    var processID: DWORD { process.map { GetProcessId($0) } ?? 0 }
     private var job: HANDLE?
     private var attributes: UnsafeMutableRawPointer?
     private let writeQueue = DispatchQueue(label: "solanum.conpty.write")

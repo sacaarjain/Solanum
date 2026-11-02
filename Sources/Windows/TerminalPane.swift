@@ -42,6 +42,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// The dropped session's password, kept (in memory, encrypted) so that Reconnect signs both connections back in
     /// without asking. Gone once used, or when the bar goes.
     private var reconnectPassword: ProtectedSecret?
+    /// How many times Reconnect has answered ssh with the kept password, for tests.
+    private(set) var reconnectedCount = 0
     /// Whether this session got as far as the sidebar's connection signing in, which a refused password never does.
     private var sessionSignedIn = false
 
@@ -287,6 +289,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// else asked here.
     func answerForTerminal(_ prompt: String, reply: @escaping (String?) -> Void) {
         if Askpass.isPassword(prompt), let password = reconnectPassword {
+            reconnectedCount += 1
             reconnectPassword = nil
             rememberedPassword = password
             lastAnswerLength = nil
@@ -1032,6 +1035,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
     var hasSelection: Bool { selection != nil }
 
     func pressBackspace() { PostMessageW(hwnd, Win.WM_KEYDOWN, WPARAM(Win.VK_BACK), 0) }
+
+    var shellProcessID: DWORD { pty?.processID ?? 0 }
 
     func pressEnter() { PostMessageW(hwnd, Win.WM_KEYDOWN, WPARAM(Win.VK_RETURN), 0) }
 
