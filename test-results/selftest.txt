@@ -7,10 +7,14 @@
   ✓ click: in the command
   ✓ click: past its end stays at the end
   ✓ click: above the command is no place
+  ✓ selection: offsets in the command
+  ✓ selection: clipped to the command
+  ✓ selection: outside the command
   ✓ click: finds Claude Code's input box
   ✓ click: left in the input box
   ✓ click: not past its text
   ✓ click: not into the gutter
+  ✓ selection: offsets in Claude Code's input
   ✓ agent session: by name, also a path or an .exe
 Solanum emulator self-test
   ✓ print + CRLF
@@ -70,4 +74,4 @@ PowerShell hook
   ✓ powershell: Esc clears the line
   ✓ powershell: exits
   - pwsh.exe isn't installed
-All 67 checks passed.
+All 71 checks passed.

@@ -14,7 +14,13 @@
   ✓ window: a command to click into
   ✓ window: clicking moves the cursor there
   ✓ window: typing goes in at the click
+  ✓ window: a command to edit
+  ✓ window: typing replaces the selection
+  ✓ window: Ctrl+Z undoes all of it
+  ✓ window: Backspace deletes the selection
+  ✓ window: paste replaces the selection
+  ✓ window: the edited command runs
   ✓ window: colors from a real program
   ✓ window: painted
   ✓ window: snapshot
-All 19 checks passed.
+All 25 checks passed.
