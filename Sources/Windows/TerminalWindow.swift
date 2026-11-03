@@ -488,6 +488,7 @@ final class TerminalWindow {
             setHovered(nil, nonClient: false)
             return 0
         case Win.WM_NCLBUTTONDOWN:
+            if naming != nil { finishNaming(commit: true) }
             let (x, y) = screenPoint(lParam)
             let part = layout.part(atX: x, y: y)
             if part == .minimize || part == .maximize || part == .close {
@@ -517,6 +518,8 @@ final class TerminalWindow {
             return 0
         case Win.WM_SETFOCUS, Win.WM_KILLFOCUS:
             isFocused = message == Win.WM_SETFOCUS
+            // Going to another window keeps the name typed so far, as clicking elsewhere does.
+            if !isFocused && naming != nil { finishNaming(commit: true) }
             if !panes.isEmpty { activePane.setFocused(isFocused) }
             invalidate()
             return 0
@@ -702,8 +705,12 @@ final class TerminalWindow {
             paletteMouse(message, x: x, y: y)
             return
         }
-        if tabDragMouse(message, x: x) { return }
         let part = layout.part(atX: x, y: y)
+        // A click anywhere but the name being typed keeps it and ends the typing, as on the Mac.
+        if naming != nil, [Win.WM_LBUTTONDOWN, Win.WM_RBUTTONDOWN, Win.WM_MBUTTONDOWN, Win.WM_LBUTTONDBLCLK].contains(message), !isOnNameField(part) {
+            finishNaming(commit: true)
+        }
+        if tabDragMouse(message, x: x) { return }
         if part == .statusBar && !terminalHasMouse && statusBarMouse(message, x: x, y: y) { return }
         if part != .statusBar && hoveredCrumb != nil {
             hoveredCrumb = nil
@@ -724,8 +731,13 @@ final class TerminalWindow {
         switch message {
         case Win.WM_MOUSEMOVE:
             setHovered(part, nonClient: false)
+        case Win.WM_LBUTTONDBLCLK:
+            // Double-clicking a tab renames it, as on the Mac.
+            if case .tab(let i) = part, panes.indices.contains(i) {
+                tabPress = nil
+                beginNaming(.tab(panes[i].id), text: panes[i].customTitle ?? "")
+            }
         case Win.WM_LBUTTONDOWN:
-            if naming != nil { finishNaming(commit: true) }
             if case .tab(let i) = part {
                 let ctrl = isDown(Win.VK_CONTROL), shift = isDown(Win.VK_SHIFT)
                 if ctrl || shift {
@@ -1545,6 +1557,16 @@ final class TerminalWindow {
         pickedTabs = []
     }
 
+    /// Whether a part of the window is the tab or chip whose name is being typed.
+    private func isOnNameField(_ part: WindowPart) -> Bool {
+        guard let naming else { return false }
+        switch (naming.target, part) {
+        case (.tab(let id), .tab(let i)): return panes.indices.contains(i) && panes[i].id == id
+        case (.group(let g), .chip(let first)): return panes.indices.contains(first) && panes[first].group === g
+        default: return false
+        }
+    }
+
     private func beginNaming(_ target: NameTarget, text: String) {
         var placeholder = ""
         if case .group = target { placeholder = nextProjectName() }
@@ -2070,6 +2092,7 @@ final class TerminalWindow {
     var isDraggingTab: Bool { tabPress != nil }
     var groupNames: [String] { TabGroupOps.groups(in: panes).map(\.name) }
     var isNaming: Bool { naming != nil }
+    var paneNameField: String? { naming?.field.text }
     var hoveredPart: WindowPart? { hovered }
     var leftShown: Float { left.shown }
     /// The pointer over a rectangle, handled before this returns, so a real pointer elsewhere can't get in first.

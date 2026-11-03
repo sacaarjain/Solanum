@@ -888,6 +888,21 @@ enum WindowSelfTest {
                           done: { window.isNaming && !window.keyDown(0x41, shift: false, ctrl: false, alt: false) && window.isNaming }))
         steps.append(Step(name: "groups: Enter keeps the suggested name", action: { pane.pressEnter() },
                           done: { !window.isNaming && window.groupNames == ["Project 1"] }))
+        steps.append(Step(name: "rename: double-clicking a tab names it", action: { window.doubleClick(window.currentLayout.tab(window.activeIndex)) },
+                          done: { window.isNaming }))
+        steps.append(Step(name: "rename: typing, then clicking elsewhere keeps the name", action: {
+            for _ in 0..<12 { _ = window.keyDown(0x08, shift: false, ctrl: false, alt: false) }
+            window.typeIntoWindow("named")
+        }, done: {
+            guard window.paneNameField == "named" else { return false }
+            window.click(UIRect(x: Float(window.currentLayout.width) / 2, y: Float(window.currentLayout.height) / 2, width: 2, height: 2))
+            return !window.isNaming && pane.tabTitle == "named"
+        }))
+        steps.append(Step(name: "rename: Reset Tab Name", action: { window.rightClick(window.currentLayout.tab(window.activeIndex)) }, done: {
+            guard let row = window.menuRow("Reset Tab Name") else { return false }
+            window.click(row)
+            return pane.customTitle == nil
+        }))
         steps.append(Step(name: "groups: Rename Group… from its chip", action: { window.rightClick(window.chipRect(1)!) }, done: {
             guard let row = window.menuRow("Rename Group…") else { return false }
             window.click(row)
@@ -947,6 +962,7 @@ enum WindowSelfTest {
                 pane.type("echo remote-ok")
                 pane.pressEnter()
             }, done: { hasLine("remote-ok") }))
+            steps.append(Step(name: "ssh: the tab is named after the server", action: {}, done: { pane.tabTitle == "localhost" }))
             if let dir = snapshotDirectory {
                 steps.append(Step(name: "ssh: snapshot connected", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-connected.png") }))
             }

@@ -141,6 +141,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
 
     var tabTitle: String {
         if let customTitle, !customTitle.isEmpty { return customTitle }
+        // In an ssh session, the server it's connected to.
+        if let sshHost { return sshHost }
         return WindowText.tabTitle(title: terminal.title, folder: terminal.cwd, home: ProcessInfo.processInfo.environment["USERPROFILE"])
     }
 
