@@ -66,7 +66,8 @@ Window layout
   ✓ layout: tabs clear of the + button
   ✓ layout: the + button follows the last tab
   ✓ layout: the + button is level with the tabs' x
-  ✓ layout: and stays clear of the flower
+  ✓ layout: and stays clear of the window's buttons
+  ✓ layout: the flower is at the left end, before the tabs
   ✓ layout: the terminal is between the bars
   ✓ layout: finds a tab
   ✓ layout: finds its close button
@@ -75,7 +76,7 @@ Window layout
   ✓ layout: below the bars is the terminal
   ✓ layout: many tabs still fit
   ✓ overflow: the arrows, tabs and + don't overlap
-  ✓ overflow: + stays beside the flower, not over the buttons
+  ✓ overflow: the arrows start after the flower
   ✓ overflow: finds the arrows
   ✓ overflow: tabs out of view can't be clicked
   ✓ overflow: a tab in view can
@@ -229,4 +230,4 @@ PowerShell hook
   ✓ powershell: Esc clears the line
   ✓ powershell: exits
   - pwsh.exe isn't installed
-All 219 checks passed.
+All 220 checks passed.
