@@ -581,6 +581,8 @@ final class TerminalView: NSView, TerminalDelegate {
     var isRunningCommand: Bool { terminal.currentBlock?.state == .running }
 
     var displayTitle: String {
+        // In an ssh session, the server it's connected to (the "host" of user@host), once that's known.
+        if let label = remote?.hostLabel { return label.split(separator: "@").last.map(String.init) ?? label }
         if let t = terminal.title, !t.isEmpty { return Self.withoutStatusGlyph(t) }
         if let pty, pty.hasForegroundJob {
             // Prefer the command line typed at the prompt; fall back to the process name.
