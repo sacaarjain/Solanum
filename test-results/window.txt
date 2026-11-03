@@ -104,6 +104,41 @@
   ✓ go to: Tab goes into it
   ✓ go to: Enter there
   ✓ go to: Ctrl+Shift+O again closes it
+  ✓ files: the sidebar shows the folder
+  ✓ files: a file's menu
+  ✓ files: New File… asks for its name in place
+  ✓ files: typing it makes the file
+  ✓ files: F2 renames it
+  ✓ files: a taken name keeps the field open
+  ✓ files: Esc leaves it as it was
+  ✓ files: Duplicate copies beside it
+  ✓ files: Ctrl+Shift+N makes a folder
+  ✓ files: Ctrl+C puts it on the clipboard, for Explorer too
+  ✓ files: Ctrl+V into a folder copies it there
+  ✓ files: cut and paste moves it
+  ✓ files: dragging a file onto a folder moves it
+  ✓ files: dropped from Explorer onto a folder, copied in
+  ✓ files: dropped on the terminal, its path is typed
+  ✓ files: and cleared again
+  ✓ files: Delete sends to the Recycle Bin
+  ✓ files: the folder's own menu below the rows
+  ✓ files: closes
+  ✓ git: a repository shows its branch and changes
+  ✓ git: the branch opens the switcher
+  ✓ git: and closes
+  ✓ git: the changes list them
+  ✓ git: and close
+  ✓ git: Ctrl+Shift+G shows Git Changes
+  ✓ git: staging there
+  ✓ git: a message to commit with
+  ✓ git: Enter commits it
+  ✓ git: Esc closes it
+  ✓ git: Git Graph shows the history
+  ✓ git: and closes
+  ✓ search: Ctrl+Shift+F finds text in the folder
+  ✓ search: and closes
+  ✓ links: a web address and a file in what's printed
+  ✓ git: out of the repository
   ✓ path: the folder icon lists the first part's folders
   ✓ path: and closes
   ✓ per tab: pinned here
@@ -136,6 +171,9 @@
   ✓ groups: grouping asks for a name
   ✓ groups: keys pressed while naming go on to be typed
   ✓ groups: Enter keeps the suggested name
+  ✓ rename: double-clicking a tab names it
+  ✓ rename: typing, then clicking elsewhere keeps the name
+  ✓ rename: Reset Tab Name
   ✓ groups: Rename Group… from its chip
   ✓ groups: typing names it
   ✓ groups: and it's named
@@ -144,6 +182,21 @@
   ✓ groups: the chip's menu
   ✓ groups: ungroups
   ✓ groups: back to two tabs
+  ✓ split: Ctrl+Alt+D opens the right column
+  ✓ split: each column is half the width
+  ✓ split: typing goes to the column with the keyboard
+  ✓ split: both columns show
+  ✓ split: a click in the left column gives it the keyboard
+  ✓ split: Ctrl+Shift+D moves a tab over
+  ✓ split: Ctrl+1 picks within the column
+  ✓ split: the right sidebar follows the right column
+  ✓ split: the right strip's + adds there
+  ✓ split: closing a right tab keeps the split
+  ✓ split: Ctrl+Alt+W puts the columns back together
+  ✓ split: and the terminal is full width again
+  ✓ split: again, for closing its last tab
+  ✓ split: closing the right column's last tab ends it
+  ✓ split: back to two tabs
   ✓ flower: highlights under the pointer
   ✓ ssh: the hosts button opens its menu
   ✓ ssh: closes
@@ -188,5 +241,5 @@
   ✓ box: delete across three rows: selects and acts
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
-Clipboard found busy 1 times; got through 189 of 189 steps.
-All 190 checks passed.
+Clipboard found busy 0 times; got through 242 of 242 steps.
+All 243 checks passed.

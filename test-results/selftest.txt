@@ -45,6 +45,14 @@ Solanum emulator self-test
   ✓ scroll: plain lines after colored ones
   ✓ scroll: region reuses its line blank
   ✓ scroll: reverse index in a region
+  ✓ git: status from Windows' git
+  ✓ git: staged apart from not
+  ✓ git: branches, with remote twins left out
+  ✓ graph: commits and lanes
+  ✓ graph: labels, current branch first
+  ✓ diff: kinds of line
+  ✓ search: matches from grep and git grep
+  ✓ links: web addresses, punctuation left off
 Drawing
   ✓ canvas: font metrics
   ✓ canvas: grid from size
@@ -105,6 +113,10 @@ File tree
   ✓ sidebars: their borders can be grabbed
   ✓ sidebars: the left switch is always there
   ✓ sidebars: the right switch only in a split
+  ✓ split: each column has its tabs
+  ✓ split: and its terminal
+  ✓ split: its parts are found
+  ✓ split: a crowded column scrolls on its own
   ✓ path: parts know their folders
   ✓ path: from the drive
   ✓ tree: a place comes back whole
@@ -217,4 +229,4 @@ PowerShell hook
   ✓ powershell: Esc clears the line
   ✓ powershell: exits
   - pwsh.exe isn't installed
-All 207 checks passed.
+All 219 checks passed.
