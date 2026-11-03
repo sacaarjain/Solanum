@@ -455,9 +455,9 @@ final class TerminalWindow {
             activeIndex = k
             normalizeColumns()
         } else {
-            // The tab before in the same column, or after; with that column empty, the other column's.
+            // The tab that took its place in the same column, or the one before it; with that column empty, the other's.
             let same = panes.indices.filter { panes[$0].column == column }
-            let next = same.last { $0 < i } ?? same.first ?? other.flatMap { o in panes.firstIndex { $0 === o } } ?? 0
+            let next = same.first { $0 >= i } ?? same.last ?? other.flatMap { o in panes.firstIndex { $0 === o } } ?? 0
             activeIndex = next
             normalizeColumns()
             panes[activeIndex].setFocused(isFocused && !sidebarHasFocus)
