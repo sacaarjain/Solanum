@@ -44,8 +44,12 @@ final class TerminalWindow {
     private var menu: MenuModel?
     private var hoveredCrumb: Int?
     private var themeHovered = false
-    /// A new tab's opening has already kept the old tab's sidebar place, so switching to it doesn't again.
-    private var sidebarPlaceSaved = false
+    /// The tab whose place the left sidebar shows (see `syncLeftSidebar`).
+    private weak var leftOwner: TerminalPane?
+    /// While split, the active tab of the column that doesn't have the keyboard.
+    private var otherActiveID: UInt?
+    /// How far the right column's tabs are scrolled.
+    private var rightTabScroll: Float = 0
     /// A press on a tab, which may turn into dragging it.
     private var tabPress: (index: Int, grab: Float, startX: Float, dragging: Bool)?
     private var draggedX: Float = 0
@@ -135,9 +139,103 @@ final class TerminalWindow {
         _ = SetTimer(created, 1, 100, nil)
     }
 
-    /// The right sidebar only exists in a split window, as on the Mac. Windows has no split screen yet.
-    private let hasSplit = false
-    private var rightIsShowing: Bool { hasSplit && right.isVisible }
+    /// The right sidebar only exists in a split window, as on the Mac.
+    private var rightIsShowing: Bool { isSplit && right.isVisible }
+
+    // MARK: - Columns
+
+    /// Two columns side by side, each with its own tabs, as on the Mac. The tabs stay in one list, the left column's first.
+    var isSplit: Bool { panes.contains { $0.column == 1 } }
+    private var splitCount: Int? { isSplit ? panes.filter { $0.column == 0 }.count : nil }
+
+    /// The active tab of the column without the keyboard, while split.
+    private var otherActivePane: TerminalPane? {
+        guard isSplit, !panes.isEmpty else { return nil }
+        let column = 1 - activePane.column
+        return panes.first { $0.id == otherActiveID && $0.column == column } ?? panes.first { $0.column == column }
+    }
+    /// What's on screen: the active tab, and while split the other column's.
+    private var visiblePanes: [TerminalPane] { panes.isEmpty ? [] : [activePane] + (otherActivePane.map { [$0] } ?? []) }
+    private var leftActivePane: TerminalPane { activePane.column == 0 ? activePane : otherActivePane ?? activePane }
+    private var rightActivePane: TerminalPane? { !isSplit ? nil : activePane.column == 1 ? activePane : otherActivePane }
+    /// The tab a sidebar follows: the right one's is the right column's.
+    private func pane(for sidebar: FileSidebar) -> TerminalPane { sidebar === right ? rightActivePane ?? activePane : leftActivePane }
+    /// The visible tab under a point of the terminal area.
+    private func pane(atX x: Float) -> TerminalPane { isSplit && x >= layout.divider ? rightActivePane ?? activePane : leftActivePane }
+
+    /// Keeps each column's tabs together, the left one's first, after anything that moved them; one column if the left
+    /// one has emptied.
+    private func normalizeColumns() {
+        if !panes.contains(where: { $0.column == 0 }) { panes.forEach { $0.column = 0 } }
+        let active = panes.indices.contains(activeIndex) ? panes[activeIndex] : nil
+        panes = panes.filter { $0.column == 0 } + panes.filter { $0.column == 1 }
+        if let active, let i = panes.firstIndex(where: { $0 === active }) { activeIndex = i }
+        if !isSplit {
+            otherActiveID = nil
+            rightTabScroll = 0
+        }
+    }
+
+    /// Where a tab's terminal is drawn.
+    func area(for pane: TerminalPane) -> UIRect { isSplit && pane.column == 1 ? rightTerminalArea : terminalArea }
+
+    private func grid(for area: UIRect) -> (cols: Int, rows: Int) {
+        let m = canvas.metrics
+        let w = max(area.width - canvas.padding * 2, 0), h = max(area.height - canvas.padding * 2, 0)
+        return (max(Int(w / m.cellWidth), 2), max(Int(h / m.cellHeight), 1))
+    }
+
+    /// Each tab sized to its column.
+    private func resizePanes() {
+        for pane in panes {
+            let g = grid(for: area(for: pane))
+            pane.resize(cols: g.cols, rows: g.rows)
+        }
+    }
+
+    /// Splits the window, with a new tab in the right column in this one's folder, or a new tab in the right column.
+    func splitRight() {
+        let cwd = activePane.sshArguments == nil ? activePane.terminal.cwd : nil
+        addPane(cwd: cwd, column: 1)
+    }
+
+    /// Moves a tab to the other column, splitting the window if it isn't; it can't be the only tab.
+    func moveToOtherColumn(_ pane: TerminalPane, at index: Int? = nil) {
+        guard isSplit || panes.count > 1 else { return }
+        let from = pane.column
+        // The column it leaves keeps an active tab: the one before it, or after.
+        if pane === activePane || pane.id == otherActiveID || otherActiveID == nil {
+            let rest = panes.filter { $0.column == from && $0 !== pane }
+            let at = panes.firstIndex { $0 === pane } ?? 0
+            let stay = rest.last { r in (panes.firstIndex { $0 === r } ?? 0) < at } ?? rest.first
+            if pane === activePane { otherActiveID = stay?.id } else if pane.id == otherActiveID { otherActiveID = stay?.id }
+        }
+        let wasSplit = isSplit
+        pane.column = wasSplit ? 1 - from : 1
+        pane.group = nil
+        if let index, let i = panes.firstIndex(where: { $0 === pane }) {
+            panes.remove(at: i)
+            panes.insert(pane, at: min(index, panes.count))
+        }
+        normalizeColumns()
+        layoutChanged()
+        if let i = panes.firstIndex(where: { $0 === pane }) { activate(i) }
+    }
+
+    /// Puts the columns back together: the right one's tabs join the left one's, nothing in them lost.
+    func closeSplit() {
+        guard isSplit else { return }
+        panes.forEach { $0.column = 0 }
+        normalizeColumns()
+        layoutChanged()
+        detailsChanged()
+    }
+
+    /// The keyboard to the other column's active tab.
+    func focusOtherColumn() {
+        guard let other = otherActivePane, let i = panes.firstIndex(where: { $0 === other }) else { return }
+        activate(i)
+    }
 
     private var dpi: Float { Float(GetDpiForWindow(hwnd)) }
     private var scale: Float { dpi / 96 }
@@ -160,19 +258,30 @@ final class TerminalWindow {
         detailsChanged()
     }
 
-    private var layout: WindowLayout {
+    private var layout: WindowLayout { layout(leftWidth: (sidebarWidth(left) * left.shown).rounded()) }
+
+    private func layout(leftWidth: Float) -> WindowLayout {
         WindowLayout(width: Float(clientWidth), height: Float(clientHeight), scale: scale, tabCount: panes.count, tabScroll: tabScroll,
-                     chips: chipWidths(), hiddenTabs: hiddenTabs,
-                     leftWidth: (sidebarWidth(left) * left.shown).rounded(), rightWidth: rightIsShowing ? sidebarWidth(right) : 0, showsRightToggle: hasSplit)
+                     chips: chipWidths(), hiddenTabs: hiddenTabs, leftWidth: leftWidth, rightWidth: rightIsShowing ? sidebarWidth(right) : 0,
+                     showsRightToggle: isSplit, splitCount: splitCount, rightTabScroll: rightTabScroll)
     }
 
-    /// Where the terminal is drawn. While a sidebar slides, the terminal moves with it but keeps the size it has at the
-    /// start of opening or the end of closing, as on the Mac: each resize makes the shell and programs redraw.
+    /// The layout once the left sidebar has finished sliding.
+    private var settledLayout: WindowLayout { layout(leftWidth: left.isVisible || left.shown > 0 ? sidebarWidth(left) : 0) }
+
+    /// Where the terminal (the left column's, when split) is drawn. While a sidebar slides, the terminal moves with it but
+    /// keeps the size it has at the start of opening or the end of closing, as on the Mac: each resize makes the shell and
+    /// programs redraw.
     private var terminalArea: UIRect {
         let now = layout.terminal
-        let leftForGrid: Float = left.isVisible || left.shown > 0 ? sidebarWidth(left) : 0
-        let width = max(Float(clientWidth) - leftForGrid - (rightIsShowing ? sidebarWidth(right) : 0), 0)
-        return UIRect(x: now.x, y: now.y, width: width, height: now.height)
+        return UIRect(x: now.x, y: now.y, width: settledLayout.terminal.width, height: now.height)
+    }
+
+    /// The right column's, while split: it moves along with the left sidebar's slide too.
+    private var rightTerminalArea: UIRect {
+        let settled = settledLayout, shift = layout.terminal.x - settled.terminal.x
+        let r = settled.rightTerminal
+        return UIRect(x: r.x + shift, y: r.y, width: r.width, height: r.height)
     }
 
     /// Where the left sidebar is drawn: its full width, slid partly off the window's edge while it comes and goes.
@@ -235,29 +344,28 @@ final class TerminalWindow {
 
     // MARK: - Tabs
 
-    private func gridSize() -> (cols: Int, rows: Int) {
-        TerminalRenderer.grid(width: clientWidth, height: clientHeight, canvas: canvas)
-    }
-
+    /// A new tab: at `index`, or at the end of `column` (the active tab's column unless given).
     @discardableResult
-    private func addPane(at index: Int? = nil, cwd: String? = nil, restoring text: String? = nil, place: SidebarPlace? = nil) -> Bool {
-        let grid = clientWidth > 0 ? gridSize() : (cols: 110, rows: 32)
+    private func addPane(at index: Int? = nil, cwd: String? = nil, restoring text: String? = nil, place: SidebarPlace? = nil, column: Int? = nil) -> Bool {
+        let wasSplit = isSplit
+        let col = column ?? index.flatMap { i in panes.indices.contains(i - 1) ? panes[i - 1].column : nil } ?? (panes.isEmpty ? 0 : activePane.column)
+        let grid = clientWidth > 0 ? self.grid(for: col == 1 ? rightTerminalArea : terminalArea) : (cols: 110, rows: 32)
         guard let pane = TerminalPane(host: self, commandLine: commandLine, cols: grid.cols, rows: grid.rows, cwd: cwd, restoring: text) else { return false }
+        pane.column = col
         pane.onRemoteChange = { [weak self, weak pane] in
-            guard let self, let pane, !self.panes.isEmpty, pane === self.activePane else { return }
-            self.left.followed = nil
+            guard let self, let pane, self.visiblePanes.contains(where: { $0 === pane }) else { return }
+            if pane === self.leftActivePane { self.left.followed = nil }
+            if pane === self.rightActivePane { self.right.followed = nil }
             self.followTerminalFolder()
             self.invalidate()
         }
-        if panes.indices.contains(activeIndex) {
-            panes[activeIndex].setFocused(false)
-            saveSidebarPlace(to: panes[activeIndex])
-            sidebarPlaceSaved = true
-        }
+        if panes.indices.contains(activeIndex) { panes[activeIndex].setFocused(false) }
         pane.sidebarPlace = place
-        let at = min(index ?? panes.count, panes.count)
-        panes.insert(pane, at: at)
-        activate(at)
+        let end = (panes.lastIndex { $0.column == col }).map { $0 + 1 } ?? panes.count
+        panes.insert(pane, at: min(index ?? end, panes.count))
+        normalizeColumns()
+        if isSplit != wasSplit { layoutChanged() }
+        activate(panes.firstIndex { $0 === pane } ?? 0)
         return true
     }
 
@@ -265,19 +373,24 @@ final class TerminalWindow {
     private struct ClosedTab {
         let index: Int, folder: String?, text: String
         let place: SidebarPlace?
+        let column: Int
     }
     private var closedTabs: [ClosedTab] = []
 
     /// The last tab closed, in its place and folder, with what it showed in its scrollback.
     func reopenClosedTab() {
         guard let closed = closedTabs.popLast() else { return }
-        addPane(at: closed.index, cwd: closed.folder, restoring: closed.text, place: closed.place)
+        let column = isSplit ? closed.column : 0
+        let range = panes.indices.filter { panes[$0].column == column }
+        let at = min(max(closed.index, range.first ?? 0), (range.last ?? panes.count - 1) + 1)
+        addPane(at: at, cwd: closed.folder, restoring: closed.text, place: closed.place, column: column)
     }
 
-    /// In the current tab's folder, unless Settings says the home folder.
-    func newTab() {
-        let here = AppSettings.shared.newTabFolder == "current" && !panes.isEmpty ? activePane.terminal.cwd : nil
-        addPane(cwd: here)
+    /// In the current tab's folder, unless Settings says the home folder; in the active tab's column, or `column`.
+    func newTab(column: Int? = nil) {
+        let from = column.flatMap { $0 == 1 ? rightActivePane : leftActivePane } ?? (panes.isEmpty ? nil : activePane)
+        let here = AppSettings.shared.newTabFolder == "current" ? from?.terminal.cwd : nil
+        addPane(cwd: here, column: column)
     }
 
     func selectTab(_ i: Int) {
@@ -285,25 +398,44 @@ final class TerminalWindow {
         activate(i)
     }
 
+    /// The `n`th tab of the column with the keyboard (Ctrl+1 to 9).
+    private func selectTab(inColumn n: Int) {
+        let range = panes.indices.filter { panes[$0].column == activePane.column }
+        if range.indices.contains(n) { selectTab(range[n]) }
+    }
+
     private func activate(_ i: Int) {
-        if panes.indices.contains(activeIndex) {
-            panes[activeIndex].setFocused(false)
-            if !sidebarPlaceSaved { saveSidebarPlace(to: panes[activeIndex]) }
+        let previous = panes.indices.contains(activeIndex) ? panes[activeIndex] : nil
+        previous?.setFocused(false)
+        // Going to the other column leaves the one before as that column's active tab.
+        if let previous, previous !== panes[i], previous.column != panes[i].column, panes.contains(where: { $0 === previous }) {
+            otherActiveID = previous.id
         }
-        sidebarPlaceSaved = false
         activeIndex = i
-        restoreSidebarPlace(from: panes[i])
+        syncLeftSidebar()
         panes[i].setFocused(isFocused && !sidebarHasFocus)
         settleTabScroll()
         detailsChanged()
+    }
+
+    /// The left sidebar keeps each tab's place (its pin, open folders, where it was): it shows the left column's active
+    /// tab's, keeping the one before's.
+    private func syncLeftSidebar() {
+        guard !panes.isEmpty else { return }
+        let owner = leftActivePane
+        guard owner !== leftOwner else { return }
+        if let old = leftOwner, panes.contains(where: { $0 === old }) { saveSidebarPlace(to: old) }
+        restoreSidebarPlace(from: owner)
+        leftOwner = owner
     }
 
     /// Stops the tab's shell. The tab goes when it has ended (see `paneExited`).
     func closeTab(_ i: Int) {
         guard panes.indices.contains(i) else { return }
         let terminal = panes[i].terminal
-        if i == activeIndex { saveSidebarPlace(to: panes[i]) }
-        closedTabs.append(ClosedTab(index: i, folder: terminal.cwd, text: terminal.restorableText(maxLines: 5000), place: panes[i].sidebarPlace))
+        if panes[i] === leftOwner { saveSidebarPlace(to: panes[i]) }
+        closedTabs.append(ClosedTab(index: i, folder: terminal.cwd, text: terminal.restorableText(maxLines: 5000), place: panes[i].sidebarPlace,
+                                    column: panes[i].column))
         if closedTabs.count > 25 { closedTabs.removeFirst() }
         panes[i].terminate()
     }
@@ -311,17 +443,28 @@ final class TerminalWindow {
     private func paneExited(id: UInt) {
         guard let i = panes.firstIndex(where: { $0.id == id }) else { return }
         panes[i].drainOutput()
-        let wasActive = i == activeIndex
+        let wasActive = i == activeIndex, column = panes[i].column, wasSplit = isSplit
+        let keep = wasActive ? nil : activePane
+        let other = otherActivePane
         panes.remove(at: i)
         guard !panes.isEmpty else {
             PostMessageW(hwnd, Win.WM_CLOSE, 0, 0)
             return
         }
-        if i < activeIndex || activeIndex >= panes.count { activeIndex = max(activeIndex - 1, 0) }
-        if wasActive {
+        if let keep, let k = panes.firstIndex(where: { $0 === keep }) {
+            activeIndex = k
+            normalizeColumns()
+        } else {
+            // The tab before in the same column, or after; with that column empty, the other column's.
+            let same = panes.indices.filter { panes[$0].column == column }
+            let next = same.last { $0 < i } ?? same.first ?? other.flatMap { o in panes.firstIndex { $0 === o } } ?? 0
+            activeIndex = next
+            normalizeColumns()
             panes[activeIndex].setFocused(isFocused && !sidebarHasFocus)
-            restoreSidebarPlace(from: panes[activeIndex])
+            syncLeftSidebar()
         }
+        if isSplit != wasSplit { layoutChanged() }
+        syncLeftSidebar()
         hovered = nil
         settleTabScroll()
         detailsChanged()
@@ -340,7 +483,7 @@ final class TerminalWindow {
 
     /// What a pane shows has changed. Only the one on screen needs drawing.
     func paneChanged(_ pane: TerminalPane) {
-        guard panes.indices.contains(activeIndex), pane === activePane else { return }
+        guard panes.indices.contains(activeIndex), visiblePanes.contains(where: { $0 === pane }) else { return }
         invalidate()
         // Posted messages outrank painting, so a program printing nonstop would otherwise never be seen.
         if Date().timeIntervalSince(lastDrawn) > 1.0 / 30 { UpdateWindow(hwnd) }
@@ -350,12 +493,19 @@ final class TerminalWindow {
 
     /// Keeps the tabs' scroll in range and, unless the person's own scrolling is what moved them, the active tab in view.
     private func settleTabScroll(showingActive: Bool = true) {
-        tabScroll = min(max(tabScroll, 0), layout.maxTabScroll)
-        if showingActive && panes.indices.contains(activeIndex) { tabScroll = layout.scroll(showing: activeIndex) }
+        tabScroll = min(max(tabScroll, 0), layout.maxTabScroll(column: 0))
+        rightTabScroll = min(max(rightTabScroll, 0), layout.maxTabScroll(column: 1))
+        guard showingActive else { return }
+        for pane in visiblePanes {
+            guard let i = panes.firstIndex(where: { $0 === pane }) else { continue }
+            let l = layout, to = l.scroll(showing: i)
+            if l.column(ofTab: i) == 0 { tabScroll = to } else { rightTabScroll = to }
+        }
     }
 
-    private func scrollTabs(by delta: Float) {
-        tabScroll += delta
+    /// Scrolls a column's strip of tabs (the left one's, or the only one).
+    private func scrollTabs(by delta: Float, column: Int = 0) {
+        if column == 1 { rightTabScroll += delta } else { tabScroll += delta }
         settleTabScroll(showingActive: false)
         invalidate()
     }
@@ -368,14 +518,24 @@ final class TerminalWindow {
         chrome.pressed = pressed
         chrome.maximized = IsZoomed(hwnd)
         chrome.focused = isFocused
-        // Over ssh, the host's folder, when it's known.
-        let overSSH = !panes.isEmpty && activePane.sshArguments != nil
-        chrome.folder = panes.isEmpty ? nil : overSSH ? activePane.remoteTerminalFolder : activePane.terminal.cwd
-        chrome.home = overSSH ? activePane.remote?.home : ProcessInfo.processInfo.environment["USERPROFILE"]
+        // Over ssh, the host's folder, when it's known. While split, each column's half has its own.
+        func folder(_ p: TerminalPane) -> String? { p.sshArguments != nil ? p.remoteTerminalFolder : p.terminal.cwd }
+        func home(_ p: TerminalPane) -> String? { p.sshArguments != nil ? p.remote?.home : ProcessInfo.processInfo.environment["USERPROFILE"] }
+        if !panes.isEmpty {
+            let l = leftActivePane
+            chrome.folder = folder(l)
+            chrome.home = home(l)
+            chrome.sshHost = l.sshHost
+            if let r = rightActivePane {
+                chrome.rightFolder = folder(r)
+                chrome.rightHome = home(r)
+                chrome.rightSSHHost = r.sshHost
+            }
+            chrome.otherActiveTab = otherActivePane.flatMap { o in panes.firstIndex { $0 === o } }
+        }
         chrome.hoveredCrumb = hoveredCrumb
-        chrome.sshHost = panes.isEmpty ? nil : activePane.sshHost
         for (first, group) in groupStarts() {
-            let members = panes.indices.filter { panes[$0].group === group }
+            let members = panes.indices.filter { panes[$0].group === group && panes[$0].column == panes[first].column }
             chrome.chips[first] = (group.chipLabel(count: members.count), group.color.rgb, members.last ?? first, group.collapsed)
         }
         chrome.picked = Set(panes.indices.filter { pickedTabs.contains(panes[$0].id) })
@@ -428,13 +588,21 @@ final class TerminalWindow {
         defer { EndPaint(hwnd, &ps) }
         guard !panes.isEmpty, sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
         chrome(on: canvas, layout: layout).draw()
-        activePane.draw(cursorShown: cursorShown, style: cursorStyleCode)
+        for pane in visiblePanes { pane.draw(cursorShown: pane === activePane ? cursorShown : true, style: cursorStyleCode) }
+        drawDivider(on: canvas)
         drawSidebars(on: canvas, layout: layout)
         drawPalette(on: canvas)
         if let menu { MenuView(canvas: canvas, menu: menu).draw() }
         _ = sol_canvas_end(canvas.raw)
         paints += 1
         lastDrawn = Date()
+    }
+
+    /// The line between the columns, while split.
+    private func drawDivider(on target: Canvas) {
+        guard isSplit else { return }
+        let l = layout
+        sol_canvas_fill_rect(target.raw, l.divider, l.tabBarHeight, 1, l.terminal.height, TerminalPalette.foreground, 0.12)
     }
 
     /// What the window shows, to a PNG. For tests.
@@ -445,10 +613,15 @@ final class TerminalWindow {
         bitmap.terminalArea = canvas.terminalArea
         guard sol_canvas_begin(bitmap.raw, TerminalPalette.background) >= 0 else { return false }
         chrome(on: bitmap, layout: layout).draw()
-        var renderer = TerminalRenderer(canvas: bitmap, terminal: activePane.terminal)
-        renderer.scrollOffset = activePane.scrollOffset
-        renderer.drawContents()
-        activePane.drawOverlays(on: bitmap)
+        for pane in visiblePanes {
+            bitmap.terminalArea = area(for: pane)
+            var renderer = TerminalRenderer(canvas: bitmap, terminal: pane.terminal)
+            renderer.scrollOffset = pane.scrollOffset
+            renderer.focused = pane === activePane
+            renderer.drawContents()
+            pane.drawOverlays(on: bitmap)
+        }
+        drawDivider(on: bitmap)
         drawSidebars(on: bitmap, layout: layout)
         drawPalette(on: bitmap)
         if let menu { MenuView(canvas: bitmap, menu: menu).draw() }
@@ -581,9 +754,11 @@ final class TerminalWindow {
         case Win.WM_MOUSEHWHEEL:
             // A touchpad's sideways swipe or a tilting wheel, which moves the tabs. It's in small steps on a touchpad, so
             // in proportion. Positive is to the right.
-            guard !panes.isEmpty, screenPoint(lParam).y < layout.tabBarHeight else { return 0 }
+            let point = screenPoint(lParam)
+            guard !panes.isEmpty, point.y < layout.tabBarHeight else { return 0 }
             let swiped = Float(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Float(Win.WHEEL_DELTA)
-            scrollTabs(by: swiped * layout.tabWidth)
+            let column = isSplit && point.x >= layout.divider ? 1 : 0
+            scrollTabs(by: swiped * layout.tabWidth(column: column), column: column)
             return 1
         case Win.WM_MOUSEWHEEL:
             guard !panes.isEmpty else { return 0 }
@@ -602,9 +777,11 @@ final class TerminalWindow {
                 invalidate()
             } else if y < layout.tabBarHeight {
                 let notches = Float(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Float(Win.WHEEL_DELTA)
-                scrollTabs(by: -notches * layout.tabWidth)
+                let column = isSplit && x >= layout.divider ? 1 : 0
+                scrollTabs(by: -notches * layout.tabWidth(column: column), column: column)
             } else {
-                activePane.wheel(wParam, lParam)
+                // The column under the pointer scrolls, whichever has the keyboard.
+                pane(atX: x).wheel(wParam, lParam)
             }
             return 0
         case Win.WM_DESTROY:
@@ -687,8 +864,7 @@ final class TerminalWindow {
         clientHeight = height
         sol_canvas_resize(canvas.raw, Int32(width), Int32(height))
         canvas.terminalArea = terminalArea
-        let grid = gridSize()
-        panes.forEach { $0.resize(cols: grid.cols, rows: grid.rows) }
+        resizePanes()
         settleTabScroll()
         invalidate()
     }
@@ -718,13 +894,18 @@ final class TerminalWindow {
         }
         if sidebarMouse(message, part: part, x: x, y: y) { return }
         if part == .terminal && !terminalHasMouse && lostBarMouse(message, x: x, y: y) { return }
+        let under = pane(atX: x)
         if message == Win.WM_LBUTTONDOWN || message == Win.WM_RBUTTONDOWN || message == Win.WM_MBUTTONDOWN || message == Win.WM_LBUTTONDBLCLK {
             terminalHasMouse = part == .terminal
-            if part == .terminal { focusTerminal() }
+            if part == .terminal {
+                // A press in the other column gives it the keyboard.
+                if under !== activePane, let i = panes.firstIndex(where: { $0 === under }) { activate(i) }
+                focusTerminal()
+            }
         }
         if terminalHasMouse || (part == .terminal && message != Win.WM_MBUTTONUP && message != Win.WM_LBUTTONUP) {
             if message == Win.WM_MOUSEMOVE { setHovered(.terminal, nonClient: false) }
-            activePane.mouse(message, wParam, lParam)
+            (terminalHasMouse ? activePane : under).mouse(message, wParam, lParam)
             if message == Win.WM_LBUTTONUP || message == Win.WM_RBUTTONUP || message == Win.WM_MBUTTONUP { terminalHasMouse = false }
             return
         }
@@ -750,12 +931,16 @@ final class TerminalWindow {
             }
             if part == .scrollLeft { scrollTabs(by: -layout.tabViewport.width * 0.75) }
             if part == .scrollRight { scrollTabs(by: layout.tabViewport.width * 0.75) }
+            if part == .rightScrollLeft { scrollTabs(by: -layout.tabViewport(column: 1).width * 0.75, column: 1) }
+            if part == .rightScrollRight { scrollTabs(by: layout.tabViewport(column: 1).width * 0.75, column: 1) }
             pressed = part
         case Win.WM_LBUTTONUP:
             if part == pressed {
                 switch part {
                 case .tabClose(let i): closeTab(i)
-                case .newTab: newTab()
+                case .newTab: newTab(column: 0)
+                case .newTabRight: newTab(column: 1)
+                case .closeSplit: closeSplit()
                 case .chip(let first): if let g = panes[first].group { setCollapsed(g, !g.collapsed) }
                 case .flower: SettingsWindow.shared.show()
                 case .toggleLeft: toggleSidebar(left)
@@ -792,13 +977,13 @@ final class TerminalWindow {
 
     private func drawSidebars(on target: Canvas, layout l: WindowLayout) {
         let home = ProcessInfo.processInfo.environment["USERPROFILE"]
-        let folder = panes.isEmpty ? nil : activePane.terminal.cwd
-        let remote = panes.isEmpty ? nil : activePane
-        let remoteHome = remote?.remote?.home, sshHost = remote?.sshHost, status = remote?.remoteStatus
         for (sidebar, visible, area, edge) in [(left, l.leftSidebar, leftSidebarArea, l.leftWidth - 1), (right, l.rightSidebar, l.rightSidebar, l.width - l.rightWidth)] where visible.width > 0 {
+            // Each follows its own column's tab.
+            let pane = panes.isEmpty ? nil : self.pane(for: sidebar)
+            let folder = pane?.terminal.cwd, remoteHome = pane?.remote?.home, sshHost = pane?.sshHost, status = pane?.remoteStatus
             sol_canvas_push_clip(target.raw, visible.x, visible.y, visible.width, visible.height)
             let onHost = sidebar.tree.root.map(AnyPath.isUnix) ?? false
-            let showsStatus = sidebar === left && sidebar.pinned == nil && status != nil
+            let showsStatus = sidebar.pinned == nil && status != nil
             SidebarView(canvas: target, sidebar: sidebar, layout: SidebarLayout(area: area, scale: scale), terminalFolder: folder,
                         home: onHost ? remoteHome : home, host: onHost || showsStatus ? sshHost : nil, status: showsStatus ? status : nil).draw()
             sol_canvas_pop_clip(target.raw)
@@ -819,7 +1004,7 @@ final class TerminalWindow {
     private func listInBackground(_ folder: String, for sidebar: FileSidebar) {
         // A folder on an ssh host is listed over the tab's own connection to it.
         if AnyPath.isUnix(folder) {
-            guard let remote = panes.isEmpty ? nil : activePane.remote else { return }
+            guard let remote = panes.isEmpty ? nil : pane(for: sidebar).remote else { return }
             remote.list(folder) { [weak self, weak sidebar] entries in
                 self?.runOnWindowThread {
                     guard let self, let sidebar else { return }
@@ -840,10 +1025,11 @@ final class TerminalWindow {
     /// Shows the terminal's folder in the sidebars that aren't pinned.
     private func followTerminalFolder() {
         guard !panes.isEmpty else { return }
-        // Over ssh, the host's folder once the sidebar's connection is up; this machine's otherwise.
-        let local = activePane.sshArguments == nil ? activePane.terminal.cwd ?? ProcessInfo.processInfo.environment["USERPROFILE"] : nil
-        guard let folder = activePane.remoteFolder ?? local else { return }
-        for sidebar in [left, right] where sidebar.isVisible && sidebar.pinned == nil {
+        for sidebar in [left, right] where sidebar.isVisible && sidebar.pinned == nil && (sidebar === left || rightIsShowing) {
+            // Over ssh, the host's folder once the sidebar's connection is up; this machine's otherwise.
+            let pane = self.pane(for: sidebar)
+            let local = pane.sshArguments == nil ? pane.terminal.cwd ?? ProcessInfo.processInfo.environment["USERPROFILE"] : nil
+            guard let folder = pane.remoteFolder ?? local else { continue }
             guard folder != sidebar.followed || sidebar.tree.root == nil else { continue }
             sidebar.followed = folder
             sidebar.tree.setRoot(folder)
@@ -875,6 +1061,8 @@ final class TerminalWindow {
     }
 
     private func toggleSidebar(_ sidebar: FileSidebar) {
+        // The right sidebar is the right column's: there's none without a split.
+        guard sidebar === left || isSplit else { return }
         sidebar.isVisible.toggle()
         if !sidebar.isVisible && sidebar.isFocused { focusTerminal() }
         // Opening resizes the terminal at the start, closing at the end of the slide.
@@ -895,8 +1083,7 @@ final class TerminalWindow {
     private func layoutChanged() {
         guard clientWidth > 0 else { return }
         canvas.terminalArea = terminalArea
-        let grid = gridSize()
-        panes.forEach { $0.resize(cols: grid.cols, rows: grid.rows) }
+        resizePanes()
         settleTabScroll()
         invalidate()
     }
@@ -1008,7 +1195,7 @@ final class TerminalWindow {
                 // Back to how it was before this double click's first click, then the terminal goes there, as on the Mac (on
                 // an ssh host too, by typing a cd into the session).
                 sidebar.tree.toggle(row.entry.path)
-                activePane.changeDirectory(to: row.entry.path)
+                pane(for: sidebar).changeDirectory(to: row.entry.path)
                 focusTerminal()
             } else if !AnyPath.isUnix(row.entry.path) {
                 onOpenFile(row.entry.path)
@@ -1199,7 +1386,8 @@ final class TerminalWindow {
     /// The status bar's folder parts under the pointer. True if it dealt with the mouse.
     private func statusBarMouse(_ message: UINT, x: Float, y: Float) -> Bool {
         let bar = chrome(on: canvas, layout: layout)
-        let spots = bar.crumbSpots()
+        // While split, the right column's half follows the left one's.
+        let leftSpots = bar.crumbSpots(), spots = leftSpots + (isSplit ? bar.crumbSpots(column: 1) : [])
         let hit = spots.firstIndex { $0.hit.contains(x, y) }
         let onTheme = bar.themeSpot().contains(x, y)
         switch message {
@@ -1215,6 +1403,9 @@ final class TerminalWindow {
             return true
         case Win.WM_LBUTTONUP, Win.WM_RBUTTONUP:
             guard let hit else { return false }
+            // The column whose folder it is gets the keyboard, so what the menu does happens there.
+            let owner = hit < leftSpots.count ? leftActivePane : rightActivePane ?? activePane
+            if owner !== activePane, let i = panes.firstIndex(where: { $0 === owner }) { activate(i) }
             showCrumbMenu(spots[hit], copyOnly: message == Win.WM_RBUTTONUP)
             return true
         default:
@@ -1223,8 +1414,8 @@ final class TerminalWindow {
     }
 
     /// The rectangle of a part of the path in the status bar, for clicking it.
-    func crumbRect(_ label: String) -> UIRect? {
-        chrome(on: canvas, layout: layout).crumbSpots().first { $0.label == label }?.rect
+    func crumbRect(_ label: String, column: Int = 0) -> UIRect? {
+        chrome(on: canvas, layout: layout).crumbSpots(column: column).first { $0.label == label }?.rect
     }
 
     /// The folder icon at the start of the path.
@@ -1250,7 +1441,7 @@ final class TerminalWindow {
 
     /// The pane's "Lost connection" bar takes the clicks over it, not the terminal underneath.
     private func lostBarMouse(_ message: UINT, x: Float, y: Float) -> Bool {
-        let pane = activePane
+        let pane = self.pane(atX: x)
         let button = pane.lostBarButton(atX: x, y: y)
         if pane.hoveredLostButton != button {
             pane.hoveredLostButton = button
@@ -1337,18 +1528,20 @@ final class TerminalWindow {
                 press.dragging = true
                 SetCapture(hwnd)
             }
-            let l = layout, v = l.tabViewport
-            draggedX = min(max(x - press.grab, v.x), max(v.maxX - l.tabWidth, v.x))
+            // Within its own column's strip; let go over the other column's, it moves there.
+            let l = layout, column = l.column(ofTab: press.index), v = l.tabViewport(column: column), w = l.tabWidth(column: column)
+            let range = l.tabRange(column: column)
+            draggedX = min(max(x - press.grab, v.x), max(v.maxX - w, v.x))
             // It trades places with a neighbor as it passes halfway over it, as on the Mac.
             var moved = true
             while moved {
                 moved = false
-                let floating = UIRect(x: draggedX, y: 0, width: l.tabWidth, height: 1)
-                if press.index + 1 < panes.count, floating.maxX > l.tab(press.index + 1).x + l.tabWidth / 2 {
+                let floating = UIRect(x: draggedX, y: 0, width: w, height: 1)
+                if press.index + 1 < range.upperBound, floating.maxX > l.tab(press.index + 1).x + w / 2 {
                     moveTab(from: press.index, to: press.index + 1)
                     press.index += 1
                     moved = true
-                } else if press.index > 0, floating.x < l.tab(press.index - 1).x + l.tabWidth / 2 {
+                } else if press.index > range.lowerBound, floating.x < l.tab(press.index - 1).x + w / 2 {
                     moveTab(from: press.index, to: press.index - 1)
                     press.index -= 1
                     moved = true
@@ -1360,7 +1553,17 @@ final class TerminalWindow {
         case Win.WM_LBUTTONUP:
             if press.dragging {
                 ReleaseCapture()
-                TabGroupOps.settle(panes[press.index], in: panes)
+                let pane = panes[press.index], l = layout
+                let over = l.isSplit ? (x >= l.divider ? 1 : 0) : pane.column
+                tabPress = nil
+                if over != pane.column {
+                    // Dropped on the other column's strip: into it, where it was let go.
+                    let target = l.tabRange(column: over)
+                    let at = target.first { l.tab($0).x + l.tab($0).width / 2 > x } ?? target.upperBound
+                    moveToOtherColumn(pane, at: at > press.index ? at - 1 : at)
+                } else {
+                    TabGroupOps.settle(pane, in: panes)
+                }
             }
             tabPress = nil
             invalidate()
@@ -1451,7 +1654,7 @@ final class TerminalWindow {
     /// Each group by the index of its first tab.
     private func groupStarts() -> [(Int, TabGroup)] {
         panes.indices.compactMap { i in
-            guard let g = panes[i].group, i == 0 || panes[i - 1].group !== g else { return nil }
+            guard let g = panes[i].group, i == 0 || panes[i - 1].group !== g || panes[i - 1].column != panes[i].column else { return nil }
             return (i, g)
         }
     }
@@ -1502,11 +1705,24 @@ final class TerminalWindow {
         let active = panes.isEmpty ? nil : activePane
         change(&panes)
         if let active, let i = panes.firstIndex(where: { $0 === active }) { activeIndex = i }
+        let wasSplit = isSplit
+        normalizeColumns()
+        if isSplit != wasSplit { layoutChanged() }
         settleTabScroll()
         invalidate()
     }
 
+    /// A group is in one column: tabs going into it go there too.
+    private func bring(_ list: [TerminalPane], toColumn column: Int) {
+        guard list.contains(where: { $0.column != column }) else { return }
+        list.forEach { $0.column = column }
+        let wasSplit = isSplit
+        normalizeColumns()
+        if isSplit != wasSplit { layoutChanged() } else { resizePanes() }
+    }
+
     func addToNewGroup(_ list: [TerminalPane]) {
+        if let first = list.first { bring(list, toColumn: first.column) }
         var created: TabGroup?
         reorder { created = TabGroupOps.addToNewGroup(&$0, picked: list) }
         pickedTabs = []
@@ -1515,6 +1731,7 @@ final class TerminalWindow {
     }
 
     private func add(_ list: [TerminalPane], to group: TabGroup) {
+        if let member = panes.first(where: { $0.group === group }) { bring(list, toColumn: member.column) }
         reorder { tabs in list.forEach { TabGroupOps.add($0, to: group, in: &tabs) } }
         pickedTabs = []
     }
@@ -1535,7 +1752,7 @@ final class TerminalWindow {
     func setCollapsed(_ group: TabGroup, _ collapsed: Bool) {
         group.collapsed = collapsed
         if collapsed, activePane.group === group {
-            let order = panes.indices.sorted { abs($0 - activeIndex) < abs($1 - activeIndex) }
+            let order = panes.indices.filter { panes[$0].column == activePane.column }.sorted { abs($0 - activeIndex) < abs($1 - activeIndex) }
             if let i = order.first(where: { panes[$0].group?.collapsed != true }) { selectTab(i) } else { addPane() }
         }
         settleTabScroll()
@@ -1640,6 +1857,12 @@ final class TerminalWindow {
         items += [.separator, MenuItem(title: "Add Tab to New Group") { [weak self] in self?.addToNewGroup([pane]) }]
         items += groupItems(for: [pane], verb: "Add Tab to")
         if pane.group != nil { items.append(MenuItem(title: "Remove from Group") { [weak self] in self?.removeFromGroup([pane]) }) }
+        if isSplit || panes.count > 1 {
+            var move = MenuItem(title: isSplit ? "Move to Other Split" : "Move to New Split") { [weak self] in self?.moveToOtherColumn(pane) }
+            move.shortcut = "Ctrl+Shift+D"
+            items += [.separator, move]
+        }
+        if isSplit { items.append(MenuItem(title: "Close Split") { [weak self] in self?.closeSplit() }) }
         items += [.separator, MenuItem(title: "Close Tab") { [weak self] in self?.closeTabs([pane]) }]
         if panes.count > 1 { items.append(MenuItem(title: "Close Other Tabs") { [weak self] in self.map { $0.closeTabs($0.panes.filter { $0 !== pane }) } }) }
         if i < panes.count - 1 {
@@ -1798,12 +2021,13 @@ final class TerminalWindow {
     /// Every shortcut, as Settings › Shortcuts lists them. Ctrl stands in for the Mac's Command.
     static let shortcutGroups: [(title: String, items: [(title: String, keys: String)])] = [
         ("Solanum", [("Settings…", "Ctrl+,"), ("Command Palette…", "Ctrl+Shift+P")]),
-        ("Shell", [("New Tab", "Ctrl+T"), ("New Tab in Group", "Ctrl+Alt+T"), ("Reopen Closed Tab", "Ctrl+Shift+T"), ("Go to Folder…", "Ctrl+Shift+O"), ("Close Tab", "Ctrl+W"),
+        ("Shell", [("New Tab", "Ctrl+T"), ("New Tab in Group", "Ctrl+Alt+T"), ("Reopen Closed Tab", "Ctrl+Shift+T"), ("Go to Folder…", "Ctrl+Shift+O"),
+                   ("Split Right", "Ctrl+Alt+D"), ("Move Tab to Other Split", "Ctrl+Shift+D"), ("Close Split", "Ctrl+Alt+W"), ("Close Tab", "Ctrl+W"),
                    ("Close Tab (also)", "Ctrl+Shift+W"), ("Rename Tab…", "Ctrl+Shift+I"), ("Add Tab to New Group", "Ctrl+Alt+G")]),
         ("Tabs", [("Pick another tab", "Ctrl+Click"), ("Pick the tabs between", "Shift+Click"), ("Collapse or expand a group", "Click its chip")]),
         ("Edit", [("Copy (with something selected)", "Ctrl+C"), ("Stop the program (with nothing selected)", "Ctrl+C"), ("Cut (in the line being typed)", "Ctrl+X"),
                   ("Paste", "Ctrl+V"), ("Paste (also)", "Shift+Insert"), ("Undo (PowerShell and Claude Code)", "Ctrl+Z")]),
-        ("View", [("Toggle File Sidebar", "Ctrl+B"), ("Pin Sidebar Folder", "Ctrl+Shift+B"), ("Scroll Back a Page", "Shift+PageUp"), ("Scroll Forward a Page", "Shift+PageDown")]),
+        ("View", [("Toggle File Sidebar", "Ctrl+B"), ("Toggle Right Sidebar (split)", "Ctrl+Alt+B"), ("Pin Sidebar Folder", "Ctrl+Shift+B"), ("Scroll Back a Page", "Shift+PageUp"), ("Scroll Forward a Page", "Shift+PageDown")]),
         ("Window", [("Next Tab", "Ctrl+Tab"), ("Previous Tab", "Ctrl+Shift+Tab"), ("Go to Tab 1 to 9", "Ctrl+1"), ("Close Window", "Alt+F4")]),
     ]
 
@@ -1829,6 +2053,10 @@ final class TerminalWindow {
             PaletteItem(title: "New Tab", category: "Shell", shortcut: "Ctrl+T") { [weak self] in self?.newTab() },
             PaletteItem(title: "Reopen Closed Tab", category: "Shell", shortcut: "Ctrl+Shift+T") { [weak self] in self?.reopenClosedTab() },
             PaletteItem(title: "Go to Folder…", category: "Shell", shortcut: "Ctrl+Shift+O") { [weak self] in self?.showGoToFolder() },
+            PaletteItem(title: "Split Right", category: "Shell", shortcut: "Ctrl+Alt+D") { [weak self] in self?.splitRight() },
+            PaletteItem(title: isSplit ? "Move Tab to Other Split" : "Move Tab to New Split", category: "Shell", shortcut: "Ctrl+Shift+D") { [weak self] in
+                self.map { $0.moveToOtherColumn($0.activePane) }
+            },
             PaletteItem(title: "Close Tab", category: "Shell", shortcut: "Ctrl+W") { [weak self] in self.map { $0.closeTab($0.activeIndex) } },
             PaletteItem(title: "Next Tab", category: "Window", shortcut: "Ctrl+Tab") { [weak self] in self.map { $0.selectTab(($0.activeIndex + 1) % $0.panes.count) } },
             PaletteItem(title: "Previous Tab", category: "Window", shortcut: "Ctrl+Shift+Tab") { [weak self] in
@@ -1859,6 +2087,11 @@ final class TerminalWindow {
             PaletteItem(title: IsZoomed(hwnd) ? "Restore" : "Maximize", category: "Window") { [weak self] in self?.pressCaptionButton(.maximize) },
             PaletteItem(title: "Close Window", category: "Window", shortcut: "Alt+F4") { [weak self] in self?.pressCaptionButton(.close) },
         ]
+        if isSplit {
+            items.append(PaletteItem(title: "Close Split", category: "Shell", shortcut: "Ctrl+Alt+W") { [weak self] in self?.closeSplit() })
+            items.append(PaletteItem(title: "Focus Other Split", category: "Window") { [weak self] in self?.focusOtherColumn() })
+            items.append(PaletteItem(title: "Toggle Right Sidebar", category: "View", shortcut: "Ctrl+Alt+B") { [weak self] in self.map { $0.toggleSidebar($0.right) } })
+        }
         for spec in AppSettings.shared.allThemes {
             items.append(PaletteItem(title: "Theme: \(spec.name)", category: "Appearance") { [weak self] in self?.useTheme(spec.name) })
         }
@@ -2019,7 +2252,7 @@ final class TerminalWindow {
         // Ctrl+B and Ctrl+Alt+B show and hide the sidebars, and Ctrl+Shift+B pins the left one to its folder.
         if ctrl && key == 0x42 {
             if alt {
-                if hasSplit { toggleSidebar(right) }
+                if isSplit { toggleSidebar(right) }
             } else if shift {
                 togglePin(left)
             } else {
@@ -2027,6 +2260,10 @@ final class TerminalWindow {
             }
             return true
         }
+        // Splits, as the Mac's ⌘D, ⇧⌘D and ⌃⌘W: Ctrl+D itself stays the shell's (end of input).
+        if ctrl && alt && !shift && key == 0x44 { splitRight(); return true }
+        if ctrl && shift && !alt && key == 0x44 { moveToOtherColumn(activePane); return true }
+        if ctrl && alt && !shift && key == 0x57 { closeSplit(); return true }
         if let sidebar = focusedSidebar, sidebarKey(key, sidebar, shift: shift, ctrl: ctrl, alt: alt) { return true }
         // Windows' Ctrl stands in for the Mac's Command, and Shift is Shift: keys the app claims are the app's, whatever's
         // running (see WINDOWS.md).
@@ -2042,12 +2279,14 @@ final class TerminalWindow {
             }
         }
         // Ctrl+1 to 9 pick a tab, with or without Shift. Shells and programs have no use for them.
+        // In the column with the keyboard, while split.
         if ctrl && !alt && (0x31...0x39).contains(key) {
-            selectTab(Int(key) - 0x31)
+            selectTab(inColumn: Int(key) - 0x31)
             return true
         }
-        if ctrl && !alt && key == Win.VK_TAB && panes.count > 1 {
-            selectTab((activeIndex + (shift ? panes.count - 1 : 1)) % panes.count)
+        let column = panes.indices.filter { panes[$0].column == activePane.column }
+        if ctrl && !alt && key == Win.VK_TAB && column.count > 1, let at = column.firstIndex(of: activeIndex) {
+            selectTab(column[(at + (shift ? column.count - 1 : 1)) % column.count])
             return true
         }
         return activePane.keyDown(key, shift: shift, ctrl: ctrl, alt: alt)
@@ -2109,6 +2348,12 @@ final class TerminalWindow {
     }
     func typeIntoWindow(_ text: String) { for unit in text.utf16 { PostMessageW(hwnd, Win.WM_CHAR, WPARAM(unit), 0) } }
     var leftTree: FileTree { left.tree }
+    var rightTree: FileTree { right.tree }
+    var splitColumnCounts: [Int] { isSplit ? [panes.filter { $0.column == 0 }.count, panes.filter { $0.column == 1 }.count] : [panes.count] }
+    var focusedColumn: Int { activePane.column }
+    var shownPaneIDs: [UInt] { visiblePanes.map(\.id) }
+    func paneArea(_ pane: TerminalPane) -> UIRect { area(for: pane) }
+    func toggleRightSidebarForTest() { toggleSidebar(right) }
     var rightIsVisible: Bool { rightIsShowing }
     var leftIsVisible: Bool { left.isVisible }
     var leftPinned: String? { left.pinned }

@@ -10,7 +10,14 @@ final class TerminalPane: TerminalDelegate, Groupable {
     let id: UInt
     private(set) weak var host: TerminalWindow?
     private let hwnd: HWND
-    private var canvas: Canvas { drawTarget ?? host!.canvas }
+    /// The window's canvas (or a snapshot's), with its terminal area set to this pane's: in a split window there are two.
+    private var canvas: Canvas {
+        let c = drawTarget ?? host!.canvas!
+        if let area = host?.area(for: self) { c.terminalArea = area }
+        return c
+    }
+    /// Which column of a split window the tab is in: 0, or 1 for the right one.
+    var column = 0
     /// Where `drawOverlays(on:)` is drawing, when it isn't the window.
     private var drawTarget: Canvas?
     private(set) var terminal: Terminal

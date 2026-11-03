@@ -20,13 +20,16 @@ enum WindowPart: Equatable {
     case titleBar
     case statusBar, terminal
     case leftSidebar, rightSidebar, leftEdge, rightEdge, toggleLeft, toggleRight, hosts
+    /// While split: the right column's new tab button and scroll arrows, and the button that closes the split.
+    case newTabRight, rightScrollLeft, rightScrollRight, closeSplit
 }
 
 /// Where everything in a window goes: the tab bar along the top, with the window's buttons at its right end as Windows
-/// has them, the status bar along the bottom, and the terminal between. Plain arithmetic, shared and testable.
+/// has them, the status bar along the bottom, and the terminal between. Split, there are two columns side by side, each
+/// with its own strip of tabs above it, as on the Mac. Plain arithmetic, shared and testable.
 struct WindowLayout {
     let width: Float, height: Float, scale: Float, tabCount: Int
-    /// How far the tabs are scrolled, when they don't all fit.
+    /// How far the tabs are scrolled, when they don't all fit (the left column's, when split).
     var tabScroll: Float = 0
     /// Group chips' widths, each by the index of the tab it comes before.
     var chips: [Int: Float] = [:]
@@ -37,7 +40,12 @@ struct WindowLayout {
     var rightWidth: Float = 0
     /// The right sidebar belongs to a split window, as on the Mac: there's nothing to switch without one.
     var showsRightToggle = false
+    /// Split in two columns: how many of the tabs are the left column's. The rest are the right one's.
+    var splitCount: Int?
+    /// How far the right column's tabs are scrolled.
+    var rightTabScroll: Float = 0
 
+    var isSplit: Bool { splitCount != nil }
     var tabBarHeight: Float { (38 * scale).rounded() }
     var statusBarHeight: Float { (26 * scale).rounded() }
     private var captionWidth: Float { (46 * scale).rounded() }
@@ -49,53 +57,100 @@ struct WindowLayout {
         let side = (36 * scale).rounded()
         return UIRect(x: minimize.x - side, y: 0, width: side, height: tabBarHeight)
     }
-    /// Right after the last tab, or pinned beside the flower when the tabs have to scroll.
-    var newTab: UIRect {
-        let x = overflows ? newTabLimit : tabsStart + contentWidth + (6 * scale).rounded()
-        return UIRect(x: x, y: (tabTop + (tabBarHeight - tabTop - newTabSide) / 2).rounded(), width: newTabSide, height: newTabSide)
+    /// Where the two columns meet: halfway across the room the sidebars leave.
+    var divider: Float { leftWidth + ((width - leftWidth - rightWidth) / 2).rounded() }
+    /// While split, the button that closes it, just before the flower.
+    var closeSplit: UIRect {
+        let side = (24 * scale).rounded()
+        return UIRect(x: flower.x - side - (2 * scale).rounded(), y: (tabTop + (tabBarHeight - tabTop - side) / 2).rounded(), width: side, height: side)
     }
+
     private var newTabSide: Float { (28 * scale).rounded() }
-    private var newTabLimit: Float { flower.x - newTabSide - (2 * scale).rounded() }
     private var tabTop: Float { (5 * scale).rounded() }
     /// Tabs start where the terminal does, so the active one opens onto it.
     private var tabsStart: Float { max((8 * scale).rounded(), leftWidth) }
     private var minTabWidth: Float { (120 * scale).rounded() }
     private var chipGap: Float { (6 * scale).rounded() }
-    private var chipSpace: Float { chips.values.reduce(0) { $0 + $1 + chipGap } }
-    private var visibleCount: Int { tabCount - hiddenTabs.count }
-    private var fittingTabWidth: Float { (newTabLimit - (6 * scale).rounded() - tabsStart - chipSpace) / Float(max(visibleCount, 1)) }
-    /// Everything in the strip end to end: tabs and chips.
-    private var contentWidth: Float { Float(visibleCount) * tabWidth + chipSpace }
-
-    /// More tabs than fit at their narrowest: they scroll between two arrows, as on the Mac.
-    var overflows: Bool { tabCount > 0 && (visibleCount > 0 ? fittingTabWidth < minTabWidth : chipSpace > newTabLimit - tabsStart) }
-
-    var tabWidth: Float {
-        guard tabCount > 0 else { return 0 }
-        return overflows ? minTabWidth : min(fittingTabWidth, 230 * scale).rounded()
-    }
-
     private var arrowWidth: Float { (22 * scale).rounded() }
-    var scrollLeft: UIRect { UIRect(x: tabsStart, y: tabTop, width: arrowWidth, height: tabBarHeight - tabTop) }
-    var scrollRight: UIRect { UIRect(x: newTabLimit - (6 * scale).rounded() - arrowWidth, y: tabTop, width: arrowWidth, height: tabBarHeight - tabTop) }
 
-    /// The stretch of the bar tabs are drawn in, and can be clicked in.
-    var tabViewport: UIRect {
-        guard overflows else { return UIRect(x: tabsStart, y: 0, width: newTabLimit - tabsStart, height: tabBarHeight) }
-        let x = scrollLeft.maxX + (2 * scale).rounded()
-        return UIRect(x: x, y: 0, width: max(scrollRight.x - (2 * scale).rounded() - x, 0), height: tabBarHeight)
+    // MARK: Strips of tabs
+
+    /// One column's tabs: which they are, where they may go, and their scroll.
+    private struct Strip {
+        let range: Range<Int>, start: Float, newTabLimit: Float, scroll: Float
     }
 
-    var maxTabScroll: Float { overflows ? max(contentWidth - tabViewport.width, 0) : 0 }
+    private func strip(_ column: Int) -> Strip {
+        guard let n = splitCount.map({ min(max($0, 0), tabCount) }) else {
+            return Strip(range: 0..<tabCount, start: tabsStart, newTabLimit: flower.x - newTabSide - (2 * scale).rounded(), scroll: tabScroll)
+        }
+        if column == 0 {
+            return Strip(range: 0..<n, start: tabsStart, newTabLimit: divider - newTabSide - (6 * scale).rounded(), scroll: tabScroll)
+        }
+        return Strip(range: n..<tabCount, start: divider + (6 * scale).rounded(), newTabLimit: closeSplit.x - newTabSide - (4 * scale).rounded(),
+                     scroll: rightTabScroll)
+    }
 
-    private var stripStart: Float { overflows ? tabViewport.x - tabScroll : tabsStart }
+    /// Which column a tab is in: 0 unless it's split and the tab is the right one's.
+    func column(ofTab i: Int) -> Int { splitCount.map { i >= $0 ? 1 : 0 } ?? 0 }
 
-    /// Where tab `i` starts: past the tabs and chips before it, and its own chip.
+    private func visibleCount(_ s: Strip) -> Int { s.range.filter { !hiddenTabs.contains($0) }.count }
+    private func chipSpace(_ s: Strip) -> Float { chips.filter { s.range.contains($0.key) }.values.reduce(0) { $0 + $1 + chipGap } }
+    private func fittingTabWidth(_ s: Strip) -> Float {
+        (s.newTabLimit - (6 * scale).rounded() - s.start - chipSpace(s)) / Float(max(visibleCount(s), 1))
+    }
+    private func overflows(_ s: Strip) -> Bool {
+        guard !s.range.isEmpty else { return false }
+        return visibleCount(s) > 0 ? fittingTabWidth(s) < minTabWidth : chipSpace(s) > s.newTabLimit - s.start
+    }
+    private func tabWidth(_ s: Strip) -> Float {
+        guard !s.range.isEmpty else { return 0 }
+        return overflows(s) ? minTabWidth : min(fittingTabWidth(s), 230 * scale).rounded()
+    }
+    /// Everything in the strip end to end: tabs and chips.
+    private func contentWidth(_ s: Strip) -> Float { Float(visibleCount(s)) * tabWidth(s) + chipSpace(s) }
+    private func scrollLeft(_ s: Strip) -> UIRect { UIRect(x: s.start, y: tabTop, width: arrowWidth, height: tabBarHeight - tabTop) }
+    private func scrollRight(_ s: Strip) -> UIRect {
+        UIRect(x: s.newTabLimit - (6 * scale).rounded() - arrowWidth, y: tabTop, width: arrowWidth, height: tabBarHeight - tabTop)
+    }
+    private func viewport(_ s: Strip) -> UIRect {
+        guard overflows(s) else { return UIRect(x: s.start, y: 0, width: max(s.newTabLimit - s.start, 0), height: tabBarHeight) }
+        let x = scrollLeft(s).maxX + (2 * scale).rounded()
+        return UIRect(x: x, y: 0, width: max(scrollRight(s).x - (2 * scale).rounded() - x, 0), height: tabBarHeight)
+    }
+    private func maxScroll(_ s: Strip) -> Float { overflows(s) ? max(contentWidth(s) - viewport(s).width, 0) : 0 }
+    private func newTab(_ s: Strip) -> UIRect {
+        let x = overflows(s) ? s.newTabLimit : s.start + contentWidth(s) + (6 * scale).rounded()
+        return UIRect(x: x, y: (tabTop + (tabBarHeight - tabTop - newTabSide) / 2).rounded(), width: newTabSide, height: newTabSide)
+    }
+
+    /// Right after the last tab, or pinned at the end of the strip when the tabs have to scroll.
+    var newTab: UIRect { newTab(strip(0)) }
+    var overflows: Bool { overflows(strip(0)) }
+    var tabWidth: Float { tabWidth(strip(0)) }
+    var scrollLeft: UIRect { scrollLeft(strip(0)) }
+    var scrollRight: UIRect { scrollRight(strip(0)) }
+    /// The stretch of the bar tabs are drawn in, and can be clicked in.
+    var tabViewport: UIRect { viewport(strip(0)) }
+    var maxTabScroll: Float { maxScroll(strip(0)) }
+
+    func newTab(column: Int) -> UIRect { newTab(strip(column)) }
+    func overflows(column: Int) -> Bool { overflows(strip(column)) }
+    func tabWidth(column: Int) -> Float { tabWidth(strip(column)) }
+    func scrollLeft(column: Int) -> UIRect { scrollLeft(strip(column)) }
+    func scrollRight(column: Int) -> UIRect { scrollRight(strip(column)) }
+    func tabViewport(column: Int) -> UIRect { viewport(strip(column)) }
+    func maxTabScroll(column: Int) -> Float { maxScroll(strip(column)) }
+    /// The tabs of a column.
+    func tabRange(column: Int) -> Range<Int> { strip(column).range }
+
+    /// Where tab `i` starts: past the tabs and chips before it in its strip, and its own chip.
     private func start(of i: Int) -> Float {
-        var x = stripStart
-        for k in 0..<i {
+        let s = strip(column(ofTab: i)), w = tabWidth(s)
+        var x = overflows(s) ? viewport(s).x - s.scroll : s.start
+        for k in s.range.lowerBound..<max(i, s.range.lowerBound) {
             if let chip = chips[k] { x += chip + chipGap }
-            if !hiddenTabs.contains(k) { x += tabWidth }
+            if !hiddenTabs.contains(k) { x += w }
         }
         if let chip = chips[i] { x += chip + chipGap }
         return x
@@ -103,7 +158,7 @@ struct WindowLayout {
 
     /// A tab, or an empty rectangle where a collapsed one would be.
     func tab(_ i: Int) -> UIRect {
-        UIRect(x: start(of: i), y: tabTop, width: hiddenTabs.contains(i) ? 0 : tabWidth, height: tabBarHeight - tabTop)
+        UIRect(x: start(of: i), y: tabTop, width: hiddenTabs.contains(i) ? 0 : tabWidth(strip(column(ofTab: i))), height: tabBarHeight - tabTop)
     }
 
     /// The chip of the group starting at tab `i`.
@@ -118,17 +173,23 @@ struct WindowLayout {
         return UIRect(x: r.maxX - side - (6 * scale).rounded(), y: (r.midY - side / 2).rounded(), width: side, height: side)
     }
 
-    /// The scroll that brings a tab fully into view, moving as little as possible.
+    /// The scroll of tab `i`'s strip that brings it fully into view, moving as little as possible.
     func scroll(showing i: Int) -> Float {
-        let r = tab(i), v = tabViewport
-        var target = tabScroll
+        let s = strip(column(ofTab: i)), r = tab(i), v = viewport(s)
+        var target = s.scroll
         if r.x < v.x { target += r.x - v.x } else if r.maxX > v.maxX { target += r.maxX - v.maxX }
-        return min(max(target, 0), maxTabScroll)
+        return min(max(target, 0), maxScroll(s))
     }
 
     var statusBar: UIRect { UIRect(x: 0, y: height - statusBarHeight, width: width, height: statusBarHeight) }
+    /// The terminal, or the left column's when split.
     var terminal: UIRect {
-        UIRect(x: leftWidth, y: tabBarHeight, width: max(width - leftWidth - rightWidth, 0), height: max(height - tabBarHeight - statusBarHeight, 0))
+        let right = isSplit ? divider : width - rightWidth
+        return UIRect(x: leftWidth, y: tabBarHeight, width: max(right - leftWidth, 0), height: max(height - tabBarHeight - statusBarHeight, 0))
+    }
+    /// The right column's terminal, while split.
+    var rightTerminal: UIRect {
+        UIRect(x: divider, y: tabBarHeight, width: max(width - rightWidth - divider, 0), height: terminal.height)
     }
     var leftSidebar: UIRect { UIRect(x: 0, y: tabBarHeight, width: leftWidth, height: terminal.height) }
     var rightSidebar: UIRect { UIRect(x: width - rightWidth, y: tabBarHeight, width: rightWidth, height: terminal.height) }
@@ -158,18 +219,31 @@ struct WindowLayout {
         if maximize.contains(x, y) { return .maximize }
         if minimize.contains(x, y) { return .minimize }
         if flower.contains(x, y) { return .flower }
+        if isSplit {
+            if closeSplit.contains(x, y) { return .closeSplit }
+            if newTab(column: 1).contains(x, y) { return .newTabRight }
+            if overflows(column: 1) {
+                if scrollLeft(column: 1).contains(x, y) { return .rightScrollLeft }
+                if scrollRight(column: 1).contains(x, y) { return .rightScrollRight }
+            }
+            if let hit = tabPart(column: 1, x, y) { return hit }
+        }
         if newTab.contains(x, y) { return .newTab }
         if overflows {
             if scrollLeft.contains(x, y) { return .scrollLeft }
             if scrollRight.contains(x, y) { return .scrollRight }
         }
-        if tabViewport.contains(x, y) {
-            for i in chips.keys.sorted() where chip(i)?.contains(x, y) == true { return .chip(i) }
-            for i in 0..<tabCount where tab(i).contains(x, y) {
-                return tabClose(i).contains(x, y) ? .tabClose(i) : .tab(i)
-            }
+        return tabPart(column: 0, x, y) ?? .titleBar
+    }
+
+    private func tabPart(column: Int, _ x: Float, _ y: Float) -> WindowPart? {
+        let s = strip(column)
+        guard viewport(s).contains(x, y) else { return nil }
+        for i in chips.keys.sorted() where s.range.contains(i) && chip(i)?.contains(x, y) == true { return .chip(i) }
+        for i in s.range where tab(i).contains(x, y) {
+            return tabClose(i).contains(x, y) ? .tabClose(i) : .tab(i)
         }
-        return .titleBar
+        return nil
     }
 }
 

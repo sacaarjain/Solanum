@@ -15,6 +15,8 @@ struct WindowChrome {
     let layout: WindowLayout
     var tabs: [String]
     var activeTab: Int
+    /// While split, the other column's active tab, which shows as active in its own strip.
+    var otherActiveTab: Int?
     var hovered: WindowPart?
     var pressed: WindowPart?
     var maximized = false
@@ -37,6 +39,10 @@ struct WindowChrome {
     var hoveredCrumb: Int?
     /// The host the active tab is connected to over ssh.
     var sshHost: String?
+    /// While split, the right column's folder, home and host, for its half of the status bar.
+    var rightFolder: String?
+    var rightHome: String?
+    var rightSSHHost: String?
 
     private var scale: Float { layout.scale }
     private var fg: UInt32 { TerminalPalette.foreground }
@@ -66,15 +72,24 @@ struct WindowChrome {
         let bar = UIRect(x: 0, y: 0, width: layout.width, height: layout.tabBarHeight)
         sol_canvas_fill_rect(canvas.raw, bar.x, bar.y, bar.width, bar.height, TerminalPalette.chrome, 1)
         sol_canvas_fill_rect(canvas.raw, 0, bar.maxY - 1, bar.width, 1, fg, 0.10)
-        let v = layout.tabViewport
-        sol_canvas_push_clip(canvas.raw, v.x, v.y, v.width, v.height)
-        for i in tabs.indices where i != draggedTab && layout.tab(i).width > 0 && layout.tab(i).maxX > v.x && layout.tab(i).x < v.maxX { drawTab(i) }
-        drawSeparators()
-        drawGroups()
-        if let draggedTab { drawTab(draggedTab) }
-        sol_canvas_pop_clip(canvas.raw)
-        drawScrollArrows()
-        drawNewTabButton()
+        for column in layout.isSplit ? [0, 1] : [0] {
+            let v = layout.tabViewport(column: column), range = layout.tabRange(column: column)
+            sol_canvas_push_clip(canvas.raw, v.x, v.y, v.width, v.height)
+            for i in range where i != draggedTab && layout.tab(i).width > 0 && layout.tab(i).maxX > v.x && layout.tab(i).x < v.maxX { drawTab(i) }
+            drawSeparators(range)
+            drawGroups(range)
+            if let draggedTab, range.contains(draggedTab) { drawTab(draggedTab) }
+            sol_canvas_pop_clip(canvas.raw)
+            drawScrollArrows(column)
+            drawNewTabButton(column)
+        }
+        if layout.isSplit {
+            // Where the columns meet, and the button that puts them back together.
+            sol_canvas_fill_rect(canvas.raw, layout.divider, (8 * scale).rounded(), 1, bar.maxY - (8 * scale).rounded(), fg, 0.12)
+            let c = layout.closeSplit
+            if hovered == .closeSplit { sol_canvas_fill_rounded(canvas.raw, c.x, c.y, c.width, c.height, 5 * scale, fg, 0.10) }
+            icon(0xE8BB, c, pixels: 9 * scale, alpha: hovered == .closeSplit ? 0.9 : 0.55)
+        }
         if hovered == .flower {
             let side = (26 * scale).rounded(), f = layout.flower
             sol_canvas_fill_rounded(canvas.raw, f.x + ((f.width - side) / 2).rounded(), ((layout.tabBarHeight - side) / 2).rounded(), side, side, 6 * scale, TerminalPalette.surface, 0.7)
@@ -86,8 +101,8 @@ struct WindowChrome {
     }
 
     /// Each group's chip, and a line in its color over its tabs.
-    private func drawGroups() {
-        for (first, group) in chips {
+    private func drawGroups(_ range: Range<Int>) {
+        for (first, group) in chips where range.contains(first) {
             guard let r = layout.chip(first) else { continue }
             let end = group.collapsed ? r.maxX : layout.tab(group.last).maxX
             sol_canvas_fill_rounded(canvas.raw, r.x, (2 * scale).rounded(), max(end - r.x, r.width), 2 * scale, scale, group.color, 0.85)
@@ -115,13 +130,13 @@ struct WindowChrome {
 
     /// Lines between tabs at rest, as on the Mac: one before the first, one between each two and one after the last, but
     /// none beside the active or hovered tab, which stand out by themselves.
-    private func drawSeparators() {
-        func quiet(_ i: Int) -> Bool { i == activeTab || i == draggedTab || picked.contains(i) || hovered == .tab(i) || hovered == .tabClose(i) }
+    private func drawSeparators(_ range: Range<Int>) {
+        func quiet(_ i: Int) -> Bool { i == activeTab || i == otherActiveTab || i == draggedTab || picked.contains(i) || hovered == .tab(i) || hovered == .tabClose(i) }
         func line(atX x: Float, midY: Float) {
             let height = (16 * scale).rounded(), width = max(scale.rounded(), 1)
             sol_canvas_fill_rect(canvas.raw, x.rounded(), (midY - height / 2).rounded(), width, height, fg, 0.18)
         }
-        let shown = tabs.indices.filter { layout.tab($0).width > 0 }
+        let shown = range.filter { layout.tab($0).width > 0 }
         guard let first = shown.first else { return }
         if !quiet(first) && chips[first] == nil { line(atX: layout.tab(first).x, midY: layout.tab(first).midY) }
         for (k, i) in shown.enumerated() {
@@ -150,7 +165,7 @@ struct WindowChrome {
     }
 
     private func drawTab(_ i: Int) {
-        let r = tabRect(i), active = i == activeTab
+        let r = tabRect(i), active = i == activeTab || i == otherActiveTab
         let hover = hovered == .tab(i) || hovered == .tabClose(i)
         let radius = 8 * scale
         if active {
@@ -200,19 +215,21 @@ struct WindowChrome {
     }
 
     /// At both ends of tabs that don't all fit, faint when there's nothing more that way.
-    private func drawScrollArrows() {
-        guard layout.overflows else { return }
-        for (part, r, glyph, more) in [(WindowPart.scrollLeft, layout.scrollLeft, Icon.chevronLeft, layout.tabScroll > 0.5),
-                                       (.scrollRight, layout.scrollRight, Icon.chevronRight, layout.tabScroll < layout.maxTabScroll - 0.5)] {
+    private func drawScrollArrows(_ column: Int) {
+        guard layout.overflows(column: column) else { return }
+        let scroll = column == 0 ? layout.tabScroll : layout.rightTabScroll, most = layout.maxTabScroll(column: column)
+        let parts: (WindowPart, WindowPart) = column == 0 ? (.scrollLeft, .scrollRight) : (.rightScrollLeft, .rightScrollRight)
+        for (part, r, glyph, more) in [(parts.0, layout.scrollLeft(column: column), Icon.chevronLeft, scroll > 0.5),
+                                       (parts.1, layout.scrollRight(column: column), Icon.chevronRight, scroll < most - 0.5)] {
             let on = more && hovered == part
             if on { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height - 4 * scale, 6 * scale, TerminalPalette.surface, 0.7) }
             icon(glyph, UIRect(x: r.x, y: r.y, width: r.width, height: r.height - 4 * scale), pixels: 10 * scale, alpha: more ? (on ? 0.95 : 0.7) : 0.18)
         }
     }
 
-    private func drawNewTabButton() {
-        let r = layout.newTab
-        if hovered == .newTab { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 5 * scale, fg, 0.10) }
+    private func drawNewTabButton(_ column: Int) {
+        let r = layout.newTab(column: column)
+        if hovered == (column == 0 ? .newTab : .newTabRight) { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 5 * scale, fg, 0.10) }
         icon(Icon.add, r, pixels: 12 * scale, alpha: 0.75)
     }
 
@@ -233,6 +250,8 @@ struct WindowChrome {
 
     /// The theme's name and icon in the status bar, which open the theme menu.
     func themeSpot() -> UIRect {
+        // Not while split, where the right column's folder goes, as on the Mac.
+        guard !layout.isSplit else { return UIRect(x: 0, y: 0, width: 0, height: 0) }
         let themeWidth = width(of: themeName, pixels: 10.5 * scale, semibold: true)
         let right = layout.showsRightToggle ? layout.toggleRight.x - 8 * scale : layout.statusBar.maxX - 10 * scale
         let left = right - themeWidth - (showsThemeIcon ? 24 * scale : 4 * scale)
@@ -240,19 +259,30 @@ struct WindowChrome {
     }
 
     /// Where the folder's parts go in the status bar, and what each stands for. For drawing them and for clicks.
-    func crumbSpots() -> [(label: String, path: String, rect: UIRect, hit: UIRect)] {
-        let themeWidth = width(of: themeName, pixels: 10.5 * scale, semibold: true)
-        let themeX = (layout.showsRightToggle ? layout.toggleRight.x - 8 * scale : layout.statusBar.maxX - 10 * scale) - themeWidth
-        return crumbSpots(themeX: themeX)
+    /// The left column's (or the only one's); `column: 1`, the right column's half while split.
+    func crumbSpots(column: Int = 0) -> [(label: String, path: String, rect: UIRect, hit: UIRect)] {
+        crumbSpots(column: column, themeX: themeX)
     }
 
-    private func crumbSpots(themeX: Float) -> [(label: String, path: String, rect: UIRect, hit: UIRect)] {
+    /// Where the theme's name starts, which the folder's parts stop short of; while split, the middle or the right end.
+    private var themeX: Float {
+        let themeWidth = width(of: themeName, pixels: 10.5 * scale, semibold: true)
+        return (layout.showsRightToggle ? layout.toggleRight.x - 8 * scale : layout.statusBar.maxX - 10 * scale) - themeWidth
+    }
+
+    /// Where a column's half of the status bar starts its folder: after the buttons on the left, or the middle.
+    private func folderStart(_ column: Int) -> Float { column == 0 ? layout.hostsButton.maxX : layout.divider + 4 * scale }
+
+    private func crumbSpots(column: Int, themeX: Float) -> [(label: String, path: String, rect: UIRect, hit: UIRect)] {
+        let folder = column == 0 ? self.folder : rightFolder, sshHost = column == 0 ? self.sshHost : rightSSHHost
         guard let folder else { return [] }
-        let bar = layout.statusBar, pixels = 12 * scale, limit = themeX - 34 * scale
-        let iconX = layout.hostsButton.maxX + 6 * scale
-        var x = layout.hostsButton.maxX + 8 * scale + 21 * scale
+        // Short of the theme's name, or while split, the middle and the right sidebar's switch.
+        let limit = !layout.isSplit ? themeX - 34 * scale : column == 0 ? layout.divider - 10 * scale : layout.toggleRight.x - 8 * scale
+        let bar = layout.statusBar, pixels = 12 * scale, base = folderStart(column)
+        let iconX = base + 6 * scale
+        var x = base + 8 * scale + 21 * scale
         // Over ssh, after the host's name.
-        if let sshHost { x = layout.hostsButton.maxX + 10 * scale + (14 * scale).rounded() + 5 * scale + width(of: sshHost, pixels: pixels) + 14 * scale }
+        if let sshHost { x = base + 10 * scale + (14 * scale).rounded() + 5 * scale + width(of: sshHost, pixels: pixels) + 14 * scale }
         var out: [(label: String, path: String, rect: UIRect, hit: UIRect)] = []
         // The whole path, never shortened to ~, so that every folder above is a click away.
         for (i, crumb) in WindowText.crumbPaths(folder, home: nil).enumerated() {
@@ -272,16 +302,20 @@ struct WindowChrome {
         sol_canvas_fill_rect(canvas.raw, bar.x, bar.y, bar.width, 1, fg, 0.10)
         let pixels = 12 * scale
 
-        // The theme's name on the right, with its flower.
+        // The theme's name on the right, with its flower. While split, the right column's folder has that half.
         let themePixels = 10.5 * scale
         let themeWidth = width(of: themeName, pixels: themePixels, semibold: true)
-        let themeX = (layout.showsRightToggle ? layout.toggleRight.x - 8 * scale : bar.maxX - 10 * scale) - themeWidth
-        let spot = themeSpot()
-        if themeHovered { sol_canvas_fill_rounded(canvas.raw, spot.x, spot.y + 3 * scale, spot.width, spot.height - 6 * scale, 4 * scale, fg, 0.10) }
-        label(themeName, UIRect(x: themeX, y: bar.y, width: themeWidth + 2, height: bar.height), pixels: themePixels, semibold: true, alpha: themeHovered ? 0.9 : 0.55)
-        if showsThemeIcon {
-            let side = (16 * scale).rounded()
-            canvas.drawArt("flowerOutline", UIRect(x: themeX - side - 5 * scale, y: (bar.midY - side / 2).rounded(), width: side, height: side), scale: scale)
+        let themeX = self.themeX
+        if layout.isSplit {
+            sol_canvas_fill_rect(canvas.raw, layout.divider, bar.y + 5 * scale, 1, bar.height - 10 * scale, fg, 0.12)
+        } else {
+            let spot = themeSpot()
+            if themeHovered { sol_canvas_fill_rounded(canvas.raw, spot.x, spot.y + 3 * scale, spot.width, spot.height - 6 * scale, 4 * scale, fg, 0.10) }
+            label(themeName, UIRect(x: themeX, y: bar.y, width: themeWidth + 2, height: bar.height), pixels: themePixels, semibold: true, alpha: themeHovered ? 0.9 : 0.55)
+            if showsThemeIcon {
+                let side = (16 * scale).rounded()
+                canvas.drawArt("flowerOutline", UIRect(x: themeX - side - 5 * scale, y: (bar.midY - side / 2).rounded(), width: side, height: side), scale: scale)
+            }
         }
 
         // The sidebars' switches, at either end.
@@ -295,23 +329,29 @@ struct WindowChrome {
         if hovered == .hosts { sol_canvas_fill_rounded(canvas.raw, hosts.x, hosts.y, hosts.width, hosts.height, 4 * scale, fg, 0.10) }
         canvas.drawArt("serverRack", UIRect(x: hosts.x + ((hosts.width - art) / 2).rounded(), y: (hosts.midY - art / 2).rounded(), width: art, height: art), scale: scale)
 
-        // Over ssh, the host first, then its folder's parts when the terminal's folder there is known.
-        if let sshHost {
-            let x = layout.hostsButton.maxX + 10 * scale, art = (14 * scale).rounded()
-            canvas.drawArt("network", UIRect(x: x, y: (bar.midY - art / 2).rounded(), width: art, height: art), scale: scale)
-            let w = min(width(of: sshHost, pixels: pixels), max(themeX - x - 40 * scale, 0))
-            label(sshHost, UIRect(x: x + art + 5 * scale, y: bar.y, width: w + 1, height: bar.height), pixels: pixels, color: TerminalPalette.accent)
-        }
-        // The folder on the left: the icon, then each part, which opens a menu of what's in it.
-        let spots = crumbSpots(themeX: themeX)
-        for (i, spot) in spots.enumerated() {
-            let last = i == spots.count - 1
-            if hoveredCrumb == i { sol_canvas_fill_rounded(canvas.raw, spot.hit.x, spot.hit.y + 3 * scale, spot.hit.width, spot.hit.height - 6 * scale, 4 * scale, fg, 0.10) }
-            label(spot.label, UIRect(x: spot.rect.x, y: bar.y, width: spot.rect.width + 1, height: bar.height), pixels: pixels, alpha: last || hoveredCrumb == i ? 0.85 : 0.55)
-            if !last { label("›", UIRect(x: spot.rect.maxX + 3 * scale, y: bar.y, width: 8 * scale, height: bar.height), pixels: pixels, alpha: 0.4) }
-        }
-        if sshHost == nil {
-            icon(Icon.folder, UIRect(x: layout.hostsButton.maxX + 8 * scale, y: bar.y, width: 16 * scale, height: bar.height), pixels: 12 * scale, alpha: 0.75)
+        // Each column's half: over ssh, the host first, then the folder's parts, each of which opens a menu of what's in it.
+        // `hoveredCrumb` counts the left half's parts first, then the right's.
+        var offset = 0
+        for column in layout.isSplit ? [0, 1] : [0] {
+            let host = column == 0 ? sshHost : rightSSHHost, base = folderStart(column)
+            let end = !layout.isSplit ? themeX : column == 0 ? layout.divider : layout.toggleRight.x
+            if let host {
+                let x = base + 10 * scale, art = (14 * scale).rounded()
+                canvas.drawArt("network", UIRect(x: x, y: (bar.midY - art / 2).rounded(), width: art, height: art), scale: scale)
+                let w = min(width(of: host, pixels: pixels), max(end - x - 40 * scale, 0))
+                label(host, UIRect(x: x + art + 5 * scale, y: bar.y, width: w + 1, height: bar.height), pixels: pixels, color: TerminalPalette.accent)
+            }
+            let spots = crumbSpots(column: column, themeX: themeX)
+            for (i, spot) in spots.enumerated() {
+                let last = i == spots.count - 1, hover = hoveredCrumb == offset + i
+                if hover { sol_canvas_fill_rounded(canvas.raw, spot.hit.x, spot.hit.y + 3 * scale, spot.hit.width, spot.hit.height - 6 * scale, 4 * scale, fg, 0.10) }
+                label(spot.label, UIRect(x: spot.rect.x, y: bar.y, width: spot.rect.width + 1, height: bar.height), pixels: pixels, alpha: last || hover ? 0.85 : 0.55)
+                if !last { label("›", UIRect(x: spot.rect.maxX + 3 * scale, y: bar.y, width: 8 * scale, height: bar.height), pixels: pixels, alpha: 0.4) }
+            }
+            if host == nil {
+                icon(Icon.folder, UIRect(x: base + 8 * scale, y: bar.y, width: 16 * scale, height: bar.height), pixels: 12 * scale, alpha: 0.75)
+            }
+            offset += spots.count
         }
     }
 }

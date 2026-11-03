@@ -151,6 +151,19 @@ enum WindowSelfTest {
         results.check("sidebars: the left switch is always there", sides.part(atX: sides.toggleLeft.x + 2, y: sides.toggleLeft.midY) == .toggleLeft)
         results.check("sidebars: the right switch only in a split", sides.part(atX: sides.toggleRight.x + 2, y: sides.toggleRight.midY) == .statusBar
                       && WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 2, showsRightToggle: true).part(atX: sides.toggleRight.x + 2, y: sides.toggleRight.midY) == .toggleRight)
+        let split = WindowLayout(width: 1200, height: 640, scale: 1, tabCount: 4, showsRightToggle: true, splitCount: 2)
+        results.check("split: each column has its tabs", split.column(ofTab: 1) == 0 && split.column(ofTab: 2) == 1
+                      && split.tab(1).maxX <= split.newTab(column: 0).x && split.newTab(column: 0).maxX <= split.divider
+                      && split.tab(2).x >= split.divider && split.newTab(column: 1).maxX <= split.closeSplit.x && split.closeSplit.maxX <= split.flower.x)
+        results.check("split: and its terminal", split.terminal.x == 0 && split.terminal.maxX == split.divider && split.rightTerminal.x == split.divider
+                      && split.rightTerminal.maxX == 1200 && split.divider == 600)
+        results.check("split: its parts are found", split.part(atX: split.tab(3).x + 20, y: 20) == .tab(3) && split.part(atX: split.tab(0).x + 20, y: 20) == .tab(0)
+                      && split.part(atX: split.newTab(column: 1).x + 4, y: split.newTab(column: 1).midY) == .newTabRight
+                      && split.part(atX: split.closeSplit.x + 4, y: split.closeSplit.midY) == .closeSplit
+                      && split.part(atX: split.newTab.x + 4, y: split.newTab.midY) == .newTab)
+        let splitCrowded = WindowLayout(width: 1200, height: 640, scale: 1, tabCount: 14, splitCount: 12)
+        results.check("split: a crowded column scrolls on its own", splitCrowded.overflows(column: 0) && !splitCrowded.overflows(column: 1)
+                      && splitCrowded.scroll(showing: 11) == splitCrowded.maxTabScroll(column: 0) && splitCrowded.scroll(showing: 13) == 0)
         let crumbs = WindowText.crumbPaths(#"C:\Users\me\Projects\Solanum"#, home: #"C:\Users\me"#)
         results.check("path: parts know their folders", crumbs.map(\.path) == [#"C:\Users\me"#, #"C:\Users\me\Projects"#, #"C:\Users\me\Projects\Solanum"#])
         results.check("path: from the drive", WindowText.crumbPaths(#"D:\work\x"#, home: nil).map(\.path) == [#"D:\"#, #"D:\work"#, #"D:\work\x"#])
@@ -930,6 +943,51 @@ enum WindowSelfTest {
         steps.append(Step(name: "groups: ungroups", action: { window.click(window.menuRow("Ungroup")!) },
                           done: { window.groupNames.isEmpty && !window.isMenuOpen }))
         steps.append(Step(name: "groups: back to two tabs", action: {}, done: {
+            if window.panes.count > 2 && pane.atPrompt { press(0x57) }
+            return window.panes.count == 2
+        }))
+
+        // Splits: two columns, each with its own tabs.
+        func keys(_ k: Int32, shift: Bool = false, alt: Bool = false) { _ = window.keyDown(k, shift: shift, ctrl: true, alt: alt) }
+        steps.append(Step(name: "split: Ctrl+Alt+D opens the right column", action: { keys(0x44, alt: true) },
+                          done: { window.isSplit && window.splitColumnCounts == [2, 1] && window.focusedColumn == 1 && pane.atPrompt }))
+        steps.append(Step(name: "split: each column is half the width", action: {}, done: {
+            let l = window.currentLayout, left = window.panes[0]
+            return window.paneArea(pane).x == l.divider && window.paneArea(left).maxX == l.divider && pane.terminal.cols * 2 <= left.terminal.cols + pane.terminal.cols + 2
+        }))
+        steps.append(Step(name: "split: typing goes to the column with the keyboard", action: {
+            pane.type("echo right-column")
+            pane.pressEnter()
+        }, done: { hasLine("right-column") && pane.atPrompt }))
+        steps.append(Step(name: "split: both columns show", action: {}, done: { window.shownPaneIDs.count == 2 }))
+        if let dir = snapshotDirectory {
+            steps.append(Step(name: "split: snapshot", action: {}, done: { window.saveSnapshot(to: dir + "\\split.png") }))
+        }
+        steps.append(Step(name: "split: a click in the left column gives it the keyboard", action: {
+            let l = window.currentLayout
+            window.click(UIRect(x: l.terminal.x + 40, y: l.terminal.maxY - 40, width: 2, height: 2))
+        }, done: { window.focusedColumn == 0 }))
+        steps.append(Step(name: "split: Ctrl+Shift+D moves a tab over", action: { keys(0x44, shift: true) },
+                          done: { window.splitColumnCounts == [1, 2] && window.focusedColumn == 1 }))
+        steps.append(Step(name: "split: Ctrl+1 picks within the column", action: { keys(0x31) },
+                          done: { window.activeIndex == 1 && window.focusedColumn == 1 }))
+        steps.append(Step(name: "split: the right sidebar follows the right column", action: { _ = window.keyDown(0x42, shift: false, ctrl: true, alt: true) }, done: {
+            window.rightIsVisible && window.rightTree.root?.lowercased() == pane.terminal.cwd?.lowercased()
+        }))
+        steps.append(Step(name: "split: the right strip's + adds there", action: { window.click(window.currentLayout.newTab(column: 1)) },
+                          done: { window.splitColumnCounts == [1, 3] && window.focusedColumn == 1 && pane.atPrompt }))
+        steps.append(Step(name: "split: closing a right tab keeps the split", action: { press(0x57) },
+                          done: { window.splitColumnCounts == [1, 2] }))
+        steps.append(Step(name: "split: Ctrl+Alt+W puts the columns back together", action: { keys(0x57, alt: true) },
+                          done: { !window.isSplit && window.splitColumnCounts == [3] && !window.rightIsVisible && window.shownPaneIDs.count == 1 }))
+        steps.append(Step(name: "split: and the terminal is full width again", action: {}, done: {
+            window.paneArea(pane).maxX == window.currentLayout.terminal.maxX && window.currentLayout.terminal.x == window.currentLayout.leftWidth
+        }))
+        steps.append(Step(name: "split: again, for closing its last tab", action: { keys(0x44, alt: true) },
+                          done: { window.splitColumnCounts == [3, 1] && pane.atPrompt }))
+        steps.append(Step(name: "split: closing the right column's last tab ends it", action: { press(0x57) },
+                          done: { !window.isSplit && window.panes.count == 3 && window.focusedColumn == 0 }))
+        steps.append(Step(name: "split: back to two tabs", action: {}, done: {
             if window.panes.count > 2 && pane.atPrompt { press(0x57) }
             return window.panes.count == 2
         }))
