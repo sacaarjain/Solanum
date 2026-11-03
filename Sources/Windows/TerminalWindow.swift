@@ -43,6 +43,7 @@ final class TerminalWindow {
     private var naming: (target: NameTarget, field: TextFieldState, placeholder: String)?
     private var menu: MenuModel?
     private var hoveredCrumb: Int?
+    private var hoveredGit: (column: Int, part: GitPart)?
     private var themeHovered = false
     /// The tab whose place the left sidebar shows (see `syncLeftSidebar`).
     private weak var leftOwner: TerminalPane?
@@ -473,7 +474,11 @@ final class TerminalWindow {
     }
 
     /// A tab's title or folder has changed.
-    func paneDetailsChanged(_ pane: TerminalPane) { detailsChanged() }
+    func paneDetailsChanged(_ pane: TerminalPane) {
+        // Another folder may be another repository, or none.
+        if visiblePanes.contains(where: { $0 === pane }) { refreshGit(pane) }
+        detailsChanged()
+    }
 
     private func detailsChanged() {
         followTerminalFolder()
@@ -534,6 +539,9 @@ final class TerminalWindow {
                 chrome.rightSSHHost = r.sshHost
             }
             chrome.otherActiveTab = otherActivePane.flatMap { o in panes.firstIndex { $0 === o } }
+            chrome.git = l.git.map { GitBadge($0, busy: l.gitBusy) }
+            if let r = rightActivePane { chrome.rightGit = r.git.map { GitBadge($0, busy: r.gitBusy) } }
+            chrome.hoveredGit = hoveredGit
         }
         chrome.hoveredCrumb = hoveredCrumb
         for (first, group) in groupStarts() {
@@ -590,7 +598,9 @@ final class TerminalWindow {
         defer { EndPaint(hwnd, &ps) }
         guard !panes.isEmpty, sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
         chrome(on: canvas, layout: layout).draw()
-        for pane in visiblePanes { pane.draw(cursorShown: pane === activePane ? cursorShown : true, style: cursorStyleCode) }
+        for pane in visiblePanes {
+            if let panel = pane.panel { panel.draw(on: canvas, in: area(for: pane), scale: scale) } else { pane.draw(cursorShown: pane === activePane ? cursorShown : true, style: cursorStyleCode) }
+        }
         drawDivider(on: canvas)
         drawSidebars(on: canvas, layout: layout)
         drawPalette(on: canvas)
@@ -617,6 +627,10 @@ final class TerminalWindow {
         chrome(on: bitmap, layout: layout).draw()
         for pane in visiblePanes {
             bitmap.terminalArea = area(for: pane)
+            if let panel = pane.panel {
+                panel.draw(on: bitmap, in: area(for: pane), scale: scale)
+                continue
+            }
             var renderer = TerminalRenderer(canvas: bitmap, terminal: pane.terminal)
             renderer.scrollOffset = pane.scrollOffset
             renderer.focused = pane === activePane
@@ -749,6 +763,9 @@ final class TerminalWindow {
                 }
             } else if palette != nil {
                 paletteTyped(UInt16(truncatingIfNeeded: wParam))
+            } else if !panes.isEmpty, let panel = activePane.panel {
+                let unit = UInt16(truncatingIfNeeded: wParam)
+                if unit >= 0x20, unit != 0x7F, let scalar = Unicode.Scalar(unit) { panel.typed(String(Character(scalar))) }
             } else if !panes.isEmpty {
                 // Typing is for the terminal, wherever the keyboard was.
                 focusTerminal()
@@ -792,7 +809,13 @@ final class TerminalWindow {
                 scrollTabs(by: -notches * layout.tabWidth(column: column), column: column)
             } else {
                 // The column under the pointer scrolls, whichever has the keyboard.
-                pane(atX: x).wheel(wParam, lParam)
+                let under = pane(atX: x)
+                if let panel = under.panel {
+                    let notches = Int(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Int(Win.WHEEL_DELTA)
+                    panel.wheel(notches: notches == 0 ? (Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF) > 0 ? 1 : -1) : notches, x: x, y: y, in: area(for: under), scale: scale)
+                } else {
+                    under.wheel(wParam, lParam)
+                }
             }
             return 0
         case Win.WM_DESTROY:
@@ -842,10 +865,11 @@ final class TerminalWindow {
         ScreenToClient(hwnd, &point)
         let part = layout.part(atX: Float(point.x), y: Float(point.y))
         let onEdge = palette == nil && (part == .leftEdge || part == .rightEdge) || draggingEdge != nil
-        let onTerminal = palette == nil && part == .terminal
+        let onLink = palette == nil && part == .terminal && !panes.isEmpty && activePane.hoveredLink != nil
+        let onTerminal = palette == nil && part == .terminal && !onLink && (panes.isEmpty || pane(atX: Float(point.x)).panel == nil)
         // A pointing hand over the flower, which opens Settings, as on the Mac.
         let onFlower = palette == nil && menu == nil && part == .flower
-        SetCursor(LoadCursorW(nil, onEdge ? Win.resizeCursor : onTerminal ? Win.ibeamCursor : onFlower ? Win.handCursor : Win.arrowCursor))
+        SetCursor(LoadCursorW(nil, onEdge ? Win.resizeCursor : onTerminal ? Win.ibeamCursor : onFlower || onLink ? Win.handCursor : Win.arrowCursor))
         return 1
     }
 
@@ -913,6 +937,16 @@ final class TerminalWindow {
         if sidebarMouse(message, part: part, x: x, y: y) { return }
         if part == .terminal && !terminalHasMouse && lostBarMouse(message, x: x, y: y) { return }
         let under = pane(atX: x)
+        // Git Changes or Git Graph has the column's area.
+        if part == .terminal, !terminalHasMouse, let panel = under.panel {
+            if message == Win.WM_LBUTTONDOWN || message == Win.WM_RBUTTONDOWN, under !== activePane, let i = panes.firstIndex(where: { $0 === under }) {
+                activate(i)
+                focusTerminal()
+            }
+            if message == Win.WM_MOUSEMOVE { setHovered(.terminal, nonClient: false) }
+            _ = panel.mouse(message, x: x, y: y, in: area(for: under), scale: scale)
+            return
+        }
         if message == Win.WM_LBUTTONDOWN || message == Win.WM_RBUTTONDOWN || message == Win.WM_MBUTTONDOWN || message == Win.WM_LBUTTONDBLCLK {
             terminalHasMouse = part == .terminal
             if part == .terminal {
@@ -1059,6 +1093,7 @@ final class TerminalWindow {
         guard Date().timeIntervalSince(lastLook) > 3 else { return }
         lastLook = Date()
         for sidebar in [left, right] where sidebar.isVisible { sidebar.tree.refresh() }
+        visiblePanes.forEach { refreshGit($0) }
         AppSettings.shared.reloadIfChanged()
     }
 
@@ -1285,6 +1320,350 @@ final class TerminalWindow {
         }
     }
 
+
+
+    // MARK: - Git
+
+    /// Where a tab's git commands run: its folder here, or over ssh the host's, once the sidebar's connection is up.
+    private func gitPlace(for pane: TerminalPane, top: Bool = false) -> GitPlace? {
+        if pane.sshArguments != nil {
+            guard let r = pane.remote, r.state == .ready, let dir = pane.remoteTerminalFolder ?? r.home else { return nil }
+            return GitPlace(dir: top ? pane.git?.root ?? dir : dir, remote: r)
+        }
+        guard let dir = pane.terminal.cwd else { return nil }
+        return GitPlace(dir: top ? pane.git.map { GitPlace(dir: "", remote: nil).localPath($0.root) } ?? dir : dir, remote: nil)
+    }
+
+    /// Reads the tab's repository state again, at most every few seconds unless `now`.
+    private func refreshGit(_ pane: TerminalPane, now: Bool = false) {
+        guard let place = gitPlace(for: pane) else {
+            if pane.git != nil { pane.git = nil; invalidate() }
+            pane.gitKey = nil
+            return
+        }
+        if place.key != pane.gitKey {
+            pane.gitKey = place.key
+            pane.git = nil
+            pane.gitCheckedAt = .distantPast
+        }
+        guard now || Date().timeIntervalSince(pane.gitCheckedAt) > 4 else { return }
+        pane.gitCheckedAt = Date()
+        let key = place.key
+        place.run(GitInfo.statusScript, timeout: 15) { [weak self, weak pane] status, out, _ in
+            let info = status == 0 ? GitInfo(statusOutput: out) : nil
+            self?.runOnWindowThread {
+                guard let self, let pane, pane.gitKey == key, info != pane.git else { return }
+                pane.git = info
+                self.invalidate()
+            }
+        }
+    }
+
+    func paneCommandFinished(_ pane: TerminalPane) {
+        guard visiblePanes.contains(where: { $0 === pane }) else { return }
+        refreshGit(pane, now: true)
+    }
+
+    /// Where a git menu goes: above the part of the status bar it came from.
+    private var gitMenuAnchor: UIRect?
+
+    /// Runs a git command for the tab, saying what's going on in the status bar; on failure, what git said, with an offer
+    /// to run it in the terminal, where a password or passphrase can be typed.
+    private func performGit(_ label: String, _ script: String, typed: String, for pane: TerminalPane, recover: ((String) -> Bool)? = nil) {
+        guard let place = gitPlace(for: pane) else { return fileProblem() }
+        pane.gitBusy = label
+        invalidate()
+        place.run(script, timeout: 300, errors: true) { [weak self, weak pane] status, out, err in
+            self?.runOnWindowThread {
+                guard let self, let pane else { return }
+                pane.gitBusy = nil
+                self.refreshGit(pane, now: true)
+                pane.panel?.reload()
+                guard status != 0 else { return self.invalidate() }
+                let said = (err.isEmpty ? String(decoding: out, as: UTF8.self) : err).trimmingCharacters(in: .whitespacesAndNewlines)
+                if recover?(said) == true { return }
+                self.showGitProblem("\(typed) didn't work", said, typed: typed, for: pane)
+            }
+        }
+    }
+
+    private func showGitProblem(_ title: String, _ output: String, typed: String?, for pane: TerminalPane) {
+        var items = [MenuItem(title: title, isEnabled: false)]
+        for line in output.split(whereSeparator: \.isNewline).suffix(8) { items.append(MenuItem(title: "    " + String(line.prefix(110)), isEnabled: false)) }
+        items.append(.separator)
+        if let typed {
+            let lock = GitInfo.leftoverLock(in: output)
+            items.append(MenuItem(title: lock == nil ? "Run in Terminal" : "Remove the Lock in Terminal") { [weak pane] in
+                // Removing a lock is only safe if no other git is running there, so that one waits for Enter.
+                if let lock { pane?.typeCommand("rm -f \(RemoteConnection.quote(lock)) && \(typed)") } else { pane?.typeCommand(typed) }
+            })
+        }
+        items.append(MenuItem(title: "OK") {})
+        let a = gitMenuAnchor ?? layout.statusBar
+        openMenu(items, x: a.x, y: a.y - 2 * scale, above: true)
+    }
+
+    private func gitClick(_ part: GitPart, at spot: UIRect) {
+        gitMenuAnchor = spot
+        let pane = activePane
+        guard let info = pane.git else { return }
+        switch part {
+        case .branch: showBranches(for: pane)
+        case .sync:
+            var items: [MenuItem] = []
+            if let upstream = info.upstream {
+                items.append(MenuItem(title: "Tracking \(upstream)", isEnabled: false))
+                items.append(MenuItem(title: info.behind > 0 ? "Pull (\(info.behind) incoming)" : "Pull") { [weak self, weak pane] in
+                    pane.map { self?.performGit("Pulling…", "git pull", typed: "git pull", for: $0) }
+                })
+                items.append(MenuItem(title: info.ahead > 0 ? "Push (\(info.ahead) outgoing)" : "Push") { [weak self, weak pane] in
+                    pane.map { self?.performGit("Pushing…", "git push", typed: "git push", for: $0) }
+                })
+                items.append(MenuItem(title: "Sync (Pull, then Push)") { [weak self, weak pane] in
+                    pane.map { self?.performGit("Syncing…", "git pull && git push", typed: "git pull && git push", for: $0) }
+                })
+            } else if !info.detached {
+                items.append(MenuItem(title: "Publish Branch") { [weak self, weak pane] in
+                    pane.map { self?.performGit("Publishing…", "r=$(git remote | head -n 1)\n[ -n \"$r\" ] || { echo \"This repository has no remote to publish to.\" >&2; exit 1; }\ngit push -u \"$r\" HEAD",
+                                                typed: "git push -u origin HEAD", for: $0) }
+                })
+            }
+            items.append(.separator)
+            items.append(MenuItem(title: "Fetch") { [weak self, weak pane] in
+                pane.map { self?.performGit("Fetching…", "git fetch --all --prune", typed: "git fetch --all --prune", for: $0) }
+            })
+            items.append(MenuItem(title: "Show Git Graph") { [weak self] in self?.showGitGraph() })
+            openMenu(items, x: spot.x, y: spot.y - 2 * scale, above: true)
+        case .changes:
+            var items = [MenuItem(title: "\(info.changes.count) changed file\(info.changes.count == 1 ? "" : "s")", isEnabled: false)]
+            let place = gitPlace(for: pane)
+            for c in info.changes.prefix(40) {
+                let letter = GitLook.badge(c.code).letter
+                let full = place.map { p in p.onHost ? AnyPath.join(info.root, c.path) : WindowsPath.join(p.localPath(info.root), c.path.replacingOccurrences(of: "/", with: "\\")) }
+                // A host's files and deleted ones have nothing here to open.
+                items.append(MenuItem(title: "\(letter)   \(c.path)", isEnabled: c.code != "D" && place?.onHost == false) { [weak self] in
+                    if let full { self?.onOpenFile(full) }
+                })
+            }
+            if info.changes.count > 40 { items.append(MenuItem(title: "…and \(info.changes.count - 40) more", isEnabled: false)) }
+            items.append(.separator)
+            var show = MenuItem(title: "Show Git Changes") { [weak self] in self?.showGitChanges() }
+            show.shortcut = "Ctrl+Shift+G"
+            items.append(show)
+            openMenu(items, x: spot.x, y: spot.y - 2 * scale, above: true)
+        }
+    }
+
+    /// The branches, most recently committed to first, in the palette; picking one switches to it.
+    private func showBranches(for pane: TerminalPane) {
+        guard let place = gitPlace(for: pane), let info = pane.git else { return }
+        place.run(GitBranch.script, timeout: 20) { [weak self, weak pane] status, out, _ in
+            let branches = status == 0 ? GitBranch.parse(out) : []
+            self?.runOnWindowThread {
+                guard let self, let pane else { return }
+                var items = [
+                    PaletteItem(title: "Show Git Graph", category: "every branch's history") { [weak self] in self?.showGitGraph() },
+                    PaletteItem(title: "Show Git Changes", category: "what's changed", shortcut: "Ctrl+Shift+G") { [weak self] in self?.showGitChanges() },
+                    PaletteItem(title: "Create New Branch…", category: "from \(info.branch)") { [weak self, weak pane] in pane.map { self?.askForBranchName(for: $0) } },
+                    PaletteItem(title: "Fetch", category: "update remote branches") { [weak self, weak pane] in
+                        pane.map { self?.performGit("Fetching…", "git fetch --all --prune", typed: "git fetch --all --prune", for: $0) }
+                    },
+                ]
+                let locals = branches.filter { !$0.isRemote }, remotes = branches.filter(\.isRemote)
+                if !locals.isEmpty { items.append(.header("Branches")) }
+                for b in locals {
+                    let current = !info.detached && b.name == info.branch
+                    items.append(PaletteItem(title: b.name, category: current ? "current · \(b.date)" : b.date) { [weak self, weak pane] in
+                        if !current, let pane { self?.switchBranch(b.name, tracking: false, for: pane) }
+                    })
+                }
+                if !remotes.isEmpty { items.append(.header("Remote branches")) }
+                for b in remotes {
+                    items.append(PaletteItem(title: b.name, category: b.date) { [weak self, weak pane] in pane.map { self?.switchBranch(b.name, tracking: true, for: $0) } })
+                }
+                self.palette = PaletteModel(items: items, placeholder: "Switch branch (on \(info.branch))…", icon: 0xE8AB, emptyMessage: "No branch by that name")
+                self.hoveredPaletteRow = nil
+                self.activePane.setFocused(false)
+                self.invalidate()
+            }
+        }
+    }
+
+    private func switchBranch(_ branch: String, tracking: Bool, for pane: TerminalPane) {
+        let q = RemoteConnection.quote(branch)
+        let script = tracking ? "git switch --track \(q)" : "git switch \(q)"
+        let local = tracking ? String(branch.split(separator: "/", maxSplits: 1).last ?? Substring(branch)) : branch
+        performGit("Switching…", script, typed: tracking ? "git switch --track \(branch)" : "git switch \(branch)", for: pane) { [weak self, weak pane] said in
+            // Changes in the way: offer to stash them first, as VS Code does.
+            guard said.contains("would be overwritten") || said.contains("commit your changes or stash them"), let self, let pane else { return false }
+            let a = self.gitMenuAnchor ?? self.layout.statusBar
+            self.openMenu([
+                MenuItem(title: "Your changes would be overwritten by switching to \(local).", isEnabled: false),
+                .separator,
+                MenuItem(title: "Stash Changes and Switch") { [weak self, weak pane] in
+                    guard let pane else { return }
+                    self?.performGit("Switching…", "git stash push -m \(RemoteConnection.quote("Solanum: before switching to \(local)")) && \(script)",
+                                     typed: "git stash && git switch \(local)", for: pane)
+                },
+                MenuItem(title: "Cancel") {},
+            ], x: a.x, y: a.y - 2 * self.scale, above: true)
+            return true
+        }
+    }
+
+    /// Asks for a new branch's name in the palette: Enter creates it from here and switches to it.
+    private func askForBranchName(for pane: TerminalPane) {
+        let from = pane.git?.branch ?? "HEAD"
+        palette = PaletteModel(query: "", placeholder: "New branch name, from \(from)", icon: 0xE8AB, emptyMessage: "Type the new branch's name") { [weak self, weak pane] typed in
+            let name = typed.trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty, let pane else { return [] }
+            return [PaletteItem(title: "Create Branch “\(name)”", category: "from \(from), and switch to it", shortcut: "Enter") { [weak self] in
+                self?.performGit("Creating branch…", "git switch -c \(RemoteConnection.quote(name))", typed: "git switch -c \(name)", for: pane)
+            }]
+        }
+        activePane.setFocused(false)
+        invalidate()
+    }
+
+    /// Git Changes or Git Graph over the active tab's terminal, at its repository's top folder.
+    private func showPanel(_ make: (GitPlace) -> ColumnPanel) {
+        let pane = activePane
+        guard let place = gitPlace(for: pane, top: true) else { return fileProblem() }
+        let panel = make(place)
+        pane.panel = panel
+        panel.reload()
+        invalidate()
+    }
+
+    func showGitChanges() {
+        if activePane.panel is GitChangesPanel { return }
+        showPanel { place in
+            let panel = GitChangesPanel(place: place)
+            wire(panel)
+            return panel
+        }
+    }
+
+    func showGitGraph() {
+        if activePane.panel is GitGraphPanel { return }
+        showPanel { place in
+            let panel = GitGraphPanel(place: place)
+            panel.invalidate = { [weak self] in self?.invalidate() }
+            panel.post = { [weak self] work in self?.runOnWindowThread(work) }
+            panel.copy = { [weak self] text in self?.activePane.setClipboard(text) }
+            let pane = activePane
+            panel.close = { [weak self, weak pane] in pane?.panel = nil; self?.invalidate() }
+            return panel
+        }
+    }
+
+    private func wire(_ panel: GitChangesPanel) {
+        let pane = activePane
+        panel.invalidate = { [weak self] in self?.invalidate() }
+        panel.post = { [weak self] work in self?.runOnWindowThread(work) }
+        panel.statusChanged = { [weak self, weak pane] in pane.map { self?.refreshGit($0, now: true) } }
+        panel.close = { [weak self, weak pane] in pane?.panel = nil; self?.invalidate() }
+        panel.cellSize = (canvas.metrics.cellWidth, canvas.metrics.cellHeight)
+        panel.confirm = { [weak self] question, button, run in
+            guard let self else { return }
+            let a = self.area(for: pane)
+            self.openMenu([MenuItem(title: question, isEnabled: false), .separator, MenuItem(title: button, run: run), MenuItem(title: "Cancel") {}],
+                          x: a.x + a.width / 2 - 160 * self.scale, y: a.y + 80 * self.scale, above: false)
+        }
+    }
+
+    // MARK: - Search in Project Folder
+
+    private struct Search {
+        let folder: String
+        let place: GitPlace
+        var query = ""
+        var results: [WorkspaceMatch] = []
+        var running = false
+        var generation = 0
+    }
+    private var search: Search?
+
+    /// Ctrl+Shift+F: the text of the files under the folder the sidebar is on (or the terminal's), as on the Mac.
+    func showSearch() {
+        let pane = activePane
+        let sidebar = pane.column == 1 && rightIsShowing ? right : left
+        let onHost = pane.sshArguments != nil
+        let folder = (sidebar.isVisible ? sidebar.tree.root : nil).flatMap { AnyPath.isUnix($0) == onHost ? $0 : nil }
+            ?? (onHost ? pane.remoteFolder : pane.terminal.cwd)
+        guard let folder else { return fileProblem() }
+        let place = GitPlace(dir: folder, remote: onHost ? pane.remote : nil)
+        guard !onHost || place.remote?.state == .ready else { return fileProblem() }
+        search = Search(folder: folder, place: place)
+        palette = PaletteModel(query: "", placeholder: "Search in \(AnyPath.name(folder))…", icon: 0xE721,
+                               emptyMessage: "Type to search the files in \(AnyPath.name(folder))") { [weak self] typed in self?.searchRows(typed) ?? [] }
+        activePane.setFocused(false)
+        invalidate()
+    }
+
+    private func searchRows(_ typed: String) -> [PaletteItem] {
+        guard var s = search else { return [] }
+        let query = typed.trimmingCharacters(in: .whitespaces)
+        if query != s.query {
+            s.query = query
+            s.results = []
+            s.generation += 1
+            s.running = !query.isEmpty
+            search = s
+            if !query.isEmpty { startSearch(query, generation: s.generation) }
+        }
+        guard !query.isEmpty else { return [] }
+        let folder = s.folder, onHost = s.place.onHost
+        var rows = s.results.prefix(WorkspaceMatch.limit).map { m -> PaletteItem in
+            PaletteItem(title: WorkspaceMatch.excerpt(m.text, query: query), category: "\(m.path):\(m.line)") { [weak self] in
+                guard let self else { return }
+                if onHost {
+                    self.activePane.setClipboard(AnyPath.join(folder, m.path) + ":\(m.line)")
+                } else {
+                    self.onOpenFile(WindowsPath.join(folder, m.path.replacingOccurrences(of: "/", with: "\\")))
+                }
+            }
+        }
+        if s.running { rows.insert(.header(rows.isEmpty ? "Searching…" : "Searching… \(rows.count) so far"), at: 0) }
+        else if rows.isEmpty { rows = [.header("Nothing in \(AnyPath.name(folder)) has “\(query)”")] }
+        else if s.results.count > WorkspaceMatch.limit { rows.insert(.header("The first \(WorkspaceMatch.limit): narrow it down for the rest"), at: 0) }
+        return rows
+    }
+
+    /// After a moment without typing, so each key doesn't start a search of its own.
+    private func startSearch(_ query: String, generation: Int) {
+        Thread.detachNewThread { [weak self] in
+            Thread.sleep(forTimeInterval: 0.25)
+            self?.runOnWindowThread {
+                guard let self, let s = self.search, s.generation == generation else { return }
+                let script = s.place.onHost ? WorkspaceMatch.remoteScript(query: query) : WorkspaceMatch.localScript(query: query, dir: GitPlace.shPath(s.folder))
+                // The local script goes to its folder itself.
+                let place = s.place.onHost ? s.place : GitPlace(dir: s.folder, remote: nil)
+                place.run(script, timeout: 30) { [weak self] _, out, _ in
+                    let found = WorkspaceMatch.parse(out)
+                    self?.runOnWindowThread {
+                        guard let self, var s = self.search, s.generation == generation else { return }
+                        s.results = found
+                        s.running = false
+                        self.search = s
+                        self.palette?.refresh()
+                        self.invalidate()
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Links
+
+    /// A web link goes to the browser, a file to the app it opens in. Tests look without opening.
+    var onOpenURL: (String) -> Void = { url in
+        _ = wide(url).withUnsafeBufferPointer { ShellExecuteW(nil, nil, $0.baseAddress, nil, nil, 1) }
+    }
+
+    func openLink(_ target: String, isURL: Bool) {
+        if isURL { onOpenURL(target) } else { onOpenFile(target) }
+    }
 
     // MARK: - Files in the sidebars
 
@@ -1936,6 +2315,21 @@ final class TerminalWindow {
         let leftSpots = bar.crumbSpots(), spots = leftSpots + (isSplit ? bar.crumbSpots(column: 1) : [])
         let hit = spots.firstIndex { $0.hit.contains(x, y) }
         let onTheme = bar.themeSpot().contains(x, y)
+        var git: (column: Int, part: GitPart, rect: UIRect)?
+        for column in isSplit ? [0, 1] : [0] {
+            if let g = bar.gitSpots(column: column).first(where: { $0.rect.contains(x, y) }) { git = (column, g.part, g.rect) }
+        }
+        if message == Win.WM_MOUSEMOVE, git?.column != hoveredGit?.column || git?.part != hoveredGit?.part {
+            hoveredGit = git.map { (column: $0.column, part: $0.part) }
+            invalidate()
+        }
+        if let git, message == Win.WM_LBUTTONUP {
+            let owner = git.column == 0 ? leftActivePane : rightActivePane ?? activePane
+            if owner !== activePane, let i = panes.firstIndex(where: { $0 === owner }) { activate(i) }
+            gitClick(git.part, at: git.rect)
+            return true
+        }
+        if git != nil { return message != Win.WM_MOUSEMOVE }
         switch message {
         case Win.WM_MOUSEMOVE:
             if hit != hoveredCrumb || onTheme != themeHovered {
@@ -2599,6 +2993,7 @@ final class TerminalWindow {
         ("Tabs", [("Pick another tab", "Ctrl+Click"), ("Pick the tabs between", "Shift+Click"), ("Collapse or expand a group", "Click its chip")]),
         ("Edit", [("Copy (with something selected)", "Ctrl+C"), ("Stop the program (with nothing selected)", "Ctrl+C"), ("Cut (in the line being typed)", "Ctrl+X"),
                   ("Paste", "Ctrl+V"), ("Paste (also)", "Shift+Insert"), ("Undo (PowerShell and Claude Code)", "Ctrl+Z")]),
+        ("Find and Git", [("Search in Project Folder…", "Ctrl+Shift+F"), ("Show Git Changes", "Ctrl+Shift+G"), ("Open a Link", "Ctrl+Click")]),
         ("View", [("Toggle File Sidebar", "Ctrl+B"), ("Toggle Right Sidebar (split)", "Ctrl+Alt+B"), ("Pin Sidebar Folder", "Ctrl+Shift+B"), ("Scroll Back a Page", "Shift+PageUp"), ("Scroll Forward a Page", "Shift+PageDown")]),
         ("Window", [("Next Tab", "Ctrl+Tab"), ("Previous Tab", "Ctrl+Shift+Tab"), ("Go to Tab 1 to 9", "Ctrl+1"), ("Close Window", "Alt+F4")]),
     ]
@@ -2626,6 +3021,10 @@ final class TerminalWindow {
             PaletteItem(title: "Reopen Closed Tab", category: "Shell", shortcut: "Ctrl+Shift+T") { [weak self] in self?.reopenClosedTab() },
             PaletteItem(title: "Go to Folder…", category: "Shell", shortcut: "Ctrl+Shift+O") { [weak self] in self?.showGoToFolder() },
             PaletteItem(title: "Split Right", category: "Shell", shortcut: "Ctrl+Alt+D") { [weak self] in self?.splitRight() },
+            PaletteItem(title: "Search in Project Folder…", category: "Find", shortcut: "Ctrl+Shift+F") { [weak self] in self?.showSearch() },
+            PaletteItem(title: "Show Git Changes", category: "Git", shortcut: "Ctrl+Shift+G") { [weak self] in self?.showGitChanges() },
+            PaletteItem(title: "Show Git Graph", category: "Git") { [weak self] in self?.showGitGraph() },
+            PaletteItem(title: "Switch Branch…", category: "Git") { [weak self] in self.map { $0.showBranches(for: $0.activePane) } },
             PaletteItem(title: isSplit ? "Move Tab to Other Split" : "Move Tab to New Split", category: "Shell", shortcut: "Ctrl+Shift+D") { [weak self] in
                 self.map { $0.moveToOtherColumn($0.activePane) }
             },
@@ -2821,6 +3220,15 @@ final class TerminalWindow {
             if palette?.isLive == true { closePalette() } else { showGoToFolder() }
             return true
         }
+        // Search in Project Folder and Git Changes, as the Mac's ⇧⌘F, and VS Code's Ctrl+Shift+G.
+        if ctrl && shift && !alt && key == 0x46 {
+            if palette?.isLive == true { closePalette() } else { showSearch() }
+            return true
+        }
+        if ctrl && shift && !alt && key == 0x47 {
+            if activePane.panel is GitChangesPanel { activePane.panel = nil; invalidate() } else { showGitChanges() }
+            return true
+        }
         if palette != nil { return paletteKey(key, ctrl: ctrl) }
         // Ctrl+B and Ctrl+Alt+B show and hide the sidebars, and Ctrl+Shift+B pins the left one to its folder.
         if ctrl && key == 0x42 {
@@ -2861,6 +3269,11 @@ final class TerminalWindow {
         if ctrl && !alt && key == Win.VK_TAB && column.count > 1, let at = column.firstIndex(of: activeIndex) {
             selectTab(column[(at + (shift ? column.count - 1 : 1)) % column.count])
             return true
+        }
+        if let panel = activePane.panel {
+            // Keys the app doesn't claim are the panel's, which takes the terminal's place.
+            if !alt && panel.key(key, shift: shift, ctrl: ctrl) { return true }
+            return ctrl || alt
         }
         return activePane.keyDown(key, shift: shift, ctrl: ctrl, alt: alt)
     }
@@ -2922,6 +3335,11 @@ final class TerminalWindow {
     func typeIntoWindow(_ text: String) { for unit in text.utf16 { PostMessageW(hwnd, Win.WM_CHAR, WPARAM(unit), 0) } }
     var leftTree: FileTree { left.tree }
     var rightTree: FileTree { right.tree }
+    var activeGit: GitInfo? { activePane.git }
+    var activeGitBusy: String? { activePane.gitBusy }
+    var activePanel: ColumnPanel? { activePane.panel }
+    func gitSpot(_ part: GitPart) -> UIRect? { chrome(on: canvas, layout: layout).gitSpots().first { $0.part == part }?.rect }
+    func refreshGitForTest() { refreshGit(activePane, now: true) }
     var splitColumnCounts: [Int] { isSplit ? [panes.filter { $0.column == 0 }.count, panes.filter { $0.column == 1 }.count] : [panes.count] }
     var focusedColumn: Int { activePane.column }
     var shownPaneIDs: [UInt] { visiblePanes.map(\.id) }

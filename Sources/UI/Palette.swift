@@ -50,13 +50,14 @@ final class PaletteModel {
     private(set) var selected = 0
     private(set) var scrollTop = 0
 
-    init(items: [PaletteItem], recents: [String] = []) {
+    init(items: [PaletteItem], recents: [String] = [], placeholder: String = "Type a command…", icon: UInt16 = 0xE721,
+         emptyMessage: String = "No matching commands") {
         self.items = items
         self.recents = recents
         live = nil
-        placeholder = "Type a command…"
-        icon = 0xE721
-        emptyMessage = "No matching commands"
+        self.placeholder = placeholder
+        self.icon = icon
+        self.emptyMessage = emptyMessage
         refilter()
     }
 

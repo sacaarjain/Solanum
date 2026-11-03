@@ -9,6 +9,27 @@ private enum Icon {
     static let dockLeft: UInt16 = 0xE90C, dockRight: UInt16 = 0xE90D
 }
 
+/// A column's git state in the status bar: branch, sync, and how many files have changed.
+struct GitBadge: Equatable {
+    var branch: String
+    var ahead = 0, behind = 0
+    var upstream = false
+    var changes = 0
+    /// What git's doing ("Pulling…"), in place of the sync counts.
+    var busy: String?
+
+    init(_ info: GitInfo, busy: String?) {
+        branch = info.branch
+        ahead = info.ahead
+        behind = info.behind
+        upstream = info.upstream != nil
+        changes = info.changes.count
+        self.busy = busy
+    }
+}
+
+enum GitPart: Equatable { case branch, sync, changes }
+
 /// The tab bar and status bar. One function for the window and for snapshots.
 struct WindowChrome {
     let canvas: Canvas
@@ -43,6 +64,10 @@ struct WindowChrome {
     var rightFolder: String?
     var rightHome: String?
     var rightSSHHost: String?
+    /// Each column's repository, when its folder is in one.
+    var git: GitBadge?
+    var rightGit: GitBadge?
+    var hoveredGit: (column: Int, part: GitPart)?
 
     private var scale: Float { layout.scale }
     private var fg: UInt32 { TerminalPalette.foreground }
@@ -259,6 +284,58 @@ struct WindowChrome {
     }
 
     /// Where the folder's parts go in the status bar, and what each stands for. For drawing them and for clicks.
+    /// Where a column's git parts go, right to left from the end of its half: changes, sync, then the branch.
+    func gitSpots(column: Int = 0) -> [(part: GitPart, rect: UIRect)] {
+        guard let g = column == 0 ? git : rightGit else { return [] }
+        let bar = layout.statusBar, pixels = 12 * scale
+        var x = !layout.isSplit ? themeX - (showsThemeIcon ? 30 : 12) * scale : column == 0 ? layout.divider - 8 * scale : layout.toggleRight.x - 6 * scale
+        var out: [(part: GitPart, rect: UIRect)] = []
+        func add(_ part: GitPart, _ w: Float) {
+            x -= w
+            out.append((part, UIRect(x: x, y: bar.y + 3 * scale, width: w, height: bar.height - 6 * scale)))
+            x -= 4 * scale
+        }
+        if g.changes > 0 { add(.changes, width(of: "● \(g.changes)", pixels: pixels) + 14 * scale) }
+        add(.sync, width(of: syncText(g), pixels: pixels) + (g.busy == nil ? 30 : 14) * scale)
+        add(.branch, min(width(of: g.branch, pixels: pixels), 170 * scale) + 34 * scale)
+        return out
+    }
+
+    private func syncText(_ g: GitBadge) -> String {
+        if let busy = g.busy { return busy }
+        if !g.upstream { return "Publish" }
+        return g.ahead == 0 && g.behind == 0 ? "" : "\(g.behind)↓ \(g.ahead)↑"
+    }
+
+    private func drawGit(_ column: Int) {
+        guard let g = column == 0 ? git : rightGit else { return }
+        let pixels = 12 * scale
+        for (part, r) in gitSpots(column: column) {
+            let hovered = hoveredGit.map { $0.column == column && $0.part == part } ?? false
+            if hovered { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 4 * scale, fg, 0.10) }
+            switch part {
+            case .branch:
+                drawBranchIcon(x: r.x + 9 * scale, midY: r.midY)
+                label(g.branch, UIRect(x: r.x + 24 * scale, y: r.y, width: r.width - 28 * scale, height: r.height), pixels: pixels, alpha: 0.8)
+            case .sync:
+                if g.busy == nil { icon(0xE72C, UIRect(x: r.x + 4 * scale, y: r.y, width: 18 * scale, height: r.height), pixels: 10 * scale, alpha: 0.7) }
+                label(syncText(g), UIRect(x: r.x + (g.busy == nil ? 24 : 7) * scale, y: r.y, width: r.width - 24 * scale, height: r.height), pixels: pixels, alpha: 0.75)
+            case .changes:
+                label("● \(g.changes)", UIRect(x: r.x + 7 * scale, y: r.y, width: r.width - 10 * scale, height: r.height), pixels: pixels, color: 0xE09C54, alpha: 0.95)
+            }
+        }
+    }
+
+    /// Git's branch mark: two commits on a line, and a branch off it.
+    private func drawBranchIcon(x: Float, midY: Float) {
+        let t = 1.3 * scale, top = midY - 5 * scale, bottom = midY + 5 * scale, side = x + 7 * scale
+        sol_canvas_line(canvas.raw, x, top, x, bottom, fg, 0.7, t)
+        sol_canvas_line(canvas.raw, side, top + 2 * scale, x + 1 * scale, midY + 2 * scale, fg, 0.7, t)
+        for (cx, cy) in [(x, top), (x, bottom), (side, top + 1 * scale)] {
+            sol_canvas_fill_ellipse(canvas.raw, cx, cy, 2 * scale, 2 * scale, fg, 0.85)
+        }
+    }
+
     /// The left column's (or the only one's); `column: 1`, the right column's half while split.
     func crumbSpots(column: Int = 0) -> [(label: String, path: String, rect: UIRect, hit: UIRect)] {
         crumbSpots(column: column, themeX: themeX)
@@ -276,8 +353,9 @@ struct WindowChrome {
     private func crumbSpots(column: Int, themeX: Float) -> [(label: String, path: String, rect: UIRect, hit: UIRect)] {
         let folder = column == 0 ? self.folder : rightFolder, sshHost = column == 0 ? self.sshHost : rightSSHHost
         guard let folder else { return [] }
-        // Short of the theme's name, or while split, the middle and the right sidebar's switch.
-        let limit = !layout.isSplit ? themeX - 34 * scale : column == 0 ? layout.divider - 10 * scale : layout.toggleRight.x - 8 * scale
+        // Short of the theme's name, or while split, the middle and the right sidebar's switch; and of git's parts.
+        var limit = !layout.isSplit ? themeX - 34 * scale : column == 0 ? layout.divider - 10 * scale : layout.toggleRight.x - 8 * scale
+        if let first = gitSpots(column: column).last { limit = min(limit, first.rect.x - 14 * scale) }
         let bar = layout.statusBar, pixels = 12 * scale, base = folderStart(column)
         let iconX = base + 6 * scale
         var x = base + 8 * scale + 21 * scale
@@ -352,6 +430,7 @@ struct WindowChrome {
                 icon(Icon.folder, UIRect(x: base + 8 * scale, y: bar.y, width: 16 * scale, height: bar.height), pixels: 12 * scale, alpha: 0.75)
             }
             offset += spots.count
+            drawGit(column)
         }
     }
 }

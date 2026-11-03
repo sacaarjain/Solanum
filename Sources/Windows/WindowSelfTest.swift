@@ -884,6 +884,75 @@ enum WindowSelfTest {
             window.menuTitles.contains("New File…") && window.menuTitles.contains("Open in Explorer") && !window.menuTitles.contains("Rename…")
         }))
         steps.append(Step(name: "files: closes", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
+        // Git, in a repository of its own.
+        steps.append(Step(name: "git: a repository shows its branch and changes", action: {
+            pane.type("New-Item -ItemType Directory repo | Out-Null; cd repo; git init -q -b main; git config user.email t@example.com; git config user.name T; "
+                      + "'hello solanum' | Out-File -Encoding ascii tracked.txt; git add .; git commit -qm one; 'more' | Out-File -Encoding ascii new.txt")
+            pane.pressEnter()
+        }, done: {
+            if pane.atPrompt && window.activeGit == nil { window.refreshGitForTest() }
+            return window.activeGit?.branch == "main" && window.activeGit?.changes.count == 1 && window.gitSpot(.branch) != nil && window.gitSpot(.changes) != nil
+        }))
+        if let dir = snapshotDirectory {
+            steps.append(Step(name: "git: snapshot of the status bar", action: {}, done: { window.saveSnapshot(to: dir + "\\git-bar.png") }))
+        }
+        steps.append(Step(name: "git: the branch opens the switcher", action: { window.click(window.gitSpot(.branch)!) },
+                          done: { window.isPaletteOpen && window.paletteRows.contains { $0.title == "Show Git Graph" } && window.paletteRows.contains { $0.title == "main" } }))
+        steps.append(Step(name: "git: and closes", action: { pane.pressEscape() }, done: { !window.isPaletteOpen }))
+        steps.append(Step(name: "git: the changes list them", action: { window.click(window.gitSpot(.changes)!) },
+                          done: { window.menuTitles.contains("U   new.txt") && window.menuTitles.contains("Show Git Changes") }))
+        steps.append(Step(name: "git: and close", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
+        steps.append(Step(name: "git: Ctrl+Shift+G shows Git Changes", action: { _ = window.keyDown(0x47, shift: true, ctrl: true, alt: false) }, done: {
+            (window.activePanel as? GitChangesPanel)?.fileRows.map(\.path) == ["new.txt"]
+        }))
+        steps.append(Step(name: "git: staging there", action: { (window.activePanel as? GitChangesPanel)?.act(.stageAll, on: nil) }, done: {
+            guard let rows = (window.activePanel as? GitChangesPanel)?.fileRows else { return false }
+            return rows.count == 1 && rows[0].staged && (window.activePanel as? GitChangesPanel)?.diff.contains { $0.kind == .added } == true
+        }))
+        if let dir = snapshotDirectory {
+            steps.append(Step(name: "git: snapshot of Git Changes", action: { window.typeIntoWindow("second") }, done: {
+                (window.activePanel as? GitChangesPanel)?.message.text == "second" && window.saveSnapshot(to: dir + "\\git-changes.png")
+            }))
+        } else {
+            steps.append(Step(name: "git: a message to commit with", action: { window.typeIntoWindow("second") },
+                              done: { (window.activePanel as? GitChangesPanel)?.message.text == "second" }))
+        }
+        steps.append(Step(name: "git: Enter commits it", action: { pane.pressEnter() }, done: {
+            (window.activePanel as? GitChangesPanel)?.fileRows.isEmpty == true && window.activeGit?.changes.isEmpty == true
+        }))
+        steps.append(Step(name: "git: Esc closes it", action: { pane.pressEscape() }, done: { window.activePanel == nil }))
+        steps.append(Step(name: "git: Git Graph shows the history", action: { window.showGitGraph() },
+                          done: { (window.activePanel as? GitGraphPanel)?.rows.count == 2 }))
+        if let dir = snapshotDirectory {
+            steps.append(Step(name: "git: snapshot of Git Graph", action: { (window.activePanel as? GitGraphPanel)?.selectRow(0) }, done: {
+                ((window.activePanel as? GitGraphPanel)?.details.count ?? 0) > 3 && window.saveSnapshot(to: dir + "\\git-graph.png")
+            }))
+        }
+        steps.append(Step(name: "git: and closes", action: { pane.pressEscape(); pane.pressEscape() }, done: { window.activePanel == nil }))
+        // Search in Project Folder.
+        steps.append(Step(name: "search: Ctrl+Shift+F finds text in the folder", action: {
+            _ = window.keyDown(0x46, shift: true, ctrl: true, alt: false)
+            window.typeIntoWindow("solanum")
+        }, done: { window.paletteRows.contains { $0.category == "tracked.txt:1" && $0.title.contains("hello solanum") } }))
+        steps.append(Step(name: "search: and closes", action: { pane.pressEscape() }, done: { !window.isPaletteOpen }))
+        // Links in what's printed.
+        func cell(_ text: String) -> (line: Int, col: Int)? {
+            guard let row = pane.terminal.screen.firstIndex(where: { $0.text().contains(text) }), let r = pane.terminal.screen[row].text().range(of: text) else { return nil }
+            return (pane.terminal.screenTopAbs + row, pane.terminal.screen[row].text().distance(from: pane.terminal.screen[row].text().startIndex, to: r.lowerBound) + 2)
+        }
+        steps.append(Step(name: "links: a web address and a file in what's printed", action: {
+            pane.type("Write-Output 'see https://example.com/page now'; Write-Output 'open tracked.txt:1 please'")
+            pane.pressEnter()
+        }, done: {
+            guard pane.atPrompt, let web = cell("https://example.com/page"), let file = cell("tracked.txt:1") else { return false }
+            return pane.link(atLine: web.line, col: web.col)?.target == "https://example.com/page"
+                && pane.link(atLine: file.line, col: file.col)?.target.lowercased().hasSuffix("\\repo\\tracked.txt") == true
+                && pane.link(atLine: file.line, col: file.col + 20) == nil
+        }))
+        steps.append(Step(name: "git: out of the repository", action: {
+            pane.type("cd ..")
+            pane.pressEnter()
+        }, done: { pane.atPrompt && pane.terminal.cwd?.hasSuffix("alpha") == true && window.activeGit == nil }))
         steps.append(Step(name: "path: the folder icon lists the first part's folders", action: { window.click(window.folderIconRect!) },
                           done: { window.menuTitles.contains("Copy Path") }))
         steps.append(Step(name: "path: and closes", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))

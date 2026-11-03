@@ -66,6 +66,15 @@ final class TerminalPane: TerminalDelegate, Groupable {
     var group: TabGroup?
     /// A name given to the tab, in place of the one it would have.
     var customTitle: String?
+    /// The git repository its folder is in, for the status bar; what git's doing for it there ("Pulling…").
+    var git: GitInfo?
+    var gitBusy: String?
+    var gitKey: String?
+    var gitCheckedAt = Date.distantPast
+    /// Git Changes or Git Graph, over the terminal while it's open.
+    var panel: ColumnPanel?
+    /// Where a link under the pointer is, while Ctrl's held over it: drawn underlined.
+    var hoveredLink: (line: Int, start: Int, end: Int)?
     /// Where the sidebar was while this tab was showing. Nil until it has been.
     var sidebarPlace: SidebarPlace?
     private var pendingSurrogate: UInt16?
@@ -360,6 +369,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
     }
 
     func terminalBlockFinished(_ t: Terminal, block: Block) {
+        // A commit, a checkout, an edit: git's state may have changed.
+        host?.paneCommandFinished(self)
         // Something else run here since: the bar's question has gone away.
         if let lost, block !== lost.block, terminal.sshControlPath == nil, !reconnecting, !block.command.isEmpty { clearLost() }
     }
@@ -459,6 +470,14 @@ final class TerminalPane: TerminalDelegate, Groupable {
         renderer.cursorShown = cursorShown
         renderer.cursorStyle = style
         renderer.drawContents()
+        // The link under the pointer, while Ctrl's held.
+        if let h = hoveredLink {
+            let row = h.line - (terminal.screenTopAbs - scrollOffset), m = canvas.metrics
+            if row >= 0 && row < terminal.rows {
+                sol_canvas_fill_rect(canvas.raw, canvas.contentX + Float(h.start) * m.cellWidth, canvas.contentY + Float(row + 1) * m.cellHeight - max(m.lineThickness, 1),
+                                     Float(h.end - h.start + 1) * m.cellWidth, max(m.lineThickness, 1), TerminalPalette.accent, 1)
+            }
+        }
         drawLostBar()
         drawQuestion()
     }
@@ -713,6 +732,19 @@ final class TerminalPane: TerminalDelegate, Groupable {
             return
         }
         let abs = terminal.screenTopAbs - scrollOffset + row
+        // Ctrl over a link underlines it, and Ctrl+click opens it.
+        if message == Win.WM_MOUSEMOVE || message == Win.WM_LBUTTONDOWN {
+            let found = isDown(Win.VK_CONTROL) && !selecting ? link(atLine: abs, col: col) : nil
+            let shown = found.map { (abs, $0.start, $0.end) }
+            if shown?.0 != hoveredLink?.line || shown?.1 != hoveredLink?.start || shown?.2 != hoveredLink?.end {
+                hoveredLink = shown
+                invalidate()
+            }
+            if message == Win.WM_LBUTTONDOWN, let found {
+                host?.openLink(found.target, isURL: found.isURL)
+                return
+            }
+        }
         switch message {
         case Win.WM_LBUTTONDOWN:
             selection = TerminalSelection(anchor: (abs, col), head: (abs, col))
@@ -804,6 +836,77 @@ final class TerminalPane: TerminalDelegate, Groupable {
         selection = nil
         write(Array("cd -LiteralPath '\(path.replacingOccurrences(of: "'", with: "''"))'\r".utf8))
     }
+
+    /// Types a command at the prompt and runs it: over ssh whenever the session's at one, as far as can be told (Ctrl+U
+    /// clears what's half typed there first), and here when the shell is. False if it can't.
+    @discardableResult
+    func typeCommand(_ command: String) -> Bool {
+        if sshArguments != nil {
+            guard canChangeRemoteFolder else { return false }
+            write(Array(("\u{15}" + command + "\r").utf8))
+            return true
+        }
+        guard atPrompt else { return false }
+        selection = nil
+        write(Array((command + "\r").utf8))
+        return true
+    }
+
+    // MARK: - Links
+
+    /// A link at a cell: a program's own (OSC 8), a web address, or a file on this PC that the text names. Where it is
+    /// on that line.
+    func link(atLine line: Int, col: Int) -> (target: String, isURL: Bool, start: Int, end: Int)? {
+        guard let here = terminal.line(abs: line), col < here.cells.count else { return nil }
+        if let url = here.links?[col] {
+            var a = col, b = col
+            while a > 0, here.links?[a - 1] == url { a -= 1 }
+            while b + 1 < here.cells.count, here.links?[b + 1] == url { b += 1 }
+            return (url, true, a, b)
+        }
+        // The whole of a line the screen wrapped, and the cell each UTF-16 unit of it came from.
+        var first = line, last = line
+        while first > terminal.firstAbs, terminal.line(abs: first - 1)?.wrapped == true { first -= 1 }
+        while last < terminal.lastAbs, terminal.line(abs: last)?.wrapped == true { last += 1 }
+        var text = "", map: [(line: Int, col: Int)] = []
+        for a in first...last {
+            guard let l = terminal.line(abs: a) else { continue }
+            let n = l.wrapped ? l.cells.count : l.trimmedLength
+            for c in 0..<n where l.cells[c].width != 0 {
+                let ch = l.cells[c].ch == 0 ? 32 : l.cells[c].ch
+                guard let scalar = Unicode.Scalar(ch) else { continue }
+                for _ in String(Character(scalar)).utf16 { map.append((a, c)) }
+                text.unicodeScalars.append(scalar)
+            }
+        }
+        guard let at = map.firstIndex(where: { $0.line == line && $0.col == col }) else { return nil }
+        func span(_ r: NSRange) -> (Int, Int)? {
+            guard r.location <= at, at < r.location + r.length else { return nil }
+            let cells = map[r.location..<(r.location + r.length)].filter { $0.line == line }.map(\.col)
+            return cells.min().flatMap { a in cells.max().map { (a, $0) } }
+        }
+        for (r, url) in TextLinks.urls(in: text) {
+            if let (a, b) = span(r) { return (url.absoluteString, true, a, b) }
+        }
+        // Files: only this PC's, which can be opened from here.
+        guard sshArguments == nil, let cwd = terminal.cwd else { return nil }
+        let ns = NSString(string: text)
+        var candidates: [(NSRange, String)] = TextLinks.mentions(in: text).map { ($0.range, $0.path) }
+        if let re = Self.windowsPath {
+            for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) { candidates.insert((m.range(at: 1), ns.substring(with: m.range(at: 1))), at: 0) }
+        }
+        for (r, raw) in candidates {
+            guard let (a, b) = span(r) else { continue }
+            let path = raw.replacingOccurrences(of: "/", with: "\")
+            let full = path.dropFirst().hasPrefix(":") ? path : WindowsPath.join(cwd, path.hasPrefix(".\") ? String(path.dropFirst(2)) : path)
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: full, isDirectory: &isDir), !isDir.boolValue { return (full, false, a, b) }
+        }
+        return nil
+    }
+
+    /// Windows paths: from a drive (C:\a\b.txt), or relative with backslashes (src\a.c), and a line number after.
+    private static let windowsPath = try? NSRegularExpression(pattern: #"((?:[A-Za-z]:\\|\.\\)?(?:[\w.~@+-]+\\)+[\w.~@+-]+|[A-Za-z]:\\[\w.~@+-]+)(?::\d+)?"#)
 
     func scrollToTop() {
         scrollOffset = terminal.usingAlt ? 0 : terminal.scrollback.count
