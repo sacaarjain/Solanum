@@ -262,12 +262,12 @@ final class TabColumn: NSObject, TabOwner {
 
     func tabWantsClose(_ tab: TabSession) { closeTabs([tab]) }
 
-    /// A file tab (just the file, no terminal) right after the active tab.
-    func addFileTab(_ ed: FileEditorView) {
+    /// A file tab (just the file, no terminal) right after the active tab, or at `index`.
+    func addFileTab(_ ed: FileEditorView, at index: Int? = nil) {
         let tab = TabSession(cwd: ed.fs.isRemote ? nil : FilePaths.parent(ed.path))
         tab.fileOrigin = (ed.fs, FilePaths.parent(ed.path))
         tab.owner = self
-        tabs.insert(tab, at: min(activeIndex + 1, tabs.count))
+        tabs.insert(tab, at: min(index ?? activeIndex + 1, tabs.count))
         tab.showFileOnly(ed)
         select(index: tabs.firstIndex(of: tab) ?? tabs.count - 1)
     }
