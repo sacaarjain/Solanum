@@ -90,6 +90,20 @@
   ✓ path: Esc closes the menu
   ✓ path: choosing a folder sends the terminal there
   ✓ path: it gets there
+  ✓ path: right-click offers the pin
+  ✓ path: the pin keeps the sidebar there
+  ✓ path: and the menu offers to unpin it, with its keys
+  ✓ path: unpinned, it follows the terminal again
+  ✓ path: clicking a part has Go to Folder and the pin
+  ✓ path: closes
+  ✓ go to: Ctrl+Shift+O starts at the terminal's folder
+  ✓ go to: Ctrl+Backspace clears the field
+  ✓ go to: a relative path
+  ✓ go to: Enter goes there
+  ✓ go to: typing picks a folder
+  ✓ go to: Tab goes into it
+  ✓ go to: Enter there
+  ✓ go to: Ctrl+Shift+O again closes it
   ✓ path: the folder icon lists the first part's folders
   ✓ path: and closes
   ✓ per tab: pinned here
@@ -174,5 +188,5 @@
   ✓ box: delete across three rows: selects and acts
   ✓ box: delete across three rows: leaves the right text
   ✓ window: painted
-Clipboard found busy 0 times; got through 175 of 175 steps.
-All 176 checks passed.
+Clipboard found busy 1 times; got through 189 of 189 steps.
+All 190 checks passed.

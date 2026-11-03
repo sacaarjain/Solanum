@@ -161,6 +161,13 @@ ssh
   ✓ hidden process: arguments quoted for Windows
   ✓ remote: quoting for sh
   ✓ paths: Unix ones
+  ✓ go to: relative paths start at the terminal's folder
+  ✓ go to: ~, drives, either slash
+  ✓ go to: never above the top
+  ✓ go to: home shows as ~
+  ✓ go to: what's typed splits at the last slash
+  ✓ go to: on a host
+  ✓ palette: a live one works its rows out from the field
   ✓ reconnect: words for PowerShell
   ✓ paths: a host's folders from /
   ✓ paths: home is ~ on a host too
@@ -210,4 +217,4 @@ PowerShell hook
   ✓ powershell: Esc clears the line
   ✓ powershell: exits
   - pwsh.exe isn't installed
-All 200 checks passed.
+All 207 checks passed.
