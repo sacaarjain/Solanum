@@ -874,7 +874,7 @@ enum WindowSelfTest {
         steps.append(Step(name: "files: dropped on the terminal, its path is typed", action: {
             let t = window.currentLayout.terminal
             window.dropFilesForTest([outside], atX: t.x + t.width / 2, y: t.y + t.height / 2)
-        }, done: { pane.cursorRowText.contains("'\(outside)'") }))
+        }, done: { pane.logicalText.contains("'\(outside)'") }))
         steps.append(Step(name: "files: and cleared again", action: { pane.pressEscape() }, done: { !pane.cursorRowText.contains("outside") }))
         steps.append(Step(name: "files: Delete sends to the Recycle Bin", action: {
             window.click(window.leftRow(named: "box")!)
