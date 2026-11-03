@@ -1749,11 +1749,11 @@ final class TerminalWindow {
     /// Files dropped from Explorer.
     private func droppedFromExplorer(_ wParam: WPARAM) {
         guard let raw = UnsafeMutableRawPointer(bitPattern: UInt(wParam)) else { return }
-        let drop = HDROP(OpaquePointer(raw))
+        let handle = HDROP(OpaquePointer(raw))
         var point = POINT()
-        _ = DragQueryPoint(drop, &point)
-        let paths = FileOps.paths(in: drop)
-        DragFinish(drop)
+        _ = DragQueryPoint(handle, &point)
+        let paths = FileOps.paths(in: handle)
+        DragFinish(handle)
         guard !paths.isEmpty, let spot = dropSpot(atX: Float(point.x), y: Float(point.y)) else { return }
         // From Explorer, a drop copies, as it does between drives there.
         drop(paths, at: spot, from: nil, copy: true)

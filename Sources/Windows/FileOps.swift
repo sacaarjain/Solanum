@@ -82,7 +82,7 @@ enum FileOps {
         return list.withUnsafeMutableBufferPointer { from -> Bool in
             var op = SHFILEOPSTRUCTW()
             op.wFunc = UINT(FO_DELETE)
-            op.pFrom = UnsafePointer(from.baseAddress)
+            op.pFrom = OpaquePointer(from.baseAddress)
             op.fFlags = FILEOP_FLAGS(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI)
             return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted.boolValue
         }
