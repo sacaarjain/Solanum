@@ -47,6 +47,12 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
     an image going to Claude Code; Ctrl+X cuts a selection in the line being typed; Ctrl+1 to 9 pick a tab.
   - Ctrl+Shift+P is the command palette, which stands in for the Mac's menu bar.
   - Ctrl+B and Ctrl+Alt+B show the left and right sidebars, and Ctrl+Shift+B pins the left one to its folder.
+  - Splits: Ctrl+Alt+D splits right, Ctrl+Shift+D moves a tab to the other column, Ctrl+Alt+W closes the split. Ctrl+D
+    stays the shell's (end of input), unlike the Mac's ⌘D.
+  - Ctrl+Shift+O is Go to Folder, Ctrl+Shift+F Search in Project Folder, Ctrl+Shift+G Git Changes, and Ctrl+click opens
+    a link.
+  - In a sidebar, Explorer's keys: F2 renames, Delete sends to the Recycle Bin, Ctrl+C, X and V copy, cut and paste
+    (with Explorer too), Ctrl+Shift+C copies the path and Ctrl+Shift+N makes a folder.
 - **Art:** `Tools/MakeWindowsArt.swift` renders the Mac's flower, tab prompt and app icon into `Sources/Windows/ArtData.swift`
   and `Support/Windows/Solanum.ico`, until the drawing itself is shared.
 - **Closing the last window:** it saves the session and exits, and the next launch restores it.
