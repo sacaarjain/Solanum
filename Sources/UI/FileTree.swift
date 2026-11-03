@@ -70,6 +70,72 @@ final class FileTree {
     var scrollTop = 0
     var onNeedsListing: ((String) -> Void)?
 
+    /// A name being typed in the tree: a new file or folder's, in a row of its own at the top of its folder, or a
+    /// rename in the item's own row.
+    struct Editing {
+        enum Kind: Equatable { case newFile(in: String), newFolder(in: String), rename(FileEntry) }
+        let kind: Kind
+        var field: TextFieldState
+    }
+    private(set) var editing: Editing?
+    /// Cut, waiting to be pasted somewhere: shown dimmed, as in Explorer.
+    var cutPaths: Set<String> = []
+    /// The path of the row a new item's name is typed in.
+    static let newItemPath = "\u{0}new"
+
+    /// Starts typing a new item's name in `folder`, opening it if it's closed.
+    func beginNew(folder: Bool, in parent: String) {
+        if parent != root && !expanded.contains(parent) { toggle(parent) }
+        editing = Editing(kind: folder ? .newFolder(in: parent) : .newFile(in: parent), field: TextFieldState(""))
+        rebuild()
+        selection = Self.newItemPath
+    }
+
+    /// Starts renaming an item, with its name selected up to the extension, as in Explorer.
+    func beginRename(_ entry: FileEntry) {
+        var field = TextFieldState(entry.name)
+        if !entry.isDirectory, let dot = entry.name.lastIndex(of: "."), dot != entry.name.startIndex {
+            field.move(to: entry.name.distance(from: entry.name.startIndex, to: dot))
+        }
+        editing = Editing(kind: .rename(entry), field: field)
+        selection = entry.path
+        rebuild()
+    }
+
+    func updateEditing(_ change: (inout TextFieldState) -> Void) {
+        guard var e = editing else { return }
+        change(&e.field)
+        editing = e
+    }
+
+    /// Stops typing, handing back what was being typed.
+    @discardableResult
+    func endEditing() -> Editing? {
+        let e = editing
+        editing = nil
+        if selection == Self.newItemPath { selection = nil }
+        rebuild()
+        return e
+    }
+
+    /// The row the name is being typed in.
+    var editingRow: Int? {
+        guard let e = editing else { return nil }
+        switch e.kind {
+        case .rename(let entry): return rows.firstIndex { $0.entry.path == entry.path }
+        case .newFile, .newFolder: return rows.firstIndex { $0.entry.path == Self.newItemPath }
+        }
+    }
+
+    /// Whether a folder's listing has this name already (case aside on Windows).
+    func contains(_ name: String, in folder: String) -> Bool {
+        let unix = AnyPath.isUnix(folder)
+        return (listings[folder] ?? []).contains { unix ? $0.name == name : $0.name.lowercased() == name.lowercased() }
+    }
+
+    /// The names in a folder, as last listed.
+    func names(in folder: String) -> Set<String> { Set((listings[folder] ?? []).map(\.name)) }
+
     var isLoadingRoot: Bool { root.map { listings[$0] == nil && !failed.contains($0) } ?? false }
     var rootFailed: Bool { root.map { failed.contains($0) } ?? false }
     /// Every folder on show, for looking again at what's changed.
@@ -161,6 +227,18 @@ final class FileTree {
         rows = []
         guard let root else { return }
         func add(_ folder: String, depth: Int) {
+            // A new item's row goes first in its folder while its name is typed.
+            if let e = editing {
+                switch e.kind {
+                case .newFile(let parent) where parent == folder, .newFolder(let parent) where parent == folder:
+                    if case .newFolder = e.kind {
+                        rows.append(Row(entry: FileEntry(name: "", path: Self.newItemPath, isDirectory: true, isHidden: false), depth: depth))
+                    } else {
+                        rows.append(Row(entry: FileEntry(name: "", path: Self.newItemPath, isDirectory: false, isHidden: false), depth: depth))
+                    }
+                default: break
+                }
+            }
             for entry in listings[folder] ?? [] where showHidden || !entry.isHidden {
                 rows.append(Row(entry: entry, depth: depth))
                 if entry.isDirectory && expanded.contains(entry.path) { add(entry.path, depth: depth + 1) }

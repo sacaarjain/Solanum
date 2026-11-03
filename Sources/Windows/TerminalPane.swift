@@ -1052,7 +1052,13 @@ final class TerminalPane: TerminalDelegate, Groupable {
     }
 
     func paste() {
-        guard var text = clipboardText(), !text.isEmpty else { return }
+        guard let text = clipboardText(), !text.isEmpty else { return }
+        pasteText(text)
+    }
+
+    /// Text as a paste: bracketed when the program asked, so it isn't run as it arrives.
+    func pasteText(_ raw: String) {
+        var text = raw
         text = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
         // Pasted text could otherwise end the bracketing early, and run what follows.
         text = text.replacingOccurrences(of: "\u{1b}", with: "")

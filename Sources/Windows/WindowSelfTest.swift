@@ -808,6 +808,82 @@ enum WindowSelfTest {
             key(0x4F, ctrl: true, shift: true)
             key(0x4F, ctrl: true, shift: true)
         }, done: { !window.isPaletteOpen }))
+        // Files in the sidebar, in the alpha folder.
+        let alphaFolder = WindowsPath.join(windowsFolder, "alpha")
+        func exists(_ name: String) -> Bool { FileManager.default.fileExists(atPath: WindowsPath.join(alphaFolder, name)) }
+        func typeName(_ text: String) {
+            for _ in 0..<40 { _ = window.keyDown(Win.VK_BACK, shift: false, ctrl: false, alt: false) }
+            window.typeIntoWindow(text)
+            pane.pressEnter()
+        }
+        steps.append(Step(name: "files: the sidebar shows the folder", action: {}, done: {
+            window.leftTree.root?.hasSuffix("alpha") == true && window.leftRow(named: "inner.txt") != nil
+        }))
+        steps.append(Step(name: "files: a file's menu", action: { window.rightClick(window.leftRow(named: "inner.txt")!) }, done: {
+            ["New File…", "New Folder…", "Cut", "Copy", "Paste", "Duplicate", "Copy Path", "Rename…", "Delete", "Show in Explorer"].allSatisfy(window.menuTitles.contains)
+                && window.menuShortcuts["Rename…"] == "F2"
+        }))
+        steps.append(Step(name: "files: New File… asks for its name in place", action: { window.click(window.menuRow("New File…")!) },
+                          done: { window.leftEditingText == "" && !window.isMenuOpen }))
+        steps.append(Step(name: "files: typing it makes the file", action: { typeName("made.txt") },
+                          done: { exists("made.txt") && window.leftRow(named: "made.txt") != nil && window.leftEditingText == nil }))
+        steps.append(Step(name: "files: F2 renames it", action: {
+            _ = window.keyDown(Win.VK_F2, shift: false, ctrl: false, alt: false)
+            _ = window.keyDown(Win.VK_END, shift: false, ctrl: false, alt: false)
+            typeName("renamed.txt")
+        }, done: { exists("renamed.txt") && !exists("made.txt") && window.leftRow(named: "renamed.txt") != nil }))
+        steps.append(Step(name: "files: a taken name keeps the field open", action: {
+            _ = window.keyDown(Win.VK_F2, shift: false, ctrl: false, alt: false)
+            _ = window.keyDown(Win.VK_END, shift: false, ctrl: false, alt: false)
+            typeName("inner.txt")
+        }, done: { window.leftEditingText == "inner.txt" && exists("renamed.txt") }))
+        steps.append(Step(name: "files: Esc leaves it as it was", action: { pane.pressEscape() },
+                          done: { window.leftEditingText == nil && exists("renamed.txt") }))
+        steps.append(Step(name: "files: Duplicate copies beside it", action: {
+            window.rightClick(window.leftRow(named: "renamed.txt")!)
+            window.click(window.menuRow("Duplicate")!)
+        }, done: { exists("renamed - Copy.txt") }))
+        steps.append(Step(name: "files: Ctrl+Shift+N makes a folder", action: {
+            _ = window.keyDown(0x4E, shift: true, ctrl: true, alt: false)
+            typeName("box")
+        }, done: { var d: ObjCBool = false; return FileManager.default.fileExists(atPath: WindowsPath.join(alphaFolder, "box"), isDirectory: &d) && d.boolValue
+                    && window.leftRow(named: "box") != nil }))
+        steps.append(Step(name: "files: Ctrl+C puts it on the clipboard, for Explorer too", action: {
+            window.click(window.leftRow(named: "renamed.txt")!)
+            _ = window.keyDown(0x43, shift: false, ctrl: true, alt: false)
+        }, done: { FileOps.clipboardFiles(owner: nil)?.paths.map { $0.lowercased() } == [WindowsPath.join(alphaFolder, "renamed.txt").lowercased()] }))
+        steps.append(Step(name: "files: Ctrl+V into a folder copies it there", action: {
+            window.click(window.leftRow(named: "box")!)
+            _ = window.keyDown(0x56, shift: false, ctrl: true, alt: false)
+        }, done: { exists("box\\renamed.txt") && exists("renamed.txt") }))
+        steps.append(Step(name: "files: cut and paste moves it", action: {
+            window.click(window.leftRow(named: "renamed - Copy.txt")!)
+            _ = window.keyDown(0x58, shift: false, ctrl: true, alt: false)
+            window.click(window.leftRow(named: "box")!)
+            _ = window.keyDown(0x56, shift: false, ctrl: true, alt: false)
+        }, done: { exists("box\\renamed - Copy.txt") && !exists("renamed - Copy.txt") }))
+        steps.append(Step(name: "files: dragging a file onto a folder moves it", action: {
+            window.dragLeftRow("renamed.txt", onto: "box")
+        }, done: { exists("box\\renamed (2).txt") && !exists("renamed.txt") }))
+        let outside = WindowsPath.join(windowsFolder, "outside file.txt")
+        steps.append(Step(name: "files: dropped from Explorer onto a folder, copied in", action: {
+            FileManager.default.createFile(atPath: outside, contents: Data("hi".utf8))
+            let r = window.leftRow(named: "box")!
+            window.dropFilesForTest([outside], atX: r.x + 40, y: r.midY)
+        }, done: { exists("box\\outside file.txt") && FileManager.default.fileExists(atPath: outside) }))
+        steps.append(Step(name: "files: dropped on the terminal, its path is typed", action: {
+            let t = window.currentLayout.terminal
+            window.dropFilesForTest([outside], atX: t.x + t.width / 2, y: t.y + t.height / 2)
+        }, done: { pane.cursorRowText.contains("'\(outside)'") }))
+        steps.append(Step(name: "files: and cleared again", action: { pane.pressEscape() }, done: { !pane.cursorRowText.contains("outside") }))
+        steps.append(Step(name: "files: Delete sends to the Recycle Bin", action: {
+            window.click(window.leftRow(named: "box")!)
+            _ = window.keyDown(Win.VK_DELETE, shift: false, ctrl: false, alt: false)
+        }, done: { !exists("box") && window.leftRow(named: "box") == nil }))
+        steps.append(Step(name: "files: the folder's own menu below the rows", action: { window.rightClick(window.leftListEmptySpot) }, done: {
+            window.menuTitles.contains("New File…") && window.menuTitles.contains("Open in Explorer") && !window.menuTitles.contains("Rename…")
+        }))
+        steps.append(Step(name: "files: closes", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
         steps.append(Step(name: "path: the folder icon lists the first part's folders", action: { window.click(window.folderIconRect!) },
                           done: { window.menuTitles.contains("Copy Path") }))
         steps.append(Step(name: "path: and closes", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
@@ -1058,6 +1134,45 @@ enum WindowSelfTest {
             if let dir = snapshotDirectory {
                 steps.append(Step(name: "ssh: snapshot of the sidebar on the host", action: {}, done: { window.saveSnapshot(to: dir + "\\ssh-sidebar.png") }))
             }
+            // Files on the host, through the sidebar's connection.
+            let hostTemp = NSTemporaryDirectory().replacingOccurrences(of: "/", with: "\\")
+            let toUpload = WindowsPath.join(hostTemp, "uploadme-\(ProcessInfo.processInfo.processIdentifier).txt"), uploadName = WindowsPath.name(toUpload)
+            let downloads = WindowsPath.join(hostTemp, "solanum-downloads-\(ProcessInfo.processInfo.processIdentifier)")
+            func hostTyped(_ text: String) {
+                for _ in 0..<40 { _ = window.keyDown(Win.VK_BACK, shift: false, ctrl: false, alt: false) }
+                window.typeIntoWindow(text)
+                pane.pressEnter()
+            }
+            steps.append(Step(name: "ssh files: the sidebar is on the host's folder", action: {}, done: {
+                window.leftTree.root?.hasSuffix("/Desktop") == true && !window.leftTree.isLoadingRoot
+            }))
+            steps.append(Step(name: "ssh files: its menu has uploading", action: { window.rightClick(window.leftListEmptySpot) },
+                              done: { window.menuTitles.contains("Upload Files Here…") && window.menuTitles.contains("New Folder…") }))
+            steps.append(Step(name: "ssh files: a new folder there", action: {
+                window.click(window.menuRow("New Folder…")!)
+                hostTyped("made-on-host")
+            }, done: { window.leftRow(named: "made-on-host") != nil }))
+            steps.append(Step(name: "ssh files: renamed there", action: {
+                window.click(window.leftRow(named: "made-on-host")!)
+                _ = window.keyDown(Win.VK_F2, shift: false, ctrl: false, alt: false)
+                hostTyped("renamed-on-host")
+            }, done: { window.leftRow(named: "renamed-on-host") != nil && window.leftRow(named: "made-on-host") == nil }))
+            steps.append(Step(name: "ssh files: uploads a file", action: {
+                FileManager.default.createFile(atPath: toUpload, contents: Data("from windows".utf8))
+                window.uploadForTest([toUpload], into: window.leftTree.root!)
+            }, done: { window.leftRow(named: uploadName) != nil }))
+            steps.append(Step(name: "ssh files: and downloads it back", action: {
+                try? FileManager.default.createDirectory(atPath: downloads, withIntermediateDirectories: true)
+                window.downloadForTest([window.leftTree.root! + "/" + uploadName], into: downloads)
+            }, done: {
+                (try? String(contentsOfFile: WindowsPath.join(downloads, uploadName), encoding: .utf8)) == "from windows"
+            }))
+            steps.append(Step(name: "ssh files: deleting there asks first", action: {
+                window.click(window.leftRow(named: uploadName)!)
+                _ = window.keyDown(Win.VK_DELETE, shift: false, ctrl: false, alt: false)
+            }, done: { window.menuTitles.contains("Delete") && window.menuTitles.contains("Cancel") }))
+            steps.append(Step(name: "ssh files: and deletes", action: { window.click(window.menuRow("Delete")!) },
+                              done: { window.leftRow(named: uploadName) == nil && !window.isMenuOpen }))
             // The server's end of each connection goes, as when the network drops: ssh sees the connection close, and exits 255.
             steps.append(Step(name: "ssh: a dropped connection shows the bar", action: {
                 print("    ended \(endSSHConnections()) of the server's connection processes")

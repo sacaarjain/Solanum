@@ -26,6 +26,8 @@ enum Win {
     static let VK_PRIOR: Int32 = 0x21, VK_NEXT: Int32 = 0x22, VK_END: Int32 = 0x23, VK_HOME: Int32 = 0x24
     static let VK_LEFT: Int32 = 0x25, VK_UP: Int32 = 0x26, VK_RIGHT: Int32 = 0x27, VK_DOWN: Int32 = 0x28
     static let VK_INSERT: Int32 = 0x2D, VK_DELETE: Int32 = 0x2E, VK_F1: Int32 = 0x70, VK_F4: Int32 = 0x73, VK_F12: Int32 = 0x7B
+    static let VK_F2: Int32 = 0x71
+    static let WM_DROPFILES: UINT = 0x0233
 
     static let WS_OVERLAPPEDWINDOW: DWORD = 0x00CF_0000
     static let CW_USEDEFAULT: Int32 = Int32.min

@@ -106,6 +106,8 @@ final class TerminalWindow {
         }
         hwnd = created
         sol_use_dark_titlebar(UnsafeMutableRawPointer(created))
+        // Files from Explorer can be dropped on the sidebars and terminals.
+        DragAcceptFiles(created, true)
         guard let canvas = Canvas(window: UnsafeMutableRawPointer(created), fontPixels: fontPixels()) else {
             failure = "Couldn't start Direct2D (HRESULT \(String(UInt32(bitPattern: Canvas.lastError), radix: 16)))."
             DestroyWindow(created)
@@ -699,6 +701,9 @@ final class TerminalWindow {
         case Win.WM_OUTPUT:
             panes.first { $0.id == UInt(wParam) }?.drainOutput()
             return 0
+        case Win.WM_DROPFILES:
+            droppedFromExplorer(wParam)
+            return 0
         case Win.WM_EXITED:
             paneExited(id: UInt(wParam))
             return 0
@@ -729,6 +734,12 @@ final class TerminalWindow {
                 // A menu takes no text.
             } else if !panes.isEmpty, activePane.hasQuestion {
                 activePane.questionTyped(UInt16(truncatingIfNeeded: wParam))
+            } else if let sidebar = editingSidebar {
+                let unit = UInt16(truncatingIfNeeded: wParam)
+                if unit >= 0x20, unit != 0x7F, let scalar = Unicode.Scalar(unit) {
+                    sidebar.tree.updateEditing { $0.insert(String(Character(scalar))) }
+                    invalidate()
+                }
             } else if var current = naming {
                 let unit = UInt16(truncatingIfNeeded: wParam)
                 if unit >= 0x20, unit != 0x7F, let scalar = Unicode.Scalar(unit) {
@@ -883,8 +894,15 @@ final class TerminalWindow {
         }
         let part = layout.part(atX: x, y: y)
         // A click anywhere but the name being typed keeps it and ends the typing, as on the Mac.
-        if naming != nil, [Win.WM_LBUTTONDOWN, Win.WM_RBUTTONDOWN, Win.WM_MBUTTONDOWN, Win.WM_LBUTTONDBLCLK].contains(message), !isOnNameField(part) {
+        let presses = [Win.WM_LBUTTONDOWN, Win.WM_RBUTTONDOWN, Win.WM_MBUTTONDOWN, Win.WM_LBUTTONDBLCLK]
+        if naming != nil, presses.contains(message), !isOnNameField(part) {
             finishNaming(commit: true)
+        }
+        // Likewise a name typed in a sidebar.
+        if let sidebar = editingSidebar, presses.contains(message) {
+            let l = sidebarLayout(sidebar)
+            let onField = sidebar.tree.editingRow.map { l.row($0 - sidebar.tree.scrollTop).contains(x, y) } ?? false
+            if !onField { finishSidebarEdit(commit: true) }
         }
         if tabDragMouse(message, x: x) { return }
         if part == .statusBar && !terminalHasMouse && statusBarMouse(message, x: x, y: y) { return }
@@ -1157,6 +1175,41 @@ final class TerminalWindow {
             SetCapture(hwnd)
             return true
         }
+        // A row held down: a click on it, or dragging it somewhere.
+        if var press = rowPress {
+            switch message {
+            case Win.WM_MOUSEMOVE:
+                if !press.dragging {
+                    guard abs(x - press.x) > 4 * scale || abs(y - press.y) > 4 * scale else { return true }
+                    press.dragging = true
+                    rowPress = press
+                    SetCapture(hwnd)
+                }
+                [left, right].forEach { $0.dropFolder = nil }
+                if case .folder(let over, let folder)? = dropSpot(atX: x, y: y) { over.dropFolder = folder }
+                invalidate()
+                return true
+            case Win.WM_LBUTTONUP:
+                rowPress = nil
+                [left, right].forEach { $0.dropFolder = nil }
+                if press.dragging {
+                    ReleaseCapture()
+                    let path = press.entry.path, copy = isDown(Win.VK_CONTROL)
+                    if let spot = dropSpot(atX: x, y: y) {
+                        // Onto itself or where it already is, it stays put.
+                        if case .folder(let over, let folder) = spot, over === press.sidebar, !copy,
+                           folder == path || AnyPath.parent(path) == folder { invalidate(); return true }
+                        drop([path], at: spot, from: press.sidebar, copy: copy)
+                    }
+                } else if press.entry.isDirectory {
+                    // A click on a folder opens or closes it.
+                    press.sidebar.tree.toggle(press.entry.path)
+                }
+                invalidate()
+                return true
+            default: break
+            }
+        }
         if terminalHasMouse { return false }
         guard part == .leftSidebar || part == .rightSidebar else {
             if left.hoveredRow != nil || right.hoveredRow != nil || left.hoveredButton != nil || right.hoveredButton != nil {
@@ -1182,12 +1235,21 @@ final class TerminalWindow {
         case Win.WM_LBUTTONDOWN:
             // Its buttons leave the keyboard where it was, so typing carries on in the terminal.
             if let button { press(button, sidebar) }
-            if let row {
+            if let row, row.entry.path != FileTree.newItemPath {
                 focus(sidebar)
                 sidebar.tree.selection = row.entry.path
-                if row.entry.isDirectory { sidebar.tree.toggle(row.entry.path) }
+                rowPress = (sidebar, row.entry, x, y, false)
             }
             invalidate()
+        case Win.WM_RBUTTONDOWN:
+            if let row, row.entry.path != FileTree.newItemPath {
+                focus(sidebar)
+                sidebar.tree.selection = row.entry.path
+            }
+            invalidate()
+        case Win.WM_RBUTTONUP:
+            // The list's menu: for the row under the pointer, or for the folder itself below the rows.
+            if button == nil, y >= l.list.y { showSidebarMenu(sidebar, entry: row?.entry, x: x, y: y) }
         case Win.WM_LBUTTONDBLCLK:
             guard let row else { break }
             sidebar.tree.selection = row.entry.path
@@ -1221,6 +1283,490 @@ final class TerminalWindow {
                 },
             ], x: anchor.x, y: anchor.maxY + 2 * scale, above: false)
         }
+    }
+
+
+    // MARK: - Files in the sidebars
+
+    /// Files cut or copied on an ssh host, which Windows' clipboard can't carry; this PC's go on that clipboard, so
+    /// Explorer can paste them too. They count while the clipboard hasn't changed since.
+    private var hostClipboard: (paths: [String], cut: Bool, remote: RemoteConnection, sequence: DWORD)?
+    /// A press on a sidebar's row, which may turn into dragging it.
+    private var rowPress: (sidebar: FileSidebar, entry: FileEntry, x: Float, y: Float, dragging: Bool)?
+
+    private var editingSidebar: FileSidebar? { left.tree.editing != nil ? left : right.tree.editing != nil ? right : nil }
+
+    /// The sidebar's connection to the host it shows, when that's an ssh host's.
+    private func remote(for sidebar: FileSidebar) -> RemoteConnection? {
+        guard sidebar.tree.root.map(AnyPath.isUnix) == true, !panes.isEmpty else { return nil }
+        return pane(for: sidebar).remote.flatMap { $0.state == .ready ? $0 : nil }
+    }
+
+    /// Where new and pasted things go: the folder clicked, the clicked file's folder, or the root.
+    private func targetFolder(_ entry: FileEntry?, in sidebar: FileSidebar) -> String? {
+        guard let entry else { return sidebar.tree.root }
+        return entry.isDirectory ? entry.path : AnyPath.parent(entry.path)
+    }
+
+    private func relist(_ folder: String?, in sidebar: FileSidebar) {
+        if let folder { listInBackground(folder, for: sidebar) }
+        invalidate()
+    }
+
+    /// Runs a script on the sidebar's host; `done` on the window's thread with whether it worked.
+    private func onHost(_ sidebar: FileSidebar, _ script: String, timeout: TimeInterval = 60, _ done: @escaping (Bool, String) -> Void) {
+        guard let remote = remote(for: sidebar) else { MessageBeep(UINT(0xFFFF_FFFF)); return }
+        remote.run(script, timeout: timeout) { [weak self] text, code in
+            self?.runOnWindowThread { done(code == 0, text ?? "") }
+        }
+    }
+
+    /// Something went wrong with a file: a sound, as Explorer makes.
+    private func fileProblem() { _ = MessageBeep(UINT(0x30)) }
+
+    private func showSidebarMenu(_ sidebar: FileSidebar, entry: FileEntry?, x: Float, y: Float) {
+        let onHost = sidebar.tree.root.map(AnyPath.isUnix) ?? false
+        var items: [MenuItem] = []
+        func item(_ title: String, _ keys: String = "", enabled: Bool = true, _ run: @escaping () -> Void) {
+            var m = MenuItem(title: title, isEnabled: enabled, run: run)
+            m.shortcut = keys
+            items.append(m)
+        }
+        if let entry {
+            if entry.isDirectory {
+                item("Open in Solanum") { [weak self] in self?.openInTerminal(entry.path, sidebar) }
+                if !onHost { item("Open in New Tab") { [weak self] in self?.openInNewTab(entry.path, sidebar) } }
+                item("Pin as Sidebar Root") { [weak self] in self?.pin(sidebar, to: entry.path) }
+            } else if !onHost {
+                item("Open", "Enter") { [weak self] in self?.onOpenFile(entry.path) }
+            }
+            items.append(.separator)
+        }
+        let folder = targetFolder(entry, in: sidebar)
+        item("New File…") { [weak self] in folder.map { self?.beginNew(folder: false, in: $0, sidebar) } }
+        item("New Folder…", "Ctrl+Shift+N") { [weak self] in folder.map { self?.beginNew(folder: true, in: $0, sidebar) } }
+        items.append(.separator)
+        if let entry {
+            item("Cut", "Ctrl+X") { [weak self] in self?.copyFiles([entry.path], cut: true, sidebar) }
+            item("Copy", "Ctrl+C") { [weak self] in self?.copyFiles([entry.path], cut: false, sidebar) }
+        }
+        item("Paste", "Ctrl+V", enabled: canPaste) { [weak self] in folder.map { self?.pasteFiles(into: $0, sidebar) } }
+        if let entry {
+            item("Duplicate") { [weak self] in self?.duplicate(entry, sidebar) }
+            items.append(.separator)
+            item("Copy Path", "Ctrl+Shift+C") { [weak self] in self?.activePane.setClipboard(entry.path) }
+            item("Rename…", "F2") { [weak self] in self?.beginRename(entry, sidebar) }
+            item(onHost ? "Delete…" : "Delete", "Del") { [weak self] in self?.deleteFiles([entry], sidebar, x: x, y: y) }
+        }
+        items.append(.separator)
+        if onHost {
+            if let entry { item("Download to Downloads") { [weak self] in self?.download([entry.path], into: FileOps.downloadsFolder, sidebar) } }
+            item("Upload Files Here…") { [weak self] in folder.map { self?.pickAndUpload(into: $0, sidebar) } }
+        } else {
+            item(entry == nil ? "Open in Explorer" : "Show in Explorer") {
+                if let entry { FileOps.onReveal(entry.path) } else if let root = sidebar.tree.root { FileOps.onReveal(root) }
+            }
+        }
+        item("Refresh") { sidebar.tree.refresh() }
+        openMenu(items, x: x, y: y, above: false)
+    }
+
+    private func openInTerminal(_ folder: String, _ sidebar: FileSidebar) {
+        pane(for: sidebar).changeDirectory(to: folder)
+        focusTerminal()
+    }
+
+    private func openInNewTab(_ folder: String, _ sidebar: FileSidebar) {
+        addPane(cwd: folder, column: sidebar === right && isSplit ? 1 : 0)
+    }
+
+    private func pin(_ sidebar: FileSidebar, to folder: String) {
+        if sidebar === left { return pinLeft(to: folder) }
+        sidebar.pinned = folder
+        sidebar.tree.setRoot(folder)
+        invalidate()
+    }
+
+    // Naming new items, and renaming
+
+    private func beginNew(folder: Bool, in parent: String, _ sidebar: FileSidebar) {
+        finishSidebarEdit(commit: true)
+        focus(sidebar)
+        sidebar.tree.beginNew(folder: folder, in: parent)
+        if let i = sidebar.tree.editingRow { sidebar.tree.selection = sidebar.tree.rows[i].entry.path }
+        sidebar.tree.keepSelectionVisible(rowsShowing: sidebarLayout(sidebar).rowsShowing)
+        invalidate()
+    }
+
+    private func beginRename(_ entry: FileEntry, _ sidebar: FileSidebar) {
+        finishSidebarEdit(commit: true)
+        focus(sidebar)
+        sidebar.tree.beginRename(entry)
+        invalidate()
+    }
+
+    /// Keys while a name's typed in a sidebar. Characters come as WM_CHAR.
+    private func sidebarEditKey(_ key: Int32, ctrl: Bool) -> Bool {
+        guard let sidebar = editingSidebar else { return false }
+        switch key {
+        case Win.VK_RETURN: finishSidebarEdit(commit: true)
+        case Win.VK_ESCAPE: finishSidebarEdit(commit: false)
+        case Win.VK_BACK: sidebar.tree.updateEditing { $0.deleteBackward(word: ctrl) }
+        case Win.VK_DELETE: sidebar.tree.updateEditing { $0.deleteForward() }
+        case Win.VK_LEFT: sidebar.tree.updateEditing { $0.move(by: -1) }
+        case Win.VK_RIGHT: sidebar.tree.updateEditing { $0.move(by: 1) }
+        case Win.VK_HOME: sidebar.tree.updateEditing { $0.move(to: 0) }
+        case Win.VK_END: sidebar.tree.updateEditing { $0.move(to: $0.text.count) }
+        case 0x56 where ctrl:
+            if let text = activePane.clipboardText() { sidebar.tree.updateEditing { $0.insert(text.filter { !$0.isNewline }) } }
+        default: return !ctrl ? false : true
+        }
+        invalidate()
+        return true
+    }
+
+    /// Makes the file or folder, or renames it. A name that can't be (taken, or with characters it can't have) keeps the
+    /// field open with a sound.
+    private func finishSidebarEdit(commit: Bool) {
+        guard let sidebar = editingSidebar, let e = sidebar.tree.endEditing() else { return }
+        invalidate()
+        guard commit else { return }
+        let name = e.field.text.trimmingCharacters(in: .whitespaces)
+        func again() {
+            fileProblem()
+            switch e.kind {
+            case .newFile(let parent): sidebar.tree.beginNew(folder: false, in: parent)
+            case .newFolder(let parent): sidebar.tree.beginNew(folder: true, in: parent)
+            case .rename(let entry): sidebar.tree.beginRename(entry)
+            }
+            sidebar.tree.updateEditing { $0 = TextFieldState(name) }
+            invalidate()
+        }
+        switch e.kind {
+        case .newFile(let parent), .newFolder(let parent):
+            guard !name.isEmpty else { return }
+            let isFolder: Bool = { if case .newFolder = e.kind { return true }; return false }()
+            let unix = AnyPath.isUnix(parent)
+            guard FileOps.isValidName(name, unix: unix), !sidebar.tree.contains(name, in: parent) else { return again() }
+            let path = AnyPath.join(parent, name)
+            if unix {
+                onHost(sidebar, FileOps.remoteCreate(path, folder: isFolder)) { [weak self] ok, _ in
+                    if ok { sidebar.tree.selection = path; self?.relist(parent, in: sidebar) } else { again() }
+                }
+            } else if isFolder ? FileOps.createFolder(path) : FileOps.createFile(path) {
+                sidebar.tree.selection = path
+                relist(parent, in: sidebar)
+            } else {
+                again()
+            }
+        case .rename(let entry):
+            guard name != entry.name, let parent = AnyPath.parent(entry.path) else { return }
+            let unix = AnyPath.isUnix(parent)
+            guard FileOps.isValidName(name, unix: unix) else { return again() }
+            if unix {
+                let target = AnyPath.join(parent, name)
+                onHost(sidebar, FileOps.remoteRename(entry.path, to: target)) { [weak self] ok, _ in
+                    if ok { sidebar.tree.selection = target; self?.relist(parent, in: sidebar) } else { again() }
+                }
+            } else if let target = FileOps.rename(entry.path, to: name) {
+                sidebar.tree.selection = target
+                relist(parent, in: sidebar)
+            } else {
+                again()
+            }
+        }
+    }
+
+    // Copying, cutting and pasting
+
+    private func copyFiles(_ paths: [String], cut: Bool, _ sidebar: FileSidebar) {
+        guard !paths.isEmpty else { return }
+        [left, right].forEach { $0.tree.cutPaths = [] }
+        if AnyPath.isUnix(paths[0]) {
+            guard let remote = remote(for: sidebar) else { return fileProblem() }
+            hostClipboard = (paths, cut, remote, GetClipboardSequenceNumber())
+        } else {
+            hostClipboard = nil
+            FileOps.putOnClipboard(paths, cut: cut, owner: hwnd)
+        }
+        if cut { sidebar.tree.cutPaths = Set(paths) }
+        invalidate()
+    }
+
+    private var canPaste: Bool {
+        if let h = hostClipboard, h.sequence == GetClipboardSequenceNumber() { return true }
+        return IsClipboardFormatAvailable(UINT(15))
+    }
+
+    /// What's been cut or copied, here or in Explorer, into `folder`: moved if it was cut.
+    private func pasteFiles(into folder: String, _ sidebar: FileSidebar) {
+        let toHost = AnyPath.isUnix(folder)
+        if let h = hostClipboard, h.sequence == GetClipboardSequenceNumber() {
+            if toHost {
+                guard let remote = remote(for: sidebar), remote === h.remote else { return fileProblem() }
+                var taken = sidebar.tree.names(in: folder)
+                let pairs = h.paths.compactMap { path -> (from: String, to: String)? in
+                    if h.cut && AnyPath.parent(path) == folder { return nil }
+                    let name = FileOps.uniqueName(AnyPath.name(path), taken: taken, copy: AnyPath.parent(path) == folder, caseSensitive: true)
+                    taken.insert(name)
+                    return (path, AnyPath.join(folder, name))
+                }
+                guard !pairs.isEmpty else { return }
+                onHost(sidebar, FileOps.remoteTransfer(pairs, move: h.cut), timeout: 600) { [weak self] ok, _ in
+                    if !ok { self?.fileProblem() }
+                    self?.afterPaste(cut: h.cut, folders: [folder] + h.paths.compactMap(AnyPath.parent))
+                }
+            } else {
+                download(h.paths, into: folder, sidebar, from: h.remote)
+                if h.cut { hostClipboard = nil }
+            }
+            return
+        }
+        guard let files = FileOps.clipboardFiles(owner: hwnd) else { return fileProblem() }
+        if toHost {
+            upload(files.paths, into: folder, sidebar)
+            return
+        }
+        sidebar.transfer = files.cut ? "Moving…" : "Copying…"
+        invalidate()
+        Thread.detachNewThread { [weak self] in
+            let done = FileOps.transfer(files.paths, into: folder, move: files.cut)
+            self?.runOnWindowThread {
+                guard let self else { return }
+                sidebar.transfer = nil
+                if done.count < files.paths.count { self.fileProblem() }
+                if let first = done.first { sidebar.tree.selection = first }
+                self.afterPaste(cut: files.cut, folders: [folder] + files.paths.compactMap(WindowsPath.parent))
+            }
+        }
+    }
+
+    /// A cut's been pasted: nothing's waiting to move any more, and the folders on both sides are listed again.
+    private func afterPaste(cut: Bool, folders: [String]) {
+        if cut {
+            [left, right].forEach { $0.tree.cutPaths = [] }
+            hostClipboard = nil
+        }
+        for sidebar in [left, right] { Set(folders).forEach { relist($0, in: sidebar) } }
+    }
+
+    private func duplicate(_ entry: FileEntry, _ sidebar: FileSidebar) {
+        guard let parent = AnyPath.parent(entry.path) else { return }
+        if AnyPath.isUnix(parent) {
+            let name = FileOps.uniqueName(entry.name, taken: sidebar.tree.names(in: parent), copy: true, caseSensitive: true)
+            onHost(sidebar, FileOps.remoteTransfer([(entry.path, AnyPath.join(parent, name))], move: false), timeout: 600) { [weak self] ok, _ in
+                if !ok { self?.fileProblem() }
+                self?.relist(parent, in: sidebar)
+            }
+        } else {
+            if let copy = FileOps.transfer([entry.path], into: parent, move: false).first { sidebar.tree.selection = copy } else { fileProblem() }
+            relist(parent, in: sidebar)
+        }
+    }
+
+    /// This PC's go to the Recycle Bin; a host's are gone for good, so it asks first.
+    private func deleteFiles(_ entries: [FileEntry], _ sidebar: FileSidebar, x: Float, y: Float) {
+        guard let first = entries.first else { return }
+        let parents = Set(entries.compactMap { AnyPath.parent($0.path) })
+        if AnyPath.isUnix(first.path) {
+            let what = entries.count == 1 ? "“\(first.name)”" : "\(entries.count) items"
+            openMenu([
+                MenuItem(title: "Delete \(what) for good", isEnabled: false),
+                .separator,
+                MenuItem(title: "Delete") { [weak self] in
+                    self?.onHost(sidebar, FileOps.remoteDelete(entries.map(\.path)), timeout: 600) { ok, _ in
+                        if !ok { self?.fileProblem() }
+                        parents.forEach { self?.relist($0, in: sidebar) }
+                    }
+                },
+                MenuItem(title: "Cancel") {},
+            ], x: x, y: y, above: false)
+            return
+        }
+        if !FileOps.recycle(entries.map(\.path)) { fileProblem() }
+        if entries.contains(where: { $0.path == sidebar.tree.selection }) { sidebar.tree.selection = nil }
+        parents.forEach { relist($0, in: sidebar) }
+    }
+
+    // Between this PC and an ssh host
+
+    private func upload(_ paths: [String], into folder: String, _ sidebar: FileSidebar, then: (() -> Void)? = nil) {
+        guard let remote = remote(for: sidebar) else { return fileProblem() }
+        var taken = sidebar.tree.names(in: folder)
+        let jobs = paths.map { path -> (path: String, name: String) in
+            let name = FileOps.uniqueName(WindowsPath.name(path), taken: taken, caseSensitive: true)
+            taken.insert(name)
+            return (path, name)
+        }
+        sidebar.transfer = "Uploading \(paths.count == 1 ? WindowsPath.name(paths[0]) : "\(paths.count) items")…"
+        invalidate()
+        Thread.detachNewThread { [weak self] in
+            var failed = false
+            for job in jobs {
+                guard let data = FileOps.pack(job.path) else { failed = true; continue }
+                let sent = DispatchSemaphore(value: 0)
+                remote.run(FileOps.remoteUnpack(data, item: WindowsPath.name(job.path), into: folder, as: job.name), timeout: 600) { _, code in
+                    if code != 0 { failed = true }
+                    sent.signal()
+                }
+                sent.wait()
+            }
+            self?.runOnWindowThread {
+                sidebar.transfer = nil
+                if failed { self?.fileProblem() }
+                self?.relist(folder, in: sidebar)
+                then?()
+            }
+        }
+    }
+
+    private func download(_ paths: [String], into folder: String, _ sidebar: FileSidebar, from source: RemoteConnection? = nil) {
+        guard let remote = source ?? remote(for: sidebar) else { return fileProblem() }
+        sidebar.transfer = "Downloading \(paths.count == 1 ? AnyPath.name(paths[0]) : "\(paths.count) items")…"
+        invalidate()
+        Thread.detachNewThread { [weak self] in
+            var failed = false, landed: [String] = []
+            for path in paths {
+                let got = DispatchSemaphore(value: 0)
+                var text: String?
+                remote.run(FileOps.remotePack(path), timeout: 600) { out, code in
+                    text = code == 0 ? out : nil
+                    got.signal()
+                }
+                got.wait()
+                if let text, let at = FileOps.unpack(text, item: AnyPath.name(path), into: folder) { landed.append(at) } else { failed = true }
+            }
+            self?.runOnWindowThread {
+                guard let self else { return }
+                sidebar.transfer = nil
+                if failed { self.fileProblem() }
+                for s in [self.left, self.right] { self.relist(folder, in: s) }
+                if let first = landed.first, folder == FileOps.downloadsFolder, !self.isTesting { FileOps.onReveal(first) }
+            }
+        }
+    }
+
+    /// Windows' Open dialog, for files to upload to the host.
+    private func pickAndUpload(into folder: String, _ sidebar: FileSidebar) {
+        var buffer = [UInt16](repeating: 0, count: 65536)
+        var title = wide("Upload to \(AnyPath.name(folder))")
+        let picked = buffer.withUnsafeMutableBufferPointer { file -> Bool in
+            title.withUnsafeMutableBufferPointer { titleText -> Bool in
+                var info = OPENFILENAMEW()
+                info.lStructSize = DWORD(MemoryLayout<OPENFILENAMEW>.size)
+                info.hwndOwner = hwnd
+                info.lpstrFile = file.baseAddress
+                info.nMaxFile = DWORD(file.count)
+                info.lpstrTitle = UnsafePointer(titleText.baseAddress)
+                info.Flags = DWORD(OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR)
+                return GetOpenFileNameW(&info)
+            }
+        }
+        guard picked else { return }
+        // One file is its whole path; several are the folder, then each name, NUL between and two at the end.
+        var parts: [String] = [], start = 0
+        for i in buffer.indices where buffer[i] == 0 {
+            if i == start { break }
+            parts.append(String(decoding: buffer[start..<i], as: UTF16.self))
+            start = i + 1
+        }
+        let paths = parts.count == 1 ? parts : parts.dropFirst().map { WindowsPath.join(parts[0], $0) }
+        upload(paths, into: folder, sidebar)
+    }
+
+    /// For tests: what the Open dialog would have handed over.
+    func uploadForTest(_ paths: [String], into folder: String) { upload(paths, into: folder, left) }
+    func downloadForTest(_ paths: [String], into folder: String) { download(paths, into: folder, left) }
+
+    private var isTesting: Bool { CommandLine.arguments.contains("--window-test") }
+
+    // Dragging and dropping
+
+    /// Where a drag over a point would drop: a sidebar and its folder there, or a terminal.
+    private enum DropSpot { case folder(FileSidebar, String), terminal(TerminalPane) }
+
+    private func dropSpot(atX x: Float, y: Float) -> DropSpot? {
+        switch layout.part(atX: x, y: y) {
+        case .leftSidebar, .rightSidebar:
+            let sidebar = layout.part(atX: x, y: y) == .leftSidebar ? left : right
+            let l = sidebarLayout(sidebar)
+            let row = l.visibleRow(atY: y).map { $0 + sidebar.tree.scrollTop }.flatMap { sidebar.tree.rows.indices.contains($0) ? sidebar.tree.rows[$0] : nil }
+            return targetFolder(row?.entry, in: sidebar).map { .folder(sidebar, $0) }
+        case .terminal:
+            return .terminal(pane(atX: x))
+        default:
+            return nil
+        }
+    }
+
+    /// A path as the shell in a tab would read it: in quotes when it has spaces or the like.
+    private func shellWord(_ path: String) -> String {
+        if AnyPath.isUnix(path) { return path.contains(where: { " '\"$`\\()&;|<>*?![]{}".contains($0) }) ? RemoteConnection.quote(path) : path }
+        return path.contains(where: { " '`$&()[]{};,@#".contains($0) }) ? "'" + path.replacingOccurrences(of: "'", with: "''") + "'" : path
+    }
+
+    /// Files dropped somewhere: into a folder (copied or moved, uploaded or downloaded) or into a terminal, as their paths.
+    private func drop(_ paths: [String], at spot: DropSpot, from source: FileSidebar?, copy: Bool) {
+        switch spot {
+        case .terminal(let pane):
+            if pane !== activePane, let i = panes.firstIndex(where: { $0 === pane }) { activate(i) }
+            focusTerminal()
+            pane.pasteText(paths.map(shellWord).joined(separator: " ") + " ")
+        case .folder(let sidebar, let folder):
+            let fromHost = paths.first.map(AnyPath.isUnix) ?? false, toHost = AnyPath.isUnix(folder)
+            switch (fromHost, toHost) {
+            case (false, false):
+                Thread.detachNewThread { [weak self] in
+                    let done = FileOps.transfer(paths, into: folder, move: !copy)
+                    self?.runOnWindowThread {
+                        if done.isEmpty { self?.fileProblem() }
+                        self?.afterPaste(cut: false, folders: [folder] + paths.compactMap(WindowsPath.parent))
+                    }
+                }
+            case (false, true):
+                upload(paths, into: folder, sidebar)
+            case (true, false):
+                download(paths, into: folder, sidebar, from: source.flatMap { remote(for: $0) })
+            case (true, true):
+                guard let source, let from = remote(for: source), from === remote(for: sidebar) else { return fileProblem() }
+                var taken = sidebar.tree.names(in: folder)
+                let pairs = paths.compactMap { path -> (from: String, to: String)? in
+                    if !copy && AnyPath.parent(path) == folder { return nil }
+                    if folder == path || folder.hasPrefix(path + "/") { return nil }
+                    let name = FileOps.uniqueName(AnyPath.name(path), taken: taken, copy: AnyPath.parent(path) == folder, caseSensitive: true)
+                    taken.insert(name)
+                    return (path, AnyPath.join(folder, name))
+                }
+                guard !pairs.isEmpty else { return }
+                onHost(sidebar, FileOps.remoteTransfer(pairs, move: !copy), timeout: 600) { [weak self] ok, _ in
+                    if !ok { self?.fileProblem() }
+                    self?.afterPaste(cut: false, folders: [folder] + paths.compactMap(AnyPath.parent))
+                }
+            }
+        }
+    }
+
+    /// Files dropped from Explorer.
+    private func droppedFromExplorer(_ wParam: WPARAM) {
+        guard let raw = UnsafeMutableRawPointer(bitPattern: UInt(wParam)) else { return }
+        let drop = HDROP(OpaquePointer(raw))
+        var point = POINT()
+        _ = DragQueryPoint(drop, &point)
+        let paths = FileOps.paths(in: drop)
+        DragFinish(drop)
+        guard !paths.isEmpty, let spot = dropSpot(atX: Float(point.x), y: Float(point.y)) else { return }
+        // From Explorer, a drop copies, as it does between drives there.
+        drop(paths, at: spot, from: nil, copy: true)
+        invalidate()
+    }
+
+    /// For tests: files dropped from Explorer at a point, as Explorer hands them over.
+    func dropFilesForTest(_ paths: [String], atX x: Float, y: Float) {
+        guard let list = FileOps.dropList(paths), let raw = GlobalLock(list) else { return }
+        raw.storeBytes(of: Int32(x), toByteOffset: 4, as: Int32.self)
+        raw.storeBytes(of: Int32(y), toByteOffset: 8, as: Int32.self)
+        GlobalUnlock(list)
+        _ = SendMessageW(hwnd, Win.WM_DROPFILES, WPARAM(UInt(bitPattern: list)), 0)
     }
 
     // MARK: - Menus
@@ -1592,6 +2138,32 @@ final class TerminalWindow {
     /// Keys while a sidebar has the focus. False hands the key on, and typing goes back to the terminal.
     private func sidebarKey(_ key: Int32, _ sidebar: FileSidebar, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
         let tree = sidebar.tree
+        let selected = tree.selectedIndex.map { tree.rows[$0].entry }
+        // Explorer's keys for files.
+        switch key {
+        case Win.VK_F2 where !ctrl && !alt:
+            if let selected { beginRename(selected, sidebar) }
+            return true
+        case Win.VK_DELETE where !ctrl && !alt:
+            if let selected, let i = tree.selectedIndex {
+                let r = sidebarLayout(sidebar).row(i - tree.scrollTop)
+                deleteFiles([selected], sidebar, x: r.x + 24 * scale, y: r.maxY)
+            }
+            return true
+        case 0x43 where ctrl && shift && !alt:
+            if let selected { activePane.setClipboard(selected.path) }
+            return true
+        case 0x43 where ctrl && !alt, 0x58 where ctrl && !alt:
+            if let selected { copyFiles([selected.path], cut: key == 0x58, sidebar) }
+            return true
+        case 0x56 where ctrl && !alt:
+            if let folder = targetFolder(selected, in: sidebar) { pasteFiles(into: folder, sidebar) }
+            return true
+        case 0x4E where ctrl && shift && !alt:
+            if let folder = targetFolder(selected, in: sidebar) { beginNew(folder: true, in: folder, sidebar) }
+            return true
+        default: break
+        }
         switch key {
         case Win.VK_UP: tree.moveSelection(by: -1)
         case Win.VK_DOWN: tree.moveSelection(by: 1)
@@ -2232,6 +2804,7 @@ final class TerminalWindow {
         if menu != nil { return menuKey(key) }
         if !panes.isEmpty, activePane.hasQuestion { return activePane.questionKey(key, ctrl: ctrl) }
         if naming != nil { return namingKey(key, ctrl: ctrl) }
+        if editingSidebar != nil { return sidebarEditKey(key, ctrl: ctrl) }
         // Ctrl+Alt+T and Ctrl+Alt+G, as the Mac's Command-Option-T and G: a new tab in this group, and a new group.
         if ctrl && alt && !shift && key == 0x54 { newTabInGroup(); return true }
         if ctrl && alt && !shift && key == 0x47 { addToNewGroup(pickedPanes.isEmpty ? [activePane] : pickedPanes); return true }
@@ -2367,6 +2940,22 @@ final class TerminalWindow {
     }
 
     func leftButton(_ button: SidebarButton) -> UIRect { sidebarLayout(left).button(button.rawValue) }
+    /// Below the left sidebar's rows, where its menu is the folder's own.
+    var leftListEmptySpot: UIRect {
+        let l = sidebarLayout(left).list
+        return UIRect(x: l.x + 20, y: l.maxY - 30, width: 4, height: 4)
+    }
+    var leftEditingText: String? { left.tree.editing?.field.text }
+
+    /// Presses a row of the left sidebar and lets go over another's, as dragging it there would.
+    func dragLeftRow(_ from: String, onto to: String) {
+        guard let a = leftRow(named: from), let b = leftRow(named: to) else { return }
+        func at(_ r: UIRect, _ dx: Float = 0) -> LPARAM { LPARAM(Int(r.x + 30 + dx) & 0xFFFF) | (LPARAM(Int(r.midY) & 0xFFFF) << 16) }
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, at(a))
+        _ = SendMessageW(hwnd, Win.WM_MOUSEMOVE, 1, at(a, 12))
+        _ = SendMessageW(hwnd, Win.WM_MOUSEMOVE, 1, at(b))
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, at(b))
+    }
 
     func doubleClick(_ rect: UIRect) {
         let position = LPARAM(Int(rect.x + rect.width / 2) & 0xFFFF) | (LPARAM(Int(rect.y + rect.height / 2) & 0xFFFF) << 16)

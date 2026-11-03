@@ -49,7 +49,8 @@ if ($LASTEXITCODE -ne 0) { Write-Error 'Swift failed to compile (the errors are 
 
 Write-Host '> Linking...'
 # The linker announces the import library it makes for each program, which nothing here uses.
-function Link-Program { & swiftc -module-name Solanum $swiftObject $canvasObject @linkIcon @args 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -notmatch 'Creating library' } | Write-Host }
+# comdlg32: the Open dialog, for uploading files to an ssh host.
+function Link-Program { & swiftc -module-name Solanum $swiftObject $canvasObject @linkIcon -lcomdlg32 @args 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -notmatch 'Creating library' } | Write-Host }
 Link-Program -o "$out\Solanum-test.exe"
 if ($LASTEXITCODE -ne 0) { Write-Error 'Linking Solanum-test.exe failed.' }
 Link-Program -o "$out\Solanum.exe" -Xlinker /SUBSYSTEM:WINDOWS -Xlinker /ENTRY:mainCRTStartup

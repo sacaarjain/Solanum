@@ -35,6 +35,10 @@ final class FileSidebar {
     var isFocused = false
     var hoveredRow: Int?
     var hoveredButton: SidebarButton?
+    /// A file transfer under way (uploading, downloading), said in place of the path.
+    var transfer: String?
+    /// Where something dragged over it would go: a folder in it, or its root.
+    var dropFolder: String?
 
     /// How much of it is showing, from 0 to 1, while it slides in or out.
     var shown: Float
@@ -99,7 +103,11 @@ struct SidebarView {
             icon(button.glyph, r, pixels: 12 * scale, color: on ? TerminalPalette.accent : nil, alpha: on ? 1 : 0.7)
         }
         let path = folder.map { AnyPath.isUnix($0) ? (crumbs.first == "~" ? "~/" + crumbs.dropFirst().joined(separator: "/") : $0) : crumbs.joined(separator: "\\") } ?? ""
-        label((sidebar.pinned != nil ? "Pinned · " : "") + (host.map { $0 + ":" } ?? "") + path, layout.subtitle, pixels: 11 * scale, alpha: 0.5)
+        if let transfer = sidebar.transfer {
+            label(transfer, layout.subtitle, pixels: 11 * scale, alpha: 0.8)
+        } else {
+            label((sidebar.pinned != nil ? "Pinned · " : "") + (host.map { $0 + ":" } ?? "") + path, layout.subtitle, pixels: 11 * scale, alpha: 0.5)
+        }
 
         let list = layout.list
         sol_canvas_push_clip(canvas.raw, list.x, list.y, list.width, list.height)
@@ -119,6 +127,10 @@ struct SidebarView {
             label("Empty folder", UIRect(x: a.x + 12 * scale, y: list.y + 4 * scale, width: a.width - 24 * scale, height: 22 * scale), pixels: 12.5 * scale, alpha: 0.5)
             return
         }
+        // Something dragged over its root: the whole list is where it goes.
+        if let drop = sidebar.dropFolder, drop == tree.root {
+            sol_canvas_stroke_rounded(canvas.raw, list.x + 3 * scale, list.y + scale, list.width - 6 * scale, list.height - 4 * scale, 6 * scale, TerminalPalette.accent, 0.8, 1.5 * scale)
+        }
         let showing = layout.rowsShowing + 1
         for visible in 0..<showing where tree.scrollTop + visible < tree.rows.count {
             drawRow(tree.rows[tree.scrollTop + visible], in: layout.row(visible), visible: visible)
@@ -133,7 +145,9 @@ struct SidebarView {
     private func drawRow(_ row: FileTree.Row, in r: UIRect, visible: Int) {
         let tree = sidebar.tree, entry = row.entry
         let inset = 4 * scale
-        if tree.selection == entry.path {
+        if sidebar.dropFolder == entry.path && entry.isDirectory {
+            sol_canvas_fill_rounded(canvas.raw, r.x + inset, r.y + scale / 2, r.width - inset * 2, r.height - scale, 5 * scale, TerminalPalette.accent, 0.32)
+        } else if tree.selection == entry.path {
             sol_canvas_fill_rounded(canvas.raw, r.x + inset, r.y + scale / 2, r.width - inset * 2, r.height - scale, 5 * scale, TerminalPalette.accent, sidebar.isFocused ? 0.26 : 0.14)
         } else if sidebar.hoveredRow == visible {
             sol_canvas_fill_rounded(canvas.raw, r.x + inset, r.y + scale / 2, r.width - inset * 2, r.height - scale, 5 * scale, fg, 0.06)
@@ -147,6 +161,19 @@ struct SidebarView {
         let iconRect = UIRect(x: chevron.maxX + 3 * scale, y: r.y, width: 16 * scale, height: r.height)
         icon(entry.isDirectory ? 0xE8B7 : 0xE7C3, iconRect, pixels: 13 * scale, color: entry.isDirectory ? TerminalPalette.accent : nil, alpha: entry.isDirectory ? 0.85 : 0.65)
         let textX = iconRect.maxX + 6 * scale
-        label(entry.name, UIRect(x: textX, y: r.y, width: max(r.maxX - textX - 8 * scale, 0), height: r.height), pixels: 12.5 * scale, alpha: entry.isHidden ? 0.5 : 0.9)
+        // A name being typed: a field in the row, with its caret.
+        if let editing = tree.editing, tree.editingRow == tree.rows.firstIndex(of: row) {
+            let box = UIRect(x: textX - 4 * scale, y: r.y + 2 * scale, width: max(r.maxX - textX - 4 * scale, 40 * scale), height: r.height - 4 * scale)
+            sol_canvas_fill_rounded(canvas.raw, box.x, box.y, box.width, box.height, 4 * scale, TerminalPalette.background, 1)
+            sol_canvas_stroke_rounded(canvas.raw, box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1, 4 * scale, TerminalPalette.accent, 0.9, 1)
+            let pixels = 12.5 * scale
+            label(editing.field.text, UIRect(x: textX, y: r.y, width: box.width - 8 * scale, height: r.height), pixels: pixels)
+            let before = Array(editing.field.beforeCaret.utf16)
+            let caretX = textX + sol_canvas_measure_label(canvas.raw, before, Int32(before.count), pixels, 0)
+            sol_canvas_fill_rect(canvas.raw, caretX.rounded(), box.y + 3 * scale, max(scale.rounded(), 1), box.height - 6 * scale, TerminalPalette.accent, 1)
+            return
+        }
+        let dim: Float = tree.cutPaths.contains(entry.path) ? 0.45 : entry.isHidden ? 0.5 : 0.9
+        label(entry.name, UIRect(x: textX, y: r.y, width: max(r.maxX - textX - 8 * scale, 0), height: r.height), pixels: 12.5 * scale, alpha: dim)
     }
 }
