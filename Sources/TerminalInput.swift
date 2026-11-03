@@ -290,9 +290,9 @@ extension TerminalView {
     }
 
     /// A selection inside one of Claude's code blocks copies that stretch of the original code: no indentation,
-    /// and no line breaks where the screen wrapped a long line.
+    /// and no line breaks where the screen wrapped a long line. Inside a quote, the same for its text, without the bar.
     private func codeText(from st: GridPos, to en: GridPos) -> String? {
-        guard let box = codeBoxes.first(where: { $0.kind == .code && $0.contains(line: st.line) && $0.contains(line: en.line) }) else { return nil }
+        guard let box = codeBoxes.first(where: { $0.kind != .table && $0.contains(line: st.line) && $0.contains(line: en.line) }) else { return nil }
         var lo = Int.max, hi = Int.min
         for a in st.line...en.line {
             let from = a == st.line ? st.col : 0

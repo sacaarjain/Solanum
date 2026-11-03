@@ -27,6 +27,8 @@ final class Block {
     var startTime: Date?
     var endTime: Date?
     var collapsed = false
+    /// Run on an ssh host, found from Enter at its prompt (see `remoteEnterPressed`): how it exited isn't known.
+    var onHost = false
 
     init(id: Int, promptLine: Int) {
         self.id = id
@@ -152,6 +154,14 @@ final class Terminal {
     private(set) var blocks: [Block] = []
     private(set) var currentBlock: Block?
     private var nextBlockId = 1
+    /// The command running on the ssh host, as far as Solanum can tell (see `remoteEnterPressed`).
+    private var hostCommand: Block?
+    /// Enter in an ssh session not yet worked out: its line, and what was noted as that line's prompt.
+    private var hostEnter: (line: Int, noted: String?)?
+    /// The line a key last went to in an ssh session, and what was on it before the cursor then: its prompt.
+    private var hostPromptNoted: (line: Int, prefix: String)?
+    /// Starts of the host's prompts that don't end the usual way, learned from the session's first command.
+    private var hostPromptHeads: [String] = []
 
     weak var delegate: TerminalDelegate?
 
@@ -1044,6 +1054,7 @@ final class Terminal {
                 if let status = Int(rest.dropFirst("SolanumSSHExit=".count)) { delegate?.terminalSSHExited(self, status: status) }
             } else if rest.hasPrefix("SolanumSSH=") {
                 let path = String(rest.dropFirst("SolanumSSH=".count))
+                if path.isEmpty { endHostSession() }
                 sshControlPath = path.isEmpty ? nil : path
                 remoteCwd = nil
                 delegate?.terminalCwdChanged(self)
@@ -1140,6 +1151,99 @@ final class Terminal {
         title = nil
         hyperlink = nil  // a program that quit mid-link doesn't link the shell's output
         delegate?.terminalBlockFinished(self, block: b)
+    }
+
+    // MARK: - Commands on an ssh host
+
+    // A shell on the host has no hooks marking its prompts, so its commands are found from the keyboard: Enter on a
+    // line that looks like a prompt starts one, and the next prompt ends it. What was before the cursor when typing
+    // began on a line is its prompt; one shaped like a prompt ($, #, %, >, ❯ …) counts. Enter after "Password:" or
+    // "Continue? [y/n]" is input to what's running instead.
+
+    /// A key is going to the ssh session: the first one on a line notes what's before the cursor, the prompt.
+    func remoteKeyPressed() {
+        guard sshControlPath != nil, !usingAlt else { return }
+        resolveHostEnter()
+        let start = logicalStart(cursorAbs)
+        guard hostPromptNoted?.line != start, start == cursorAbs, let l = line(abs: start) else { return }
+        hostPromptNoted = (start, cursorX > 0 ? l.text(from: 0, to: cursorX - 1, trim: false) : "")
+    }
+
+    /// Enter went to the ssh session. What it was for is worked out once the host has echoed what was typed (at the
+    /// next key, or when the output goes quiet): over a slow link, the line may not show it yet.
+    func remoteEnterPressed() {
+        guard sshControlPath != nil, !usingAlt else { return }
+        resolveHostEnter()
+        let start = logicalStart(cursorAbs)
+        hostEnter = (start, hostPromptNoted?.line == start ? hostPromptNoted?.prefix : nil)
+        hostPromptNoted = nil
+    }
+
+    /// On a prompt, the command before ends and the one typed there starts.
+    private func resolveHostEnter() {
+        guard let enter = hostEnter else { return }
+        hostEnter = nil
+        var text = ""
+        var a = enter.line
+        while let l = line(abs: a) {
+            text += l.text(trim: !l.wrapped)
+            guard l.wrapped, a < lastAbs else { break }
+            a += 1
+        }
+        guard line(abs: enter.line) != nil else { return }
+        let firstCommand = !blocks.contains { $0.onHost }
+        guard let end = HostPrompt.end(of: text, noted: enter.noted, heads: hostPromptHeads, firstCommand: firstCommand) else { return }
+        finishHostCommand(before: enter.line)
+        let command = String(text.dropFirst(end)).trimmingCharacters(in: .whitespaces)
+        guard !command.isEmpty else { return }
+        if firstCommand, let head = HostPrompt.head(String(text.prefix(end))), !hostPromptHeads.contains(head) { hostPromptHeads.append(head) }
+        let b = Block(id: nextBlockId, promptLine: enter.line)
+        nextBlockId += 1
+        b.onHost = true
+        b.commandLine = enter.line
+        b.commandCol = min(end, cols - 1)
+        b.command = command
+        b.outputLine = a + 1
+        b.state = .running
+        b.startTime = Date()
+        blocks.append(b)
+        hostCommand = b
+    }
+
+    /// The output has gone quiet: what Enter was for is settled, and with the cursor just after a prompt on a line of
+    /// its own, the command has finished. True if anything changed.
+    @discardableResult func remoteOutputQuiet() -> Bool {
+        guard sshControlPath != nil, !usingAlt else { return false }
+        let pending = hostEnter != nil
+        resolveHostEnter()
+        guard let b = hostCommand, cursorAbs > b.promptLine, let l = line(abs: cursorAbs), l.trimmedLength <= cursorX, cursorX > 0 else { return pending }
+        let prefix = l.text(from: 0, to: cursorX - 1, trim: false)
+        guard HostPrompt.isPrompt(prefix, heads: hostPromptHeads) else { return pending }
+        finishHostCommand(before: cursorAbs)
+        return true
+    }
+
+    private func finishHostCommand(before line: Int) {
+        guard let b = hostCommand else { return }
+        hostCommand = nil
+        guard blocks.contains(where: { $0 === b }) else { return }
+        b.endLine = max(line - 1, b.promptLine)
+        b.endTime = Date()
+        b.state = .finished
+    }
+
+    private func endHostSession() {
+        resolveHostEnter()
+        finishHostCommand(before: cursorX == 0 ? cursorAbs : cursorAbs + 1)
+        hostPromptNoted = nil
+        hostPromptHeads = []
+    }
+
+    /// The first line of what's on `abs`, going back over lines the screen wrapped.
+    private func logicalStart(_ abs: Int) -> Int {
+        var a = abs
+        while a > firstAbs, line(abs: a - 1)?.wrapped == true { a -= 1 }
+        return a
     }
 
     private func removeBlocks(onOrAfter abs: Int) {

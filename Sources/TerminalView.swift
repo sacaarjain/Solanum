@@ -491,6 +491,11 @@ final class TerminalView: NSView, TerminalDelegate {
 
     func send(_ bytes: [UInt8]) {
         if !typingUndoRedo && !redoStack.isEmpty { redoStack.removeAll() }
+        // In an ssh session, Enter at the host's prompt marks a command there (see Terminal.remoteEnterPressed).
+        // Not while an agent is running: its input box isn't a shell's prompt.
+        if terminal.sshControlPath != nil, agent == nil {
+            if bytes == [13] { terminal.remoteEnterPressed() } else { terminal.remoteKeyPressed() }
+        }
         pty?.write(bytes)
         // A command was entered in an ssh session: look up the remote shell's folder once it has had a moment to cd.
         if remote != nil, !terminal.usingAlt, bytes.contains(13) {
@@ -617,6 +622,8 @@ final class TerminalView: NSView, TerminalDelegate {
     }
 
     func refreshTitle() {
+        // A command on the ssh host has finished once its prompt is back and the output has stopped.
+        if terminal.sshControlPath != nil, Date().timeIntervalSince(lastOutputAt) > 0.3, terminal.remoteOutputQuiet() { needsDisplay = true }
         let t = displayTitle
         if t != lastTitle {
             lastTitle = t
@@ -695,9 +702,11 @@ final class TerminalView: NSView, TerminalDelegate {
         let before = codeBoxes.count
         codeBoxes.removeAll { !terminal.stillShows($0) }
         if codeBoxes.count != before { needsDisplay = true }
-        guard let agent, agent.kind == .claude, agent.status != .working, remote == nil,
-              let pid = pty?.foregroundPID, let cwd = PTYProcess.directory(of: pid) else { return }
-        ClaudeTranscript.codeBlocks(cwd: cwd) { [weak self] blocks, signature in
+        guard let agent, agent.kind == .claude, agent.status != .working else { return }
+        // Code blocks come from Claude's transcript, which is only here for Claude on this Mac. Tables and quotes are
+        // found from the screen alone, so over ssh they still get theirs.
+        let cwd = remote == nil ? pty?.foregroundPID.flatMap { PTYProcess.directory(of: $0) } : nil
+        let scan: ([String], String) -> Void = { [weak self] blocks, signature in
             guard let self else { return }
             let key = "\(signature)|\(self.terminal.firstAbs)|\(self.terminal.lastAbs)|\(self.terminal.cols)|\(self.terminal.cursorAbs)"
             guard key != self.boxScanKey else { return }
@@ -716,6 +725,7 @@ final class TerminalView: NSView, TerminalDelegate {
                 }
             }
         }
+        if let cwd { ClaudeTranscript.codeBlocks(cwd: cwd, scan) } else { scan([], "screen") }
     }
 
     // MARK: - Layout
@@ -1264,7 +1274,7 @@ final class TerminalView: NSView, TerminalDelegate {
             let copied = copiedBox == i
             // Above the box when the line there is empty (Claude leaves one), so it never covers a long first line:
             // flush with the box's right edge and a few points clear of its top border, within that empty line.
-            let roomAbove = b.kind == .code && r > 0 && rowMap[r - 1] == b.first - 1 && (terminal.line(abs: b.first - 1)?.isBlank ?? false)
+            let roomAbove = b.kind != .table && r > 0 && rowMap[r - 1] == b.first - 1 && (terminal.line(abs: b.first - 1)?.isBlank ?? false)
             let rect = drawCopyPill(copied ? "Copied" : b.kind == .table ? "Copy table" : "Copy", copied: copied, hover: hoverCopyButton == i,
                                     rightX: bounds.width - padX + (roomAbove ? 6 : 2),
                                     top: { roomAbove ? max(self.rowY(r) - self.fonts.cellH, self.rowY(r) - $0 - 4)
@@ -1715,6 +1725,8 @@ final class TerminalView: NSView, TerminalDelegate {
             guard d > 1 && !b.isAgentSession else { return nil }
             return ("● running  \(TerminalView.formatDuration(d))", th.accent)
         default:
+            // How a command on an ssh host exited isn't known: just how long it took.
+            if b.onHost { return (TerminalView.formatDuration(d), th.dimText) }
             if b.failed { return ("✕ exit \(b.exitCode ?? -1)  ·  \(TerminalView.formatDuration(d))", th.red) }
             return ("✓ \(TerminalView.formatDuration(d))", th.green)
         }

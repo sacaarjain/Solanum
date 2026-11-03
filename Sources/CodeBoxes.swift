@@ -9,16 +9,16 @@ import AppKit
 
 /// A code block or table found on screen.
 struct CodeBox {
-    enum Kind { case code, table }
+    enum Kind { case code, table, quote }
     let kind: Kind
     /// Absolute lines it spans.
     let first: Int
     let last: Int
     /// Column its text starts at (the box is drawn from just before it).
     let indent: Int
-    /// What Copy puts on the clipboard: the original code, or the table as markdown.
+    /// What Copy puts on the clipboard: the original code, the table as markdown, or the quote's text.
     let copyText: String
-    /// Code only: the offset into `copyText`'s unicode scalars of each non-space cell.
+    /// Code and quotes: the offset into `copyText`'s unicode scalars of each non-space cell.
     var offsets: [GridPos: Int] = [:]
     /// Table only: its cells, header row first.
     var rows: [[String]] = []
@@ -213,7 +213,7 @@ extension LineSnapshot {
         for a in lo...hi {
             if let l = line(abs: a), let x = textStart(l) { starts[a] = (x, l.cells[x].ch) }
         }
-        var boxes = findTables(lo...hi, starts)
+        var boxes = findTables(lo...hi, starts) + findQuotes(lo...hi, starts)
         var claimed = IndexSet()
         for b in boxes { claimed.insert(integersIn: b.first...b.last) }
         for src in code.reversed() {
@@ -261,6 +261,59 @@ extension LineSnapshot {
             x = 0
         }
         return nil
+    }
+
+    /// Quotes ("> " in markdown), which Claude Code draws behind a dim ▎ bar, hard-wrapped to the window. Copy gives
+    /// the text without the bar, each paragraph on one line and each list item on its own. Found from the screen
+    /// alone, so it works for Claude over ssh too.
+    private func findQuotes(_ range: ClosedRange<Int>, _ starts: [Int: (col: Int, ch: UInt32)]) -> [CodeBox] {
+        let bar: UInt32 = 0x258E
+        var out: [CodeBox] = []
+        var a = range.lowerBound
+        while a <= range.upperBound {
+            guard let s = starts[a], s.ch == bar else { a += 1; continue }
+            var scalars: [Unicode.Scalar] = []
+            var offsets: [GridPos: Int] = [:]
+            var gap = ""
+            var textCol: Int?
+            var b = a
+            while b <= range.upperBound, let t = starts[b], t.col == s.col, t.ch == bar, let l = line(abs: b) {
+                let n = l.trimmedLength
+                var x = s.col + 1
+                while x < n, l.cells[x].width == 0 || Self.isBlank(l.cells[x]) { x += 1 }
+                b += 1
+                // A bar with nothing after it is the line between paragraphs.
+                guard x < n else {
+                    if !scalars.isEmpty { gap = "\n\n" }
+                    continue
+                }
+                textCol = min(textCol ?? x, x)
+                if !scalars.isEmpty && gap.isEmpty { gap = Self.startsListItem(l, at: x) ? "\n" : " " }
+                scalars += gap.unicodeScalars
+                gap = ""
+                while x < n {
+                    let c = l.cells[x]
+                    x += 1
+                    if c.width == 0 { continue }
+                    if Self.isBlank(c) { scalars.append(" "); continue }
+                    offsets[GridPos(line: b - 1, col: x - 1)] = scalars.count
+                    scalars.append(Unicode.Scalar(c.ch) ?? "?")
+                }
+            }
+            if !scalars.isEmpty {
+                out.append(CodeBox(kind: .quote, first: a, last: b - 1, indent: textCol ?? s.col + 2,
+                                   copyText: String(String.UnicodeScalarView(scalars)), offsets: offsets,
+                                   probe: (GridPos(line: a, col: s.col), bar)))
+            }
+            a = b
+        }
+        return out
+    }
+
+    /// "- ", "* ", "• " or "1. " where a line's text starts.
+    private static func startsListItem(_ l: Line, at x: Int) -> Bool {
+        let head = l.text(from: x, to: min(x + 5, l.cells.count - 1), trim: false)
+        return head.range(of: #"^([-*+•]|\d{1,3}[.)]) "#, options: .regularExpression) != nil
     }
 
     /// Box-drawn tables (┌─┬─┐ … └─┴─┘), as Claude Code renders markdown tables. Copy gives markdown.

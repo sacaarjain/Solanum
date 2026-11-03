@@ -247,6 +247,58 @@ enum SelfTest {
             check("channels: room again once they've ended", started.last == 5)
         }
         do {
+            // Commands on an ssh host, found from Enter at its prompt.
+            let t = Terminal(cols: 60, rows: 20, scrollbackLimit: 100)
+            feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}ssh box\r\n\u{1b}]133;C\u{07}\u{1b}]1337;SolanumSSH=/tmp/s\u{07}Welcome!\r\n")
+            func type(_ text: String) { t.remoteKeyPressed(); feed(t, text) }
+            feed(t, "sacaar@box:~$ ")
+            type("ls")
+            t.remoteEnterPressed()
+            feed(t, "\r\nnotes.txt  logs\r\nsacaar@box:~$ ")
+            let quiet = t.remoteOutputQuiet()
+            let ls = t.blocks.last
+            check("host: Enter at its prompt starts a command", ls?.onHost == true && ls?.command == "ls" && ls?.promptLine == 2 && ls?.outputLine == 3)
+            check("host: it finishes when the prompt is back", quiet && ls?.state == .finished && ls?.endLine == 3)
+            // Enter before the host has echoed what was typed, as over a slow link.
+            t.remoteKeyPressed()
+            t.remoteEnterPressed()
+            feed(t, "pwd\r\n/home/sacaar\r\nsacaar@box:~$ ")
+            check("host: what's typed can echo after Enter", t.remoteOutputQuiet() && t.blocks.last?.command == "pwd" && t.blocks.last?.endLine == 5,
+                  t.blocks.map { "\($0.command) \($0.promptLine)-\($0.endLine ?? -1)" }.description)
+            type("rm -i notes.txt")
+            t.remoteEnterPressed()
+            feed(t, "\r\nrm: remove regular file 'notes.txt'? ")
+            type("y")
+            t.remoteEnterPressed()
+            feed(t, "\r\n[other@box ~]$ ")
+            let rm = t.blocks.last
+            check("host: Enter at a question is input, not a command", rm?.command == "rm -i notes.txt" && t.blocks.filter(\.onHost).count == 3)
+            check("host: a sudo -i prompt is a prompt too", t.remoteOutputQuiet() && rm?.state == .finished && rm?.endLine == 7)
+            type("whoami")
+            t.remoteEnterPressed()
+            feed(t, "\r\nother\r\n")
+            feed(t, "\u{1b}]1337;SolanumSSH=\u{07}")
+            check("host: leaving the host finishes the last one", t.blocks.last?.command == "whoami" && t.blocks.last?.state == .finished && t.blocks.last?.endLine == 9)
+            check("host: a password isn't a command", HostPrompt.end(of: "sacaar@box's password: ", noted: "sacaar@box's password: ", heads: [], firstCommand: true) == nil
+                  && HostPrompt.end(of: "Continue? [y/N] y", noted: "Continue? [y/N] ", heads: [], firstCommand: false) == nil)
+            check("host: a prompt pasted into has its shape", HostPrompt.end(of: "pi@raspberrypi:~/app $ make", noted: nil, heads: [], firstCommand: false) == 23
+                  && HostPrompt.end(of: "root@box:/# ls", noted: nil, heads: [], firstCommand: false) == 12)
+            check("host: an unusual prompt is learned from the first command", HostPrompt.end(of: "box | git log", noted: "box | ", heads: [], firstCommand: true) == 6
+                  && HostPrompt.head("box | ") == "box" && HostPrompt.isPrompt("box ~/x | ", heads: ["box"]))
+        }
+        do {
+            // Claude's quotes: a dim ▎ bar, hard-wrapped. Copy joins each paragraph into one line, without the bar.
+            let t = Terminal(cols: 40, rows: 12, scrollbackLimit: 100)
+            feed(t, "\u{23FA} Here's the note:\r\n\r\n  \u{1b}[2m\u{258E}\u{1b}[0m \u{1b}[3mOne more from the same\r\n"
+                 + "  \u{1b}[2m\u{258E}\u{1b}[0m \u{1b}[3mincident: PO-49142 failed.\r\n  \u{258E}\r\n"
+                 + "  \u{258E} - first\r\n  \u{258E} - second\r\n\r\nAfter it.\r\n")
+            let boxes = t.snapshot().findBoxes(code: [])
+            let q = boxes.first { $0.kind == .quote }
+            check("quote: found from its bar", boxes.count == 1 && q?.first == 2 && q?.last == 6 && q?.indent == 4, boxes.map { "\($0.kind) \($0.first)-\($0.last)" }.description)
+            check("quote: copies as paragraphs", q?.copyText == "One more from the same incident: PO-49142 failed.\n\n- first\n- second", q?.copyText ?? "-")
+            check("quote: every letter maps to the copy", q?.offsets[GridPos(line: 3, col: 4)] == 23)
+        }
+        do {
             let (t, _) = make(20, 8)
             feed(t, "\u{1b}[1;31mred\u{1b}[0m plain\r\n" + String(repeating: "x", count: 25) + "\r\n\u{1b}[48;2;10;20;30mshaded\u{1b}[0m")
             let (u, _) = make(20, 8)
@@ -325,7 +377,7 @@ extension NSWorkspace {
 /// Development aid: SOLANUM_SNAPSHOT=/path.png renders the first window to a PNG after a delay.
 /// SOLANUM_SNAPSHOT_INPUT types text first; SOLANUM_SNAPSHOT_ACTIONS=split,palette,select-block,collapse,jump-prompt,find,find-commands,find-output,click:<col>:<row>,keys:<text>,theme:<name>,
 /// newtab,rename-tab,new-group,edit:<text>,select-tab:<i>,collapse-group:<i>,split-down,save-session,
-/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,crumb-menu[:<item>],crumb-context[:<label>[:<item>]],press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>
+/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,screen-boxes,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,crumb-menu[:<item>],crumb-context[:<label>[:<item>]],press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>
 /// (with SOLANUM_SESSION_FILE set, which also makes the run restore from that file).
 enum SnapshotHelper {
     static func runIfRequested() {
@@ -404,6 +456,10 @@ enum SnapshotHelper {
                             FileHandle.standardError.write("\(name)=\(pane.encodeKey(e) ?? [])\n".data(using: .utf8)!)
                         }
                     }
+                case "screen-boxes":
+                    // The boxes found from the screen alone (tables and quotes), as if Claude were running.
+                    pane.codeBoxes = pane.terminal.snapshot().findBoxes(code: [])
+                    pane.needsDisplay = true
                 case "print-boxes":
                     // Each box, what Copy gives, and what selecting its second line gives (code: a wrapped piece).
                     for b in pane.codeBoxes {
