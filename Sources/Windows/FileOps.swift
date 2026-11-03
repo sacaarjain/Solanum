@@ -78,11 +78,11 @@ enum FileOps {
     /// To the Recycle Bin, where they can be brought back from.
     static func recycle(_ paths: [String]) -> Bool {
         guard !paths.isEmpty else { return true }
-        var list = paths.flatMap { Array($0.utf16) + [0] } + [0]
+        var list: [UInt16] = paths.flatMap { Array($0.utf16) + [0] } + [0]
         return list.withUnsafeMutableBufferPointer { from -> Bool in
             var op = SHFILEOPSTRUCTW()
             op.wFunc = UINT(FO_DELETE)
-            op.pFrom = OpaquePointer(from.baseAddress)
+            op.pFrom = UnsafePointer(from.baseAddress)
             op.fFlags = FILEOP_FLAGS(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI)
             return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted.boolValue
         }
@@ -108,7 +108,7 @@ enum FileOps {
     /// A list of files as Explorer passes them around (DROPFILES): a header, then the paths, each ending in a NUL, then
     /// another NUL. In memory Windows can own.
     static func dropList(_ paths: [String]) -> HGLOBAL? {
-        let units = paths.flatMap { Array($0.utf16) + [0] } + [0]
+        let units: [UInt16] = paths.flatMap { Array($0.utf16) + [0] } + [0]
         let header = 20
         guard let memory = GlobalAlloc(UINT(GMEM_MOVEABLE | GMEM_ZEROINIT), SIZE_T(header + units.count * 2)),
               let raw = GlobalLock(memory) else { return nil }
