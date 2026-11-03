@@ -78,7 +78,9 @@ enum WindowSelfTest {
         let crowded = WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 12)
         results.check("layout: the + button is level with the tabs' x", abs(layout.newTab.midY - layout.tabClose(1).midY) <= 0.5,
                       "\(layout.newTab.midY) \(layout.tabClose(1).midY)")
-        results.check("layout: and stays clear of the flower", crowded.newTab.maxX <= crowded.flower.x)
+        results.check("layout: and stays clear of the window's buttons", crowded.newTab.maxX <= crowded.minimize.x)
+        results.check("layout: the flower is at the left end, before the tabs", layout.flower.x < 10 && layout.tab(0).x >= layout.flower.maxX
+                      && WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 2, leftWidth: 240).tab(0).x == 240)
         results.check("layout: the terminal is between the bars", layout.terminal.y == layout.tabBarHeight && layout.terminal.maxY == layout.statusBar.y)
         results.check("layout: finds a tab", layout.part(atX: layout.tab(1).x + 20, y: 20) == .tab(1))
         results.check("layout: finds its close button", layout.part(atX: layout.tabClose(1).x + 5, y: layout.tabClose(1).y + 5) == .tabClose(1))
@@ -88,8 +90,8 @@ enum WindowSelfTest {
         results.check("layout: many tabs still fit", WindowLayout(width: 1000, height: 640, scale: 2, tabCount: 4).tabWidth >= 144)
         let many = WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 20, tabScroll: 300)
         results.check("overflow: the arrows, tabs and + don't overlap", many.overflows && many.scrollLeft.maxX <= many.tabViewport.x
-                      && many.tabViewport.maxX <= many.scrollRight.x && many.scrollRight.maxX <= many.newTab.x && many.newTab.maxX <= many.flower.x)
-        results.check("overflow: + stays beside the flower, not over the buttons", many.flower.maxX <= many.minimize.x)
+                      && many.tabViewport.maxX <= many.scrollRight.x && many.scrollRight.maxX <= many.newTab.x && many.newTab.maxX <= many.minimize.x)
+        results.check("overflow: the arrows start after the flower", many.flower.maxX <= many.scrollLeft.x)
         results.check("overflow: finds the arrows", many.part(atX: many.scrollLeft.x + 2, y: 20) == .scrollLeft && many.part(atX: many.scrollRight.x + 2, y: 20) == .scrollRight)
         results.check("overflow: tabs out of view can't be clicked", WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 20).part(atX: many.newTab.x + 2, y: 20) == .newTab)
         results.check("overflow: a tab in view can", many.part(atX: many.tabViewport.x + 40, y: 20) != .titleBar)
@@ -154,7 +156,7 @@ enum WindowSelfTest {
         let split = WindowLayout(width: 1200, height: 640, scale: 1, tabCount: 4, showsRightToggle: true, splitCount: 2)
         results.check("split: each column has its tabs", split.column(ofTab: 1) == 0 && split.column(ofTab: 2) == 1
                       && split.tab(1).maxX <= split.newTab(column: 0).x && split.newTab(column: 0).maxX <= split.divider
-                      && split.tab(2).x >= split.divider && split.newTab(column: 1).maxX <= split.closeSplit.x && split.closeSplit.maxX <= split.flower.x)
+                      && split.tab(2).x >= split.divider && split.newTab(column: 1).maxX <= split.closeSplit.x && split.closeSplit.maxX <= split.minimize.x)
         results.check("split: and its terminal", split.terminal.x == 0 && split.terminal.maxX == split.divider && split.rightTerminal.x == split.divider
                       && split.rightTerminal.maxX == 1200 && split.divider == 600)
         results.check("split: its parts are found", split.part(atX: split.tab(3).x + 20, y: 20) == .tab(3) && split.part(atX: split.tab(0).x + 20, y: 20) == .tab(0)

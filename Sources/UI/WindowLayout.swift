@@ -53,22 +53,23 @@ struct WindowLayout {
     var close: UIRect { UIRect(x: width - captionWidth, y: 0, width: captionWidth, height: tabBarHeight) }
     var maximize: UIRect { UIRect(x: width - captionWidth * 2, y: 0, width: captionWidth, height: tabBarHeight) }
     var minimize: UIRect { UIRect(x: width - captionWidth * 3, y: 0, width: captionWidth, height: tabBarHeight) }
+    /// The Settings flower, at the left end of the bar: over the sidebar when it's open, where nothing else is.
     var flower: UIRect {
         let side = (36 * scale).rounded()
-        return UIRect(x: minimize.x - side, y: 0, width: side, height: tabBarHeight)
+        return UIRect(x: (4 * scale).rounded(), y: 0, width: side, height: tabBarHeight)
     }
     /// Where the two columns meet: halfway across the room the sidebars leave.
     var divider: Float { leftWidth + ((width - leftWidth - rightWidth) / 2).rounded() }
-    /// While split, the button that closes it, just before the flower.
+    /// While split, the button that closes it, just before the window's buttons.
     var closeSplit: UIRect {
         let side = (24 * scale).rounded()
-        return UIRect(x: flower.x - side - (2 * scale).rounded(), y: (tabTop + (tabBarHeight - tabTop - side) / 2).rounded(), width: side, height: side)
+        return UIRect(x: minimize.x - side - (6 * scale).rounded(), y: (tabTop + (tabBarHeight - tabTop - side) / 2).rounded(), width: side, height: side)
     }
 
     private var newTabSide: Float { (28 * scale).rounded() }
     private var tabTop: Float { (5 * scale).rounded() }
-    /// Tabs start where the terminal does, so the active one opens onto it.
-    private var tabsStart: Float { max((8 * scale).rounded(), leftWidth) }
+    /// Tabs start where the terminal does, so the active one opens onto it; past the flower when the sidebar's closed.
+    private var tabsStart: Float { max(flower.maxX + (4 * scale).rounded(), leftWidth) }
     private var minTabWidth: Float { (120 * scale).rounded() }
     private var chipGap: Float { (6 * scale).rounded() }
     private var arrowWidth: Float { (22 * scale).rounded() }
@@ -82,7 +83,7 @@ struct WindowLayout {
 
     private func strip(_ column: Int) -> Strip {
         guard let n = splitCount.map({ min(max($0, 0), tabCount) }) else {
-            return Strip(range: 0..<tabCount, start: tabsStart, newTabLimit: flower.x - newTabSide - (2 * scale).rounded(), scroll: tabScroll)
+            return Strip(range: 0..<tabCount, start: tabsStart, newTabLimit: minimize.x - newTabSide - (8 * scale).rounded(), scroll: tabScroll)
         }
         if column == 0 {
             return Strip(range: 0..<n, start: tabsStart, newTabLimit: divider - newTabSide - (6 * scale).rounded(), scroll: tabScroll)

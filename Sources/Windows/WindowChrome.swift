@@ -14,6 +14,7 @@ struct GitBadge: Equatable {
     var branch: String
     var ahead = 0, behind = 0
     var upstream = false
+    var detached = false
     var changes = 0
     /// What git's doing ("Pulling…"), in place of the sync counts.
     var busy: String?
@@ -23,6 +24,7 @@ struct GitBadge: Equatable {
         ahead = info.ahead
         behind = info.behind
         upstream = info.upstream != nil
+        detached = info.detached
         changes = info.changes.count
         self.busy = busy
     }
@@ -284,55 +286,102 @@ struct WindowChrome {
     }
 
     /// Where the folder's parts go in the status bar, and what each stands for. For drawing them and for clicks.
-    /// Where a column's git parts go, right to left from the end of its half: changes, sync, then the branch.
-    func gitSpots(column: Int = 0) -> [(part: GitPart, rect: UIRect)] {
-        guard let g = column == 0 ? git : rightGit else { return [] }
-        let bar = layout.statusBar, pixels = 12 * scale
-        var x = !layout.isSplit ? themeX - (showsThemeIcon ? 30 : 12) * scale : column == 0 ? layout.divider - 8 * scale : layout.toggleRight.x - 6 * scale
-        var out: [(part: GitPart, rect: UIRect)] = []
-        func add(_ part: GitPart, _ w: Float) {
-            x -= w
-            out.append((part, UIRect(x: x, y: bar.y + 3 * scale, width: w, height: bar.height - 6 * scale)))
-            x -= 4 * scale
-        }
-        if g.changes > 0 { add(.changes, width(of: "● \(g.changes)", pixels: pixels) + 14 * scale) }
-        add(.sync, width(of: syncText(g), pixels: pixels) + (g.busy == nil ? 30 : 14) * scale)
-        add(.branch, min(width(of: g.branch, pixels: pixels), 170 * scale) + 34 * scale)
+    /// Where a column's half of the status bar puts things, as on the Mac: the ssh host, git's parts and a divider after
+    /// them, then the folder. While split, the right half runs the other way: the folder, then git and the host against
+    /// its right end.
+    private struct Half {
+        var hostX: Float?
+        var git: [(part: GitPart, rect: UIRect)] = []
+        var dividerX: Float?
+        /// Where the folder starts (its icon, then its parts), and where it has to stop.
+        var folderX: Float
+        var limit: Float
+        var mirrored = false
+    }
+
+    private func gitWidths(_ g: GitBadge?) -> [(GitPart, Float)] {
+        guard let g else { return [] }
+        let pixels = 12 * scale
+        var out: [(GitPart, Float)] = [(.branch, 22 * scale + min(width(of: g.branch, pixels: pixels), 200 * scale) + 8 * scale)]
+        if let busy = g.busy { out.append((.sync, 22 * scale + width(of: busy, pixels: pixels) + 6 * scale)) }
+        else if g.upstream { out.append((.sync, 22 * scale + (syncCounts(g).isEmpty ? 0 : width(of: syncCounts(g), pixels: pixels) + 6 * scale))) }
+        else if !g.detached { out.append((.sync, 22 * scale)) }
+        if g.changes > 0 { out.append((.changes, 22 * scale + width(of: "\(g.changes)", pixels: pixels) + 6 * scale)) }
         return out
     }
 
-    private func syncText(_ g: GitBadge) -> String {
-        if let busy = g.busy { return busy }
-        if !g.upstream { return "Publish" }
-        return g.ahead == 0 && g.behind == 0 ? "" : "\(g.behind)↓ \(g.ahead)↑"
+    private func syncCounts(_ g: GitBadge) -> String {
+        [g.behind > 0 ? "\(g.behind)↓" : nil, g.ahead > 0 ? "\(g.ahead)↑" : nil].compactMap { $0 }.joined(separator: " ")
     }
+
+    private func half(_ column: Int) -> Half {
+        let bar = layout.statusBar, pixels = 12 * scale
+        let host = column == 0 ? sshHost : rightSSHHost, g = column == 0 ? git : rightGit
+        let hostW: Float = host.map { (14 * scale).rounded() + 5 * scale + min(width(of: $0, pixels: pixels), 200 * scale) + 10 * scale } ?? 0
+        let parts = gitWidths(g)
+        func spot(_ x: Float, _ w: Float) -> UIRect { UIRect(x: x, y: bar.y + 3 * scale, width: w, height: bar.height - 6 * scale) }
+        if column == 0 {
+            var x = layout.hostsButton.maxX + 6 * scale
+            var h = Half(folderX: 0, limit: !layout.isSplit ? themeX - 34 * scale : layout.divider - 10 * scale)
+            if host != nil { h.hostX = x + 4 * scale; x += 4 * scale + hostW }
+            for (part, w) in parts { h.git.append((part, spot(x, w))); x += w + 2 * scale }
+            if g != nil { h.dividerX = x + 3 * scale; x += 9 * scale }
+            h.folderX = x
+            return h
+        }
+        let infoW = hostW + parts.reduce(0) { $0 + $1.1 + 2 * scale } + (g != nil ? 9 * scale : 0)
+        var x = layout.toggleRight.x - 8 * scale - infoW
+        var h = Half(folderX: layout.divider + 4 * scale, limit: x - 8 * scale, mirrored: true)
+        if g != nil { h.dividerX = x + 3 * scale; x += 9 * scale }
+        for (part, w) in parts { h.git.append((part, spot(x, w))); x += w + 2 * scale }
+        if host != nil { h.hostX = x + 4 * scale }
+        return h
+    }
+
+    /// Where a column's git parts go: the branch, its sync, and how many files have changed.
+    func gitSpots(column: Int = 0) -> [(part: GitPart, rect: UIRect)] { half(column).git }
 
     private func drawGit(_ column: Int) {
         guard let g = column == 0 ? git : rightGit else { return }
-        let pixels = 12 * scale
-        for (part, r) in gitSpots(column: column) {
+        let h = half(column), pixels = 12 * scale, dim: Float = 0.6
+        for (part, r) in h.git {
             let hovered = hoveredGit.map { $0.column == column && $0.part == part } ?? false
             if hovered { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 4 * scale, fg, 0.10) }
+            let iconRect = UIRect(x: r.x + 3 * scale, y: r.y, width: 16 * scale, height: r.height)
+            let text = UIRect(x: r.x + 21 * scale, y: r.y, width: max(r.width - 23 * scale, 0), height: r.height)
             switch part {
             case .branch:
-                drawBranchIcon(x: r.x + 9 * scale, midY: r.midY)
-                label(g.branch, UIRect(x: r.x + 24 * scale, y: r.y, width: r.width - 28 * scale, height: r.height), pixels: pixels, alpha: 0.8)
+                drawBranchIcon(x: r.x + 8 * scale, midY: r.midY)
+                label(g.branch, text, pixels: pixels, alpha: 0.85)
             case .sync:
-                if g.busy == nil { icon(0xE72C, UIRect(x: r.x + 4 * scale, y: r.y, width: 18 * scale, height: r.height), pixels: 10 * scale, alpha: 0.7) }
-                label(syncText(g), UIRect(x: r.x + (g.busy == nil ? 24 : 7) * scale, y: r.y, width: r.width - 24 * scale, height: r.height), pixels: pixels, alpha: 0.75)
+                if let busy = g.busy {
+                    icon(0xE72C, iconRect, pixels: 10 * scale, alpha: dim)
+                    label(busy, text, pixels: pixels, alpha: dim)
+                } else if g.upstream {
+                    let counts = syncCounts(g)
+                    icon(0xE72C, iconRect, pixels: 10 * scale, color: counts.isEmpty ? nil : TerminalPalette.accent, alpha: counts.isEmpty ? dim : 1)
+                    if !counts.isEmpty { label(counts, text, pixels: pixels, alpha: 0.85) }
+                } else {
+                    // Not on a remote yet: the cloud publishes it.
+                    icon(0xE753, iconRect, pixels: 11 * scale, alpha: dim)
+                }
             case .changes:
-                label("● \(g.changes)", UIRect(x: r.x + 7 * scale, y: r.y, width: r.width - 10 * scale, height: r.height), pixels: pixels, color: 0xE09C54, alpha: 0.95)
+                icon(0xE70F, iconRect, pixels: 10 * scale, alpha: dim)
+                label("\(g.changes)", text, pixels: pixels, alpha: dim)
             }
+        }
+        if let d = h.dividerX, (column == 0 ? folder : rightFolder) != nil || !h.mirrored {
+            sol_canvas_fill_rect(canvas.raw, d.rounded(), layout.statusBar.y + 6 * scale, 1, layout.statusBar.height - 12 * scale, fg, 0.14)
         }
     }
 
-    /// Git's branch mark: two commits on a line, and a branch off it.
+    /// Git's branch mark: two commits on a line, and a branch off it, in the accent colour as on the Mac.
     private func drawBranchIcon(x: Float, midY: Float) {
-        let t = 1.3 * scale, top = midY - 5 * scale, bottom = midY + 5 * scale, side = x + 7 * scale
-        sol_canvas_line(canvas.raw, x, top, x, bottom, fg, 0.7, t)
-        sol_canvas_line(canvas.raw, side, top + 2 * scale, x + 1 * scale, midY + 2 * scale, fg, 0.7, t)
+        let t = 1.3 * scale, top = midY - 5 * scale, bottom = midY + 5 * scale, side = x + 7 * scale, c = TerminalPalette.accent
+        sol_canvas_line(canvas.raw, x, top, x, bottom, c, 0.9, t)
+        sol_canvas_line(canvas.raw, side, top + 2 * scale, x + 1 * scale, midY + 2 * scale, c, 0.9, t)
         for (cx, cy) in [(x, top), (x, bottom), (side, top + 1 * scale)] {
-            sol_canvas_fill_ellipse(canvas.raw, cx, cy, 2 * scale, 2 * scale, fg, 0.85)
+            sol_canvas_fill_ellipse(canvas.raw, cx, cy, 2 * scale, 2 * scale, c, 1)
         }
     }
 
@@ -341,26 +390,19 @@ struct WindowChrome {
         crumbSpots(column: column, themeX: themeX)
     }
 
-    /// Where the theme's name starts, which the folder's parts stop short of; while split, the middle or the right end.
+    /// Where the theme's name starts, which the folder's parts stop short of.
     private var themeX: Float {
         let themeWidth = width(of: themeName, pixels: 10.5 * scale, semibold: true)
         return (layout.showsRightToggle ? layout.toggleRight.x - 8 * scale : layout.statusBar.maxX - 10 * scale) - themeWidth
     }
 
-    /// Where a column's half of the status bar starts its folder: after the buttons on the left, or the middle.
-    private func folderStart(_ column: Int) -> Float { column == 0 ? layout.hostsButton.maxX : layout.divider + 4 * scale }
-
     private func crumbSpots(column: Int, themeX: Float) -> [(label: String, path: String, rect: UIRect, hit: UIRect)] {
         let folder = column == 0 ? self.folder : rightFolder, sshHost = column == 0 ? self.sshHost : rightSSHHost
         guard let folder else { return [] }
-        // Short of the theme's name, or while split, the middle and the right sidebar's switch; and of git's parts.
-        var limit = !layout.isSplit ? themeX - 34 * scale : column == 0 ? layout.divider - 10 * scale : layout.toggleRight.x - 8 * scale
-        if let first = gitSpots(column: column).last { limit = min(limit, first.rect.x - 14 * scale) }
-        let bar = layout.statusBar, pixels = 12 * scale, base = folderStart(column)
-        let iconX = base + 6 * scale
-        var x = base + 8 * scale + 21 * scale
-        // Over ssh, after the host's name.
-        if let sshHost { x = base + 10 * scale + (14 * scale).rounded() + 5 * scale + width(of: sshHost, pixels: pixels) + 14 * scale }
+        let h = half(column), bar = layout.statusBar, pixels = 12 * scale, limit = h.limit
+        // After the folder icon; over ssh there's none, as the host's name says where it is.
+        let iconX = h.folderX
+        var x = h.folderX + (sshHost == nil ? 23 : 4) * scale
         var out: [(label: String, path: String, rect: UIRect, hit: UIRect)] = []
         // The whole path, never shortened to ~, so that every folder above is a click away.
         for (i, crumb) in WindowText.crumbPaths(folder, home: nil).enumerated() {
@@ -371,7 +413,20 @@ struct WindowChrome {
             out.append((crumb.label, crumb.path, UIRect(x: x, y: bar.y, width: w, height: bar.height), hit))
             x += w + 13 * scale
         }
+        // The right half's folder ends against its git and host, as on the Mac.
+        if h.mirrored, let last = out.last {
+            let shift = max(limit - last.rect.maxX, 0)
+            out = out.map { ($0.label, $0.path, UIRect(x: $0.rect.x + shift, y: $0.rect.y, width: $0.rect.width, height: $0.rect.height),
+                             UIRect(x: $0.hit.x + shift, y: $0.hit.y, width: $0.hit.width, height: $0.hit.height)) }
+        }
         return out
+    }
+
+    /// Where the folder icon goes: before the first part.
+    private func folderIconX(_ column: Int) -> Float? {
+        guard (column == 0 ? sshHost : rightSSHHost) == nil else { return nil }
+        let spots = crumbSpots(column: column)
+        return spots.first.map { $0.rect.x - 21 * scale } ?? half(column).folderX + 2 * scale
     }
 
     private func drawStatusBar() {
@@ -407,18 +462,18 @@ struct WindowChrome {
         if hovered == .hosts { sol_canvas_fill_rounded(canvas.raw, hosts.x, hosts.y, hosts.width, hosts.height, 4 * scale, fg, 0.10) }
         canvas.drawArt("serverRack", UIRect(x: hosts.x + ((hosts.width - art) / 2).rounded(), y: (hosts.midY - art / 2).rounded(), width: art, height: art), scale: scale)
 
-        // Each column's half: over ssh, the host first, then the folder's parts, each of which opens a menu of what's in it.
+        // Each column's half: over ssh the host, git, then the folder's parts, each of which opens a menu of what's in it.
         // `hoveredCrumb` counts the left half's parts first, then the right's.
         var offset = 0
         for column in layout.isSplit ? [0, 1] : [0] {
-            let host = column == 0 ? sshHost : rightSSHHost, base = folderStart(column)
-            let end = !layout.isSplit ? themeX : column == 0 ? layout.divider : layout.toggleRight.x
-            if let host {
-                let x = base + 10 * scale, art = (14 * scale).rounded()
+            let host = column == 0 ? sshHost : rightSSHHost, h = half(column)
+            if let host, let x = h.hostX {
+                let art = (14 * scale).rounded()
                 canvas.drawArt("network", UIRect(x: x, y: (bar.midY - art / 2).rounded(), width: art, height: art), scale: scale)
-                let w = min(width(of: host, pixels: pixels), max(end - x - 40 * scale, 0))
-                label(host, UIRect(x: x + art + 5 * scale, y: bar.y, width: w + 1, height: bar.height), pixels: pixels, color: TerminalPalette.accent)
+                label(host, UIRect(x: x + art + 5 * scale, y: bar.y, width: min(width(of: host, pixels: pixels), 200 * scale) + 1, height: bar.height),
+                      pixels: pixels, color: TerminalPalette.accent)
             }
+            drawGit(column)
             let spots = crumbSpots(column: column, themeX: themeX)
             for (i, spot) in spots.enumerated() {
                 let last = i == spots.count - 1, hover = hoveredCrumb == offset + i
@@ -426,11 +481,10 @@ struct WindowChrome {
                 label(spot.label, UIRect(x: spot.rect.x, y: bar.y, width: spot.rect.width + 1, height: bar.height), pixels: pixels, alpha: last || hover ? 0.85 : 0.55)
                 if !last { label("›", UIRect(x: spot.rect.maxX + 3 * scale, y: bar.y, width: 8 * scale, height: bar.height), pixels: pixels, alpha: 0.4) }
             }
-            if host == nil {
-                icon(Icon.folder, UIRect(x: base + 8 * scale, y: bar.y, width: 16 * scale, height: bar.height), pixels: 12 * scale, alpha: 0.75)
+            if let x = folderIconX(column) {
+                icon(Icon.folder, UIRect(x: x, y: bar.y, width: 16 * scale, height: bar.height), pixels: 12 * scale, alpha: 0.75)
             }
             offset += spots.count
-            drawGit(column)
         }
     }
 }
