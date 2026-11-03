@@ -404,6 +404,46 @@ enum SelfTest {
                   && !TerminalView.isLocal(URL(string: "https://github.com")!))
         }
         do {
+            // Commands on an ssh host, found from Enter at its prompt.
+            let t = Terminal(cols: 60, rows: 20, scrollbackLimit: 100)
+            feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}ssh box\r\n\u{1b}]133;C\u{07}\u{1b}]1337;SolanumSSH=/tmp/s\u{07}Welcome!\r\n")
+            func type(_ text: String) { t.remoteKeyPressed(); feed(t, text) }
+            feed(t, "sacaar@box:~$ ")
+            type("ls")
+            t.remoteEnterPressed()
+            feed(t, "\r\nnotes.txt  logs\r\nsacaar@box:~$ ")
+            let quiet = t.remoteOutputQuiet()
+            let ls = t.blocks.last
+            check("host: Enter at its prompt starts a command", ls?.onHost == true && ls?.command == "ls" && ls?.promptLine == 2 && ls?.outputLine == 3)
+            check("host: it finishes when the prompt is back", quiet && ls?.state == .finished && ls?.endLine == 3)
+            // Enter before the host has echoed what was typed, as over a slow link.
+            t.remoteKeyPressed()
+            t.remoteEnterPressed()
+            feed(t, "pwd\r\n/home/sacaar\r\nsacaar@box:~$ ")
+            check("host: what's typed can echo after Enter", t.remoteOutputQuiet() && t.blocks.last?.command == "pwd" && t.blocks.last?.endLine == 5,
+                  t.blocks.map { "\($0.command) \($0.promptLine)-\($0.endLine ?? -1)" }.description)
+            type("rm -i notes.txt")
+            t.remoteEnterPressed()
+            feed(t, "\r\nrm: remove regular file 'notes.txt'? ")
+            type("y")
+            t.remoteEnterPressed()
+            feed(t, "\r\n[other@box ~]$ ")
+            let rm = t.blocks.last
+            check("host: Enter at a question is input, not a command", rm?.command == "rm -i notes.txt" && t.blocks.filter(\.onHost).count == 3)
+            check("host: a sudo -i prompt is a prompt too", t.remoteOutputQuiet() && rm?.state == .finished && rm?.endLine == 7)
+            type("whoami")
+            t.remoteEnterPressed()
+            feed(t, "\r\nother\r\n")
+            feed(t, "\u{1b}]1337;SolanumSSH=\u{07}")
+            check("host: leaving the host finishes the last one", t.blocks.last?.command == "whoami" && t.blocks.last?.state == .finished && t.blocks.last?.endLine == 9)
+            check("host: a password isn't a command", HostPrompt.end(of: "sacaar@box's password: ", noted: "sacaar@box's password: ", heads: [], firstCommand: true) == nil
+                  && HostPrompt.end(of: "Continue? [y/N] y", noted: "Continue? [y/N] ", heads: [], firstCommand: false) == nil)
+            check("host: a prompt pasted into has its shape", HostPrompt.end(of: "pi@raspberrypi:~/app $ make", noted: nil, heads: [], firstCommand: false) == 23
+                  && HostPrompt.end(of: "root@box:/# ls", noted: nil, heads: [], firstCommand: false) == 12)
+            check("host: an unusual prompt is learned from the first command", HostPrompt.end(of: "box | git log", noted: "box | ", heads: [], firstCommand: true) == 6
+                  && HostPrompt.head("box | ") == "box" && HostPrompt.isPrompt("box ~/x | ", heads: ["box"]))
+        }
+        do {
             // Claude's quotes: a dim ▎ bar, hard-wrapped. Copy joins each paragraph into one line, without the bar.
             let t = Terminal(cols: 40, rows: 12, scrollbackLimit: 100)
             feed(t, "\u{23FA} Here's the note:\r\n\r\n  \u{1b}[2m\u{258E}\u{1b}[0m \u{1b}[3mOne more from the same\r\n"

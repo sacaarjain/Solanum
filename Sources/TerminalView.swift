@@ -491,6 +491,11 @@ final class TerminalView: NSView, TerminalDelegate {
 
     func send(_ bytes: [UInt8]) {
         if !typingUndoRedo && !redoStack.isEmpty { redoStack.removeAll() }
+        // In an ssh session, Enter at the host's prompt marks a command there (see Terminal.remoteEnterPressed).
+        // Not while an agent is running: its input box isn't a shell's prompt.
+        if terminal.sshControlPath != nil, agent == nil {
+            if bytes == [13] { terminal.remoteEnterPressed() } else { terminal.remoteKeyPressed() }
+        }
         pty?.write(bytes)
         // A command was entered in an ssh session: look up the remote shell's folder once it has had a moment to cd.
         if remote != nil, !terminal.usingAlt, bytes.contains(13) {
@@ -617,6 +622,8 @@ final class TerminalView: NSView, TerminalDelegate {
     }
 
     func refreshTitle() {
+        // A command on the ssh host has finished once its prompt is back and the output has stopped.
+        if terminal.sshControlPath != nil, Date().timeIntervalSince(lastOutputAt) > 0.3, terminal.remoteOutputQuiet() { needsDisplay = true }
         let t = displayTitle
         if t != lastTitle {
             lastTitle = t
@@ -1718,6 +1725,8 @@ final class TerminalView: NSView, TerminalDelegate {
             guard d > 1 && !b.isAgentSession else { return nil }
             return ("● running  \(TerminalView.formatDuration(d))", th.accent)
         default:
+            // How a command on an ssh host exited isn't known: just how long it took.
+            if b.onHost { return (TerminalView.formatDuration(d), th.dimText) }
             if b.failed { return ("✕ exit \(b.exitCode ?? -1)  ·  \(TerminalView.formatDuration(d))", th.red) }
             return ("✓ \(TerminalView.formatDuration(d))", th.green)
         }
