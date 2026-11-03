@@ -237,5 +237,30 @@ enum CoreSelfTest {
             check("scroll: reverse index in a region", (0..<4).map { row(r, $0) } == ["top", "", "two", "three"]
                   && r.screen[1].cells.count == 10, (0..<4).map { row(r, $0) }.description)
         }
+        do {
+            // git, read on either system.
+            let status = "C:/Users/me/repo\n# branch.oid 1234567890\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +2 -1\0"
+                + "1 M. N... 100644 100644 100644 a b src/app.swift\0" + "1 .M N... 100644 100644 100644 a b README.md\0" + "? notes.txt\0"
+            let info = GitInfo(statusOutput: Data(status.utf8))
+            check("git: status from Windows' git", info?.root == "C:/Users/me/repo" && info?.branch == "main" && info?.ahead == 2 && info?.behind == 1
+                  && info?.changes.count == 3)
+            check("git: staged apart from not", info?.changes[0].staged == "M" && info?.changes[0].unstaged == "." && info?.changes[1].staged == "."
+                  && info?.changes[1].unstaged == "M" && info?.changes[2].unstaged == "?")
+            let refs = "refs/heads/main\0main\03 days ago\nrefs/heads/fix\0fix\01 hour ago\nrefs/remotes/origin/main\0origin/main\03 days ago\n"
+                + "refs/remotes/origin/HEAD\0origin/HEAD\03 days ago\nrefs/remotes/origin/wip\0origin/wip\0a week ago\n"
+            check("git: branches, with remote twins left out", GitBranch.parse(Data(refs.utf8)).map(\.name) == ["main", "fix", "origin/wip"])
+            let log = "c3\n" + ["c3\u{1f}c2 b1\u{1f}Ann\u{1f}100\u{1f}Merge\u{1f}HEAD -> main", "b1\u{1f}c1\u{1f}Ann\u{1f}90\u{1f}Side\u{1f}fix",
+                                  "c2\u{1f}c1\u{1f}Ann\u{1f}80\u{1f}Two\u{1f}", "c1\u{1f}\u{1f}Ann\u{1f}70\u{1f}One\u{1f}tag: v1"].joined(separator: "\u{1e}\n")
+            let graph = GraphCommit.parse(Data(log.utf8))
+            let rows = GraphLayout.rows(graph.commits)
+            check("graph: commits and lanes", graph.head == "c3" && rows.count == 4 && rows[0].lane == 0 && rows[1].lane == 1 && rows[2].lane == 0 && rows[3].lane == 0
+                  && rows.map(\.width).max() == 2, rows.map { "\($0.lane)/\($0.width)" }.description)
+            check("graph: labels, current branch first", GraphLabel.labels(["origin/main", "HEAD -> main", "tag: v1"]).map(\.name) == ["main", "v1"])
+            check("diff: kinds of line", [GitDiffKind.of("@@ -1 +1 @@"), .of("+added"), .of("-gone"), .of("--- a/x"), .of(" same")] == [.hunk, .added, .removed, .header, .context])
+            let found = WorkspaceMatch.parse(Data("./src/a.swift\012:let x = 1\nREADME.md\03\0see x\n".utf8))
+            check("search: matches from grep and git grep", found == [WorkspaceMatch(path: "src/a.swift", line: 12, text: "let x = 1"), WorkspaceMatch(path: "README.md", line: 3, text: "see x")])
+            let urls = TextLinks.urls(in: "see https://example.com/a?b=1, or localhost:3000.")
+            check("links: web addresses, punctuation left off", urls.map(\.url.absoluteString) == ["https://example.com/a?b=1", "http://localhost:3000"])
+        }
     }
 }

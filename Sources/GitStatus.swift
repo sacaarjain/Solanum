@@ -4,71 +4,6 @@ import AppKit
 // number of changed files (click to list them). Works in local folders and, through the session's
 // multiplexing socket, on an ssh host.
 
-/// Git state of a folder.
-struct GitInfo: Equatable {
-    var root: String
-    /// Branch name, or the short commit when HEAD is detached.
-    var branch = ""
-    var detached = false
-    var upstream: String?
-    var ahead = 0
-    var behind = 0
-    var changes: [GitChange] = []
-}
-
-struct GitChange: Equatable {
-    /// M, A, D, R, C, T, U (conflict) or ? (untracked).
-    let code: Character
-    /// Relative to the repository root.
-    let path: String
-}
-
-extension GitInfo {
-    static let statusScript = "git rev-parse --show-toplevel && git status --porcelain=v2 --branch -z"
-
-    /// Parses `statusScript`'s output: the top-level folder on one line, then NUL-separated porcelain v2.
-    init?(statusOutput out: Data) {
-        let s = String(decoding: out, as: UTF8.self)
-        guard let nl = s.firstIndex(of: "\n") else { return nil }
-        root = String(s[..<nl])
-        guard root.hasPrefix("/") else { return nil }
-        var oid = ""
-        let fields = s[s.index(after: nl)...].split(separator: "\0", omittingEmptySubsequences: false)
-        var i = 0
-        while i < fields.count {
-            let f = fields[i]
-            i += 1
-            if f.hasPrefix("# branch.oid ") {
-                oid = String(f.dropFirst(13))
-            } else if f.hasPrefix("# branch.head ") {
-                branch = String(f.dropFirst(14))
-            } else if f.hasPrefix("# branch.upstream ") {
-                upstream = String(f.dropFirst(18))
-            } else if f.hasPrefix("# branch.ab ") {
-                let ab = f.dropFirst(12).split(separator: " ")
-                if ab.count == 2 {
-                    ahead = Int(ab[0].dropFirst()) ?? 0
-                    behind = Int(ab[1].dropFirst()) ?? 0
-                }
-            } else if let kind = f.first, "12u".contains(kind), f.dropFirst().first == " " {
-                // Fields before the path: 8 for ordinary entries, 9 for renames/copies, 10 for conflicts.
-                let n = kind == "1" ? 8 : kind == "2" ? 9 : 10
-                let parts = f.split(separator: " ", maxSplits: n, omittingEmptySubsequences: false)
-                if kind == "2" { i += 1 }  // skip the rename's original path
-                guard parts.count == n + 1 else { continue }
-                let code: Character = kind == "u" ? "U" : (parts[1].first { $0 != "." } ?? "M")
-                changes.append(GitChange(code: code, path: String(parts[n])))
-            } else if f.hasPrefix("? ") {
-                changes.append(GitChange(code: "?", path: String(f.dropFirst(2))))
-            }
-        }
-        if branch == "(detached)" {
-            detached = true
-            branch = String(oid.prefix(7))
-        }
-    }
-}
-
 /// Git state of the files and folders under the file sidebar's folder: a letter for each changed file (and,
 /// for a folder, its most serious change inside), plus the files git tracks that are gone from disk.
 struct GitTreeStatus: Equatable {
@@ -508,13 +443,8 @@ final class GitController {
         }
     }
 
-    /// The lock file in git's "Unable to create '….lock': File exists" (left behind by a git that crashed or was killed).
-    static func leftoverLock(in output: String) -> String? {
-        guard let re = try? NSRegularExpression(pattern: #"Unable to create '([^'\n]+\.lock)': File exists"#),
-              let m = re.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
-              let r = Range(m.range(at: 1), in: output) else { return nil }
-        return String(output[r])
-    }
+    /// The lock file in git's "Unable to create '….lock': File exists" (see GitInfo.leftoverLock).
+    static func leftoverLock(in output: String) -> String? { GitInfo.leftoverLock(in: output) }
 
     private func confirm(_ title: String, detail: String, button: String, _ action: @escaping () -> Void) {
         guard let window = bar?.window else { return }
