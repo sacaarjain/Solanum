@@ -451,11 +451,11 @@ final class GitGraphPanel: ColumnPanel {
 
     func reload() {
         place.run(GraphCommit.script, timeout: 60) { [weak self] status, out, _ in
-            let parsed = status == 0 ? GraphCommit.parse(out) : ("", [])
+            let parsed: (head: String, commits: [GraphCommit]) = status == 0 ? GraphCommit.parse(out) : ("", [])
             let rows = GraphLayout.rows(parsed.commits)
             self?.post {
                 guard let self else { return }
-                self.head = parsed.0
+                self.head = parsed.head
                 self.rows = rows
                 self.loaded = true
                 if let s = self.selected, !rows.indices.contains(s) { self.selected = nil }

@@ -897,8 +897,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
         }
         for (r, raw) in candidates {
             guard let (a, b) = span(r) else { continue }
-            let path = raw.replacingOccurrences(of: "/", with: "\")
-            let full = path.dropFirst().hasPrefix(":") ? path : WindowsPath.join(cwd, path.hasPrefix(".\") ? String(path.dropFirst(2)) : path)
+            let path = raw.replacingOccurrences(of: "/", with: "\\")
+            let full = path.dropFirst().hasPrefix(":") ? path : WindowsPath.join(cwd, path.hasPrefix(".\\") ? String(path.dropFirst(2)) : path)
             var isDir: ObjCBool = false
             if FileManager.default.fileExists(atPath: full, isDirectory: &isDir), !isDir.boolValue { return (full, false, a, b) }
         }
