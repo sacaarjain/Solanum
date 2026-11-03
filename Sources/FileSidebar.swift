@@ -15,7 +15,8 @@ final class FileNode {
     }
 }
 
-private let internalDragType = NSPasteboard.PasteboardType("local.solanum.file-path")
+/// A sidebar's own drag: its files' paths, for other sidebars and the tab bar.
+let internalDragType = NSPasteboard.PasteboardType("local.solanum.file-path")
 
 /// Hideable file tree on the left of a window (⌘B). It follows the focused pane's folder, on this Mac or,
 /// inside an ssh session, on the remote host, unless the tab has a folder pinned (⇧⌘B, the pin button, or a
@@ -69,7 +70,9 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
     /// Shared by every sidebar, so files copied in one can be pasted in another (on another host, say).
     private static var clipboard: (fs: FileSystem, paths: [String], cut: Bool)?
     /// What this sidebar is dragging, and from where (its file system may change before the drop).
-    private var dragOrigin: (fs: FileSystem, paths: [String])?
+    private(set) var dragOrigin: (fs: FileSystem, paths: [String])?
+    /// Which of the dragged paths are folders.
+    private(set) var dragFolders: Set<String> = []
     /// Git changes under the folder shown (nil outside a repository), refreshed while the sidebar is up.
     private var gitStatus: GitTreeStatus?
     private var gitRunning = false
@@ -1522,10 +1525,12 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
 
     func outlineView(_ outlineView: NSOutlineView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forItems draggedItems: [Any]) {
         dragOrigin = (fs, draggedItems.compactMap { ($0 as? FileNode)?.item.path })
+        dragFolders = Set(draggedItems.compactMap { ($0 as? FileNode).flatMap { $0.item.isDirectory ? $0.item.path : nil } })
     }
 
     func outlineView(_ outlineView: NSOutlineView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         dragOrigin = nil
+        dragFolders = []
     }
 
     private func dropFolder(_ item: Any?) -> FileNode? {

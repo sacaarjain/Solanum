@@ -2372,6 +2372,8 @@ final class TabBarView: NSView, NSTextFieldDelegate {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        // Files dragged here, from a sidebar or Finder, open in new tabs.
+        registerForDraggedTypes([.fileURL, internalDragType])
         guard updateObserver == nil, window != nil else { return }
         updateObserver = NotificationCenter.default.addObserver(forName: .solanumUpdateChanged, object: nil, queue: .main) { [weak self] _ in
             self?.needsDisplay = true
@@ -2927,6 +2929,89 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             ctx?.endTransparencyLayer()
             ctx?.setAlpha(1)
         }
+        drawFileDropLine()
+    }
+
+    // MARK: Files dropped on the strip
+
+    /// Where dropped files go: before the tab at this index (the tabs' count: after the last). Shown as a line.
+    private var fileDropIndex: Int? { didSet { if fileDropIndex != oldValue { needsDisplay = true } } }
+
+    /// What's dragged: from a sidebar (local or over ssh), its file system, paths and which are folders; from Finder,
+    /// this Mac's files.
+    private func droppedFiles(_ info: NSDraggingInfo) -> (fs: FileSystem, paths: [String], folders: Set<String>)? {
+        if let sidebar = (info.draggingSource as? FileOutlineView)?.sidebar, let origin = sidebar.dragOrigin, !origin.paths.isEmpty {
+            return (origin.fs, origin.paths, sidebar.dragFolders)
+        }
+        let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        guard !urls.isEmpty else { return nil }
+        let folders = Set(urls.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }.map(\.path))
+        return (LocalFileSystem.shared, urls.map(\.path), folders)
+    }
+
+    /// The gap nearest the pointer, between the tabs showing.
+    private func dropIndex(at p: NSPoint) -> Int {
+        guard let c = controller else { return 0 }
+        for i in c.tabs.indices where tabRects.indices.contains(i) && !tabRects[i].isNull && tabRects[i].midX > p.x { return i }
+        return c.tabs.count
+    }
+
+    /// Only files, and folders on this Mac (which open a terminal there): a folder on an ssh host has nowhere to go.
+    private func canOpen(_ d: (fs: FileSystem, paths: [String], folders: Set<String>)) -> Bool {
+        d.paths.contains { !d.folders.contains($0) || !d.fs.isRemote }
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard let d = droppedFiles(sender), canOpen(d) else {
+            fileDropIndex = nil
+            return []
+        }
+        fileDropIndex = dropIndex(at: convert(sender.draggingLocation, from: nil))
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) { fileDropIndex = nil }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        defer { fileDropIndex = nil }
+        guard let d = droppedFiles(sender), canOpen(d) else { return false }
+        openDropped(d, at: dropIndex(at: convert(sender.draggingLocation, from: nil)))
+        return true
+    }
+
+    /// Each file in a new file tab, in order from `index`; each folder on this Mac in a new terminal tab there.
+    func openDropped(_ d: (fs: FileSystem, paths: [String], folders: Set<String>), at index: Int) {
+        guard let c = controller else { return }
+        var at = min(index, c.tabs.count)
+        // Dropped inside a group, between two of its tabs, they join it.
+        let group = at > 0 && at < c.tabs.count && c.tabs[at - 1].group != nil && c.tabs[at - 1].group === c.tabs[at].group ? c.tabs[at].group : nil
+        for path in d.paths {
+            if d.folders.contains(path) {
+                guard !d.fs.isRemote else { continue }
+                _ = c.insertTab(cwd: path, at: at, group: group)
+            } else {
+                c.addFileTab(FileEditorView(fs: d.fs, path: path), at: at)
+                if c.tabs.indices.contains(at) { c.tabs[at].group = group }
+            }
+            at += 1
+        }
+        needsDisplay = true
+    }
+
+    /// Dev aid (DevTools drop-hover): the drop line as a drag at `x` would show it.
+    func devDropHover(x: CGFloat?) { fileDropIndex = x.map { dropIndex(at: NSPoint(x: $0, y: bounds.midY)) } }
+
+    private func drawFileDropLine() {
+        guard let i = fileDropIndex, let c = controller else { return }
+        let shown = c.tabs.indices.filter { tabRects.indices.contains($0) && !tabRects[$0].isNull }
+        let x: CGFloat
+        if let r = shown.first(where: { $0 >= i }).map({ tabRects[$0] }) { x = r.minX - 1 }
+        else if let last = shown.last { x = tabRects[last].maxX + 1 } else { x = viewport.minX + 4 }
+        guard x >= viewport.minX - 2, x <= viewport.maxX + 2 else { return }
+        Config.shared.theme.accent.setFill()
+        NSBezierPath(roundedRect: CGRect(x: x - 1.5, y: viewport.minY + 6, width: 3, height: max(viewport.height - 12, 8)), xRadius: 1.5, yRadius: 1.5).fill()
     }
 
     /// A tab title too wide for `full`, cut to fit `width`: at the last whole word that fits, then "…" (or within the
