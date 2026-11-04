@@ -40,6 +40,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var lastTheme = ""
     /// Set while a control here is committing, so our own change doesn't rebuild the page under the pointer.
     var committing = false
+    /// The theme being edited, for asking about unsaved changes before leaving it.
+    var themeDraft: ThemeEditor.Model?
+    /// Pinned under the page (the theme editor's Save bar), rebuilt with it.
+    var footer: NSView? { didSet { root.setFooter(footer) } }
 
     private init() {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 640),
@@ -81,15 +85,52 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func show(_ p: Page) {
-        page = p
-        editingTheme = nil
-        rebuild()
-        root.scrollToTop()
+        confirmLeavingTheme { [weak self] in
+            guard let self else { return }
+            self.page = p
+            self.editingTheme = nil
+            self.rebuild()
+            self.root.scrollToTop()
+        }
+    }
+
+    /// Before leaving the theme editor with unsaved changes: Save, Don't Save (back to what's saved), or Cancel.
+    func confirmLeavingTheme(_ then: @escaping () -> Void) {
+        guard let model = themeDraft, model.isDirty, let w = window else {
+            themeDraft = nil
+            return then()
+        }
+        let alert = NSAlert()
+        alert.messageText = "Save changes to “\(model.saved.name)”?"
+        alert.informativeText = "Your changes to this theme will be lost if you don't save them."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Don't Save")
+        alert.beginSheetModal(for: w) { [weak self] resp in
+            switch resp {
+            case .alertFirstButtonReturn: model.save()
+            case .alertThirdButtonReturn:
+                ThemeLibrary.draft = nil
+                Config.shared.commit()
+            default: return
+            }
+            self?.themeDraft = nil
+            then()
+        }
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard let model = themeDraft, model.isDirty else { return true }
+        confirmLeavingTheme { [weak self] in self?.window?.close() }
+        return false
     }
 
     /// Opens a custom theme in the editor, switching to it so edits show live in every window.
     func edit(_ theme: Theme) {
         guard let url = theme.file else { return }
+        if let model = themeDraft, model.isDirty, model.saved.file != url {
+            return confirmLeavingTheme { [weak self] in self?.edit(theme) }
+        }
         page = .appearance
         editingTheme = url
         if Config.shared.themeName != theme.name {
@@ -107,6 +148,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let same = builtPage == page && builtEditing == editingTheme
         builtPage = page
         builtEditing = editingTheme
+        // The editor sets these again as it builds.
+        footer = nil
+        if editingTheme == nil || page != .appearance { themeDraft = nil }
         root.show(SettingsPages.make(page, controller: self), keepScroll: same)
     }
     private var builtPage: Page?
@@ -141,6 +185,8 @@ final class SettingsRootView: NSView {
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
+        scroll.wantsLayer = true
+        scroll.contentView.wantsLayer = true
         addSubview(scroll)
     }
 
@@ -167,13 +213,28 @@ final class SettingsRootView: NSView {
         }
     }
 
+    private var footer: NSView?
+
+    /// Something pinned under the page (nil: none).
+    func setFooter(_ view: NSView?) {
+        footer?.removeFromSuperview()
+        footer = view
+        if let view { addSubview(view) }
+        needsLayout = true
+    }
+
     /// Swaps in a freshly built page; `keepScroll` holds the scroll position (a rebuild of the page already showing).
     func show(_ page: SettingsPageView, keepScroll: Bool = false) {
         let offset = scroll.contentView.bounds.origin.y
         pageView = page
+        // Its own layer: the scroll area is see-through (the window is glass), so a page drawn into the root's layer
+        // left its pixels behind when the next one came in, two pages showing at once.
+        page.wantsLayer = true
         scroll.documentView = page
         needsLayout = true
         layoutSubtreeIfNeeded()
+        needsDisplay = true
+        scroll.contentView.needsDisplay = true
         if keepScroll {
             let maxY = max(0, page.frame.height - scroll.contentSize.height)
             scroll.contentView.scroll(to: NSPoint(x: 0, y: min(offset, maxY)))
@@ -190,7 +251,9 @@ final class SettingsRootView: NSView {
         super.layout()
         effect.frame = bounds
         sidebar.frame = NSRect(x: 0, y: 0, width: Self.sidebarWidth, height: bounds.height)
-        scroll.frame = NSRect(x: Self.sidebarWidth, y: 0, width: bounds.width - Self.sidebarWidth, height: bounds.height)
+        let footerH = footer == nil ? 0 : ThemeSaveBar.height
+        scroll.frame = NSRect(x: Self.sidebarWidth, y: 0, width: bounds.width - Self.sidebarWidth, height: bounds.height - footerH)
+        footer?.frame = NSRect(x: Self.sidebarWidth, y: bounds.height - footerH, width: bounds.width - Self.sidebarWidth, height: footerH)
         guard let page = pageView else { return }
         let w = scroll.contentSize.width
         page.frame = NSRect(x: 0, y: 0, width: w, height: page.height(forWidth: w))

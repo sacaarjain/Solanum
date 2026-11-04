@@ -184,8 +184,18 @@ enum ThemeLibrary {
     static var all: [Theme] { [solanumDefault] + outerWilds + custom + vsCode }
 
     static func theme(named name: String) -> Theme {
-        all.first { $0.name.caseInsensitiveCompare(name) == .orderedSame } ?? builtIn.first { $0.name == defaultName } ?? builtIn[0]
+        let t = all.first { $0.name.caseInsensitiveCompare(name) == .orderedSame } ?? builtIn.first { $0.name == defaultName } ?? builtIn[0]
+        // A custom theme being edited shows its unsaved colors everywhere (under its saved name, until saved).
+        if let d = draft, d.file != nil, d.file == t.file {
+            var shown = d
+            shown.name = t.name
+            return shown
+        }
+        return t
     }
+
+    /// Settings' theme editor's unsaved changes to a custom theme (see `ThemeEditor.Model`); nil when there are none.
+    static var draft: Theme?
 
     static func loadCustomThemes(from dir: URL) {
         custom = []

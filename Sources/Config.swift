@@ -76,7 +76,9 @@ final class Config {
     var windowRows = 32
     var padding: CGFloat = 16
 
-    let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/solanum")
+    /// ~/.config/solanum, or (for tests, so they never touch yours) `SOLANUM_CONFIG_DIR`.
+    let dir = ProcessInfo.processInfo.environment["SOLANUM_CONFIG_DIR"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+        ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/solanum")
     var fileURL: URL { dir.appendingPathComponent("config") }
     var themesDir: URL { dir.appendingPathComponent("themes") }
 
