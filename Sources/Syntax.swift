@@ -6,8 +6,14 @@ import AppKit
 
 enum SyntaxLanguage {
     case json, yaml, xml
+    /// Logs: colored by LogFormat (time, level, logger, stack traces…), their own ANSI colors shown, not printed.
+    case log
+
+    /// JSON, YAML and XML can be beautified; logs can't.
+    var canFormat: Bool { self != .log }
 
     init?(path: String) {
+        if LogFormats.isLogFile(name: (path as NSString).lastPathComponent) { self = .log; return }
         switch (path as NSString).pathExtension.lowercased() {
         case "json", "jsonc", "json5", "geojson", "webmanifest": self = .json
         case "yaml", "yml": self = .yaml
@@ -72,6 +78,10 @@ enum SyntaxHighlighter {
     /// Colors `text` in place (foreground only); call after resetting it to the plain foreground.
     static func highlight(_ text: NSMutableAttributedString, as language: SyntaxLanguage, theme th: Theme = Config.shared.theme) {
         guard text.length <= maxLength else { return }
+        if language == .log {
+            LogPainter.paint(text, in: NSRange(location: 0, length: text.length), format: .builtIn, theme: th)
+            return
+        }
         let s = text.string
         let whole = NSRange(location: 0, length: text.length)
         func paint(_ r: NSRange, _ t: Token) {
@@ -90,6 +100,8 @@ enum SyntaxHighlighter {
                 guard let m else { return }
                 for (i, t) in tokens.enumerated() { paint(m.range(at: i + 1), t) }
             }
+        case .log:
+            break
         case .xml:
             xml.enumerateMatches(in: s, range: whole) { m, _, _ in
                 guard let m else { return }
@@ -123,6 +135,7 @@ enum Prettifier {
         case .json: return try json(text, strict: strictJSON)
         case .yaml: return yaml(text)
         case .xml: return try xml(text)
+        case .log: throw Failure(message: "Logs can't be beautified.")
         }
     }
 

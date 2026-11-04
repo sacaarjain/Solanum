@@ -224,6 +224,64 @@ final class TabSession: NSObject {
         view.addArrangedSubview(root)
         for p in panes { p.tab = self }
         updateDimming()
+        remoteObserver = NotificationCenter.default.addObserver(forName: .solanumRemoteReady, object: nil, queue: .main) { [weak self] note in
+            guard let self, let session = note.object as? RemoteSession else { return }
+            self.repinAfterReconnect(to: session)
+            // A file tab from a lost session browses the new one.
+            if let o = self.fileOrigin, let old = o.fs as? RemoteSession, old !== session, !old.isConnected,
+               old.hostLabel == session.hostLabel { self.fileOrigin = (session, o.dir) }
+            self.owner?.tabDidUpdate(self)
+        }
+    }
+
+    private var remoteObserver: NSObjectProtocol?
+
+    /// A pane logged in to `host` right now, in any window, for files waiting on (or cut off from) that host.
+    static func liveSession(host: String) -> RemoteSession? {
+        for wc in NSApp.windows.compactMap({ $0.windowController as? TerminalWindowController }) {
+            for tab in wc.allTabs {
+                for p in tab.panes {
+                    if let r = p.remote, r.isReady, r.isConnected, r.hostLabel == host { return r }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Logs back in to the host of `session`, whose connection was lost, for a file open here: in the pane that had
+    /// that session if this tab has it, else in this tab's terminal, in `dir`. The terminal shows (if hidden), as
+    /// logging in may ask for a password; open files move to the new session once it's in (see
+    /// `FileEditorView.follow`).
+    func reconnect(_ session: RemoteSession, in dir: String) {
+        let pane = panes.first { $0.lostRemote === session }
+        let command = pane == nil ? session.reconnectCommand(in: dir) : nil
+        if pane == nil, command == nil {
+            // No way to log in from here (how ssh was run wasn't reported): the tab that had the session does it.
+            for wc in NSApp.windows.compactMap({ $0.windowController as? TerminalWindowController }) {
+                for column in wc.columns {
+                    for (i, tab) in column.tabs.enumerated() {
+                        guard let p = tab.panes.first(where: { $0.lostRemote === session }) else { continue }
+                        wc.focus(column)
+                        column.select(index: i)
+                        wc.window?.makeKeyAndOrderFront(nil)
+                        return p.reconnectLost()
+                    }
+                }
+            }
+            return NSSound.beep()
+        }
+        if !showsTerminal {
+            showsTerminal = true
+            arrange()
+            owner?.tabDidUpdate(self)
+        }
+        if let pane { return pane.reconnectLost() }
+        if !focusedPane.hasStarted {
+            focusedPane.pendingCommand = command
+            focus()
+        } else {
+            focusedPane.reconnect(command!)
+        }
     }
 
     var panes: [TerminalView] {
@@ -238,7 +296,7 @@ final class TabSession: NSObject {
 
     var title: String {
         if let customTitle { return customTitle }
-        if !showsTerminal, let ed = editor { return ed.displayName }
+        if !showsTerminal, let ed = editor { return ed.displayName + (ed.isDeleted ? " (deleted)" : "") }
         return focusedPane.displayTitle
     }
     var isRunningCommand: Bool { panes.contains { $0.isRunningCommand } }
@@ -426,9 +484,14 @@ final class TabSession: NSObject {
             guard let self, let ed else { return }
             self.openFile(ed.fs, path, mode: mode)
         }
+        ed.onReconnect = { [weak self, weak ed] session in
+            guard let self, let ed else { return }
+            self.reconnect(session, in: FilePaths.parent(ed.path))
+        }
         ed.onPathChanged = { [weak self, weak ed] in
             guard let self, let ed else { return }
-            if let o = self.fileOrigin, !self.showsTerminal { self.fileOrigin = (o.fs, FilePaths.parent(ed.path)) }
+            // A file tab browses where its file is (on the session it moved to, after reconnecting).
+            if self.fileOrigin != nil, !self.showsTerminal, ed === self.editor { self.fileOrigin = (ed.fs, FilePaths.parent(ed.path)) }
             self.editorArea.strip.needsDisplay = true
             self.owner?.tabDidUpdate(self)
         }
@@ -1880,6 +1943,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     /// ⌥⌘F: on the window rather than the editor, so it works (and the palette lists it) wherever the focus is,
     /// such as on the sidebar after clicking a file.
     @objc func beautifyDocument(_ sender: Any?) { activeTab?.editor?.formatDocument(sender) }
+
+    /// Import Log Format…: a logging config (logback.xml, log4j2.xml, …) or a JSON rules file, which then colors
+    /// the logs it fits (see LogFormat.swift).
+    @objc func importLogFormat(_ sender: Any?) { LogFormatStore.runImportPanel(for: window) }
 
     /// ⇧⌘F, Search in Project Folder: searches the text of the files in the folder the sidebar is on (the focused column's, if it's open), else
     /// the pinned or current folder. Choosing a result opens the file there.

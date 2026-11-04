@@ -369,6 +369,123 @@ enum SelfTest {
             check("file links: worth a look over ssh", FileLinks.looksLikePath("a/b") && FileLinks.looksLikePath("a.txt")
                   && !FileLinks.looksLikePath("word") && !FileLinks.looksLikePath("/") && !FileLinks.looksLikePath("..") && !FileLinks.looksLikePath("dir/"))
             do {
+                // The Git Graph's filters, as git log arguments, and the commits as laid out.
+                var f = GraphFilter()
+                check("graph filter: all branches", f.script().contains("git log --all --parents") && !f.script().contains("--grep"))
+                f.text = "fix"; f.user = "Ben Guo"; f.days = 7; f.path = "Sources/a b.swift"; f.branch = "origin/main"
+                let sc = f.script()
+                check("graph filter: everything", sc.contains("git log 'origin/main' --parents") && sc.contains("--author='^Ben Guo <'")
+                      && sc.contains("--since='7 days ago'") && sc.contains("--grep='fix' -F -i") && sc.contains("-- 'Sources/a b.swift'\n") && sc.hasSuffix("git log 'origin/main' --topo-order -n 50000 --format='%H %P'"), sc)
+                f = GraphFilter(); f.text = "f607a7e"; f.regex = true; f.matchCase = true
+                check("graph filter: a hash too", f.script().contains("--grep='f607a7e' -E\n") && f.script().contains("rev-parse -q --verify 'f607a7e^{commit}'"))
+                let c = { (h: String, p: [String], t: Double) in GraphCommit(hash: h, parents: p, author: "a", date: Date(timeIntervalSince1970: t), subject: h, refs: []) }
+                let arranged = f.arrange([c("b", ["a"], 2), c("c", ["b"], 3), c("b", ["a"], 2)])
+                check("graph filter: a search shows a list", arranged.map(\.hash) == ["c", "b"] && arranged[0].parents == ["b"] && arranged[1].parents.isEmpty)
+                // Shown: d, b. Hidden: c (d's parent) and a. d connects to b through c; b's parent a isn't shown.
+                let topo: [(String, [String])] = [("d", ["c"]), ("c", ["b", "x"]), ("x", ["a"]), ("b", ["a"]), ("a", [])]
+                let linked = f.arrange([c("d", ["c"], 4), c("b", ["a"], 2)], topology: topo)
+                check("graph filter: a search connects through hidden commits", linked.map(\.parents) == [["b"], []], "\(linked.map(\.parents))")
+                let split = GraphFilter.split(Data("h\nrec\u{1e}\u{1d}d c\nc b x\n".utf8))
+                check("graph filter: shape read after the commits", split.topology?.map(\.0) == ["d", "c"] && String(decoding: split.log, as: UTF8.self) == "h\nrec\u{1e}")
+                check("graph refs", GraphRefs.parse(Data("main\n\u{1e}refs/heads/main\nrefs/remotes/origin/HEAD\nrefs/remotes/origin/main\nrefs/tags/v1\n".utf8)).remotes == ["origin/main"])
+            }
+            do {
+                // Logs: a logback file written with %highlight / %cyan, its config imported, and the built-in coloring.
+                let esc = "\u{1B}"
+                let line = "2026-07-21 18:09:05.778 [main] \(esc)[34mINFO \(esc)[0;39m \(esc)[36mVipsLogger\(esc)[0;39m - \(esc)[32mVipsLogger initialized: D:\\x\\y.log\(esc)[0m"
+                let st = ANSIText.strip(line)
+                check("logs: escapes taken out", st.visible == "2026-07-21 18:09:05.778 [main] INFO  VipsLogger - VipsLogger initialized: D:\\x\\y.log", st.visible)
+                check("logs: their colors kept", st.colors.map(\.color) == [.palette(4), .palette(6), .palette(2)]
+                      && (line as NSString).substring(with: st.colors[0].range) == "INFO ")
+                let ns = line as NSString
+                let open = ns.range(of: "\(esc)[34m").location
+                check("logs: an escape found from inside it", ANSIText.escapeStart(ns, open + 3) == open && ANSIText.escapeStart(ns, open + 4) == open
+                      && ANSIText.escapeStart(ns, open + 5) == nil && ANSIText.escapeStart(ns, 0) == nil
+                      && ANSIText.escapeRange(ns, around: open + 2) == NSRange(location: open, length: 5))
+                check("logs: copying leaves escapes out", ANSIText.removing("a\(esc)[1;31mb\(esc)[0mc") == "abc")
+                let xml = """
+                <configuration>
+                  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender"><encoder>
+                    <!-- <pattern>%msg</pattern> -->
+                    <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %highlight(%-5level) %cyan(%logger{0}) - %msg%n</pattern>
+                  </encoder></appender>
+                  <appender name="FILE"><file>{PATH_TO_LOGS}/service-output.log</file><encoder>
+                    <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %highlight(%-5level) %cyan(%logger{0}) - %msg%n</pattern></encoder>
+                    <rollingPolicy><fileNamePattern>{PATH_TO_LOGS}/service-output-%d{yyyy-MM-dd}.%i.log</fileNamePattern></rollingPolicy>
+                  </appender>
+                  <appender name="ERROR_FILE"><file>{PATH_TO_LOGS}/nativelogs/service-error.log</file>
+                    <encoder><pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{0} - %msg%n</pattern></encoder>
+                  </appender>
+                </configuration>
+                """
+                let j = try? LogFormats.convert(xml, name: "logback.xml", folder: "PathoDaemon")
+                check("logs: logback config imported", j?["name"] as? String == "PathoDaemon" && (j?["patterns"] as? [String])?.count == 1
+                      && j?["files"] as? [String] == ["service-output.log", "service-output-*.*.log", "service-error.log"], "\(j ?? [:])")
+                if let j, let f = try? LogFormat(json: j) {
+                    let p = f.paint(line, carried: nil)
+                    let painted = { (p: LogLinePaint, text: String) in p.paints.filter { (line as NSString).substring(with: $0.range) == text }.map(\.color) }
+                    check("logs: the layout's fields", p.isHeader && p.level == .info && painted(p, "2026-07-21 18:09:05.778") == [.dim]
+                          && painted(p, "main") == [.dim] && painted(p, "D:\\x\\y.log") == [.palette(4)], "\(p)")
+                    let err = f.paint("2026-07-21 18:09:06.000 [pool-1] ERROR Main - boom java.io.IOException: disk 'D' full at 99%", carried: nil)
+                    check("logs: an error line", err.level == .error && err.wash == .palette(1) && err.paints.contains { $0.color == .palette(1) && $0.bold })
+                    let frame = f.paint("\tat com.x.Y.z(Y.java:12)", carried: .error)
+                    check("logs: its stack trace goes with it", frame.continues && frame.wash == .palette(1) && !frame.isHeader)
+                    check("logs: caused by", f.paint("Caused by: java.lang.IllegalStateException: x", carried: .warn).wash == .palette(3))
+                    check("logs: a plain line after doesn't", f.paint("plain words", carried: .error).wash == nil)
+                    check("logs: the format chosen by its lines", LogFormats.choose(for: "issue.log", sample: [line, line, ""], among: [f]).name == "PathoDaemon"
+                          && LogFormats.choose(for: "other.log", sample: ["hello", "world"], among: [f]).name == LogFormat.builtIn.name)
+                    check("logs: and by its file names", f.matches(fileName: "service-output-2026-07-21.0.log") && !f.matches(fileName: "issue.log"))
+                } else {
+                    check("logs: imported format reads", false)
+                }
+                let generic = LogFormat.builtIn.paint("2026-07-21T18:09:05.120Z [worker-3] WARN  com.acme.Sync - retrying in 500ms (attempt 2)", carried: nil)
+                check("logs: built-in time, thread, level", generic.isHeader && generic.level == .warn && generic.wash == .palette(3)
+                      && generic.paints.contains { $0.color == .palette(6) } && generic.paints.filter { $0.color == .palette(5) }.count == 2, "\(generic)")
+                check("logs: built-in bracketed and level=", LogFormat.builtIn.paint("[error] x", carried: nil).level == .error
+                      && LogFormat.builtIn.paint("ts=1 level=debug msg=hi", carried: nil).level == .debug
+                      && LogFormat.builtIn.paint("an error occurred", carried: nil).level == nil)
+                let py = LogLayout.regex(fromPattern: "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+                check("logs: Python layouts", py.flatMap { try? NSRegularExpression(pattern: $0) }?.firstMatch(in: "2026-07-21 18:09:05,123 - app.db - WARNING - slow", range: NSRange(location: 0, length: 49)) != nil)
+                check("logs: date patterns", LogLayout.dateRegex("dd/MMM/yyyy:HH:mm:ss Z") == #"\d{2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2}\s+(?:Z|[A-Z]{2,5}|[+-]\d{2}:?\d{2})"#)
+                check("logs: globs", LogFormats.glob("app-*.log", "APP-1.log") && LogFormats.glob("a?c", "abc") && !LogFormats.glob("*.log", "a.txt"))
+                check("logs: color names", LogColor(name: "bright-red") == .palette(9) && LogColor(name: "#ff8800") == .rgb(255, 136, 0) && LogColor(name: "nope") == nil)
+                let rules = try? LogFormat(json: ["name": "R", "rules": [["match": "heartbeat", "color": "dim", "line": true], ["match": "slide (\\d+)", "color": "yellow", "bold": true]]])
+                let ruled = rules?.paint("INFO heartbeat for slide 42", carried: nil)
+                check("logs: rules files", ruled?.wash == .dim && ruled?.paints.last == LogPaint(range: NSRange(location: 25, length: 2), color: .palette(3), bold: true))
+                check("logs: bad rules say why", (try? LogFormat(json: ["rules": [["match": "x", "color": "nope"]]])) == nil
+                      && (try? LogFormats.convert("<configuration/>", name: "logback.xml", folder: "x")) == nil)
+                check("logs: styles in words", LogStyle(text: "bright-red bold tint") == LogStyle(color: .palette(9), bold: true, tint: true)
+                      && LogStyle(text: "dim fade")?.text == "dim fade" && LogStyle(text: "#00FF00")?.text == "#00FF00" && LogStyle(text: "loud") == nil)
+                if let j, let base = try? LogFormat(json: j),
+                   let all = try? LogFormat(json: ["colors": ["time": "yellow", "logger": "red"], "rules": [["text": "[OK]", "style": "green bold"]]], colorsOnly: true),
+                   let mine = try? LogFormat(json: ["colors": ["logger": "magenta bold"], "rules": [["text": "Main", "style": "bright-blue tint"], ["text": "noise", "style": "fade"]]]) {
+                    var f = base
+                    f.styles = mine.styles
+                    f.rules = mine.rules
+                    f = f.merged(over: all)
+                    check("logs: a format's colors over all logs'", f.style(.logger).style.color == .palette(5) && f.style(.time).style.color == .palette(3)
+                          && f.style(.thread).chosen == false && f.markerStyle("[OK]")?.bold == true)
+                    let p = f.paint(line, carried: nil)
+                    let logger = (line as NSString).range(of: "VipsLogger")
+                    // Chosen colors go over the file's own (cyan), which go over the defaults.
+                    check("logs: chosen colors win over the file's", p.paints.last { NSIntersectionRange($0.range, logger).length > 0 }?.color == .palette(5))
+                    let ok = f.paint("2026-07-21 18:11:08.525 [main] INFO  StartupHealthCheck - StartupHealthCheck: [OK]   PLM Auth", carried: nil)
+                    check("logs: a marker", ok.paints.last == LogPaint(range: NSRange(location: 78, length: 4), color: .palette(2), bold: true), "\(ok.paints.last.map { "\($0)" } ?? "")")
+                    let main = f.paint("2026-07-21 18:09:06.733 [main] INFO  Main - Loaded MainWindow", carried: nil)
+                    check("logs: a marker is a whole word, and tints", main.wash == .palette(12) && main.paints.filter { $0.color == .palette(12) }.count == 1)
+                    let faded = f.paint("2026-07-21 18:09:06.733 [main] ERROR Main - noise", carried: nil)
+                    check("logs: fading a line", faded.paints == [LogPaint(range: NSRange(location: 0, length: 49), color: .faint)] && faded.wash == nil)
+                    var spans: [(String, LogStyleKey)] = []
+                    let msg = "GET https://x.io/a?b=1, file C:\\data\\a.svs and /var/log/x.log took 4812ms at 10.0.0.1:8080 id 9f3c2a1e-7b44-4c1a-9d2e-0a1b2c3d4e5f 'ai_retry' \"q\" ok=true v1.2.3 pool-2-thread-1 java.io.IOException 3rd"
+                    let mu = Array(msg.utf16)
+                    LogMessageScanner.scan(mu, in: NSRange(location: 0, length: mu.count)) { r, k in spans.append(((msg as NSString).substring(with: r), k)) }
+                    check("logs: message parts", spans.map(\.0) == ["https://x.io/a?b=1", "C:\\data\\a.svs", "/var/log/x.log", "4812ms", "10.0.0.1:8080",
+                                                                    "9f3c2a1e-7b44-4c1a-9d2e-0a1b2c3d4e5f", "'ai_retry'", "\"q\"", "true", "java.io.IOException"]
+                          && spans.map(\.1) == [.url, .path, .path, .number, .number, .number, .string, .string, .literal, .exception], "\(spans)")
+                }
+                check("logs: log files", SyntaxLanguage(path: "/a/issue.log") == .log && SyntaxLanguage(path: "/a/app.log.1") == .log && SyntaxLanguage(path: "/a/b.txt") == nil)
+            }
+            do {
                 // A question near the top of a tall screen counts, as it does at the bottom; old menus further up don't.
                 let (t, _) = make(40, 50)
                 feed(t, "Trust this folder?\r\n❯ 1. Yes\r\n  2. No\r\n")
@@ -539,7 +656,7 @@ extension NSWorkspace {
 /// Development aid: SOLANUM_SNAPSHOT=/path.png renders the first window to a PNG after a delay.
 /// SOLANUM_SNAPSHOT_INPUT types text first; SOLANUM_SNAPSHOT_ACTIONS=split,palette,select-block,collapse,jump-prompt,find,find-commands,find-output,click:<col>:<row>,keys:<text>,theme:<name>,
 /// newtab,rename-tab,new-group,edit:<text>,select-tab:<i>,collapse-group:<i>,split-down,save-session,
-/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,screen-boxes,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,crumb-menu[:<item>],crumb-context[:<label>[:<item>]],drop-files:<index>:<path>|<path>,drop-hover:<x>,press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>
+/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,screen-boxes,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,crumb-menu[:<item>],crumb-context[:<label>[:<item>]],drop-files:<index>:<path>|<path>,drop-hover:<x>,press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>,log-menu[:<menu>>…>item],graph-type:<text>,graph-press:<Branch|User|Date|Paths>,graph-menu-run:<title>,graph-branch:<title>,graph-branch-filter:<text>,graph-path:<path>,print-graph,log-marker-text:<text>,log-select:<text>,editor-end,editor-edge-drag:<fraction>:<seconds>,print-deleted,editor-lost-bar:<host>,print-time,hang-watch,display-time,log-import:<path>,print-log-format
 /// (with SOLANUM_SESSION_FILE set, which also makes the run restore from that file).
 enum SnapshotHelper {
     static func runIfRequested() {
@@ -985,6 +1102,47 @@ enum SnapshotHelper {
                     if action.hasPrefix("open-diff:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(10)), mode: .diff) }
                     if action.hasPrefix("open-preview:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(13)), mode: .preview) }
                     if action == "format-file" { c.activeTab?.editor?.formatDocument(nil) }
+                    if action == "log-menu" || action.hasPrefix("log-menu:") {
+                        c.activeTab?.editor?.devLogMenu(run: action.hasPrefix("log-menu:") ? String(action.dropFirst(9)) : nil)
+                    }
+                    if action.hasPrefix("editor-lost-bar:") {
+                        c.activeTab?.editor?.devShowLostBar(host: String(action.dropFirst(16)))
+                        c.activeTab?.editor?.layoutSubtreeIfNeeded()
+                        let f = c.activeTab?.editor?.devLostBar?.frame ?? .zero
+                        FileHandle.standardError.write("lost bar: \(f) in \(c.activeTab?.editor?.bounds ?? .zero)\n".data(using: .utf8)!)
+                    }
+                    if action == "print-deleted" {
+                        FileHandle.standardError.write("deleted: \(c.activeTab?.editor?.devIsDeleted == true) title \(c.activeTab?.title ?? "-")\n".data(using: .utf8)!)
+                    }
+                    if action.hasPrefix("editor-edge-drag:") {
+                        let n = action.dropFirst(17).split(separator: ":").compactMap { Double($0) }
+                        if n.count == 2 { c.activeTab?.editor?.devEdgeDrag(fraction: CGFloat(n[0]), seconds: n[1]) }
+                    }
+                    if action == "editor-end" { c.activeTab?.editor?.devScrollToEnd() }
+                    if action == "display-time" {
+                        let a = Date()
+                        if let v = c.window?.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+                            v.layoutSubtreeIfNeeded()
+                            v.cacheDisplay(in: v.bounds, to: rep)
+                        }
+                        FileHandle.standardError.write("display: \(Int(Date().timeIntervalSince(a) * 1000)) ms\n".data(using: .utf8)!)
+                    }
+                    if action == "hang-watch" {
+                        // Prints each stall of the main thread past 250 ms, as it ends.
+                        var last = Date()
+                        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+                            let gap = Date().timeIntervalSince(last)
+                            if gap > 0.25 { FileHandle.standardError.write("hang: \(Int(gap * 1000)) ms at \(Date().timeIntervalSince1970)\n".data(using: .utf8)!) }
+                            last = Date()
+                        }
+                    }
+                    if action == "print-time" { FileHandle.standardError.write("time: \(Date().timeIntervalSince1970)\n".data(using: .utf8)!) }
+                    if action.hasPrefix("log-select:") { c.activeTab?.editor?.devSelect(String(action.dropFirst(11))) }
+                    if action.hasPrefix("log-marker-text:") { LogColorMenu.devMarkerText = String(action.dropFirst(16)) }
+                    if action.hasPrefix("log-import:") { c.activeTab?.editor?.devImportLogFormat(String(action.dropFirst(11))) }
+                    if action == "print-log-format" {
+                        FileHandle.standardError.write("log format: \(c.activeTab?.editor?.devLogFormatName ?? "none")\n".data(using: .utf8)!)
+                    }
                     if action.hasPrefix("open-status:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(12)), mode: .status) }
                     if action.hasPrefix("status-click:") { c.activeTab?.editor?.devStatusView?.devClick(String(action.dropFirst(13))) }
                     if action.hasPrefix("graph-changes:"), let r = Int(action.dropFirst(14)) { c.activeTab?.editor?.devGraphView?.devViewChanges(r) }
@@ -992,6 +1150,18 @@ enum SnapshotHelper {
                     if action == "status-all" { c.activeTab?.editor?.devStatusView?.devToggleAll() }
                     if action.hasPrefix("open-graph:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(11)), mode: .graph) }
                     if action.hasPrefix("hover-graph:"), let row = Int(action.dropFirst(12)) { c.activeTab?.editor?.devHoverGraph(row) }
+                    if let g = c.activeTab?.editor?.devGraphView {
+                        if action.hasPrefix("graph-type:") { g.devToolbar.devType(String(action.dropFirst(11))) }
+                        if action.hasPrefix("graph-press:") { g.devToolbar.devPress(String(action.dropFirst(12))) }
+                        if action.hasPrefix("graph-path:") { g.devToolbar.devPath(String(action.dropFirst(11))) }
+                        if action.hasPrefix("graph-menu-run:"), let menu = GraphToolbar.devLastMenu,
+                           let i = menu.items.firstIndex(where: { $0.title == String(action.dropFirst(15)) }) { menu.performActionForItem(at: i) }
+                        if action.hasPrefix("graph-branch:") { g.devBranchList.devPick(String(action.dropFirst(13))) }
+                        if action.hasPrefix("graph-branch-filter:") { g.devBranchList.devFilter(String(action.dropFirst(20))) }
+                        if action == "print-graph" {
+                            FileHandle.standardError.write("graph: \(g.devRowCount) rows, filters \(g.devToolbar.devButtons), list \(g.devBranchList.devTitles.prefix(12))\n".data(using: .utf8)!)
+                        }
+                    }
                     if action == "toggle-terminal" { c.activeTab?.toggleTerminal() }
                     if action == "restore-prompt" { (NSApp.delegate as? AppDelegate)?.offerRestore(SessionState(windows: [c.sessionState])) }
                     if action == "editor-drag-out", let tab = c.activeTab, let ed = tab.editor {

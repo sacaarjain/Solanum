@@ -325,6 +325,9 @@ final class TerminalView: NSView, TerminalDelegate {
     /// The ssh session here lost its connection and nothing's been decided yet: where it was, how to log back in, and
     /// the command that ended it (another one finishing means this shell has moved on).
     private var lostSession: (host: String, command: String, block: Block?)?
+    /// The ssh session whose connection this pane lost, while it's still lost: files opened from it offer to
+    /// reconnect through this pane.
+    private(set) var lostRemote: RemoteSession?
     private var lostBar: ConnectionLostBar?
     private weak var lostNotice: CornerNoticeView?
     /// Logging back in was asked for; if that doesn't work out, the bar comes back.
@@ -542,7 +545,10 @@ final class TerminalView: NSView, TerminalDelegate {
         remote = terminal.sshControlPath.map { RemoteSession(controlPath: $0, sshArgs: terminal.sshArgs) }
         remote?.onChange = { [weak self] in
             guard let self else { return }
-            if self.remote?.isReady == true { self.clearLostSession() }
+            if let remote = self.remote, remote.isReady {
+                self.clearLostSession()
+                NotificationCenter.default.post(name: .solanumRemoteReady, object: remote)
+            }
             self.tab?.paneCwdChanged(self)
         }
         remote?.start()
@@ -550,6 +556,7 @@ final class TerminalView: NSView, TerminalDelegate {
 
     private func clearLostSession() {
         lostSession = nil
+        lostRemote = nil
         reconnecting = false
         lostNotice?.dismiss()
         updateLostBar()
@@ -938,6 +945,7 @@ final class TerminalView: NSView, TerminalDelegate {
               let command = remote.reconnectCommand(in: terminal.remoteCwd ?? remote.cwd) else { return }
         let host = remote.hostLabel ?? "the ssh host"
         lostSession = (host, command, terminal.currentBlock)
+        lostRemote = remote
         let th = Config.shared.theme
         lostNotice = showCornerNotice(title: "Lost connection to \(host)", symbol: ("wifi.exclamationmark", th.red),
                                       lines: [Self.place(of: tab), terminal.remoteCwd ?? remote.cwd ?? ""].filter { !$0.isEmpty }, in: tab,
@@ -945,8 +953,14 @@ final class TerminalView: NSView, TerminalDelegate {
         if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
     }
 
+    /// Logs back in where the connection was lost, as the bar's Reconnect does.
+    func reconnectLost() {
+        guard let command = lostSession?.command else { return NSSound.beep() }
+        reconnect(command)
+    }
+
     /// Runs `command` at this pane's prompt (once the shell is back at one); not while something else has the pane.
-    private func reconnect(_ command: String) {
+    func reconnect(_ command: String) {
         guard !exited, terminal.sshControlPath == nil, !terminal.usingAlt, !hasRunningJob else { return NSSound.beep() }
         reconnecting = lostSession != nil
         updateLostBar()

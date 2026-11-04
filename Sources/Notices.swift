@@ -167,9 +167,9 @@ final class ConnectionLostBar: NSView {
     private let reconnectButton: NSButton
     private let closeButton: NSButton
 
-    init(host: String, onReconnect: @escaping () -> Void, onClose: @escaping () -> Void) {
+    init(host: String, title: String? = nil, onReconnect: @escaping () -> Void, onClose: @escaping () -> Void) {
         let th = Config.shared.theme
-        label = NSTextField(labelWithString: "Lost connection to \(host)")
+        label = NSTextField(labelWithString: title ?? "Lost connection to \(host)")
         label.font = .systemFont(ofSize: 12, weight: .medium)
         label.textColor = th.foreground
         label.lineBreakMode = .byTruncatingMiddle

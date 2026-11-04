@@ -259,9 +259,22 @@ final class RemoteSession: FileSystem {
     /// How the session was opened (`ssh` arguments, shell-quoted), when the shell integration reported them.
     let sshArgs: String?
 
+    /// Not a connection yet: files restored from a saved session wait on one to their host (see
+    /// `FileEditorView.follow`), and logging in again uses `sshArgs`.
+    let awaitingLogin: Bool
+
     init(controlPath: String, sshArgs: String? = nil) {
         self.controlPath = controlPath
         self.sshArgs = sshArgs
+        awaitingLogin = false
+    }
+
+    /// For files restored from a saved session that were open on `host`, reached with `sshArgs`.
+    init(awaiting host: String, sshArgs: String) {
+        controlPath = ""
+        self.sshArgs = sshArgs
+        hostLabel = host
+        awaitingLogin = true
     }
 
     /// A command that opens another shell on the same host, in `dir` (running `command` there first): the
@@ -405,11 +418,16 @@ final class RemoteSession: FileSystem {
         return p
     }
 
+    /// Why nothing can be done through it: it ended, or (restored) it hasn't started.
+    var endedMessage: String {
+        awaitingLogin ? "Not connected to \(hostLabel ?? "the host") yet." : "The ssh session has ended."
+    }
+
     /// Runs a POSIX sh script on the host; `done` gets (exit status, stdout, stderr) on the main queue.
     func run(_ script: String, input: Data? = nil, timeout: TimeInterval = 60,
              _ done: @escaping (Int32, Data, String) -> Void) {
         guard isConnected else {
-            done(255, Data(), "The ssh session has ended.")
+            done(255, Data(), endedMessage)
             return
         }
         // Waits its turn: each of these is a channel on the user's own ssh connection (see `ChannelGate`).
@@ -565,14 +583,14 @@ enum FileTransfer {
         let reader: Process, writer: Process
         switch src {
         case let remote as RemoteSession:
-            guard remote.isConnected else { return done(FileError(message: "The ssh session has ended.")) }
+            guard remote.isConnected else { return done(FileError(message: remote.endedMessage)) }
             reader = remote.sshProcess("tar -C \(shellQuote(parent)) -cf - \(shellQuote(base))")
         default:
             reader = tarProcess(["-cf", "-", "-C", parent, base])
         }
         switch dst {
         case let remote as RemoteSession:
-            guard remote.isConnected else { return done(FileError(message: "The ssh session has ended.")) }
+            guard remote.isConnected else { return done(FileError(message: remote.endedMessage)) }
             writer = remote.sshProcess(unpack)
         default:
             writer = Process()
@@ -668,4 +686,7 @@ extension Notification.Name {
     static let solanumGitStatusChanged = Notification.Name("SolanumGitStatusChanged")
     /// An editor saved a file: `object` is its file system, `userInfo["path"]` its path.
     static let solanumFileSaved = Notification.Name("SolanumFileSaved")
+    /// An ssh session (`object`, a `RemoteSession`) is logged in and knows its host: files and tabs still on a
+    /// lost session to that host move to it.
+    static let solanumRemoteReady = Notification.Name("SolanumRemoteReady")
 }

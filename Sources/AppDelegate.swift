@@ -419,6 +419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         shell.addItem(.separator())
         _ = add(shell, "Save File", #selector(FileEditorView.saveDocument(_:)), "s")
         _ = add(shell, "Beautify / Format Document", #selector(TerminalWindowController.beautifyDocument(_:)), "f", [.command, .option])
+        _ = add(shell, "Import Log Format…", #selector(TerminalWindowController.importLogFormat(_:)), "")
         shell.addItem(.separator())
         // Two columns, each with its own tabs (like VS Code's editor groups).
         _ = add(shell, "Split Right", #selector(TerminalWindowController.splitIntoColumns(_:)), "d")

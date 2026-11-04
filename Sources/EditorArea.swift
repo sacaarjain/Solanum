@@ -103,9 +103,14 @@ final class FileTabStrip: NSView {
             }
             let para = NSMutableParagraphStyle()
             para.lineBreakMode = .byTruncatingMiddle
-            (name as NSString).draw(in: NSRect(x: r.minX + 30, y: r.midY - 7, width: r.width - 54, height: 16),
-                                    withAttributes: [.font: Self.font, .paragraphStyle: para,
-                                                     .foregroundColor: active ? th.foreground : th.foreground.withAlphaComponent(0.6)])
+            // Deleted from disk: struck through in red, as VS Code shows it.
+            var attrs: [NSAttributedString.Key: Any] = [.font: Self.font, .paragraphStyle: para,
+                                                         .foregroundColor: active ? th.foreground : th.foreground.withAlphaComponent(0.6)]
+            if ed.isDeleted {
+                attrs[.foregroundColor] = th.red.withAlphaComponent(active ? 1 : 0.75)
+                attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            }
+            (name as NSString).draw(in: NSRect(x: r.minX + 30, y: r.midY - 7, width: r.width - 54, height: 16), withAttributes: attrs)
             // Unsaved: a dot where the ✕ goes, until hovered.
             let cr = closeRects[i]
             if hover == i || active {

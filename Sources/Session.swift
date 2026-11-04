@@ -29,6 +29,9 @@ struct TabState: Codable {
     var layout: PaneNode
     /// Local files open above the terminal, the one showing, and whether it's a file tab (terminal hidden).
     var files: [String]?
+    /// For each of `files`, the ssh host it's on (nil: this Mac) and how that host was reached (`ssh`'s arguments).
+    var fileHosts: [String?]?
+    var fileSSH: [String?]?
     var activeFile: Int?
     var terminalHidden: Bool?
     /// The sidebar's pinned folder for this tab (local folders only; ssh pins don't outlive the connection).
@@ -151,12 +154,19 @@ extension TabSession {
     /// Everything needed to bring this tab back (panes, folders, scrollback, name, open files), with `group` as
     /// an index into the saved groups.
     func savedState(group: Int?) -> TabState {
-        // Diffs and graphs aren't files to reopen; ssh files can't come back without their connection.
-        let kept = editors.filter { !$0.fs.isRemote && $0.mode == .file }
+        // Diffs and graphs aren't files to reopen. Files on an ssh host come back waiting for a connection to it,
+        // which needs to know how it was reached.
+        func remote(_ ed: FileEditorView) -> RemoteSession? { ed.fs as? RemoteSession }
+        let kept = editors.filter { ed in
+            ed.mode == .file && (!ed.fs.isRemote || (remote(ed)?.hostLabel != nil && remote(ed)?.sshArgs?.isEmpty == false))
+        }
+        let anyRemote = kept.contains { $0.fs.isRemote }
         return TabState(title: customTitle, group: group,
                  focused: panes.firstIndex(of: focusedPane) ?? 0,
                  layout: root.subviews.first.flatMap(TabSession.node) ?? .pane(PaneState()),
                  files: kept.isEmpty ? nil : kept.map(\.path),
+                 fileHosts: anyRemote ? kept.map { remote($0)?.hostLabel } : nil,
+                 fileSSH: anyRemote ? kept.map { remote($0)?.sshArgs } : nil,
                  activeFile: kept.isEmpty ? nil : editor.flatMap { kept.firstIndex(of: $0) } ?? 0,
                  terminalHidden: showsTerminal ? nil : true,
                  pinnedFolder: pinnedFolder.flatMap { $0.fs.isRemote ? nil : $0.path })
