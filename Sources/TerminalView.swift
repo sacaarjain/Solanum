@@ -1276,7 +1276,77 @@ final class TerminalView: NSView, TerminalDelegate {
             ctx.setLineWidth(1)
             ctx.addPath(path)
             ctx.strokePath()
+            drawBoxSelection(b, in: rect, rows: r0...r1, ctx)
         }
+    }
+
+    /// Whether a selection on line `a` is drawn by `drawBoxSelection` rather than cell by cell.
+    private func selectionDrawnByBox(line a: Int) -> Bool {
+        guard let s = selection, !s.rect else { return false }
+        return codeBoxes.contains { $0.kind == .code && $0.contains(line: a) }
+    }
+
+    /// The selection inside a code box, as an editor draws it: one rounded shape kept within the panel, starting
+    /// at the selection's first character and ending after its last, full width on the lines between.
+    private func drawBoxSelection(_ b: CodeBox, in box: CGRect, rows: ClosedRange<Int>, _ ctx: CGContext) {
+        guard let s = selection, !s.rect else { return }
+        let cw = fonts.cellW
+        let left = box.minX + 4, right = box.maxX - 4
+        var group: [(lo: CGFloat, hi: CGFloat)] = []
+        var groupTop: CGFloat = 0
+        func flush() {
+            if !group.isEmpty { ctx.addPath(Self.roundedStaircase(group, top: groupTop, rowH: fonts.cellH, radius: 4)) }
+            group = []
+        }
+        for r in rows {
+            let a = rowMap[r]
+            guard a >= 0, let cols = selectionCols(forLine: a) else { flush(); continue }
+            let lo = a == s.start.line && cols.lowerBound > b.indent ? max(left, padX + CGFloat(cols.lowerBound) * cw) : left
+            let hi = a == s.end.line ? min(right, padX + CGFloat(cols.upperBound + 1) * cw) : right
+            guard hi > lo else { flush(); continue }
+            // Lines whose highlights don't touch (the end of one, the start of the next) are separate shapes.
+            if let prev = group.last, lo >= prev.hi || hi <= prev.lo { flush() }
+            if group.isEmpty { groupTop = rowY(r) }
+            group.append((lo, hi))
+        }
+        flush()
+        ctx.setFillColor(palette.selection)
+        ctx.fillPath()
+    }
+
+    /// The outline of stacked row spans (each overlapping the next), with every corner rounded, inside and out.
+    static func roundedStaircase(_ spans: [(lo: CGFloat, hi: CGFloat)], top: CGFloat, rowH: CGFloat, radius: CGFloat) -> CGPath {
+        var pts: [CGPoint] = []
+        for (i, s) in spans.enumerated() {
+            pts.append(CGPoint(x: s.hi, y: top + CGFloat(i) * rowH))
+            pts.append(CGPoint(x: s.hi, y: top + CGFloat(i + 1) * rowH))
+        }
+        for (i, s) in spans.enumerated().reversed() {
+            pts.append(CGPoint(x: s.lo, y: top + CGFloat(i + 1) * rowH))
+            pts.append(CGPoint(x: s.lo, y: top + CGFloat(i) * rowH))
+        }
+        // Drop repeated points and the middle of straight runs, so only real corners are left.
+        var changed = true
+        while changed && pts.count > 4 {
+            changed = false
+            for i in pts.indices.reversed() where pts.count > 4 {
+                let p = pts[(i + pts.count - 1) % pts.count], v = pts[i], n = pts[(i + 1) % pts.count]
+                let same = abs(p.x - v.x) < 0.5 && abs(p.y - v.y) < 0.5
+                let straight = (abs(p.x - v.x) < 0.5 && abs(v.x - n.x) < 0.5) || (abs(p.y - v.y) < 0.5 && abs(v.y - n.y) < 0.5)
+                if same || straight { pts.remove(at: i); changed = true }
+            }
+        }
+        let path = CGMutablePath()
+        let last = pts[pts.count - 1]
+        path.move(to: CGPoint(x: (last.x + pts[0].x) / 2, y: (last.y + pts[0].y) / 2))
+        for i in pts.indices {
+            let p = pts[(i + pts.count - 1) % pts.count], v = pts[i], n = pts[(i + 1) % pts.count]
+            let before: CGFloat = hypot(v.x - p.x, v.y - p.y), after: CGFloat = hypot(n.x - v.x, n.y - v.y)
+            let r = min(radius, before / 2, after / 2)
+            path.addArc(tangent1End: v, tangent2End: n, radius: r)
+        }
+        path.closeSubpath()
+        return path
     }
 
     /// "Copy" at the top right of each box whose first line is on screen.
@@ -1413,6 +1483,8 @@ final class TerminalView: NSView, TerminalDelegate {
             let y = rowY(r)
             let n = min(line.cells.count, cols)
             let sel = selectionCols(forLine: a)
+            // Inside a code box the selection is already drawn, as one shape within the panel (drawBoxSelection).
+            let boxSel = sel != nil && selectionDrawnByBox(line: a)
             let lineMatches = matchesByLine[a]
             // "[Image #N]" with its picture drawn there instead (see ImageChips.swift).
             let hiddenText = imageChipState.hidden[a]
@@ -1443,7 +1515,7 @@ final class TerminalView: NSView, TerminalDelegate {
                         }
                     }
                 }
-                if let sel, sel.contains(x) { bg = palette.selection }
+                if let sel, sel.contains(x) { bg = boxSel ? nil : palette.selection }
                 if let hiddenText, hiddenText.contains(where: { $0.contains(x) }) { fg = .clear }
                 rowFG[x] = fg
                 rowBG[x] = bg
