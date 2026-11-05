@@ -17,10 +17,12 @@ struct DropdownItem {
     var detail: String?
     /// What ⌥-click or ⌥↩ does instead (connect in this pane rather than a new tab, say).
     var optionAction: (() -> Void)?
+    /// A dot of this color where the check mark goes (a tab group's color); checked, it's ringed instead of ticked.
+    var color: NSColor?
 
-    static func item(_ title: String, checked: Bool = false, symbol: String? = nil, detail: String? = nil,
+    static func item(_ title: String, checked: Bool = false, symbol: String? = nil, detail: String? = nil, color: NSColor? = nil,
                      option: (() -> Void)? = nil, _ action: @escaping () -> Void) -> DropdownItem {
-        DropdownItem(kind: .item, title: title, checked: checked, action: action, symbol: symbol, detail: detail, optionAction: option)
+        DropdownItem(kind: .item, title: title, checked: checked, action: action, symbol: symbol, detail: detail, optionAction: option, color: color)
     }
     static func header(_ title: String) -> DropdownItem { DropdownItem(kind: .header, title: title) }
     static let separator = DropdownItem(kind: .separator)
@@ -63,8 +65,10 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate {
 
     /// Opens under `anchor` (its left edge, or right-aligned when it'd run off the window), or over it when there's
     /// more room there. `rect`: the button within `anchor`, when it's drawn inside a bigger view (the status bar).
-    /// `placeholder`: what the filter field says while empty.
-    static func show(_ items: [DropdownItem], under anchor: NSView, rect: NSRect? = nil, minWidth: CGFloat = 200, placeholder: String = "Filter") {
+    /// `placeholder`: what the filter field says while empty. `searchable`: false for a short menu of actions, with no
+    /// filter field (↑ / ↓ and ↩ still work).
+    static func show(_ items: [DropdownItem], under anchor: NSView, rect: NSRect? = nil, minWidth: CGFloat = 200, placeholder: String = "Filter",
+                     searchable: Bool = true) {
         if let a = anchor as? DropdownAnchor, !a.dropdownWanted { return }
         devLastItems = items
         // A view in the window, not a menu with its own event loop, so headless runs show it too (and print it).
@@ -73,8 +77,8 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate {
         }
         current?.dismiss()
         guard let window = anchor.window, let content = window.contentView else { return }
-        // Every dropdown has the field, focused from the start: typing narrows the list straight away.
-        let d = ThemedDropdown(items, searchable: true, placeholder: placeholder, previous: window.firstResponder)
+        // The field is focused from the start: typing narrows the list straight away.
+        let d = ThemedDropdown(items, searchable: searchable, placeholder: placeholder, previous: window.firstResponder)
         d.frame = content.bounds
         d.autoresizingMask = [.width, .height]
         content.addSubview(d)
@@ -117,7 +121,11 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate {
     }
 
     /// Dev aid: picks the last dropdown's item called `title`.
-    static func devRun(_ title: String) { devLastItems.first { $0.kind == .item && $0.title == title }?.action?() }
+    static func devRun(_ title: String) {
+        // As a click would: through the open dropdown (closing it first), else straight from its items.
+        if let d = current, let i = d.list.items.firstIndex(where: { $0.kind == .item && $0.title == title }) { return d.pick(i) }
+        devLastItems.first { $0.kind == .item && $0.title == title }?.action?()
+    }
 
     private init(_ items: [DropdownItem], searchable: Bool, placeholder: String, previous: NSResponder?) {
         all = items
@@ -449,14 +457,24 @@ final class DropdownListView: NSView {
                     th.accent.withAlphaComponent(0.2).setFill()
                     NSBezierPath(roundedRect: r.insetBy(dx: 6, dy: 1), xRadius: 6, yRadius: 6).fill()
                 }
-                if let symbol = item.symbol, !item.checked {
+                if let dot = item.color {
+                    let c = NSRect(x: 15, y: (r.midY - 5).rounded(), width: 10, height: 10)
+                    dot.setFill()
+                    NSBezierPath(ovalIn: c).fill()
+                    if item.checked {
+                        dot.setStroke()
+                        let ring = NSBezierPath(ovalIn: c.insetBy(dx: -3, dy: -3))
+                        ring.lineWidth = 1.5
+                        ring.stroke()
+                    }
+                } else if let symbol = item.symbol, !item.checked {
                     let cfg = NSImage.SymbolConfiguration(pointSize: 11.5, weight: .regular)
                         .applying(.init(paletteColors: [i == highlighted ? th.accent : th.foreground.withAlphaComponent(0.7)]))
                     if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(cfg) {
                         img.draw(in: NSRect(x: 20 - img.size.width / 2, y: (r.midY - img.size.height / 2).rounded(), width: img.size.width, height: img.size.height))
                     }
                 }
-                if item.checked {
+                if item.checked && item.color == nil {
                     let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .bold).applying(.init(paletteColors: [th.accent]))
                     if let img = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)?.withSymbolConfiguration(cfg) {
                         img.draw(in: NSRect(x: 14, y: r.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
@@ -465,7 +483,7 @@ final class DropdownListView: NSView {
                 let font = NSFont.systemFont(ofSize: 13, weight: item.checked ? .semibold : .regular)
                 (item.title as NSString).draw(in: NSRect(x: 34, y: r.midY - 8.5, width: r.width - 46, height: 17),
                                               withAttributes: [.font: font, .paragraphStyle: middle,
-                                                               .foregroundColor: item.checked ? th.accent : th.foreground.withAlphaComponent(0.92)])
+                                                               .foregroundColor: item.checked && item.color == nil ? th.accent : th.foreground.withAlphaComponent(0.92)])
                 if let detail = item.detail {
                     let tw = (item.title as NSString).size(withAttributes: [.font: font]).width
                     let x = 34 + ceil(tw) + 8

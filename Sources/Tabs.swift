@@ -3691,26 +3691,29 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         return m
     }
 
-    private func menu(forGroup g: TabGroup) -> NSMenu {
-        let m = NSMenu()
-        guard let c = controller else { return m }
-        m.addItem(ActionMenuItem("Rename Group…") { [weak self] in self?.beginEditing(group: g) })
-        m.addItem(.separator())
+    /// A group chip's menu, in our own dropdown under the chip: rename, its color, and what to do with its tabs.
+    func showGroupMenu(_ g: TabGroup) {
+        guard let c = controller, let chip = chips.first(where: { $0.group === g }) else { return }
+        var items: [DropdownItem] = [.item("Rename Group…") { [weak self] in self?.beginEditing(group: g) }, .separator]
         for color in TabGroupColor.allCases {
-            let item = ActionMenuItem(color.title, checked: g.color == color) { [weak self] in
+            items.append(.item(color.title, checked: g.color == color, color: color.color) { [weak self] in
                 g.color = color
                 self?.needsDisplay = true
-            }
-            item.image = swatch(color)
-            m.addItem(item)
+            })
         }
-        m.addItem(.separator())
-        m.addItem(ActionMenuItem("New Tab in Group") { [weak c] in c?.newTab(in: g) })
-        m.addItem(ActionMenuItem(g.collapsed ? "Expand Group" : "Collapse Group") { [weak c] in c?.setCollapsed(g, !g.collapsed) })
-        m.addItem(ActionMenuItem("Ungroup") { [weak c] in c?.ungroup(g) })
-        m.addItem(ActionMenuItem("Close Group") { [weak c] in c?.closeTabs(c?.tabs(in: g) ?? []) })
-        return m
+        items += [
+            .separator,
+            .item("New Tab in Group") { [weak c] in c?.newTab(in: g) },
+            .item(g.collapsed ? "Expand Group" : "Collapse Group") { [weak c] in c?.setCollapsed(g, !g.collapsed) },
+            .item("Ungroup") { [weak c] in c?.ungroup(g) },
+            .item("Close Group") { [weak c] in c?.closeTabs(c?.tabs(in: g) ?? []) },
+        ]
+        let r = shownRect(ObjectIdentifier(g)) ?? chip.rect
+        ThemedDropdown.show(items, under: self, rect: r, minWidth: 200, searchable: false)
     }
+
+    /// Dev aid (DevTools chip-dropdown): the first group's menu.
+    func devShowGroupMenu() { if let g = chips.first?.group { showGroupMenu(g) } }
 
     /// Right-clicking one of several ⌘/⇧-picked tabs: actions on all of them.
     private func menu(forTabs list: [TabSession]) -> NSMenu {
@@ -3760,7 +3763,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         let p = convert(e.locationInWindow, from: nil)
         let menu: NSMenu
         if let ci = chipIndex(at: p) {
-            menu = self.menu(forGroup: chips[ci].group)
+            return showGroupMenu(chips[ci].group)
         } else if let i = tabIndex(at: p) {
             if selectedTabs.count > 1 && selectedTabs.contains(c.tabs[i]) {
                 menu = self.menu(forTabs: c.tabs.filter { selectedTabs.contains($0) })
