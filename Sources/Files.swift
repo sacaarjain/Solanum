@@ -247,6 +247,9 @@ final class RemoteSession: FileSystem {
     private(set) var home: String?
     /// The interactive remote shell's folder, when it could be found (Linux hosts, via /proc).
     private(set) var cwd: String?
+    /// Whether the login shell has the terminal (false while a program, or a shell from `sudo -i -u`, runs in front
+    /// of it); nil when it couldn't be told.
+    private(set) var loginShellInForeground: Bool?
     var onChange: (() -> Void)?
     private var readyTimer: Timer?
     private var probing = false
@@ -348,6 +351,17 @@ final class RemoteSession: FileSystem {
         return "ssh -t -S " + shellQuote(controlPath) + " -o ControlMaster=no solanum-remote" + remote
     }
 
+    /// A command for another terminal on this host, in `dir`: over this connection while it's open (no password asked
+    /// again, as VS Code's terminals share theirs), else logging in again as `reconnectCommand` does. The ssh wrapper
+    /// takes the shared socket as that terminal's, and `SOLANUM_SSH_ARGS` as how to log in again should it drop.
+    func newTerminalCommand(in dir: String?, then command: String? = nil) -> String? {
+        guard isConnected else { return reconnectCommand(in: dir, then: command) }
+        let first = command.map { $0 + "; " } ?? ""
+        let remote = " " + shellQuote((dir.map { "cd " + shellQuote($0) + " 2>/dev/null; " } ?? "") + first + "exec \"$SHELL\" -l")
+        let args = sshArgs.flatMap { $0.isEmpty ? nil : "SOLANUM_SSH_ARGS=" + shellQuote(Data(($0 + " ").utf8).base64EncodedString()) + " " } ?? ""
+        return args + "ssh -t -S " + shellQuote(controlPath) + " -o ControlMaster=no solanum-remote" + remote
+    }
+
     deinit { readyTimer?.invalidate() }
 
     func start() {
@@ -374,9 +388,11 @@ final class RemoteSession: FileSystem {
                 let label = lines.first.flatMap { $0.isEmpty ? nil : $0 }
                 let home = lines.count > 1 && !lines[1].isEmpty ? lines[1] : nil
                 let cwd = lines.count > 2 && lines[2].hasPrefix("/") ? lines[2] : nil
-                if label != self.hostLabel || home != self.home || (cwd != nil && cwd != self.cwd) {
+                let fg: Bool? = lines.count > 3 ? (lines[3] == "fg" ? true : lines[3] == "bg" ? false : nil) : nil
+                if label != self.hostLabel || home != self.home || (cwd != nil && cwd != self.cwd) || fg != self.loginShellInForeground {
                     self.hostLabel = label
                     self.home = home
+                    self.loginShellInForeground = fg
                     if let cwd { self.cwd = cwd }
                     self.onChange?()
                 }
@@ -388,8 +404,9 @@ final class RemoteSession: FileSystem {
         }
     }
 
-    /// Prints user@host, $HOME, then the folder of the session's interactive shell: walk up from this
-    /// command to the per-connection sshd, then take its child whose stdin is a pty.
+    /// Prints user@host, $HOME, then the folder of the session's interactive shell (walk up from this command to the
+    /// per-connection sshd, then take its child whose stdin is a pty), and "fg" or "bg": whether that shell has the
+    /// terminal (its process group is the terminal's foreground one).
     private static let probeScript = #"""
     h=$(hostname 2>/dev/null || uname -n)
     printf '%s@%s\n%s\n' "$(id -un 2>/dev/null)" "${h%%.*}" "$HOME"
@@ -402,7 +419,11 @@ final class RemoteSession: FileSystem {
       kids=$(cat /proc/$p/task/*/children 2>/dev/null)
       [ -n "$kids" ] || kids=$(pgrep -P "$p" 2>/dev/null)
       for k in $kids; do
-        case $(readlink /proc/$k/fd/0 2>/dev/null) in /dev/pts/*) readlink /proc/$k/cwd 2>/dev/null; break ;; esac
+        case $(readlink /proc/$k/fd/0 2>/dev/null) in /dev/pts/*)
+          printf '%s\n' "$(readlink /proc/$k/cwd 2>/dev/null)"
+          set -- $(sed 's/.*) //' /proc/$k/stat 2>/dev/null)
+          if [ -n "$6" ]; then if [ "$3" = "$6" ]; then echo fg; else echo bg; fi; fi
+          break ;; esac
       done
     fi
     """#

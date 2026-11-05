@@ -274,25 +274,19 @@ final class GitGraphView: NSView {
 
     private func showBranchMenu(_ anchor: NSView) {
         let refs = branchList.refs
-        let menu = NSMenu()
-        menu.addItem(ActionMenuItem("All Branches", checked: filter.branch == nil) { [weak self] in self?.toolbar.pick(branch: nil) })
-        menu.addItem(ActionMenuItem("HEAD" + (refs.current.map { " (\($0))" } ?? ""), checked: filter.branch == "HEAD") { [weak self] in
-            self?.toolbar.pick(branch: "HEAD")
-        })
+        var items: [DropdownItem] = [
+            .item("All Branches", checked: filter.branch == nil) { [weak self] in self?.toolbar.pick(branch: nil) },
+            .item("HEAD" + (refs.current.map { " (\($0))" } ?? ""), checked: filter.branch == "HEAD") { [weak self] in self?.toolbar.pick(branch: "HEAD") },
+        ]
         func section(_ title: String, _ names: [String]) {
             guard !names.isEmpty else { return }
-            menu.addItem(.separator())
-            let header = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            header.isEnabled = false
-            menu.addItem(header)
-            for name in names {
-                menu.addItem(ActionMenuItem(name, checked: filter.branch == name) { [weak self] in self?.toolbar.pick(branch: name) })
-            }
+            items += [.separator, .header(title)]
+            items += names.map { name in .item(name, checked: filter.branch == name) { [weak self] in self?.toolbar.pick(branch: name) } }
         }
         section("Local", refs.locals)
         section("Remote", refs.remotes)
         section("Tags", refs.tags)
-        GraphToolbar.popUp(menu, under: anchor)
+        ThemedDropdown.show(items, under: anchor, minWidth: 240)
     }
 
     private func showUserMenu(_ anchor: NSView) {
@@ -311,21 +305,17 @@ final class GitGraphView: NSView {
             }
             return
         }
-        let menu = NSMenu()
-        menu.addItem(ActionMenuItem("All Users", checked: filter.user == nil) { [weak self] in self?.toolbar.pick(user: nil) })
+        var items: [DropdownItem] = [.item("All Users", checked: filter.user == nil) { [weak self] in self?.toolbar.pick(user: nil) }]
         if let me {
-            menu.addItem(ActionMenuItem("Me (\(me))", checked: filter.user == me) { [weak self] in self?.toolbar.pick(user: me) })
+            items.append(.item("Me (\(me))", checked: filter.user == me) { [weak self] in self?.toolbar.pick(user: me) })
         }
-        menu.addItem(.separator())
-        for name in authors where name != me {
-            menu.addItem(ActionMenuItem(name, checked: filter.user == name) { [weak self] in self?.toolbar.pick(user: name) })
-        }
-        GraphToolbar.popUp(menu, under: anchor)
+        items.append(.separator)
+        items += authors.filter { $0 != me }.map { name in .item(name, checked: filter.user == name) { [weak self] in self?.toolbar.pick(user: name) } }
+        ThemedDropdown.show(items, under: anchor)
     }
 
-    /// A searchable list of the repository's folders and files (as HEAD has them), in the command palette.
+    /// The repository's folders and files (as HEAD has them) in a dropdown under Paths, with a field to narrow them.
     private func showPathPicker(_ anchor: NSView) {
-        guard let window else { return }
         guard let paths else {
             runner.run("git ls-tree -r -t --name-only HEAD | head -50000", timeout: 30) { [weak self] _, out, _ in
                 guard let self else { return }
@@ -339,17 +329,12 @@ final class GitGraphView: NSView {
             }
             return
         }
-        typealias Item = CommandPalette.Item
-        var items: [Item] = []
-        if filter.path != nil {
-            items.append(Item(title: "All Paths", path: "clear the Paths filter", shortcut: "") { [weak self] in self?.toolbar.pick(path: nil) })
-        }
-        items += paths.map { p in Item(title: p, path: "", shortcut: "") { [weak self] in self?.toolbar.pick(path: p) } }
         if Headless.active {
             FileHandle.standardError.write("graph paths: \(paths.count), first \(paths.prefix(5))\n".data(using: .utf8)!)
-            return
         }
-        CommandPalette.show(in: window, items: items, placeholder: "Commits touching a folder or file…", keepsOrder: true, icon: "folder")
+        var items: [DropdownItem] = [.item("All Paths", checked: filter.path == nil) { [weak self] in self?.toolbar.pick(path: nil) }, .separator]
+        items += paths.map { p in .item(p, checked: filter.path == p) { [weak self] in self?.toolbar.pick(path: p) } }
+        ThemedDropdown.show(items, under: anchor, minWidth: 360, placeholder: "Folder or file")
     }
 
     var devToolbar: GraphToolbar { toolbar }

@@ -497,7 +497,12 @@ final class TerminalView: NSView, TerminalDelegate {
         // In an ssh session, Enter at the host's prompt marks a command there (see Terminal.remoteEnterPressed).
         // Not while an agent is running: its input box isn't a shell's prompt.
         if terminal.sshControlPath != nil, agent == nil {
-            if bytes == [13] { terminal.remoteEnterPressed() } else { terminal.remoteKeyPressed() }
+            if bytes == [13] {
+                noteUserSwitch()
+                terminal.remoteEnterPressed()
+            } else {
+                terminal.remoteKeyPressed()
+            }
         }
         pty?.write(bytes)
         // A command was entered in an ssh session: look up the remote shell's folder once it has had a moment to cd.
@@ -518,10 +523,108 @@ final class TerminalView: NSView, TerminalDelegate {
     /// Where this pane's files live: the ssh host while a session is running in it, otherwise this Mac.
     var fileSystem: FileSystem { remote ?? LocalFileSystem.shared }
 
+    /// The ssh login's user name (from user@host).
+    var loginUser: String? { remote?.hostLabel.flatMap { $0.split(separator: "@").first.map(String.init) } }
+
+    /// user@host for the shell in this pane: the user it says it runs as (see Follow This Shell's Folder), else the login.
+    var shellHostLabel: String? {
+        guard let label = remote?.hostLabel else { return nil }
+        guard let user = terminal.remoteUser?.name, let at = label.firstIndex(of: "@") else { return label }
+        return user + label[at...]
+    }
+
+    /// The home folder of the user the shell in this pane runs as, for ~ in Go to.
+    var shellHome: String? {
+        if let home = terminal.remoteUser?.home, home.hasPrefix("/") { return home }
+        return remote?.home
+    }
+
+    /// The user the shell runs as, when it isn't the ssh login (a shell from `sudo -i -u`).
+    var borrowedUser: String? {
+        guard let user = terminal.remoteUser?.name, user != loginUser else { return nil }
+        return user
+    }
+
+    /// The line Follow This Shell's Folder types: from then on, each prompt of that shell (bash) reports its folder
+    /// (OSC 7) and its user and home, so the sidebar, status bar and Go to follow a shell from `sudo -i -u`. A
+    /// leading space keeps it out of the shell's history.
+    static let followLine = #" PROMPT_COMMAND='printf "\033]7;file://%s%s\007\033]1337;SolanumUser=%s:%s\007" "${HOSTNAME:-$(hostname)}" "$PWD" "${USER:-$(id -un)}" "$HOME"'"${PROMPT_COMMAND:+;$PROMPT_COMMAND}""#
+
+    /// Types `followLine` at the prompt of the shell on the host, then erases what it typed (and its echo), so the
+    /// next prompt comes up where this one was.
+    func followShellFolder() {
+        guard remote != nil, !terminal.usingAlt else { return NSSound.beep() }
+        send("\u{15}" + Self.followCommand(promptWidth: terminal.cursorX, columns: terminal.cols) + "\r")
+    }
+
+    /// `followLine`, then a printf that moves back up over the lines the prompt and the echoed command took and clears
+    /// from there.
+    static func followCommand(promptWidth: Int, columns: Int) -> String {
+        var lines = 1, text = ""
+        for _ in 0..<3 {
+            text = followLine + "; printf '\\033[\(lines)A\\033[J'"
+            lines = max(1, (promptWidth + text.count - 1) / max(columns, 1) + 1)
+        }
+        return text
+    }
+
+    /// Commands at the host's prompt that start a shell as someone else: sudo -i / -s / su, su.
+    private static let switchesUser = try! NSRegularExpression(pattern:
+        #"(^|[\s;&|])(sudo\s+((-u\s+\S+|-\S+)\s+)*?(-[a-zA-Z]*[is][a-zA-Z]*\b|su\b|(bash|sh|zsh)\b)|su(\s+-|\s+-l|\s+--login)?(\s+[A-Za-z_][\w.-]*)?\s*$)"#)
+
+    static func switchesUser(_ command: String) -> Bool {
+        let ns = command as NSString
+        return switchesUser.firstMatch(in: command, range: NSRange(location: 0, length: ns.length)) != nil
+    }
+
+    /// Enter on a sudo -i (or su) at the host's prompt: once that shell's prompt is up, Follow This Shell's Folder.
+    private var followAfterSwitch: Date?
+    private var followTimer: Timer?
+
+    private func noteUserSwitch() {
+        guard terminal.sshControlPath != nil, agent == nil, Self.switchesUser(terminal.cursorLineText) else { return }
+        expectUserSwitch()
+    }
+
+    /// A shell as another user is on its way here (a sudo just entered, or a new terminal logging in as one): once its
+    /// prompt is up, Follow This Shell's Folder.
+    func expectUserSwitch() {
+        guard Config.shared.followSudoShells else { return }
+        followAfterSwitch = Date()
+        followTimer?.invalidate()
+        followTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] t in
+            guard let self, let at = self.followAfterSwitch, Date().timeIntervalSince(at) < 120 else {
+                t.invalidate()
+                self?.followAfterSwitch = nil
+                return
+            }
+            // The new shell's prompt, settled (not sudo's password question, which isn't a prompt).
+            guard Date().timeIntervalSince(at) > 0.4, Date().timeIntervalSince(self.lastOutputAt) > 0.35,
+                  self.terminal.atEmptyHostPrompt() else { return }
+            t.invalidate()
+            self.followAfterSwitch = nil
+            self.followShellFolder()
+        }
+    }
+
     /// The folder the shell is in, on whichever machine `fileSystem` points at.
     var browseDirectory: String? {
         guard let remote else { return currentDirectory }
         return terminal.remoteCwd ?? remote.cwd ?? remote.home
+    }
+
+    /// For a new terminal beside this one (⌘D, a split): log in to the same ssh host, in the folder this shell is in;
+    /// as the same user too, when this is a shell from `sudo -i -u` (it then follows itself, see `expectUserSwitch`).
+    /// nil when this isn't an ssh session.
+    var sameHostCommand: (command: String, switchesUser: Bool)? {
+        guard let remote, remote.isReady else { return nil }
+        let dir = browseDirectory
+        if let user = borrowedUser {
+            let inner = (dir.map { "cd \(shellQuote($0)) 2>/dev/null; " } ?? "") + "exec \"$SHELL\" -l"
+            guard let c = remote.newTerminalCommand(in: dir, then: "sudo -i -u \(shellQuote(user)) sh -c \(shellQuote(inner))") else { return nil }
+            return (c, true)
+        }
+        return remote.newTerminalCommand(in: dir).map { ($0, false) }
     }
 
     /// Whether a typed `cd` would reach a shell: not while a program (Claude Code, an editor…) has the terminal.
@@ -548,6 +651,11 @@ final class TerminalView: NSView, TerminalDelegate {
             if let remote = self.remote, remote.isReady {
                 self.clearLostSession()
                 NotificationCenter.default.post(name: .solanumRemoteReady, object: remote)
+                // Back at the login shell (the sudo shell exited): its user and folder stop applying.
+                if remote.loginShellInForeground == true, let other = self.terminal.remoteUser?.name, other != self.loginUser {
+                    self.terminal.remoteUser = nil
+                    self.terminal.remoteCwd = nil
+                }
             }
             self.tab?.paneCwdChanged(self)
         }

@@ -11,7 +11,7 @@ enum AgentKind: Equatable {
     case other(String)
 
     /// Command names of other terminal agents, as they appear in argv.
-    private static let others = ["astra", "aider", "opencode", "cursor-agent", "amp", "goose", "crush", "qwen", "copilot", "droid", "kiro-cli", "auggie"]
+    private static let others = ["aider", "opencode", "cursor-agent", "amp", "goose", "crush", "qwen", "copilot", "droid", "kiro-cli", "auggie"]
 
     var name: String {
         switch self {
@@ -96,7 +96,7 @@ enum AgentKind: Equatable {
             Self.drawGlyph("✳", color: NSColor(srgbRed: 0.85, green: 0.47, blue: 0.34, alpha: alpha), in: r)
         case .antigravity:
             Self.drawGlyph("✦", color: NSColor(srgbRed: 0.30, green: 0.55, blue: 0.97, alpha: alpha), in: r)
-        case .codex, .other("astra"):
+        case .codex:
             place(AgentLogos.openAI(Config.shared.theme.foreground), r)
         case .other:
             let config = NSImage.SymbolConfiguration(pointSize: r.height, weight: .semibold).applying(.init(paletteColors: [Config.shared.theme.accent]))

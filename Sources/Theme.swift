@@ -89,14 +89,18 @@ struct Theme {
     init(name: String, bg: String, bg2: String? = nil, fg: String, cursor: String? = nil, selection: String? = nil,
          accent: String, chrome: String? = nil, ansi: [String]) {
         self.name = name
-        background = NSColor(hex: bg)
-        background2 = bg2.map { NSColor(hex: $0) }
-        foreground = NSColor(hex: fg)
-        self.accent = NSColor(hex: accent)
-        self.chrome = chrome.map { NSColor(hex: $0) }
-        self.cursor = NSColor(hex: cursor ?? accent)
-        self.selection = selection.map { NSColor(hex: $0) } ?? NSColor(hex: accent).withAlphaComponent(0.30)
-        self.ansi = ansi.map { NSColor(hex: $0) }
+        // Only the selection may be see-through: the window's transparency is the Background opacity setting, which
+        // replaces the background's alpha, so an alpha anywhere else (#RRGGBBAA in a theme file) would only show up
+        // in the odd spot that uses the color as it is.
+        func solid(_ hex: String) -> NSColor { NSColor(hex: hex).withAlphaComponent(1) }
+        background = solid(bg)
+        background2 = bg2.map(solid)
+        foreground = solid(fg)
+        self.accent = solid(accent)
+        self.chrome = chrome.map(solid)
+        self.cursor = solid(cursor ?? accent)
+        self.selection = selection.map { NSColor(hex: $0) } ?? solid(accent).withAlphaComponent(0.30)
+        self.ansi = ansi.map(solid)
         while self.ansi.count < 16 { self.ansi.append(foreground) }
     }
 

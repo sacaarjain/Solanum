@@ -337,6 +337,19 @@ enum ShellIntegration {
     if ! alias ssh >/dev/null 2>&1 && ! typeset -f ssh >/dev/null 2>&1; then
     function ssh {
         if [ ! -t 0 ] || [ ! -t 1 ]; then command ssh "$@"; return; fi
+        # A session over a connection that's already open (-S its socket, from a new terminal Solanum opened beside
+        # one): that socket is this pane's too, and how the first was started is what logging in again uses.
+        local __solanum_mux="" __solanum_prev="" __solanum_a
+        for __solanum_a in "$@"; do [ "$__solanum_prev" = "-S" ] && __solanum_mux="$__solanum_a"; __solanum_prev="$__solanum_a"; done
+        if [ -n "$__solanum_mux" ]; then
+            printf '\033]1337;SolanumSSHArgs=%s\007' "${SOLANUM_SSH_ARGS:-$(printf '%q ' "$@" | base64 | tr -d '\n')}" > /dev/tty
+            printf '\033]1337;SolanumSSH=%s\007' "$__solanum_mux" > /dev/tty
+            command ssh "$@"
+            local __solanum_r=$?
+            printf '\033]1337;SolanumSSHExit=%s\007' "$__solanum_r" > /dev/tty
+            printf '\033]1337;SolanumSSH=\007' > /dev/tty
+            return $__solanum_r
+        fi
         local __solanum_d="$HOME/.config/solanum/ssh"
         mkdir -p "$__solanum_d" 2>/dev/null && chmod 700 "$__solanum_d" 2>/dev/null
         local __solanum_s="$__solanum_d/$$-$RANDOM$RANDOM"

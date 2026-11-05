@@ -10,6 +10,8 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
         var isHeader = false
         /// What ⌘↩ does instead of `run`, when set.
         var alternate: (() -> Void)? = nil
+        /// What ⌥↩ (or ⌥-click) does instead of `run`, when set: an ssh host in the current tab.
+        var optionAlternate: (() -> Void)? = nil
         /// What Tab puts in the field (a "Go to:" folder suggestion).
         var completion: String? = nil
         /// A section label shown as written (a file's path), not in capitals.
@@ -63,8 +65,10 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
     /// Opens the palette over a custom list (e.g. prompts to jump to).
     /// Go to Folder (⌘O on an ssh tab, and Go to Folder…): a palette of its own whose field is just the path, so it
     /// can be cleared and typed afresh. Its list is `goToItems`, as for "Go to:" in the command palette.
-    static func showGoTo(in window: NSWindow, path: String = "") {
-        show(in: window, items: [], placeholder: "Go to folder: a path, ~/…, or a folder in this one", icon: "folder")
+    /// `on`: user@host, for an ssh tab (the sudo user, when the shell reports one).
+    static func showGoTo(in window: NSWindow, path: String = "", on host: String? = nil) {
+        show(in: window, items: [], placeholder: host.map { "Go to folder on \($0): a path, ~/…, or a folder in this one" }
+             ?? "Go to folder: a path, ~/…, or a folder in this one", icon: "folder")
         guard let p = current else { return }
         p.goToMode = true
         p.field.stringValue = path
@@ -205,6 +209,10 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
             runSelected(alternate: true)
             return true
         }
+        if mods == .option, e.keyCode == 36 || e.keyCode == 76 {
+            runSelected(option: true)
+            return true
+        }
         return super.performKeyEquivalent(with: e)
     }
 
@@ -236,7 +244,8 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
         // A live list's scope shares the field's line, and never takes more than half of it.
         let scopeFull = (scopeLabel.stringValue as NSString).size(withAttributes: [.font: scopeLabel.font ?? .systemFont(ofSize: 11.5)]).width
         let scopeW = scopeLabel.isHidden ? 0 : min(ceil(scopeFull) + 8, (width - 58) / 2)
-        field.frame = NSRect(x: 42, y: h - 37, width: width - 58 - (scopeW > 0 ? scopeW + 10 : 0), height: 22)
+        // Two points lower than the field's own placement, so its capitals center on the icon.
+        field.frame = NSRect(x: 42, y: h - 39, width: width - 58 - (scopeW > 0 ? scopeW + 10 : 0), height: 22)
         scopeLabel.frame = NSRect(x: width - 16 - scopeW, y: h - 34, width: scopeW, height: 16)
         list.frame = NSRect(x: 6, y: 6, width: width - 12, height: h - 58)
         list.needsDisplay = true
@@ -264,6 +273,16 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
                     NSApp.sendAction(action, to: item.target, from: item)
                 })
             }
+        }
+        // ssh hosts (~/.ssh/config, known_hosts): Return connects in a new tab, ⌥Return in this one.
+        let (configured, known) = SSHHosts.load()
+        for h in configured + known {
+            func controller() -> TerminalWindowController? {
+                (NSApp.keyWindow?.windowController ?? NSApp.mainWindow?.windowController) as? TerminalWindowController
+            }
+            var item = Item(title: "SSH: \(h.title)", path: h.detail ?? "ssh host", shortcut: "⌥↩ here") { controller()?.connect(h, inNewTab: true) }
+            item.optionAlternate = { controller()?.connect(h, inNewTab: false) }
+            out.append(item)
         }
         if let main = NSApp.mainMenu {
             // App menu (About/Quit…) goes last so everyday commands appear first.
@@ -406,12 +425,12 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
         list.needsDisplay = true
     }
 
-    func runSelected(alternate: Bool = false) {
+    func runSelected(alternate: Bool = false, option: Bool = false) {
         guard filtered.indices.contains(selected), !filtered[selected].isHeader else { return }
         let item = filtered[selected]
         recordRecent(item)
         dismiss(restoreFocus: true)
-        let action = alternate ? item.alternate ?? item.run : item.run
+        let action = option ? item.optionAlternate ?? item.run : alternate ? item.alternate ?? item.run : item.run
         DispatchQueue.main.async { action() }
     }
 
@@ -441,6 +460,11 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
     /// Where "Go to:" looks: this Mac, or the ssh host of the focused tab, whose folders are listed over its session.
     private struct GoToPlace {
         let remote: RemoteSession?
+        /// user@host as the pane's shell runs (the sudo user, after Follow This Shell's Folder).
+        var label: String?
+        /// The ssh login, when the shell runs as someone else: a new tab signs in as them.
+        var login: String?
+        var borrowed: String?
         let base: String
         let home: String
         let open: (String) -> Void
@@ -458,10 +482,12 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
         let here: ((String) -> Void)? = pane.flatMap { p in p.canChangeDirectory && p.hasStarted ? { [weak p] dir in _ = p?.changeDirectory(to: dir) } : nil }
         if let tab = controller?.activeTab, let remote = tab.browseRemote, remote.isReady, let home = remote.home {
             // A new tab logs in to the same host again, in that folder; here is only for a pane on that host.
-            return GoToPlace(remote: remote, base: tab.browseDirectory ?? home, home: home, open: { [weak controller] dir in
+            let own = pane?.remote === remote ? pane : nil
+            return GoToPlace(remote: remote, label: own?.shellHostLabel ?? remote.hostLabel, login: own?.loginUser, borrowed: own?.borrowedUser,
+                             base: tab.browseDirectory ?? home, home: own?.shellHome ?? home, open: { [weak controller] dir in
                 let pane = controller?.addTab(cwd: nil).focusedPane
-                pane?.pendingCommand = remote.reconnectCommand(in: dir)
-            }, here: pane?.remote === remote ? here : nil)
+                pane?.pendingCommand = remote.newTerminalCommand(in: dir)
+            }, here: own != nil ? here : nil)
         }
         return GoToPlace(remote: nil, base: controller?.focused.currentLocalFolder ?? NSHomeDirectory(), home: NSHomeDirectory(),
                          open: { [weak controller] dir in controller?.addTab(cwd: dir) },
@@ -523,7 +549,7 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
         }
         func shown(_ p: String) -> String {
             let short = FilePaths.abbreviate(p, home: place.home)
-            return place.remote?.hostLabel.map { "\($0):\(short)" } ?? short
+            return place.label.map { "\($0):\(short)" } ?? short
         }
         // Return opens where the terminal is, ⌘Return a new tab; with no terminal to cd in, Return is a new tab.
         let open: (String) -> Void = place.here ?? place.open
@@ -534,10 +560,12 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
         let folder = isFolder(target, place)
         if folder == true {
             if place.here != nil {
-                var item = Item(title: "Open \(shown(target)) Here", path: "cd in this tab", shortcut: "↩", run: { open(target) })
+                var item = Item(title: "Open \(shown(target)) Here", path: place.borrowed.map { "cd as \($0) in this tab" } ?? "cd in this tab",
+                                shortcut: "↩", run: { open(target) })
                 item.alternate = alternate?(target)
                 out.append(item)
-                out.append(Item(title: "Open \(shown(target)) in a New Tab", path: place.remote == nil ? "" : "signs in again", shortcut: "⌘↩",
+                let signIn = place.borrowed != nil ? "signs in again as \(place.login ?? "you")" : "signs in again"
+                out.append(Item(title: "Open \(shown(target)) in a New Tab", path: place.remote == nil ? "" : signIn, shortcut: "⌘↩",
                                 run: { place.open(target) }))
             } else {
                 out.append(Item(title: "Open \(shown(target)) in a New Tab", path: "Go to", shortcut: "↩", run: { open(target) }))
@@ -605,7 +633,12 @@ final class CommandPalette: NSView, NSTextFieldDelegate {
         case #selector(NSResponder.moveUp(_:)): move(-1); return true
         case #selector(NSResponder.moveDown(_:)): move(1); return true
         case #selector(NSResponder.insertNewline(_:)):
-            runSelected(alternate: NSApp.currentEvent?.modifierFlags.contains(.command) == true)
+            let mods = NSApp.currentEvent?.modifierFlags ?? []
+            runSelected(alternate: mods.contains(.command), option: mods.contains(.option))
+            return true
+        // ⌥↩ in a text field.
+        case #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
+            runSelected(option: true)
             return true
         case #selector(NSResponder.cancelOperation(_:)): dismiss(restoreFocus: true); return true
         case #selector(NSResponder.insertTab(_:)):
@@ -736,7 +769,7 @@ final class PaletteList: NSView {
             p.hover(row: r)
             // A "Go to:" folder: a click goes into it, to keep looking; Return is what opens one.
             if p.visibleItems[p.visibleItems.startIndex + r].completion != nil { return p.completeSelected() }
-            p.runSelected(alternate: e.modifierFlags.contains(.command))
+            p.runSelected(alternate: e.modifierFlags.contains(.command), option: e.modifierFlags.contains(.option))
         }
     }
 

@@ -202,14 +202,15 @@ final class GraphBranchList: NSView, NSTextFieldDelegate {
         switch item {
         case .section(let title, _):
             if openSections.contains(title) { openSections.remove(title) } else { openSections.insert(title) }
-            rebuild()
+            rebuild(sliding: title)
         case .ref(let name, _, _):
             onPick?(name == selected ? nil : name)
         }
     }
 
     /// The rows, narrowed to what the field says (opening every section, so nothing that matches stays folded).
-    private func rebuild() {
+    /// `sliding`: the section just opened or closed, whose rows slide out from under it (or back).
+    private func rebuild(sliding: String? = nil) {
         let query = field.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
         func keep(_ names: [String]) -> [String] { query.isEmpty ? names : names.filter { $0.lowercased().contains(query) } }
         var items: [BranchRowsView.Item] = []
@@ -223,9 +224,9 @@ final class GraphBranchList: NSView, NSTextFieldDelegate {
             items.append(.section(title: title, open: open))
             if open { items += shown.map { .ref(name: $0, title: $0, kind: $0 == refs.current && kind == .local ? .current : kind) } }
         }
-        rowsView.items = items
         rowsView.selected = selected
-        rowsView.fit(width: scroll.contentSize.width)
+        if let sliding { rowsView.slide(to: items, section: sliding, width: scroll.contentSize.width) }
+        else { rowsView.items = items; rowsView.fit(width: scroll.contentSize.width) }
     }
 
     var devTitles: [String] { rowsView.items.map(\.title) }
@@ -254,9 +255,58 @@ final class BranchRowsView: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// A section's rows on the move: `count` rows from `start` (just under its header), `shown` of the way out
+    /// (0 tucked under the header, 1 in place). Everything below moves with them.
+    private var sliding: (start: Int, count: Int, shown: CGFloat)?
+    private var slideTimer: Timer?
+    private var fitWidth: CGFloat = 0
+
     func fit(width: CGFloat) {
-        setFrameSize(NSSize(width: width, height: CGFloat(items.count) * Self.rowHeight + 8))
+        fitWidth = width
+        let hidden = sliding.map { CGFloat($0.count) * (1 - $0.shown) } ?? 0
+        setFrameSize(NSSize(width: width, height: (CGFloat(items.count) - hidden) * Self.rowHeight + 8))
         needsDisplay = true
+    }
+
+    /// Opens or closes `section` with its rows sliding down out from under the header (or back up under it).
+    func slide(to new: [Item], section: String, width: CGFloat) {
+        finishSlide()
+        let old = items
+        guard let h = new.firstIndex(where: { $0.title == section }), new.count != old.count else {
+            items = new
+            return fit(width: width)
+        }
+        let opening = new.count > old.count
+        let count = abs(new.count - old.count)
+        if opening { items = new }
+        sliding = (h + 1, count, opening ? 0 : 1)
+        fit(width: width)
+        let began = Date(), duration = 0.2
+        slideTimer = Timer.scheduledTimer(withTimeInterval: 1 / 120, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let t = min(1, Date().timeIntervalSince(began) / duration)
+            let eased = CGFloat(1 - pow(1 - t, 3))
+            self.sliding?.shown = opening ? eased : 1 - eased
+            if t >= 1 {
+                self.finishSlide()
+                self.items = new
+            }
+            self.fit(width: self.fitWidth)
+        }
+        RunLoop.main.add(slideTimer!, forMode: .common)
+    }
+
+    private func finishSlide() {
+        slideTimer?.invalidate()
+        slideTimer = nil
+        sliding = nil
+    }
+
+    /// Where row `i` is drawn: rows from a sliding section down are pulled up by what's still tucked away.
+    private func top(ofRow i: Int) -> CGFloat {
+        var y = CGFloat(i) * Self.rowHeight
+        if let s = sliding, i >= s.start { y -= CGFloat(s.count) * (1 - s.shown) * Self.rowHeight }
+        return y
     }
 
     override func updateTrackingAreas() {
@@ -266,6 +316,7 @@ final class BranchRowsView: NSView {
     }
 
     private func row(_ e: NSEvent) -> Int? {
+        guard sliding == nil else { return nil }
         let r = Int(convert(e.locationInWindow, from: nil).y / Self.rowHeight)
         return items.indices.contains(r) ? r : nil
     }
@@ -279,8 +330,16 @@ final class BranchRowsView: NSView {
         let para = NSMutableParagraphStyle()
         para.lineBreakMode = .byTruncatingTail
         for (i, item) in items.enumerated() {
-            let r = NSRect(x: 0, y: CGFloat(i) * Self.rowHeight, width: bounds.width, height: Self.rowHeight)
+            let r = NSRect(x: 0, y: top(ofRow: i), width: bounds.width, height: Self.rowHeight)
             guard r.intersects(dirtyRect) else { continue }
+            // A sliding section's rows show only below its header, fading in as they come out.
+            let moving = sliding.map { i >= $0.start && i < $0.start + $0.count } ?? false
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            if moving, let s = sliding {
+                NSRect(x: 0, y: CGFloat(s.start) * Self.rowHeight, width: bounds.width, height: bounds.height).clip()
+                NSGraphicsContext.current?.cgContext.setAlpha(s.shown)
+            }
             let font = NSFont.systemFont(ofSize: 12.5)
             let textY = r.midY - 8
             switch item {
@@ -438,26 +497,12 @@ final class GraphToolbar: NSView, NSTextFieldDelegate {
     }
 
     private func showDateMenu(_ anchor: NSView) {
-        let menu = NSMenu()
-        menu.addItem(ActionMenuItem("Any Time", checked: filter.days == nil) { [weak self] in self?.change { $0.days = nil } })
-        menu.addItem(.separator())
+        var items: [DropdownItem] = [.item("Any Time", checked: filter.days == nil) { [weak self] in self?.change { $0.days = nil } }, .separator]
         for choice in GraphFilter.dayChoices {
-            menu.addItem(ActionMenuItem(choice.title, checked: filter.days == choice.days) { [weak self] in self?.change { $0.days = choice.days } })
+            items.append(.item(choice.title, checked: filter.days == choice.days) { [weak self] in self?.change { $0.days = choice.days } })
         }
-        Self.popUp(menu, under: anchor)
+        ThemedDropdown.show(items, under: anchor)
     }
-
-    static func popUp(_ menu: NSMenu, under anchor: NSView) {
-        if Headless.active {
-            FileHandle.standardError.write("graph menu: \(menu.items.map { $0.isSeparatorItem ? "---" : ($0.state == .on ? "✓ " : "") + $0.title })\n".data(using: .utf8)!)
-            devLastMenu = menu
-            return
-        }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.maxY + 4), in: anchor)
-    }
-
-    /// Dev aid: the last menu a filter opened (headless runs print it instead of showing it).
-    static var devLastMenu: NSMenu?
 
     func setFilter(_ f: GraphFilter, notify: Bool) {
         filter = f
@@ -506,7 +551,17 @@ final class GraphToolbar: NSView, NSTextFieldDelegate {
 
     var devButtons: [String] { [branchButton, userButton, dateButton, pathButton].map(\.shown) }
     func devPress(_ title: String) {
-        [branchButton, userButton, dateButton, pathButton].first { $0.title == title }.map { $0.onPress?($0) }
+        [branchButton, userButton, dateButton, pathButton].first { $0.title == title }?.press()
+    }
+    /// Dev aid: a real click on the button (through the window, as the mouse would), not a call to its action.
+    func devClick(_ title: String) {
+        guard let b = [branchButton, userButton, dateButton, pathButton].first(where: { $0.title.hasPrefix(title) }), let w = window else { return }
+        let p = b.convert(NSPoint(x: b.bounds.midX, y: b.bounds.midY), to: nil)
+        // Headless windows ignore the mouse, so this does the window's part: the view under the point gets it.
+        guard let content = w.contentView,
+              let e = NSEvent.mouseEvent(with: .leftMouseDown, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                         windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { return }
+        content.superview?.hitTest(content.superview!.convert(p, from: nil))?.mouseDown(with: e)
     }
     func devPath(_ path: String) { pick(path: path) }
     func devType(_ text: String) {
@@ -515,13 +570,19 @@ final class GraphToolbar: NSView, NSTextFieldDelegate {
     }
 }
 
-/// "User ▾", or, set, "User: sjain ▾" in the accent color.
-final class FilterButton: NSView {
+/// "User ▾", or, set, "User: sjain ▾" in the accent color. Each click toggles its dropdown: it shows pressed while
+/// open, and a second click before the list has loaded cancels it.
+final class FilterButton: NSView, DropdownAnchor {
     let title: String
     var value: String? { didSet { needsDisplay = true; superview?.needsLayout = true } }
     var onPress: ((FilterButton) -> Void)?
     private var hovering = false { didSet { needsDisplay = true } }
     private static let font = NSFont.systemFont(ofSize: 12.5)
+    /// When it was pressed, until its dropdown opens (or a second press cancels it); a press that never opened
+    /// anything (git failed) stops counting after a few seconds.
+    private var pressedAt: Date?
+    var dropdownWanted: Bool { pressedAt.map { Date().timeIntervalSince($0) < 8 } ?? false }
+    var dropdownOpen = false { didSet { if dropdownOpen { pressedAt = nil }; needsDisplay = true } }
 
     init(_ title: String) {
         self.title = title
@@ -546,16 +607,25 @@ final class FilterButton: NSView {
 
     override func mouseEntered(with e: NSEvent) { hovering = true }
     override func mouseExited(with e: NSEvent) { hovering = false }
-    override func mouseDown(with e: NSEvent) { onPress?(self) }
+    override func mouseDown(with e: NSEvent) { press() }
+
+    func press() {
+        if dropdownOpen { return ThemedDropdown.dismissCurrent() }
+        if dropdownWanted { pressedAt = nil; needsDisplay = true; return }
+        pressedAt = Date()
+        needsDisplay = true
+        onPress?(self)
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         let th = Config.shared.theme
-        let on = value != nil
-        if hovering || on {
-            (on ? th.accent.withAlphaComponent(0.16) : th.foreground.withAlphaComponent(0.07)).setFill()
-            NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
+        // Styled as the find bar's toggles (Aa, .*): set or open, an accent box behind accent text; hovered, a lighter one.
+        let on = value != nil || dropdownOpen || dropdownWanted
+        if on || hovering {
+            th.accent.withAlphaComponent(on ? 0.24 : 0.13).setFill()
+            NSBezierPath(roundedRect: bounds, xRadius: 5, yRadius: 5).fill()
         }
-        let color = on ? th.accent : th.foreground.withAlphaComponent(0.85)
+        let color = on || hovering ? th.accent : th.foreground.withAlphaComponent(0.85)
         // The text's capitals centered in the button, and the chevron centered on them.
         let f = Self.font
         let top = EditorFindBar.textTop(f, centeredIn: bounds)

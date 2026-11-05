@@ -537,7 +537,7 @@ final class GitController {
         }
         guard let runner else { return NSSound.beep() }
         if let remote = runner.remote {
-            guard let ssh = remote.reconnectCommand(in: runner.dir, then: command), let p = newTab(nil) else { return NSSound.beep() }
+            guard let ssh = remote.newTerminalCommand(in: runner.dir, then: command), let p = newTab(nil) else { return NSSound.beep() }
             p.pendingCommand = ssh
         } else {
             guard let p = newTab(runner.dir) else { return NSSound.beep() }
