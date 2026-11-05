@@ -242,8 +242,11 @@ final class ColorControl: NSView {
     var onChange: ((NSColor) -> Void)?
     private let hex: ThemedField
     private let well: ThemedColorWell
+    /// Only the selection's color keeps an alpha; anywhere else a typed #RRGGBBAA keeps the color and drops it.
+    private let allowsAlpha: Bool
 
     init(_ color: NSColor, allowsAlpha: Bool) {
+        self.allowsAlpha = allowsAlpha
         hex = ThemedField(color.hexString, placeholder: "#RRGGBB")
         well = ThemedColorWell(color, allowsAlpha: allowsAlpha)
         super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: 26))
@@ -283,7 +286,8 @@ final class ColorControl: NSView {
             hex.stringValue = well.color.hexString
             return NSSound.beep()
         }
-        let c = NSColor(hex: digits)
+        let typed = NSColor(hex: digits)
+        let c = allowsAlpha ? typed : typed.withAlphaComponent(1)
         well.color = c
         hex.stringValue = c.hexString
         onChange?(c)
@@ -506,7 +510,7 @@ final class ThemeSaveBar: NSView {
 
 /// A button in the theme's colors: filled with the accent (the one to press), or outlined.
 final class BarButton: NSView {
-    let title: String
+    var title: String { didSet { needsDisplay = true; superview?.needsLayout = true } }
     private let filled: Bool
     var isEnabled = true { didSet { needsDisplay = true } }
     var onPress: (() -> Void)?

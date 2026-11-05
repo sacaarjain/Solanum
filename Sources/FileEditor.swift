@@ -27,6 +27,8 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     var onPathChanged: (() -> Void)?
     /// The header's Preview and Working Tree buttons: this file, shown another way in another sub-tab.
     var onOpenAs: ((EditorMode) -> Void)?
+    /// Git Changes: a git command to run in this tab's terminal, in `dir` (one that needs a password, say).
+    var onRunInTerminal: ((_ command: String, _ dir: String) -> Void)?
     /// Git Status: another file, in a sub-tab of its own.
     var onOpenOther: ((String, EditorMode) -> Void)?
 
@@ -846,6 +848,10 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 // A commit doesn't change.
                 if hash == nil { view.onRefresh = { [weak self] in self?.load() } }
                 view.onOpen = { [weak self] path, mode in self?.onOpenOther?(path, mode) }
+                view.onRunInTerminal = { [weak self] command in
+                    guard let self else { return }
+                    self.onRunInTerminal?(command, self.path)
+                }
                 self.addSubview(view)
                 self.needsLayout = true
                 self.layoutSubtreeIfNeeded()

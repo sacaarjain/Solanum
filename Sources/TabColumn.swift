@@ -44,6 +44,18 @@ final class TabColumn: NSObject, TabOwner {
         addTab(cwd: Config.shared.newTabFolder == "home" ? nil : currentLocalFolder)
     }
 
+    /// ⌃⌘T: a new tab where the focused terminal is. On an ssh session that's the same host and folder (and the same
+    /// user, after `sudo -i -u`), logged in again over the shared connection, as ⌘D does; on this Mac, its folder.
+    @discardableResult
+    func newTabOnSameHost() -> TabSession {
+        let pane = activeTab?.focusedPane
+        guard let login = pane?.sameHostCommand else { return addTab(cwd: currentLocalFolder) }
+        let tab = addTab(cwd: nil)
+        tab.focusedPane.pendingCommand = login.command
+        if login.switchesUser { tab.focusedPane.expectUserSwitch() }
+        return tab
+    }
+
     /// `openFolders`: the sidebar folders it starts with open (none: everything closed).
     @discardableResult
     func insertTab(cwd: String?, at index: Int, group: TabGroup?, openFolders: [String: Set<String>] = [:]) -> TabSession {

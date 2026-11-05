@@ -369,6 +369,50 @@ enum SelfTest {
             check("file links: worth a look over ssh", FileLinks.looksLikePath("a/b") && FileLinks.looksLikePath("a.txt")
                   && !FileLinks.looksLikePath("word") && !FileLinks.looksLikePath("/") && !FileLinks.looksLikePath("..") && !FileLinks.looksLikePath("dir/"))
             do {
+                // A shell from sudo -i -u reporting its user (Follow This Shell's Folder), and the line that has it do so.
+                let (t, _) = make(20, 80)
+                feed(t, "\u{1b}]1337;SolanumUser=svc:/home/svc\u{07}")
+                check("sudo shell: no user outside ssh", t.remoteUser == nil)
+                feed(t, "\u{1b}]1337;SolanumSSH=/tmp/x\u{07}\u{1b}]7;file://host/opt/app\u{07}\u{1b}]1337;SolanumUser=svc:/home/svc\u{07}")
+                check("sudo shell: its folder and user", t.remoteCwd == "/opt/app" && t.remoteUser?.name == "svc" && t.remoteUser?.home == "/home/svc")
+                feed(t, "\u{1b}]1337;SolanumSSH=\u{07}")
+                check("sudo shell: forgotten when ssh ends", t.remoteUser == nil && t.remoteCwd == nil)
+                check("sudo shell: commands that switch user", ["sudo -i -u pipelineservice", "sudo -iu svc", "sudo su - svc", "sudo -s",
+                    "su - svc", "su", "sudo -u svc bash", "x$ sudo -i"].allSatisfy(TerminalView.switchesUser)
+                      && !["sudo ls", "sudo -u svc ls /tmp", "sudo systemctl restart x", "summary", "ls -s", "sudo cat -s x"].contains(where: TerminalView.switchesUser))
+                let follow = TerminalView.followCommand(promptWidth: 30, columns: 80)
+                check("sudo shell: erases the lines it took", follow.hasSuffix("printf '\\033[\((30 + follow.count - 1) / 80 + 1)A\\033[J'"), follow)
+                let (p, _) = make(40, 5)
+                feed(p, "\u{1b}]1337;SolanumSSH=/tmp/x\u{07}[sudo] password for sjain: ")
+                check("sudo shell: not at a password question", !p.atEmptyHostPrompt())
+                feed(p, "\r\n[svc@host ~]$ ")
+                check("sudo shell: at the new shell's prompt", p.atEmptyHostPrompt())
+                feed(p, "ls")
+                check("sudo shell: not with something typed", !p.atEmptyHostPrompt())
+                check("sudo shell: the follow line", TerminalView.followLine.hasPrefix(" PROMPT_COMMAND=")
+                      && TerminalView.followLine.contains("SolanumUser=%s:%s") && TerminalView.followLine.contains("${PROMPT_COMMAND:+;$PROMPT_COMMAND}"))
+            }
+            do {
+                // A new terminal on an ssh host shares the open connection (no password again); logs in afresh once it's gone.
+                let sock = NSTemporaryDirectory() + "solanum-selftest-sock-\(getpid())"
+                FileManager.default.createFile(atPath: sock, contents: Data())
+                let r = RemoteSession(controlPath: sock, sshArgs: "lanode11")
+                let shared = r.newTerminalCommand(in: "/srv/app") ?? ""
+                check("ssh: new terminals share the connection", shared.hasPrefix("SOLANUM_SSH_ARGS='bGFub2RlMTEg' ssh -t -S ")
+                      && shared.contains("-o ControlMaster=no solanum-remote") && shared.contains("cd '\\''/srv/app'\\''"), shared)
+                try? FileManager.default.removeItem(atPath: sock)
+                check("ssh: and log in again once it's gone", r.newTerminalCommand(in: "/srv/app")?.hasPrefix("ssh -t lanode11 ") == true,
+                      r.newTerminalCommand(in: "/srv/app") ?? "nil")
+            }
+            do {
+                // Only the selection keeps an alpha: the window's transparency is the Background opacity setting.
+                let t = Theme(name: "t", bg: "#11223344", bg2: "#00000080", fg: "#EEEEEE80", selection: "#8ED8FF4D", accent: "#8ED8FF80",
+                              ansi: ["#11111180"])
+                check("themes: only the selection is see-through", t.background.hexString == "#112233" && t.background2?.hexString == "#000000"
+                      && t.foreground.hexString == "#EEEEEE" && t.accent.hexString == "#8ED8FF" && t.ansi[0].hexString == "#111111"
+                      && t.selection.hexString == "#8ED8FF4D", t.background.hexString)
+            }
+            do {
                 // The Git Graph's filters, as git log arguments, and the commits as laid out.
                 var f = GraphFilter()
                 check("graph filter: all branches", f.script().contains("git log --all --parents") && !f.script().contains("--grep"))
@@ -656,7 +700,7 @@ extension NSWorkspace {
 /// Development aid: SOLANUM_SNAPSHOT=/path.png renders the first window to a PNG after a delay.
 /// SOLANUM_SNAPSHOT_INPUT types text first; SOLANUM_SNAPSHOT_ACTIONS=split,palette,select-block,collapse,jump-prompt,find,find-commands,find-output,click:<col>:<row>,keys:<text>,theme:<name>,
 /// newtab,rename-tab,new-group,edit:<text>,select-tab:<i>,collapse-group:<i>,split-down,save-session,
-/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,screen-boxes,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,crumb-menu[:<item>],crumb-context[:<label>[:<item>]],drop-files:<index>:<path>|<path>,drop-hover:<x>,press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,themed-alert[:problem],themed-alert-ok,window-png:<path>,settings-sidebar-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>,log-menu[:<menu>>…>item],graph-type:<text>,graph-press:<Branch|User|Date|Paths>,graph-menu-run:<title>,graph-branch:<title>,graph-branch-filter:<text>,graph-path:<path>,print-graph,log-marker-text:<text>,log-select:<text>,editor-end,editor-edge-drag:<fraction>:<seconds>,print-deleted,editor-lost-bar:<host>,print-time,hang-watch,display-time,log-import:<path>,print-log-format,theme-edit:<name>,theme-background:<hex>,theme-ansi:<i>:<hex>,theme-bar:<Save Changes|Reset>,theme-leave:<page>,print-theme,settings-window-png:<path>,settings-sheet-press:<title>
+/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,screen-boxes,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,strip-scroll:<points>,strip-activate:<i>,strip-arrow:<-1|1>,print-strip-scroll,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,crumb-menu[:<item>],crumb-context[:<label>[:<item>]],drop-files:<index>:<path>|<path>,drop-hover:<x>,press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,git-action:<name>[:<path>],git-message:<text>,git-press:<button>,print-git-box,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>,log-menu[:<menu>>…>item],graph-type:<text>,graph-press:<Branch|User|Date|Paths>,graph-click:<Branch|User|Date|Paths>,dropdown-type:<text>,hosts-dropdown,graph-menu-run:<title>,graph-branch:<title>,graph-branch-filter:<text>,graph-path:<path>,print-graph,log-marker-text:<text>,log-select:<text>,editor-end,editor-edge-drag:<fraction>:<seconds>,print-deleted,editor-lost-bar:<host>,print-time,hang-watch,display-time,log-import:<path>,print-log-format,theme-edit:<name>,theme-background:<hex>,theme-ansi:<i>:<hex>,theme-bar:<Save Changes|Reset>,theme-leave:<page>,print-theme,print-samehost,release-history,print-releases,settings-window-png:<path>,settings-sheet-press:<title>,themed-alert[:problem],themed-alert-ok,window-png:<path>,settings-sidebar-png:<path>
 /// (with SOLANUM_SESSION_FILE set, which also makes the run restore from that file).
 enum SnapshotHelper {
     static func runIfRequested() {
@@ -703,6 +747,8 @@ enum SnapshotHelper {
                     pane.searchScope = action == "find-commands" ? .commands : .output
                     pane.showFind(nil); pane.searchBar?.field.stringValue = q; pane.performSearch(q)
                 case "newtab": c.newTab(nil)
+                case "newtab-host": c.newTabOnSameHost(nil)
+                case "hosts-dropdown": c.devShowHosts()
                 case "newtab-group": c.newTabInGroup(nil)
                 case "sidebar": c.toggleFileSidebar(nil)
                 case "pin-sidebar": c.togglePinnedSidebarFolder(nil)
@@ -1147,15 +1193,25 @@ enum SnapshotHelper {
                     if action.hasPrefix("status-click:") { c.activeTab?.editor?.devStatusView?.devClick(String(action.dropFirst(13))) }
                     if action.hasPrefix("graph-changes:"), let r = Int(action.dropFirst(14)) { c.activeTab?.editor?.devGraphView?.devViewChanges(r) }
                     if action.hasPrefix("status-open:") { c.activeTab?.editor?.devStatusView?.devOpen(String(action.dropFirst(12))) }
+                    if action.hasPrefix("git-action:") {
+                        // git-action:<name>[:<path>], as the Git Changes page's buttons and links.
+                        let f = action.dropFirst(11).split(separator: ":", maxSplits: 1).map(String.init)
+                        c.activeTab?.editor?.devStatusView?.devAction(f[0], f.count > 1 ? f[1] : nil)
+                    }
+                    if action.hasPrefix("git-message:") { c.activeTab?.editor?.devStatusView?.devCommitBox.text.string = String(action.dropFirst(12)) }
+                    if action.hasPrefix("git-press:") { c.activeTab?.editor?.devStatusView?.devCommitBox.devPress(String(action.dropFirst(10))) }
+                    if action == "print-git-box" {
+                        FileHandle.standardError.write("git box: \(c.activeTab?.editor?.devStatusView?.devCommitBox.devState ?? "-")\n".data(using: .utf8)!)
+                    }
                     if action == "status-all" { c.activeTab?.editor?.devStatusView?.devToggleAll() }
                     if action.hasPrefix("open-graph:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(11)), mode: .graph) }
                     if action.hasPrefix("hover-graph:"), let row = Int(action.dropFirst(12)) { c.activeTab?.editor?.devHoverGraph(row) }
                     if let g = c.activeTab?.editor?.devGraphView {
                         if action.hasPrefix("graph-type:") { g.devToolbar.devType(String(action.dropFirst(11))) }
                         if action.hasPrefix("graph-press:") { g.devToolbar.devPress(String(action.dropFirst(12))) }
+                        if action.hasPrefix("graph-click:") { g.devToolbar.devClick(String(action.dropFirst(12))) }
                         if action.hasPrefix("graph-path:") { g.devToolbar.devPath(String(action.dropFirst(11))) }
-                        if action.hasPrefix("graph-menu-run:"), let menu = GraphToolbar.devLastMenu,
-                           let i = menu.items.firstIndex(where: { $0.title == String(action.dropFirst(15)) }) { menu.performActionForItem(at: i) }
+                        if action.hasPrefix("graph-menu-run:") { ThemedDropdown.devRun(String(action.dropFirst(15))) }
                         if action.hasPrefix("graph-branch:") { g.devBranchList.devPick(String(action.dropFirst(13))) }
                         if action.hasPrefix("graph-branch-filter:") { g.devBranchList.devFilter(String(action.dropFirst(20))) }
                         if action == "print-graph" {
@@ -1163,6 +1219,10 @@ enum SnapshotHelper {
                         }
                     }
                     if action == "toggle-terminal" { c.activeTab?.toggleTerminal() }
+                    if action.hasPrefix("strip-scroll:"), let x = Double(action.dropFirst(13)) { c.activeTab?.editorArea.strip.scroll(by: CGFloat(x)) }
+                    if action.hasPrefix("strip-activate:"), let i = Int(action.dropFirst(15)) { c.activeTab?.activateEditor(i) }
+                    if action.hasPrefix("strip-arrow:"), let d = Int(action.dropFirst(12)) { c.activeTab?.editorArea.strip.slide(d) }
+                    if action == "print-strip-scroll", let st = c.activeTab?.editorArea.strip { print("strip: \(st.devScrollState)") }
                     if action == "restore-prompt" { (NSApp.delegate as? AppDelegate)?.offerRestore(SessionState(windows: [c.sessionState])) }
                     if action == "editor-drag-out", let tab = c.activeTab, let ed = tab.editor {
                         // Drags the active file's sub-tab onto the middle of the focused column's tab strip and drops it.
@@ -1315,6 +1375,21 @@ enum SnapshotHelper {
                        let rep = root.bitmapImageRepForCachingDisplay(in: root.bounds) {
                         root.cacheDisplay(in: root.bounds, to: rep)
                         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: String(action.dropFirst(20))))
+                    }
+                    if action == "release-history" {
+                        SettingsWindowController.shared.present(.system)
+                        SettingsWindowController.shared.showReleases(true)
+                    }
+                    if action == "print-releases" {
+                        func timelines(_ v: NSView) -> [ReleaseTimelineView] { ((v as? ReleaseTimelineView).map { [$0] } ?? []) + v.subviews.flatMap(timelines) }
+                        let t = SettingsWindowController.shared.window?.contentView.map(timelines)?.first
+                        FileHandle.standardError.write("releases: \(t?.releases.count ?? -1): \(t?.devSummary ?? "-")\n".data(using: .utf8)!)
+                    }
+                    if action == "print-samehost" {
+                        let r = RemoteSession(awaiting: "sjain@lanode11", sshArgs: "lanode11")
+                        let dir = "/tmp/solanum q test/a b'c"
+                        let inner = "cd \(shellQuote(dir)) 2>/dev/null; exec \"$SHELL\" -l"
+                        FileHandle.standardError.write("samehost-sudo: \(r.reconnectCommand(in: dir, then: "sudo -i -u \(shellQuote("pipelineservice")) sh -c \(shellQuote(inner))")!)\nsamehost: \(r.reconnectCommand(in: dir)!)\n".data(using: .utf8)!)
                     }
                     if action == "print-theme" {
                         let bar = (SettingsWindowController.shared.footer as? ThemeSaveBar)?.devState ?? "no bar"
@@ -1514,6 +1589,7 @@ enum SnapshotHelper {
                     }
                     if action == "print-anim" { FileHandle.standardError.write("\(c.tabBar.animSummary)\n".data(using: .utf8)!) }
                     if action.hasPrefix("close-tab:"), let i = Int(action.dropFirst(10)) { c.closeTab(at: i) }
+                    if action.hasPrefix("dropdown-type:") { ThemedDropdown.devType(String(action.dropFirst(14))) }
                     if action.hasPrefix("palette-query:"), let w = c.window {
                         CommandPalette.show(in: w, items: CommandPalette.collectItems(), tracksRecents: true, query: String(action.dropFirst(14)))
                     }

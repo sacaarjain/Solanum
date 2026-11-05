@@ -22,6 +22,8 @@ final class Config {
     /// A ring of the bell plays the system alert sound too (it always flashes the pane).
     var audibleBell = false
     var boldIsBright = false
+    /// In ssh, after `sudo -i -u` (or su), have that shell report its folder and user (Follow This Shell's Folder).
+    var followSudoShells = true
     /// On light themes, darken text too faint to read (colors programs chose for dark backgrounds).
     var minimumContrast = true
     var scrollback = 10_000
@@ -130,6 +132,7 @@ final class Config {
             }
         case "audible-bell": audibleBell = bool()
         case "bold-is-bright": boldIsBright = bool()
+        case "follow-sudo-shells": followSudoShells = bool()
         case "minimum-contrast": minimumContrast = bool()
         case "scrollback-lines": if let n = Int(value) { scrollback = min(max(n, 100), 200_000) }
         case "shell": shell = value
@@ -187,6 +190,8 @@ final class Config {
         # Play the alert sound when a program rings the bell (it always flashes the pane).
         audible-bell = \(audibleBell)
         bold-is-bright = \(boldIsBright)
+        # In ssh, after sudo -i -u (or su), have that shell report its folder and user, so the sidebar follows it.
+        follow-sudo-shells = \(followSudoShells)
 
         # On light themes, darken text too faint to read, such as colors a program chose for dark backgrounds.
         minimum-contrast = \(minimumContrast)

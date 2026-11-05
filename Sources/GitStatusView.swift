@@ -242,9 +242,16 @@ struct GitDiffLine: Equatable {
 final class GitStatusView: NSView {
     private let scroll = NSScrollView()
     private let rowsView: GitStatusRowsView
+    private let commitBox = GitCommitBox()
+    private let runner: GitRunner
     /// Asks for a fresh report; every few seconds while it's showing.
     var onRefresh: (() -> Void)?
+    /// Types a git command in this tab's terminal (when one failed for want of a password, say).
+    var onRunInTerminal: ((String) -> Void)?
     private var timer: Timer?
+    private var report: GitStatusReport?
+    /// What's running (the commit box says so, and its buttons wait).
+    private var busy: String? { didSet { report.map { commitBox.update($0, busy: busy) } } }
 
     /// A file's full path was clicked (or chosen from its menu) to be shown this way.
     var onOpen: ((String, EditorMode) -> Void)? {
@@ -253,8 +260,15 @@ final class GitStatusView: NSView {
     }
 
     init(runner: GitRunner) {
+        self.runner = runner
         rowsView = GitStatusRowsView(runner: runner)
         super.init(frame: .zero)
+        commitBox.isHidden = true
+        addSubview(commitBox)
+        commitBox.onCommit = { [weak self] push in self?.commit(thenPush: push) }
+        commitBox.onPull = { [weak self] in self?.perform(.pull) }
+        commitBox.onPush = { [weak self] in self?.perform(.push(upstream: self?.report?.upstream != nil)) }
+        rowsView.onAction = { [weak self] action in self?.perform(action) }
         scroll.documentView = rowsView
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
@@ -284,17 +298,122 @@ final class GitStatusView: NSView {
     }
 
     func show(_ report: GitStatusReport) {
+        self.report = report
+        // A commit's files are history: nothing to stage or commit there.
+        let editable = report.commit == nil
+        if commitBox.isHidden == editable { commitBox.isHidden = !editable; needsLayout = true }
+        commitBox.update(report, busy: busy)
+        rowsView.editable = editable
         rowsView.report = report
         rowsView.fitSize()
     }
 
-    func applyTheme() { rowsView.needsDisplay = true }
+    func applyTheme() {
+        rowsView.needsDisplay = true
+        commitBox.applyTheme()
+    }
 
     override func layout() {
         super.layout()
-        scroll.frame = bounds
+        let top = commitBox.isHidden ? 0 : GitCommitBox.height
+        commitBox.frame = NSRect(x: 0, y: 0, width: bounds.width, height: top)
+        scroll.frame = NSRect(x: 0, y: top, width: bounds.width, height: bounds.height - top)
         rowsView.fitSize()
     }
+
+    // MARK: Changing the repository
+
+    /// Commits what's staged; with nothing staged, everything (after asking). Then pushes, if asked.
+    private func commit(thenPush: Bool) {
+        guard let r = report, busy == nil else { return }
+        let message = commitBox.message
+        guard !message.isEmpty else {
+            NSSound.beep()
+            window?.makeFirstResponder(commitBox.text)
+            return
+        }
+        let go = { [weak self] (all: Bool) in
+            self?.perform(.commit(message: message, all: all)) { [weak self] in
+                self?.commitBox.text.string = ""
+                self?.commitBox.text.needsDisplay = true
+                if thenPush { self?.perform(.push(upstream: r.upstream != nil)) }
+            }
+        }
+        guard r.staged.isEmpty else { go(false); return }
+        let n = Set((r.changed + r.untracked).map(\.path)).count
+        confirm("There are no staged changes. Stage all \(n) change\(n == 1 ? "" : "s") and commit them?",
+                detail: "That includes untracked files.", button: "Stage All and Commit") { go(true) }
+    }
+
+    /// Runs `action` in the repository (asking first when it throws work away), then reads the page again.
+    func perform(_ action: GitAction, then: (() -> Void)? = nil) {
+        switch action {
+        case .discard(let paths):
+            return confirm("Discard changes to \(Self.names(paths))?", detail: "This can't be undone.", button: "Discard") { [weak self] in
+                self?.run(action, then: then)
+            }
+        case .delete(let paths):
+            return confirm("Delete \(Self.names(paths))?", detail: "The untracked file\(paths.count == 1 ? " is" : "s are") deleted, not moved to the Trash.",
+                           button: "Delete") { [weak self] in self?.run(action, then: then) }
+        case .discardAll:
+            let n = report?.changed.count ?? 0
+            return confirm("Discard all \(n) change\(n == 1 ? "" : "s")?", detail: "Untracked files stay. This can't be undone.", button: "Discard All") { [weak self] in
+                self?.run(action, then: then)
+            }
+        default:
+            run(action, then: then)
+        }
+    }
+
+    private static func names(_ paths: [String]) -> String {
+        paths.count == 1 ? "“\((paths[0] as NSString).lastPathComponent)”" : "\(paths.count) files"
+    }
+
+    private func run(_ action: GitAction, then: (() -> Void)? = nil) {
+        guard busy == nil else { return NSSound.beep() }
+        busy = action.busy
+        runner.run(action.script, timeout: 300) { [weak self] status, out, err in
+            guard let self else { return }
+            self.busy = nil
+            self.onRefresh?()
+            NotificationCenter.default.post(name: .solanumGitStatusChanged, object: self.runner.fileSystem)
+            NotificationCenter.default.post(name: .solanumFilesChanged, object: self.runner.fileSystem)
+            guard status == 0 else {
+                let output = (err.isEmpty ? String(decoding: out, as: UTF8.self) : err).trimmingCharacters(in: .whitespacesAndNewlines)
+                return self.showError(action, output: output)
+            }
+            then?()
+        }
+    }
+
+    private func showError(_ action: GitAction, output: String) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "\(action.busy.replacingOccurrences(of: "…", with: "")) failed"
+        alert.informativeText = output.split(separator: "\n", omittingEmptySubsequences: false).suffix(14).joined(separator: "\n")
+        alert.addButton(withTitle: "OK")
+        let typed = action.typed
+        // Pushing and pulling can need a password or passphrase: the terminal can ask for it.
+        if typed != nil, onRunInTerminal != nil { alert.addButton(withTitle: "Run in Terminal") }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            if response == .alertSecondButtonReturn, let typed { self?.onRunInTerminal?(typed) }
+        }
+    }
+
+    private func confirm(_ title: String, detail: String, button: String, _ action: @escaping () -> Void) {
+        guard let window else { return }
+        if Headless.active { return action() }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: button)
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { if $0 == .alertFirstButtonReturn { action() } }
+    }
+
+    var devCommitBox: GitCommitBox { commitBox }
+    func devAction(_ name: String, _ path: String?) { rowsView.devAction(name, path) }
 
     /// Dev aids (DevTools status-click, status-open, status-all).
     func devClick(_ path: String) { rowsView.devToggle(path) }
@@ -328,6 +447,9 @@ final class GitStatusRowsView: NSView {
         }
     }
     var onOpen: ((String, EditorMode) -> Void)?
+    /// Stage, unstage, discard… (off for a commit's files, which are history).
+    var onAction: ((GitAction) -> Void)?
+    var editable = true { didSet { needsDisplay = true } }
     private var rows: [Row] = []
     /// Where each row starts, and the end of the last.
     private var offsets: [CGFloat] = [0]
@@ -491,6 +613,51 @@ final class GitStatusRowsView: NSView {
         NSRect(x: bounds.width - Self.left - 20, y: row.midY - 11, width: 22, height: 22)
     }
 
+    /// What a file's row offers, right to left before its open button: Stage, and Discard (or Delete, untracked);
+    /// Unstage when staged; Mark Resolved in a conflict.
+    private func actions(_ e: GitStatusReport.Entry, _ mode: EditorMode) -> [(symbol: String, tip: String, action: GitAction)] {
+        guard editable, report?.commit == nil else { return [] }
+        let p = [e.path]
+        if mode == .stagedDiff { return [("minus", "Unstage", .unstage(p + (e.oldPath.map { [$0] } ?? [])))] }
+        if e.code == "U" { return [("plus", "Mark Resolved (stage it)", .stage(p))] }
+        if e.code == "?" { return [("plus", "Stage", .stage(p)), ("trash", "Delete", .delete(p))] }
+        return [("plus", "Stage", .stage(p)), ("arrow.uturn.backward", "Discard Changes", .discard(p))]
+    }
+
+    private func actionRects(_ row: NSRect, count: Int) -> [NSRect] {
+        let open = openButton(row)
+        return (0..<count).map { NSRect(x: open.minX - CGFloat($0 + 1) * 24, y: open.minY, width: 22, height: 22) }
+    }
+
+    /// A section's links on its right: Unstage All; Stage All and Discard All; Stage All (untracked).
+    private func sectionLinks(_ title: String, _ row: NSRect) -> [(rect: NSRect, title: String, action: GitAction)] {
+        guard editable, report?.commit == nil else { return [] }
+        let links: [(String, GitAction)]
+        switch title {
+        case "Staged": links = [("Unstage All", .unstageAll)]
+        case "Changes": links = [("Stage All", .stageTracked), ("Discard All", .discardAll)]
+        case "Untracked": links = [("Stage All", .stageUntracked)]
+        default: links = []
+        }
+        var x = bounds.width - Self.left
+        return links.map { t, a in
+            let w = width(t, Self.linkAttrs) + 8
+            x -= w
+            defer { x -= 10 }
+            return (NSRect(x: x, y: row.minY + 5, width: w, height: 22), t, a)
+        }
+    }
+
+    private static let linkAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11.5, weight: .medium)]
+
+    private func sectionRow(at e: NSEvent) -> (Int, String)? {
+        let at = convert(e.locationInWindow, from: nil).y
+        for (i, r) in rows.enumerated() where offsets[i] <= at && at < offsets[i + 1] {
+            if case .section(let t, _) = r { return (i, t) }
+        }
+        return nil
+    }
+
     override func mouseMoved(with e: NSEvent) { hovered = fileRow(at: e) }
     override func mouseExited(with e: NSEvent) { hovered = nil }
 
@@ -498,7 +665,13 @@ final class GitStatusRowsView: NSView {
         window?.makeFirstResponder(superview?.superview?.superview)
         let p = convert(e.locationInWindow, from: nil)
         if toggleAllRect.contains(p) { return toggleAll() }
-        guard let i = fileRow(at: e), let (entry, mode) = entry(i), canUnfold(entry) else { return }
+        if let (i, title) = sectionRow(at: e), let link = sectionLinks(title, rect(ofRow: i)).first(where: { $0.rect.contains(p) }) {
+            return onAction?(link.action) ?? ()
+        }
+        guard let i = fileRow(at: e), let (entry, mode) = entry(i) else { return }
+        let acts = actions(entry, mode)
+        if let k = actionRects(rect(ofRow: i), count: acts.count).firstIndex(where: { $0.contains(p) }) { return onAction?(acts[k].action) ?? () }
+        guard canUnfold(entry) else { return }
         if openButton(rect(ofRow: i)).contains(p) { onOpen?(full(entry), mode); return }
         setUnfolded(!unfolded.contains(key(entry, mode)), entry, mode)
     }
@@ -515,11 +688,26 @@ final class GitStatusRowsView: NSView {
             if entry.code != "D", report?.commit == nil { menu.addItem(ActionMenuItem("Open File") { [weak self] in self?.onOpen?(path, .file) }) }
             menu.addItem(.separator())
         }
+        let acts = actions(entry, mode)
+        for a in acts { menu.addItem(ActionMenuItem(a.tip) { [weak self] in self?.onAction?(a.action) }) }
+        if !acts.isEmpty { menu.addItem(.separator()) }
         menu.addItem(ActionMenuItem("Copy Path") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(path, forType: .string)
         })
         return menu
+    }
+
+    /// Dev aid: a file's (or, with no path, a section's) action by its name ("Stage", "Unstage All"…).
+    func devAction(_ name: String, _ path: String?) {
+        if let path, let (e, m) = rows.compactMap({ r -> (GitStatusReport.Entry, EditorMode)? in
+            if case .file(let e, let m) = r, e.path == path { return (e, m) } else { return nil } }).first {
+            actions(e, m).first { $0.tip.hasPrefix(name) }.map { onAction?($0.action) }
+            return
+        }
+        for (i, r) in rows.enumerated() {
+            if case .section(let t, _) = r, let link = sectionLinks(t, rect(ofRow: i)).first(where: { $0.title == name }) { return onAction?(link.action) ?? () }
+        }
     }
 
     func devToggle(_ path: String) {
@@ -768,6 +956,11 @@ final class GitStatusRowsView: NSView {
     }
 
     private func drawSection(_ title: String, _ count: Int, _ rect: NSRect, _ th: Theme) {
+        for link in sectionLinks(title, rect) {
+            var attrs = Self.linkAttrs
+            attrs[.foregroundColor] = link.title.hasPrefix("Discard") ? th.red : th.accent
+            (link.title as NSString).draw(at: NSPoint(x: link.rect.minX + 4, y: rect.minY + 8), withAttributes: attrs)
+        }
         let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: th.dimText, .kern: 0.8]
         let t = title.uppercased()
         (t as NSString).draw(at: NSPoint(x: Self.left, y: rect.minY + 9), withAttributes: attrs)
@@ -801,10 +994,20 @@ final class GitStatusRowsView: NSView {
         x += 22
         // The line counts on the right first, then the name, then as much of the folder as fits.
         let right = bounds.width - Self.left
-        var r = right - 26
+        let acts = hovered ? actions(e, mode) : []
+        // On hover the buttons take the right end; the line counts move along for them.
+        var r = right - 26 - CGFloat(acts.count) * 24
         if hovered, canUnfold(e), let img = symbol("arrow.up.forward.square", th.foreground.withAlphaComponent(0.7), 12) {
             let box = openButton(rect)
             img.draw(in: NSRect(x: box.midX - img.size.width / 2, y: box.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
+        }
+        for (a, box) in zip(acts, actionRects(rect, count: acts.count)) {
+            let color = a.symbol == "trash" || a.symbol == "arrow.uturn.backward" ? th.red.withAlphaComponent(0.85) : th.accent
+            th.foreground.withAlphaComponent(0.06).setFill()
+            NSBezierPath(roundedRect: box, xRadius: 5, yRadius: 5).fill()
+            if let img = symbol(a.symbol, color, 11, .semibold) {
+                img.draw(in: NSRect(x: box.midX - img.size.width / 2, y: box.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
+            }
         }
         let stats = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
         if let v = e.removed, v > 0 {

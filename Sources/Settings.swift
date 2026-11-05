@@ -40,6 +40,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var lastTheme = ""
     /// Set while a control here is committing, so our own change doesn't rebuild the page under the pointer.
     var committing = false
+    /// System shows the release history instead of its settings.
+    private(set) var showingReleases = false
+
+    /// Opens (or leaves) System › Release History.
+    func showReleases(_ on: Bool) {
+        page = .system
+        showingReleases = on
+        rebuild()
+        root.scrollToTop()
+    }
+
     /// The theme being edited, for asking about unsaved changes before leaving it.
     var themeDraft: ThemeEditor.Model?
     /// Pinned under the page (the theme editor's Save bar), rebuilt with it.
@@ -89,6 +100,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             self.page = p
             self.editingTheme = nil
+            self.showingReleases = false
             self.rebuild()
             self.root.scrollToTop()
         }
@@ -393,7 +405,10 @@ final class SettingsPageView: NSView {
         var y: CGFloat = 46
         for b in blocks {
             let h = b.height(inner)
-            b.view.frame = NSRect(x: Self.margin, y: y, width: inner, height: h)
+            // A lone button (‹ All Themes, ‹ System) keeps its own width at the left: stretched across the page, its
+            // title sat in the middle, and the empty space beside it was clickable too.
+            let w = (b.view as? NSButton).map { min(inner, ceil($0.fittingSize.width)) } ?? inner
+            b.view.frame = NSRect(x: Self.margin, y: y, width: w, height: h)
             y += h + b.gapAfter
         }
     }
@@ -1309,7 +1324,12 @@ enum SettingsPages {
     static func make(_ page: SettingsWindowController.Page, controller: SettingsWindowController) -> SettingsPageView {
         let v = SettingsPageView()
         let editing = page == .appearance ? controller.editingTheme.flatMap { url in ThemeLibrary.custom.first { $0.file == url } } : nil
-        v.add(settingsLabel(editing == nil ? page.title : "Edit Theme", size: 26, weight: .bold), height: 32, gap: 24)
+        let releases = page == .system && controller.showingReleases
+        v.add(settingsLabel(editing != nil ? "Edit Theme" : releases ? "Release History" : page.title, size: 26, weight: .bold), height: 32, gap: 24)
+        if releases {
+            ReleaseHistoryPage.build(v, controller)
+            return v
+        }
         switch page {
         case .appearance:
             if let editing { ThemeEditor.build(v, controller, editing) } else { appearance(v, controller) }
@@ -1378,6 +1398,8 @@ enum SettingsPages {
         case .building:
             break
         }
+        // Every push to main, whatever the update's doing.
+        if u.repo != nil { actions.append(linkButton("Release History") { [weak ctl] in ctl?.showReleases(true) }) }
         if !actions.isEmpty {
             let row = NSStackView(views: actions)
             row.spacing = 18
