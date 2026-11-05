@@ -537,6 +537,10 @@ enum SelfTest {
                 feed(t, String(repeating: "line\r\n", count: 30))
                 check("agent status: an old question far above isn't live", t.agentScreenStatus() == .done)
             }
+            check("ssh: a typed host to connect to", SSHHosts.newTarget("ssh bob@build9") == "bob@build9"
+                  && SSHHosts.newTarget("  bob@build9 ") == "bob@build9" && SSHHosts.newTarget("ssh -p 2222 bob@h.example.com") == "-p 2222 bob@h.example.com"
+                  && SSHHosts.newTarget("build") == nil && SSHHosts.newTarget("ssh ") == nil && SSHHosts.newTarget("ssh bob@") == nil
+                  && SSHHosts.newTarget("ssh -p") == nil && SSHHosts.newTarget("ssh h; rm x") == nil && SSHHosts.newTarget("ssh $(x)@h") == nil)
             check("chats: commands join oldest first", AgentChats.transcript(["$ a\n1", "$ b\n2"]) == "$ a\n1\n\n$ b\n2")
             check("chats: agents found on PATH", InstalledAgents.parse("noise\nsolanum-agent:codex\nsolanum-agent:claude\nsolanum-agent:nonsense\n").map(\.command) == ["claude", "codex"])
             check("chats: every known agent can start", AgentKind.known.allSatisfy { !$0.command.isEmpty } && AgentKind.known.contains(.other("aider")))

@@ -19,10 +19,15 @@ struct DropdownItem {
     var optionAction: (() -> Void)?
     /// A dot of this color where the check mark goes (a tab group's color); checked, it's ringed instead of ticked.
     var color: NSColor?
+    /// Picking it doesn't close the dropdown: the search field gets this text instead ("ssh ", to type a host after).
+    var fill: String?
 
     static func item(_ title: String, checked: Bool = false, symbol: String? = nil, detail: String? = nil, color: NSColor? = nil,
                      option: (() -> Void)? = nil, _ action: @escaping () -> Void) -> DropdownItem {
         DropdownItem(kind: .item, title: title, checked: checked, action: action, symbol: symbol, detail: detail, optionAction: option, color: color)
+    }
+    static func fill(_ title: String, symbol: String? = nil, _ text: String) -> DropdownItem {
+        DropdownItem(kind: .item, title: title, symbol: symbol, fill: text)
     }
     static func header(_ title: String) -> DropdownItem { DropdownItem(kind: .header, title: title) }
     static let separator = DropdownItem(kind: .separator)
@@ -37,7 +42,7 @@ protocol DropdownAnchor: AnyObject {
 }
 
 /// Covers the window while open (a click anywhere outside the panel closes it, and still reaches what it's on); the panel sits under the anchor.
-final class ThemedDropdown: NSView, NSTextFieldDelegate {
+final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
     private static weak var current: ThemedDropdown?
     /// Dev aid: the last dropdown's items (headless runs print them instead of showing anything).
     static var devLastItems: [DropdownItem] = []
@@ -58,6 +63,10 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate {
     private var anchorEdge: CGFloat = 0
     /// The tallest the panel may be where it is (it shrinks to fit what the filter leaves).
     private var tallest: CGFloat = 0
+    /// Typed before what's searched for, and left out of the search ("ssh " in the hosts dropdown).
+    private var prefix: String?
+    /// Rows made from what's typed, above the matches (connecting to a host that isn't listed, say).
+    private var extra: ((String) -> [DropdownItem])?
 
     static let rowHeight: CGFloat = 26
     private static let fieldHeight: CGFloat = 34
@@ -67,8 +76,9 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate {
     /// more room there. `rect`: the button within `anchor`, when it's drawn inside a bigger view (the status bar).
     /// `placeholder`: what the filter field says while empty. `searchable`: false for a short menu of actions, with no
     /// filter field (↑ / ↓ and ↩ still work).
+    /// `prefix` and `extra`: see their properties.
     static func show(_ items: [DropdownItem], under anchor: NSView, rect: NSRect? = nil, minWidth: CGFloat = 200, placeholder: String = "Filter",
-                     searchable: Bool = true) {
+                     searchable: Bool = true, prefix: String? = nil, extra: ((String) -> [DropdownItem])? = nil) {
         if let a = anchor as? DropdownAnchor, !a.dropdownWanted { return }
         devLastItems = items
         // A view in the window, not a menu with its own event loop, so headless runs show it too (and print it).
@@ -81,6 +91,8 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate {
         let d = ThemedDropdown(items, searchable: searchable, placeholder: placeholder, previous: window.firstResponder)
         d.frame = content.bounds
         d.autoresizingMask = [.width, .height]
+        d.prefix = prefix
+        d.extra = extra
         content.addSubview(d)
         d.anchor = anchor
         d.anchorRect = rect ?? anchor.bounds
@@ -89,6 +101,31 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate {
         window.makeFirstResponder(d.searchable ? d.field : d)
         (anchor as? DropdownAnchor)?.dropdownOpen = true
         d.slideIn()
+        d.coverChanged()
+    }
+
+    /// Where the panel is, so resize strips under it (the sidebar's edge) don't show their ↔ cursor through it.
+    var coveredRects: [NSRect] {
+        guard superview != nil else { return [] }
+        return [convert(panel.frame.insetBy(dx: -10, dy: -10), to: superview)]
+    }
+
+    private func coverChanged(in root: NSView? = nil) { ((root ?? superview) as? WindowRootView)?.overlaysChanged() }
+
+    // An arrow over the panel (but the text cursor over the search field): what's under it doesn't get a say.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.cursorUpdate, .mouseMoved, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func cursorUpdate(with e: NSEvent) { setCursor(e) }
+    override func mouseMoved(with e: NSEvent) { setCursor(e); super.mouseMoved(with: e) }
+
+    private func setCursor(_ e: NSEvent) {
+        let p = convert(e.locationInWindow, from: nil)
+        guard panel.frame.contains(p) else { return }
+        (searchable && convert(field.frame, from: panel).contains(p) ? NSCursor.iBeam : NSCursor.arrow).set()
     }
 
     /// Closes whichever dropdown is open.
@@ -194,6 +231,13 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate {
     private func pick(_ i: Int, option: Bool = false) {
         guard list.items.indices.contains(i), list.items[i].kind == .item else { return }
         let item = list.items[i]
+        if let fill = item.fill, searchable {
+            field.stringValue = fill
+            window?.makeFirstResponder(field)
+            field.currentEditor()?.selectedRange = NSRange(location: (fill as NSString).length, length: 0)
+            controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+            return
+        }
         let action = option ? item.optionAction ?? item.action : item.action
         dismiss()
         action?()
@@ -202,10 +246,11 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate {
     private var optionHeld: Bool { NSApp.currentEvent?.modifierFlags.contains(.option) ?? false }
 
     func dismiss() {
-        let w = window
+        let w = window, root = superview
         (anchor as? DropdownAnchor)?.dropdownOpen = false
         if Headless.active, superview != nil { FileHandle.standardError.write("dropdown: closed\n".data(using: .utf8)!) }
         removeFromSuperview()
+        coverChanged(in: root)
         if let previous, previous !== field, previous !== self { w?.makeFirstResponder(previous) }
     }
 
@@ -255,14 +300,25 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate {
     }
 
     func controlTextDidChange(_ obj: Notification) {
-        let q = field.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
+        var q = field.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
+        if let p = prefix?.lowercased() {
+            let bare = p.trimmingCharacters(in: .whitespaces)
+            if q == bare { q = "" } else if q.hasPrefix(p) { q = q.dropFirst(p.count).trimmingCharacters(in: .whitespaces) }
+        }
+        let made = extra?(field.stringValue) ?? []
+        // Only the prefix typed ("ssh ", from New Connection…): the whole list, less what fills the field, and
+        // nothing picked yet, so ↩ doesn't connect to the first host by surprise.
+        let onlyPrefix = q.isEmpty && !field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty
         if q.isEmpty {
-            list.items = all
+            let rest = onlyPrefix ? Array(all.drop { $0.fill != nil || $0.kind == .separator }) : all
+            list.items = made + (made.isEmpty ? [] : [.separator]) + rest
         } else {
             // Just the matching items (with no headers or lines between, which only grouped the full list).
-            list.items = all.filter { $0.kind == .item && ($0.title.lowercased().contains(q) || ($0.detail?.lowercased().contains(q) ?? false)) }
+            // What's typed, made into rows, comes after anything it matches ("ssh lanode2" → lanode23 first).
+            list.items = all.filter { $0.kind == .item && $0.fill == nil
+                && ($0.title.lowercased().contains(q) || ($0.detail?.lowercased().contains(q) ?? false)) } + made
         }
-        list.highlighted = list.firstSelectable(from: 0, by: 1)
+        list.highlighted = onlyPrefix && made.isEmpty ? nil : list.firstSelectable(from: 0, by: 1)
         list.frame.size.height = list.contentHeight
         let top = Self.fieldHeight + 6
         panel.frame.size.height = min(top + list.contentHeight + 6, tallest)
@@ -270,6 +326,7 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate {
         scroll.frame.size.height = panel.frame.height - top - 6
         list.frame.size.width = scroll.contentSize.width
         scrollToHighlighted()
+        coverChanged()
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {

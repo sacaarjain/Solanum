@@ -1572,6 +1572,11 @@ final class WindowRootView: NSView {
         }
         // And whatever floats over the window stays above all of it, strips and overlay included.
         for v in floating where subviews.last !== v { addSubview(v) }
+        overlaysChanged()
+    }
+
+    /// Something floating over the window opened, closed or moved: the resize strips' cursors leave it out.
+    func overlaysChanged() {
         window?.invalidateCursorRects(for: sidebarHandle)
         window?.invalidateCursorRects(for: rightSidebarHandle)
         window?.invalidateCursorRects(for: divider)
@@ -1890,22 +1895,38 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     private func showHostsMenu(at point: NSPoint) {
         let bar = rootView.statusBar
         let (configured, known) = SSHHosts.load()
-        func item(_ h: SSHHost) -> DropdownItem {
-            .item(h.title, symbol: "server.rack", detail: h.detail,
-                  option: { [weak self] in self?.connect(h, inNewTab: false, fallBackToNewTab: false) }) { [weak self] in self?.connect(h) }
+        // `remember`: one typed in (not from the config or known_hosts) is kept under Recent, user and all.
+        func item(_ h: SSHHost, title: String? = nil, symbol: String = "server.rack", detail: String? = nil, remember: Bool = false) -> DropdownItem {
+            func go(_ here: Bool) {
+                if remember { SSHHosts.remember(h.target) }
+                connect(h, inNewTab: !here, fallBackToNewTab: !here)
+            }
+            return .item(title ?? h.title, symbol: symbol, detail: detail ?? h.detail, option: { go(true) }) { go(false) }
         }
-        var items: [DropdownItem] = [.header(configured.isEmpty ? "No hosts in ~/.ssh/config" : "SSH Config")]
-        items += configured.map(item)
+        let recent = SSHHosts.recent.map { SSHHost(target: $0, title: $0) }
+        var items: [DropdownItem] = [.fill("New Connection…", symbol: "plus", "ssh "), .separator]
+        if !recent.isEmpty {
+            items += [.header("Recent")] + recent.map { item($0, symbol: "clock.arrow.circlepath", remember: true) } + [.separator]
+        }
+        items += [.header(configured.isEmpty ? "No hosts in ~/.ssh/config" : "SSH Config")]
+        items += configured.map { item($0) }
         if !known.isEmpty {
             items += [.separator, .header("Known Hosts")]
-            items += known.prefix(200).map(item)
+            items += known.prefix(200).map { item($0) }
         }
         items += [.separator, .item("Edit SSH Config…", symbol: "square.and.pencil") { [weak self] in
             SSHHosts.ensureConfigExists()
             self?.activeTab?.openFile(LocalFileSystem.shared, SSHHosts.configPath)
         }]
         let rect = bar.hostsButtonRect ?? NSRect(x: point.x, y: point.y, width: 1, height: 1)
-        ThemedDropdown.show(items, under: bar, rect: rect, minWidth: 320, placeholder: "Connect to a host… (⌥ for this pane)")
+        let listed = (configured + known + recent).flatMap { [$0.title.lowercased(), $0.target.lowercased()] }
+        ThemedDropdown.show(items, under: bar, rect: rect, minWidth: 320, placeholder: "Connect to a host… (⌥ for this pane)",
+                            prefix: "ssh ") { typed in
+            // "ssh user@host" (or just "user@host") that isn't listed: a row to connect to it, kept under Recent after.
+            guard let target = SSHHosts.newTarget(typed), !listed.contains(target.lowercased()) else { return [] }
+            return [item(SSHHost(target: target, title: target), title: "ssh " + target, symbol: "arrow.right.circle",
+                         detail: "new connection", remember: true)]
+        }
     }
 
     /// ssh to `host`: in a new tab, or in the focused pane when it's at a prompt on this Mac (otherwise a new tab
