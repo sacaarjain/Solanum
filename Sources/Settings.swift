@@ -269,6 +269,9 @@ final class SettingsSidebar: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// Dark on a light fill, white on a dark one (the tab badges' rule).
+    private static func ink(on fill: NSColor) -> NSColor { fill.luminance > 0.6 ? NSColor(white: 0.1, alpha: 1) : .white }
+
     private func symbol(_ name: String, _ color: NSColor) -> NSImage? {
         let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium).applying(.init(paletteColors: [color]))
         return NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(cfg)
@@ -297,9 +300,10 @@ final class SettingsSidebar: NSView {
                 NSBezierPath(roundedRect: r, xRadius: 8, yRadius: 8).fill()
             }
             let box = NSRect(x: r.minX + 8, y: r.midY - 12, width: 24, height: 24)
-            (selected ? th.accent.withAlphaComponent(0.9) : th.foreground.withAlphaComponent(0.08)).setFill()
+            (selected ? th.accent : th.foreground.withAlphaComponent(0.08)).setFill()
             NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6).fill()
-            if let img = symbol(p.symbol, selected ? .white : th.foreground.withAlphaComponent(0.75)) {
+            // On the accent, ink that reads on it: white washes out on a light accent (a pale blue, a yellow).
+            if let img = symbol(p.symbol, selected ? Self.ink(on: th.accent) : th.foreground.withAlphaComponent(0.75)) {
                 img.draw(in: NSRect(x: box.midX - img.size.width / 2, y: box.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
             }
             (p.title as NSString).draw(at: NSPoint(x: box.maxX + 10, y: r.midY - 8),
@@ -310,7 +314,7 @@ final class SettingsSidebar: NSView {
                 let badge = NSRect(x: r.maxX - 28, y: r.midY - 8, width: 16, height: 16)
                 th.accent.setFill()
                 NSBezierPath(ovalIn: badge).fill()
-                let one = NSAttributedString(string: "1", attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .bold), .foregroundColor: NSColor.white])
+                let one = NSAttributedString(string: "1", attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .bold), .foregroundColor: Self.ink(on: th.accent)])
                 let s = one.size()
                 one.draw(at: NSPoint(x: badge.midX - s.width / 2, y: badge.midY - s.height / 2))
             }

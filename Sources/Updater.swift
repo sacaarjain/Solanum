@@ -104,7 +104,8 @@ final class Updater {
         guard let repo, let built else {
             if manual {
                 alert("Updates need a build made with build.sh",
-                      "This copy of Solanum doesn't know which repository it came from. Build it with ./build.sh in a clone of the repository.")
+                      "This copy of Solanum doesn't know which repository it came from. Build it with ./build.sh in a clone of the repository.",
+                      problem: true)
             }
             return
         }
@@ -124,7 +125,7 @@ final class Updater {
             guard let self else { return }
             self.checking = false
             guard status == 0 else {
-                if manual { self.alert("Couldn't check for updates", err.isEmpty ? "git fetch from origin failed." : err) }
+                if manual { self.alert("Couldn't check for updates", err.isEmpty ? "git fetch from origin failed." : err, problem: true) }
                 return
             }
             self.defaults.set(Date().timeIntervalSince1970, forKey: Key.lastCheck)
@@ -233,10 +234,9 @@ final class Updater {
         wc?.rootView.showNotice(notice)
     }
 
-    private func alert(_ title: String, _ text: String) {
-        let a = NSAlert()
-        a.messageText = title
-        a.informativeText = text
-        a.runModal()
+    /// In Solanum's own colors (see ThemedAlertView): the flower, or a warning mark for a `problem`.
+    private func alert(_ title: String, _ text: String, problem: Bool = false) {
+        ThemedAlertView.show(title, text.trimmingCharacters(in: .whitespacesAndNewlines),
+                             symbol: problem ? ("exclamationmark", Config.shared.theme.yellow) : nil)
     }
 }
