@@ -113,6 +113,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         if forgettingSession { SessionStore.forget() } else { SessionStore.save(windows, sync: true) }
         SessionStore.stopSaving()
         for w in windows { w.tabs.forEach { $0.terminateAll() } }
+        // A build made while Solanum ran goes in now that nothing of this one is left to need its files.
+        PendingInstall.install()
         if restarting && !Headless.active {
             // A detached shell waits for this process to exit, then opens the app again (picking up a new build).
             let p = Process()

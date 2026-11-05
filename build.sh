@@ -148,11 +148,24 @@ fi
 echo "› Installing to ${INSTALL_DIR}…"
 mkdir -p "$INSTALL_DIR"
 NEW="$INSTALL_DIR/.$APP_NAME.app.new"; OLD="$INSTALL_DIR/.$APP_NAME.app.old"
+# A Solanum that's running keeps its files: replacing them makes macOS lose track of it, and a little later its folder
+# access (Desktop, Documents, Full Disk Access) stops working in every tab, with no prompt, until it restarts. So
+# then the build waits here, and Solanum moves it into place when it quits or restarts (PendingInstall in Updater.swift).
+PENDING="$INSTALL_DIR/.$APP_NAME.app.pending"
 rm -rf "$NEW" "$OLD"
 cp -R "$APP" "$NEW"
-[[ -e "$INSTALL_DIR/$APP_NAME.app" ]] && mv "$INSTALL_DIR/$APP_NAME.app" "$OLD"
-mv "$NEW" "$INSTALL_DIR/$APP_NAME.app"
-rm -rf "$OLD"
+# (ps, not pgrep: pgrep doesn't list the shell's own ancestors, and this often runs in a Solanum tab.)
+if [[ -e "$INSTALL_DIR/$APP_NAME.app" ]] && grep -Fxq "$INSTALL_DIR/$APP_NAME.app/Contents/MacOS/$APP_NAME" <<<"$(ps -axo comm=)"; then
+  rm -rf "$PENDING"
+  mv "$NEW" "$PENDING"
+  INSTALLED="Built; Solanum is running, so the new build goes in when it quits or restarts (⇧⌘R)"
+else
+  rm -rf "$PENDING"
+  [[ -e "$INSTALL_DIR/$APP_NAME.app" ]] && mv "$INSTALL_DIR/$APP_NAME.app" "$OLD"
+  mv "$NEW" "$INSTALL_DIR/$APP_NAME.app"
+  rm -rf "$OLD"
+  INSTALLED="Installed $INSTALL_DIR/$APP_NAME.app"
+fi
 # Only the installed copy is Solanum to macOS: a registered build/ copy can be launched beside it (a second Solanum).
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$PWD/$APP" 2>/dev/null || true
-echo "✓ Installed $INSTALL_DIR/$APP_NAME.app"
+echo "✓ $INSTALLED"

@@ -502,6 +502,14 @@ enum SelfTest {
             check("agents: known by their commands", AgentKind.known.allSatisfy { AgentKind.named($0.command) == $0 } && AgentKind.named("zsh") == nil)
             check("agents: continue goes through an alias", AgentKind.claude.throughAlias("claude -c", alias: "c") == "c -c"
                   && AgentKind.claude.throughAlias("claudette -c", alias: "c") == "claudette -c" && AgentKind.codex.throughAlias("codex resume --last", alias: nil) == "codex resume --last")
+            check("session: Claude resumes its own chat, not the folder's newest", {
+                let id = "95c88082-9cd8-4ae9-bc0a-c8645ac3bb71"
+                return ClaudeSessions.resuming("claude -c", session: id, exists: true) == "claude --resume \(id)"
+                    && ClaudeSessions.resuming("claude --continue --model opus", session: id, exists: true) == "claude --resume \(id) --model opus"
+                    && ClaudeSessions.resuming("claude -c", session: id, exists: false) == "claude"
+                    && ClaudeSessions.resuming("claude --model opus", session: id, exists: true) == "claude --model opus"
+                    && ClaudeSessions.resuming("claude -c", session: "x; rm -rf ~", exists: true) == "claude -c"
+            }())
             check("session: Claude from an older session still continues", {
                 let old = try? JSONDecoder().decode(PaneState.self, from: Data(#"{"claude":true}"#.utf8))
                 return old?.claude == true && old?.agent == nil
