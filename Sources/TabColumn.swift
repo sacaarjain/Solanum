@@ -360,7 +360,6 @@ final class TabColumn: NSObject, TabOwner {
         t.owner = self
         t.customTitle = ts.title
         t.group = group
-        t.pinnedFolder = ts.pinnedFolder.map { (LocalFileSystem.shared, $0) }
         // Local files that are still there; files on an ssh host, waiting for a connection to it (one per host and
         // way of reaching it, shared by the tab's files).
         var waiting: [String: RemoteSession] = [:]
@@ -372,6 +371,18 @@ final class TabColumn: NSObject, TabOwner {
             let session = waiting[key] ?? RemoteSession(awaiting: host, sshArgs: ssh)
             waiting[key] = session
             return (session, path)
+        }
+        // The pinned folder: on this Mac, or on an ssh host, waiting (with the tab's files there) for a connection to
+        // it; once the tab's logged in there, the pin moves to that session (see `repinAfterReconnect`).
+        if let pin = ts.pinnedFolder {
+            if let host = ts.pinnedHost {
+                let key = host + "\n" + (ts.pinnedSSH ?? "")
+                let session = waiting[key] ?? RemoteSession(awaiting: host, sshArgs: ts.pinnedSSH ?? "")
+                waiting[key] = session
+                t.pinnedFolder = (session, pin)
+            } else {
+                t.pinnedFolder = (LocalFileSystem.shared, pin)
+            }
         }
         if ts.terminalHidden == true, let first = files.first {
             t.fileOrigin = (first.fs, FilePaths.parent(first.path))

@@ -537,6 +537,45 @@ enum SelfTest {
                 feed(t, String(repeating: "line\r\n", count: 30))
                 check("agent status: an old question far above isn't live", t.agentScreenStatus() == .done)
             }
+            check("files: a change on disk changes the signature, even at the same size", {
+                let f = NSTemporaryDirectory() + "solanum-sig-\(UUID().uuidString).txt"
+                defer { try? FileManager.default.removeItem(atPath: f) }
+                try? "alpha\n".write(toFile: f, atomically: false, encoding: .utf8)
+                let before = LocalFileSystem.signature(f)
+                usleep(2000)
+                try? "ALPHA\n".write(toFile: f, atomically: false, encoding: .utf8)
+                return before != nil && LocalFileSystem.signature(f) != before && LocalFileSystem.signature(f + ".gone") == nil
+            }())
+            do {
+                // The ssh watch, run here with sh: not up at first (no connection yet), it keeps trying, and once it
+                // can run it reports the file and then a change to it.
+                let f = NSTemporaryDirectory() + "solanum-watch-\(UUID().uuidString).txt"
+                defer { try? FileManager.default.removeItem(atPath: f) }
+                try? "one\n".write(toFile: f, atomically: false, encoding: .utf8)
+                var up = false
+                let watch = RemoteFileWatch { script in
+                    guard up else { return nil }
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: "/bin/sh")
+                    p.arguments = ["-c", script]
+                    return p
+                }
+                var seen: [String?] = []
+                func spin(_ limit: TimeInterval, until cond: () -> Bool) {
+                    let end = Date(timeIntervalSinceNow: limit)
+                    while !cond(), Date() < end { RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05)) }
+                }
+                let token = watch.watch(f) { seen.append($0) }
+                spin(5) { watch.live == false }
+                check("ssh watch: says it isn't updating while it can't run", watch.live == false && seen.isEmpty)
+                up = true
+                spin(6) { watch.live == true && !seen.isEmpty }
+                check("ssh watch: starts once it can, and reports the file", watch.live == true && seen.count == 1 && seen[0] != nil)
+                try? "one\ntwo\n".write(toFile: f, atomically: false, encoding: .utf8)
+                spin(4) { seen.count >= 2 }
+                check("ssh watch: reports a change within a couple of seconds", seen.count == 2 && seen[1] != nil && seen[1] != seen[0])
+                withExtendedLifetime(token) {}
+            }
             check("ssh: a typed host to connect to", SSHHosts.newTarget("ssh bob@build9") == "bob@build9"
                   && SSHHosts.newTarget("  bob@build9 ") == "bob@build9" && SSHHosts.newTarget("ssh -p 2222 bob@h.example.com") == "-p 2222 bob@h.example.com"
                   && SSHHosts.newTarget("build") == nil && SSHHosts.newTarget("ssh ") == nil && SSHHosts.newTarget("ssh bob@") == nil
@@ -711,8 +750,27 @@ extension NSWorkspace {
 /// Development aid: SOLANUM_SNAPSHOT=/path.png renders the first window to a PNG after a delay.
 /// SOLANUM_SNAPSHOT_INPUT types text first; SOLANUM_SNAPSHOT_ACTIONS=split,palette,select-block,collapse,jump-prompt,find,find-commands,find-output,click:<col>:<row>,keys:<text>,theme:<name>,
 /// newtab,rename-tab,new-group,edit:<text>,select-tab:<i>,collapse-group:<i>,split-down,save-session,
-/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,screen-boxes,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,strip-scroll:<points>,strip-activate:<i>,strip-arrow:<-1|1>,print-strip-scroll,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,crumb-menu[:<item>],crumb-context[:<label>[:<item>]],drop-files:<index>:<path>|<path>,drop-hover:<x>,press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,git-action:<name>[:<path>],git-message:<text>,git-press:<button>,print-git-box,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>,log-menu[:<menu>>…>item],graph-type:<text>,graph-press:<Branch|User|Date|Paths>,graph-click:<Branch|User|Date|Paths>,dropdown-type:<text>,hosts-dropdown,chip-dropdown,dropdown-run:<title>,graph-menu-run:<title>,graph-branch:<title>,graph-branch-filter:<text>,graph-path:<path>,print-graph,log-marker-text:<text>,log-select:<text>,editor-end,editor-edge-drag:<fraction>:<seconds>,print-deleted,editor-lost-bar:<host>,print-time,hang-watch,display-time,log-import:<path>,print-log-format,theme-edit:<name>,theme-background:<hex>,theme-ansi:<i>:<hex>,theme-bar:<Save Changes|Reset>,theme-leave:<page>,print-theme,print-samehost,release-history,print-releases,settings-window-png:<path>,settings-sheet-press:<title>,themed-alert[:problem],themed-alert-ok,window-png:<path>,settings-sidebar-png:<path>
+/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,screen-boxes,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,strip-scroll:<points>,strip-activate:<i>,strip-arrow:<-1|1>,print-strip-scroll,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,print-editor-text,open-slow-file-tab:<path>,print-sidebar-rows,lost-notice:<command>,notice-reconnect,notice-secret:<text>,print-notice,editor-insert:<text>,editor-save,editor-conflict:<Compare|Overwrite|Revert|Cancel>,watch-tag:<live|off>,crumb-menu[:<item>],crumb-context[:<label>[:<item>]],drop-files:<index>:<path>|<path>,drop-hover:<x>,press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,git-action:<name>[:<path>],git-message:<text>,git-press:<button>,print-git-box,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>,log-menu[:<menu>>…>item],graph-type:<text>,graph-press:<Branch|User|Date|Paths>,graph-click:<Branch|User|Date|Paths>,dropdown-type:<text>,hosts-dropdown,dropdown-option,chip-dropdown,print-watch-script:<path>|<path>,dropdown-run:<title>,graph-menu-run:<title>,graph-branch:<title>,graph-branch-filter:<text>,graph-path:<path>,print-graph,log-marker-text:<text>,log-select:<text>,editor-end,editor-edge-drag:<fraction>:<seconds>,print-deleted,editor-lost-bar:<host>,print-time,hang-watch,display-time,log-import:<path>,print-log-format,theme-edit:<name>,theme-background:<hex>,theme-ansi:<i>:<hex>,theme-bar:<Save Changes|Reset>,theme-leave:<page>,print-theme,print-samehost,release-history,print-releases,settings-window-png:<path>,settings-sheet-press:<title>,themed-alert[:problem],themed-alert-ok,window-png:<path>,settings-sidebar-png:<path>
 /// (with SOLANUM_SESSION_FILE set, which also makes the run restore from that file).
+/// Dev aid: files on this Mac, served as if from an ssh host whose folder listings take `delay` seconds (DevTools
+/// open-slow-file-tab), to see what the sidebar shows while one is on its way.
+final class DevSlowFileSystem: FileSystem {
+    static let shared = DevSlowFileSystem()
+    var delay: TimeInterval = 3
+    var isRemote: Bool { true }
+    var hostLabel: String? { "slow@test" }
+    var home: String? { NSHomeDirectory() }
+    func list(_ dir: String, _ done: @escaping (Result<[FileItem], Error>) -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { LocalFileSystem.shared.list(dir, done) }
+    }
+    func read(_ path: String, limit: Int, _ done: @escaping (Result<Data, Error>) -> Void) { LocalFileSystem.shared.read(path, limit: limit, done) }
+    func readPart(_ path: String, from offset: Int?, whole: Int, tail: Int, _ done: @escaping (Result<FilePart, Error>) -> Void) {
+        LocalFileSystem.shared.readPart(path, from: offset, whole: whole, tail: tail, done)
+    }
+    func write(_ data: Data, to path: String, _ done: @escaping (Error?) -> Void) { LocalFileSystem.shared.write(data, to: path, done) }
+    func perform(_ op: FileOp, _ done: @escaping (Error?) -> Void) { LocalFileSystem.shared.perform(op, done) }
+}
+
 enum SnapshotHelper {
     static func runIfRequested() {
         let env = ProcessInfo.processInfo.environment
@@ -760,7 +818,9 @@ enum SnapshotHelper {
                 case "newtab": c.newTab(nil)
                 case "newtab-host": c.newTabOnSameHost(nil)
                 case "hosts-dropdown": c.devShowHosts()
+                case "dropdown-option": ThemedDropdown.devHoldOption()
                 case "chip-dropdown": c.tabBar.devShowGroupMenu()
+                case let a where a.hasPrefix("print-watch-script:"): print(RemoteFileWatch.script(a.dropFirst(19).split(separator: "|").map(String.init)))
                 case let a where a.hasPrefix("dropdown-run:"): ThemedDropdown.devRun(String(a.dropFirst(13)))
                 case "newtab-group": c.newTabInGroup(nil)
                 case "sidebar": c.toggleFileSidebar(nil)
@@ -1124,6 +1184,17 @@ enum SnapshotHelper {
                         }
                     }
                     if action.hasPrefix("select-tab:"), let i = Int(action.dropFirst(11)) { c.select(index: i) }
+                    if action.hasPrefix("open-slow-file-tab:") {
+                        c.focused.addFileTab(FileEditorView(fs: DevSlowFileSystem.shared, path: String(action.dropFirst(19))))
+                    }
+                    if action.hasPrefix("lost-notice:") { pane.devShowLostNotice(host: "sjain@box", command: String(action.dropFirst(12))) }
+                    if action == "notice-reconnect" { pane.devLostNotice?.devPressButton() }
+                    if action.hasPrefix("notice-secret:") { pane.devLostNotice?.devSubmitSecret(String(action.dropFirst(14))) }
+                    if action == "print-notice" {
+                        let n = pane.devLostNotice
+                        FileHandle.standardError.write("notice: \(n.map { "\($0.devTitle.debugDescription) field=\($0.devHasSecretField) shown=\($0.superview != nil)" } ?? "none")\n".data(using: .utf8)!)
+                    }
+                    if action == "print-sidebar-rows" { FileHandle.standardError.write("sidebar rows: \(c.rootView.sidebar.devRowsState)\n".data(using: .utf8)!) }
                     if action.hasPrefix("tab-drop:") || action.hasPrefix("tab-drop-hold:"), let w = c.window {
                         // tab-drop:<i>:<fx>:<fy> — press on tab i of the focused column's strip, drag to (fx, fy) as
                         // fractions of the window, release. tab-drop-hold: stops before releasing (to see the preview).
@@ -1319,6 +1390,15 @@ enum SnapshotHelper {
                        let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                                 windowNumber: w.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
                                                 isARepeat: false, keyCode: 36) { w.sendEvent(e) }
+                    if action == "print-editor-text" {
+                        for ed in c.allTabs.flatMap(\.editors) {
+                            FileHandle.standardError.write("editor text: \(ed.displayName): \(ed.devTextState)\n".data(using: .utf8)!)
+                        }
+                    }
+                    if action.hasPrefix("editor-insert:") { c.activeTab?.editor?.devInsert(String(action.dropFirst(14))) }
+                    if action == "editor-save" { c.activeTab?.editor?.devSave() }
+                    if action.hasPrefix("editor-conflict:") { c.activeTab?.editor?.devConflict(String(action.dropFirst(16))) }
+                    if action.hasPrefix("watch-tag:") { c.activeTab?.editor?.devWatchTag(String(action.dropFirst(10))) }
                     if action == "print-editors" {
                         let eds = c.allTabs.flatMap { $0.editors.map { "\($0.displayName) @ \($0.path)" } }
                         FileHandle.standardError.write("editors: \(eds)\n".data(using: .utf8)!)

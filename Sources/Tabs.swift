@@ -1901,7 +1901,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
                 if remember { SSHHosts.remember(h.target) }
                 connect(h, inNewTab: !here, fallBackToNewTab: !here)
             }
-            return .item(title ?? h.title, symbol: symbol, detail: detail ?? h.detail, option: { go(true) }) { go(false) }
+            return .item(title ?? h.title, symbol: symbol, detail: detail ?? h.detail, option: { go(true) }, optionDetail: "open in this pane") { go(false) }
         }
         let recent = SSHHosts.recent.map { SSHHost(target: $0, title: $0) }
         var items: [DropdownItem] = [.fill("New Connection…", symbol: "plus", "ssh "), .separator]

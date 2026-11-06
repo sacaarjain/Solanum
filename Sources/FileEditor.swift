@@ -69,10 +69,29 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private var diskTail = Data()
     /// Bytes at the end of the last read that stop partway through a character, kept for the next.
     private var carry = Data()
-    /// The eye in the header: re-read the file every 5 seconds while it's on screen (and on coming back to it).
-    private var watching = false { didSet { header.watching = watching; updateWatchTimer() } }
-    private var watchTimer: Timer?
+    /// Tail File, in the header: the end stays in view as the file grows (tail -f), even after scrolling up. Without
+    /// it a growing file scrolls along only while its end is showing. Either way the file keeps up with the disk.
+    private var tailing = false {
+        didSet {
+            header.tailing = tailing
+            if tailing { textView.scrollToEndOfDocument(nil); syncWithDisk() }
+        }
+    }
     private var refreshing = false
+    /// The file as last read or saved (see `LocalFileSystem.signature`, `RemoteSession.statCommand`): when what's on
+    /// disk differs, something else changed it (an agent, git, a formatter) and the text catches up.
+    private var diskSignature: String?
+    /// On this Mac: its folder, watched while the file's open (see `DiskWatch`).
+    private var diskWatch: DiskWatch.Token?
+    /// Over ssh: the file, followed on the host while it's showing (see `RemoteFileWatch`).
+    private var remoteWatch: RemoteFileWatch.Token?
+    /// It changed on disk while there were unsaved edits here: they stay, the header says so, and saving asks first.
+    private var changedOnDisk = false { didSet { header.changedOnDisk = changedOnDisk } }
+    /// Saving over a file changed on disk: Compare, Overwrite or Revert (see `showConflict`).
+    private var conflictBar: EditorNoticeBar?
+    private var compareView: DiffView?
+    /// What was to happen after the save that hit the conflict (closing the editor, say).
+    private var afterConflict: (() -> Void)?
     private var wraps = false
     /// Colored as JSON, YAML, XML or a log (see Syntax.swift, LogFormat.swift); other files stay plain.
     private var language: SyntaxLanguage? { didSet { header.canFormat = language?.canFormat ?? false } }
@@ -121,7 +140,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         header.onShowChanges = { [weak self] in self?.onOpenAs?(.diff) }
         header.onToggleWrap = { [weak self] in self?.toggleWrap(nil) }
         header.onCopyPath = { [weak self] in self?.copyPath() }
-        header.onToggleWatch = { [weak self] in self?.watching.toggle() }
+        header.onToggleTail = { [weak self] in self?.tailing.toggle() }
         addSubview(header)
 
         textView.coveredBy = { [weak self] p in
@@ -187,11 +206,16 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             self?.followRename(from: old, to: new)
         })
         if mode == .file {
+            observers.append(NotificationCenter.default.addObserver(forName: RemoteFileWatch.liveChanged, object: nil, queue: .main) { [weak self] _ in
+                self?.updateWatchTag()
+            })
             for name in [NSApplication.didBecomeActiveNotification, .solanumFileSaved, .solanumGitStatusChanged, .solanumFilesChanged] {
                 observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                     guard let self, note.name == NSApplication.didBecomeActiveNotification || note.object as AnyObject? === self.fs else { return }
                     if note.name != .solanumFilesChanged { self.refreshGitChanges() }
                     self.checkExists()
+                    // In case an event was missed.
+                    if note.name == NSApplication.didBecomeActiveNotification { self.syncWithDisk() }
                 })
             }
             refreshGitChanges()
@@ -213,7 +237,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        updateWatchTimer()
+        updateDiskWatch()
         // Whether the file is still there: a stat every 2 seconds here; over ssh, whether the connection is (a
         // local check, as often) and a folder listing every 16.
         existsTimer?.invalidate()
@@ -224,16 +248,17 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 self.existsTicks += 1
                 self.updateConnection()
                 if !self.fs.isRemote || self.existsTicks % 8 == 0 { self.checkExists() }
+                // A stat, in case the folder's events can't be had (a network drive, say).
+                if !self.fs.isRemote { self.syncWithDisk() }
             }
             updateConnection()
             checkExists()
         }
-        // Coming back to a watched file: catch up straight away.
-        if watching, window != nil { refreshFromDisk() }
+        // Coming back to the file: catch up straight away (over ssh, the watch's first report does).
+        if window != nil { syncWithDisk() }
     }
 
     deinit {
-        watchTimer?.invalidate()
         existsTimer?.invalidate()
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         if let dir = mediaCopy?.deletingLastPathComponent() { try? FileManager.default.removeItem(at: dir) }
@@ -255,6 +280,8 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private func followRename(from old: String, to new: String) {
         guard path == old || path.hasPrefix(old + "/") else { return }
         path = new + path.dropFirst(old.count)
+        if !fs.isRemote { diskSignature = LocalFileSystem.signature(path) }
+        updateDiskWatch()
         let wasLog = language == .log
         language = SyntaxLanguage(path: path) ?? (wasLog && textView.hidesEscapes ? .log : nil)
         if language == .log { chooseLogFormat() } else { logFormat = nil }
@@ -298,6 +325,11 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             bar.frame = NSRect(x: bounds.width - w - 12, y: scroll.frame.minY + 6, width: w, height: bar.preferredHeight)
         }
         previewView?.frame = scroll.frame
+        compareView?.frame = scroll.frame
+        if let bar = conflictBar {
+            let w = min(bar.preferredWidth, bounds.width - 16)
+            bar.frame = NSRect(x: max(8, bounds.width - w - 12), y: bounds.height - EditorNoticeBar.height - 10, width: w, height: EditorNoticeBar.height)
+        }
         if let bar = lostBar {
             let w = min(bar.preferredWidth, bounds.width - 16)
             bar.frame = NSRect(x: max(8, bounds.width - w - 12), y: bounds.height - ConnectionLostBar.height - 10, width: w, height: ConnectionLostBar.height)
@@ -336,6 +368,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         guard let old = fs as? RemoteSession, old !== session, !old.isConnected, session.isReady, session.isConnected,
               old.hostLabel == session.hostLabel else { return }
         fs = session
+        updateDiskWatch()
         updateConnection()
         refreshGitChanges()
         onPathChanged?()
@@ -483,6 +516,10 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             case .failure(let e):
                 if !keepPlace { self.showMessage(e.localizedDescription) }
             case .success(let part):
+                // Typed into while it was read: what's typed stays (it isn't replaced under you).
+                if keepPlace && self.isDirty { return }
+                self.diskSignature = part.signature
+                self.changedOnDisk = false
                 var data = part.data
                 let cut = part.size > data.count
                 let partial = part.size > maxEditableFileSize
@@ -496,6 +533,13 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 let (bytes, crlf) = Self.droppingCR(whole)
                 if crlf { self.usesCRLF = true }
                 let text = String(decoding: bytes, as: UTF8.self)
+                // The same as shown (a touch, or a save of the same text): nothing to redo, and the undo history stays.
+                if keepPlace, self.loaded, !cut, !partial, text == self.textView.string {
+                    self.diskSize = part.size
+                    self.diskTail = Data(part.data.suffix(256))
+                    self.carry = rest
+                    return
+                }
                 // Color codes a logger wrote into the file (logback's %highlight…) are hidden and shown as colors;
                 // a file with them, or one an imported log format names, is a log whatever it's called.
                 let escapes = Self.hasEscapes(bytes)
@@ -532,6 +576,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 }
                 self.loaded = true
                 self.isDirty = false
+                self.updateDiskWatch()
                 self.message.isHidden = true
                 self.scroll.isHidden = false
                 self.ruler.invalidateLines()
@@ -591,25 +636,163 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         return (Data(data[data.startIndex..<cut]), Data(data[cut...]))
     }
 
-    // MARK: Watching
+    @objc func toggleTail(_ sender: Any?) { tailing.toggle() }
 
-    @objc func toggleWatch(_ sender: Any?) { watching.toggle() }
+    // MARK: Changes on disk
 
-    /// Every 5 seconds while watched and on screen (a tab not in front, or a file sub-tab not showing, has no window).
-    private func updateWatchTimer() {
-        let wanted = watching && window != nil && mode == .file
-        if wanted, watchTimer == nil {
-            watchTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refreshFromDisk() }
-        } else if !wanted {
-            watchTimer?.invalidate()
-            watchTimer = nil
+    /// The file is kept current, VS Code style. On this Mac, whether it's showing or not: its folder is watched, and
+    /// when the file changes there it's checked (see `syncWithDisk`). Over ssh, while it's showing: the host checks
+    /// it every second (see `RemoteFileWatch`), and it catches up on coming back to it. Not media.
+    private func updateDiskWatch() {
+        let wanted = mode == .file && media == nil && loaded
+        if let remote = fs as? RemoteSession {
+            diskWatch = nil
+            defer { updateWatchTag() }
+            guard wanted, window != nil else { remoteWatch = nil; return }
+            if let t = remoteWatch, t.path == path, t.belongs(to: remote.fileWatch) { return }
+            remoteWatch = remote.fileWatch.watch(path) { [weak self] sig in self?.diskSignatureNow(sig) }
+            return
         }
+        remoteWatch = nil
+        header.watchLive = nil
+        if !wanted { diskWatch = nil; return }
+        guard diskWatch?.folder != DiskWatch.realPath((path as NSString).deletingLastPathComponent) else { return }
+        diskWatch = DiskWatch.shared.watch(folderOf: path) { [weak self] events in self?.diskChanged(events) }
+    }
+
+    /// Something in the file's folder changed: if it's this file, see whether it really did. Renamed within its
+    /// folder (the same file under a new name, by its inode): the editor follows it there.
+    private func diskChanged(_ events: [DiskWatch.Event]) {
+        let real = DiskWatch.realPath((path as NSString).deletingLastPathComponent) + "/" + (path as NSString).lastPathComponent
+        guard events.contains(where: { $0.path == real || $0.rescan }) else { return }
+        if LocalFileSystem.signature(path) == nil, let inode = diskSignature?.split(separator: " ").last,
+           let moved = events.first(where: { $0.renamed && $0.path != real && LocalFileSystem.signature($0.path)?.split(separator: " ").last == inode }) {
+            let folder = (moved.path as NSString).deletingLastPathComponent
+            let realFolder = (real as NSString).deletingLastPathComponent
+            // Named as the editor had it (/tmp, not /private/tmp) when it's the same folder.
+            let to = folder == realFolder ? ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent((moved.path as NSString).lastPathComponent)
+                : moved.path
+            followRename(from: path, to: to)
+            return
+        }
+        syncWithDisk()
+    }
+
+    /// Over ssh, whether the host's watch is reporting, in the header ("Live", or "Not Updating" when it isn't).
+    private func updateWatchTag() {
+        guard let remote = fs as? RemoteSession, let t = remoteWatch, t.belongs(to: remote.fileWatch) else {
+            header.watchLive = nil
+            return
+        }
+        header.watchLive = remote.fileWatch.live
+    }
+
+    /// On this Mac: a stat, and what it means (see `diskSignatureNow`). Over ssh the host's watch reports instead.
+    func syncWithDisk() {
+        guard !fs.isRemote, mode == .file, loaded, media == nil else { return }
+        diskSignatureNow(LocalFileSystem.signature(path))
+    }
+
+    /// The file's signature on disk now (nil: it isn't there). If it changed from what was read or saved (its
+    /// modified time, size or inode), the text catches up quietly (see `refreshFromDisk`), keeping the caret and
+    /// scroll. With unsaved edits it only says so: they stay, and saving asks first.
+    private func diskSignatureNow(_ sig: String?) {
+        guard mode == .file, loaded, media == nil else { return }
+        // Busy reading or saving: look again in a moment (the host's watch reports a change only once).
+        if refreshing || saving {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self else { return }
+                self.fs.isRemote ? self.diskSignatureNow(sig) : self.syncWithDisk()
+            }
+            return
+        }
+        guard let sig else { return checkExists() }
+        if isDeleted { checkExists() }
+        guard sig != diskSignature else { return }
+        if isDirty {
+            changedOnDisk = true
+            return
+        }
+        diskSignature = sig
+        refreshFromDisk(changed: true)
+    }
+
+    /// The signature on disk now: a stat here, a command over ssh.
+    private func currentSignature(_ done: @escaping (String?) -> Void) {
+        if let remote = fs as? RemoteSession { remote.signature(path, done) } else { done(LocalFileSystem.signature(path)) }
+    }
+
+    /// Saving over a file that changed on disk since it was read: a bar over the file asks what to do.
+    private func showConflict(then next: (() -> Void)?) {
+        afterConflict = next
+        changedOnDisk = true
+        guard conflictBar == nil else { return }
+        let name = (path as NSString).lastPathComponent
+        let bar = EditorNoticeBar(title: "“\(name)” changed on disk", symbol: "exclamationmark.triangle.fill", actions: [
+            ("Compare", { [weak self] in self?.toggleCompare() }),
+            ("Overwrite", { [weak self] in self?.resolveConflict(overwrite: true) }),
+            ("Revert", { [weak self] in self?.resolveConflict(overwrite: false) }),
+            ("Cancel", { [weak self] in self?.endConflict() }),
+        ])
+        bar.toolTip = "Compare: what's on disk (left) beside your edits (right). Overwrite: save yours over it. Revert: drop yours and show what's on disk."
+        bar.wantsLayer = true
+        conflictBar = bar
+        addSubview(bar)
+        needsLayout = true
+    }
+
+    /// What's on disk on the left, the unsaved text on the right; again to go back to editing.
+    private func toggleCompare() {
+        if let v = compareView {
+            v.removeFromSuperview()
+            compareView = nil
+            scroll.isHidden = false
+            conflictBar?.setTitle("Compare", at: 0)
+            window?.makeFirstResponder(textView)
+            return
+        }
+        let mine = textView.string
+        fs.read(path) { [weak self] result in
+            guard let self, self.conflictBar != nil, self.compareView == nil else { return }
+            let disk = (try? result.get()).map { String(decoding: Self.droppingCR($0).0, as: UTF8.self) } ?? ""
+            let v = DiffView()
+            v.show(old: disk, new: mine, language: self.language)
+            self.compareView = v
+            self.addSubview(v, positioned: .below, relativeTo: self.conflictBar)
+            self.scroll.isHidden = true
+            self.conflictBar?.setTitle("Back to Editing", at: 0)
+            self.needsLayout = true
+        }
+    }
+
+    private func resolveConflict(overwrite: Bool) {
+        let next = afterConflict
+        endConflict()
+        if overwrite {
+            save(force: true, then: next)
+        } else {
+            isDirty = false
+            changedOnDisk = false
+            loadText(keepPlace: true)
+            next?()
+        }
+    }
+
+    private func endConflict() {
+        afterConflict = nil
+        compareView?.removeFromSuperview()
+        compareView = nil
+        scroll.isHidden = false
+        conflictBar?.removeFromSuperview()
+        conflictBar = nil
+        if window?.firstResponder == nil || window?.firstResponder === window { window?.makeFirstResponder(textView) }
     }
 
     /// Catches up with the file on disk: new bytes at the end are added (scrolling along if the end was in view,
     /// as with tail -f); anything else (rewritten, truncated, rotated) reloads it, keeping the place. Unsaved
     /// edits are never overwritten.
-    func refreshFromDisk() {
+    /// `changed`: it's known to have changed (its stat did), so with nothing added at the end it's read again.
+    func refreshFromDisk(changed: Bool = false) {
         guard mode == .file, loaded, media == nil, !isDirty, !refreshing, !saving else { return }
         refreshing = true
         let from = max(0, diskSize - diskTail.count)
@@ -618,6 +801,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             self.refreshing = false
             guard case .success(let part) = result else { return self.checkExists() }
             guard !self.isDirty else { return }
+            if let sig = part.signature { self.diskSignature = sig }
             let known = self.diskSize - from
             guard part.size >= self.diskSize, part.data.count >= known, part.data.prefix(known) == self.diskTail else {
                 return self.loadText(keepPlace: true)
@@ -625,7 +809,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             let added = Data(part.data.dropFirst(known))
             // More arrived than one read brings: start again from the end.
             if part.size - self.diskSize > added.count { return self.loadText(keepPlace: true) }
-            guard !added.isEmpty else { return }
+            guard !added.isEmpty else { return changed ? self.loadText(keepPlace: true) : () }
             self.diskSize = part.size
             self.diskTail = Data((self.diskTail + added).suffix(256))
             let (whole, rest) = Self.splitUTF8(self.carry + added)
@@ -647,7 +831,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             } else if self.language != nil, storage.length <= SyntaxHighlighter.maxLength { self.highlightSyntax() }
             self.ruler.linesAppended(from: end)
             self.findTextChanged()
-            if atEnd { self.textView.scrollToEndOfDocument(nil) }
+            if atEnd || self.tailing { self.textView.scrollToEndOfDocument(nil) }
             self.paintVisibleLog()
         }
     }
@@ -1082,8 +1266,24 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         save(then: nil)
     }
 
-    private func save(then next: (() -> Void)?) {
+    /// `force`: save even over changes made on disk since it was read (Overwrite, from the conflict bar).
+    private func save(force: Bool = false, then next: (() -> Void)?) {
         guard loaded, !saving else { return }
+        // Changed on disk since it was read (not just deleted, which saving puts back): ask before writing over it.
+        if !force, let known = diskSignature {
+            saving = true
+            currentSignature { [weak self] now in
+                guard let self else { return }
+                self.saving = false
+                if let now, now != known { return self.showConflict(then: next) }
+                self.write(then: next)
+            }
+            return
+        }
+        write(then: next)
+    }
+
+    private func write(then next: (() -> Void)?) {
         saving = true
         var text = textView.string
         if usesCRLF { text = text.replacingOccurrences(of: "\n", with: "\r\n") }
@@ -1091,8 +1291,8 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         header.status = "Saving…"
         fs.write(Data(text.utf8), to: path) { [weak self] error in
             guard let self else { return }
-            self.saving = false
             if let error {
+                self.saving = false
                 self.header.status = nil
                 self.presentAlert("Couldn't save “\((self.path as NSString).lastPathComponent)”", error.localizedDescription)
                 return
@@ -1105,6 +1305,14 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             self.diskSize = saved.count
             self.diskTail = Data(saved.suffix(256))
             self.carry = Data()
+            // Our own write: its signature is what's on disk now, so the change it makes is nothing new. Still saving
+            // until it's known, so the watch doesn't take the write for someone else's.
+            self.currentSignature { [weak self] sig in
+                self?.diskSignature = sig
+                self?.saving = false
+            }
+            self.changedOnDisk = false
+            self.endConflict()
             NotificationCenter.default.post(name: .solanumFileSaved, object: self.fs, userInfo: ["path": self.path])
             self.header.status = "Saved"
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
@@ -1138,6 +1346,17 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     }
 
     var devIsDeleted: Bool { isDeleted }
+    /// Dev aids (DevTools print-editor-text, editor-insert, editor-save, editor-conflict): the text shown, whether
+    /// it's unsaved, changed on disk, can be undone, and the conflict bar; typing at the caret; saving; the bar's buttons.
+    var devTextState: String {
+        "\(textView.string.debugDescription.prefix(120)) dirty=\(isDirty) changedOnDisk=\(changedOnDisk) undo=\(textView.undoManager?.canUndo ?? false)"
+            + " bar=\(conflictBar.map { "\($0.titles)" } ?? "none") compare=\(compareView.map { $0.summary } ?? "none") path=\(path)"
+    }
+    func devInsert(_ text: String) { textView.insertText(text, replacementRange: textView.selectedRange()) }
+    func devSave() { save(then: nil) }
+    func devConflict(_ title: String) { conflictBar?.devPress(title) }
+    /// The ssh watch tag as it would show (a local file has none): "live", "off", or anything else for none.
+    func devWatchTag(_ state: String) { header.watchLive = state == "live" ? true : state == "off" ? false : nil }
 
     /// Clicking the path in the header copies it in full (not the ~-abbreviated form shown).
     private func copyPath() {
@@ -1639,6 +1858,8 @@ final class EditorHeaderView: NSView {
     var status: String? { didSet { needsDisplay = true } }
     /// The file is gone from disk: the header says so, and saving (which puts it back) is offered.
     var deleted = false { didSet { needsDisplay = true } }
+    /// It changed on disk under unsaved edits: said in yellow, as deleted is in red.
+    var changedOnDisk = false { didSet { needsDisplay = true } }
     /// Off for read-only text (the end of a big file): no save button.
     var editable = true { didSet { needsDisplay = true } }
     /// Off for previews, diffs and graphs: only the close button shows.
@@ -1652,9 +1873,12 @@ final class EditorHeaderView: NSView {
     var onLogFormat: (() -> Void)?
     /// Git has changes for this file: the working tree button shows.
     var hasGitChanges = false { didSet { needsDisplay = true } }
-    /// The eye is on: the file is re-read every few seconds.
-    var watching = false { didSet { needsDisplay = true } }
-    var onToggleWatch: (() -> Void)?
+    /// Tail File is on: the file's end stays in view as it grows.
+    var tailing = false { didSet { needsDisplay = true } }
+    /// Over ssh: whether the host is reporting changes (a green "Live"), or not (a yellow "Not Updating"); nil: no
+    /// tag (on this Mac, or starting).
+    var watchLive: Bool? { didSet { if watchLive != oldValue { needsDisplay = true } } }
+    var onToggleTail: (() -> Void)?
     var onClose: (() -> Void)?
     var onSave: (() -> Void)?
     var onFormat: (() -> Void)?
@@ -1718,7 +1942,7 @@ final class EditorHeaderView: NSView {
     var devButtons: [String] { buttons.map(\.tip) }
     func devPress(_ tip: String) { buttons.first { $0.tip.hasPrefix(tip) }?.action?() }
 
-    /// Right to left: close, save, format, wrap, watch, working tree, preview. No action: greyed out (save, with nothing to save).
+    /// Right to left: close, save, format, wrap, tail, working tree, preview. No action: greyed out (save, with nothing to save).
     private var buttons: [(symbol: String, tip: String, active: Bool, action: (() -> Void)?)] {
         var b: [(symbol: String, tip: String, active: Bool, action: (() -> Void)?)] = [("xmark", "Close (⌘W)", false, onClose)]
         guard textTools else { return b }
@@ -1728,9 +1952,7 @@ final class EditorHeaderView: NSView {
         }
         if editable, canFormat { b.append(("list.bullet.indent", "Beautify / Format Document (⌥⌘F)", false, onFormat)) }
         b.append(("text.word.spacing", wraps ? "Don't Wrap Lines (⌥Z)" : "Wrap Lines (⌥Z)", wraps, onToggleWrap))
-        b.append((watching ? "eye.fill" : "eye",
-                  watching ? "Stop Watching for Changes" : "Watch for Changes (re-reads the file every 5 seconds while it's showing)",
-                  watching, onToggleWatch))
+        b.append(("chevron.down.2", tailing ? "Stop Tailing" : "Tail File (keep the end in view as it grows)", tailing, onToggleTail))
         if hasGitChanges { b.append(("plusminus", "Open Working Tree (this file's uncommitted changes)", false, onShowChanges)) }
         if canPreview { b.append(("doc.richtext", "Open Preview", false, onPreview)) }
         if let logFormatName { b.append(("paintpalette", "Log Coloring: \(logFormatName)", false, onLogFormat)) }
@@ -1787,6 +2009,27 @@ final class EditorHeaderView: NSView {
             if right - x > w + 30 {
                 (tag as NSString).draw(in: NSRect(x: x, y: bounds.midY - 7.5, width: w, height: 15), withAttributes: tagAttrs)
                 x += w + 8
+            }
+        }
+        if changedOnDisk, !deleted, status == nil {
+            let tag = "Changed on Disk"
+            let tagAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: th.yellow]
+            let w = (tag as NSString).size(withAttributes: tagAttrs).width + 1
+            if right - x > w + 30 {
+                (tag as NSString).draw(in: NSRect(x: x, y: bounds.midY - 7.5, width: w, height: 15), withAttributes: tagAttrs)
+                x += w + 8
+            }
+        }
+        if let live = watchLive, !deleted, !changedOnDisk, status == nil {
+            let tag = live ? "Live" : "Not Updating"
+            let color = live ? th.green : th.yellow
+            let tagAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: color]
+            let w = (tag as NSString).size(withAttributes: tagAttrs).width + 1
+            if right - x > w + 44 {
+                color.setFill()
+                NSBezierPath(ovalIn: NSRect(x: x, y: bounds.midY - 3, width: 6, height: 6)).fill()
+                (tag as NSString).draw(in: NSRect(x: x + 10, y: bounds.midY - 7.5, width: w, height: 15), withAttributes: tagAttrs)
+                x += w + 18
             }
         }
         let sub = status ?? subtitle

@@ -332,6 +332,12 @@ final class TerminalView: NSView, TerminalDelegate {
     private weak var lostNotice: CornerNoticeView?
     /// Logging back in was asked for; if that doesn't work out, the bar comes back.
     private var reconnecting = false
+    /// Reconnect from the lost-connection card: it watches this pane for a password (or passphrase, or code) question
+    /// and asks it in the card, so logging back in doesn't mean going to the tab (see `watchForSecret`).
+    private var secretWatch: Timer?
+    /// The line (absolute) of the question the card asked, and of the one last answered.
+    private var secretAskedAt: Int?
+    private var secretSentAt: Int?
 
     init(cwd: String?) {
         initialDirectory = cwd
@@ -666,6 +672,7 @@ final class TerminalView: NSView, TerminalDelegate {
         lostSession = nil
         lostRemote = nil
         reconnecting = false
+        stopSecretWatch()
         lostNotice?.dismiss()
         updateLostBar()
     }
@@ -1029,9 +1036,10 @@ final class TerminalView: NSView, TerminalDelegate {
     /// said otherwise. Clicking it goes to the tab.
     @discardableResult
     func showCornerNotice(title: String, symbol: (name: String, color: NSColor), lines: [String], in tab: TabSession,
-                                  button: (title: String, action: () -> Void)? = nil, lifetime: TimeInterval = 30) -> CornerNoticeView? {
+                                  button: (title: String, action: () -> Void)? = nil, keepsOpen: Bool = false,
+                                  lifetime: TimeInterval = 30) -> CornerNoticeView? {
         guard let wc = (NSApp.keyWindow?.windowController as? TerminalWindowController) ?? tab.windowController else { return nil }
-        let notice = CornerNoticeView(title: title, symbol: symbol, lines: lines, button: button, lifetime: lifetime)
+        let notice = CornerNoticeView(title: title, symbol: symbol, lines: lines, button: button, keepsOpen: keepsOpen, lifetime: lifetime)
         notice.onClick = { [weak tab] in
             guard let tab, let column = tab.owner as? TabColumn, let i = column.tabs.firstIndex(of: tab), let owner = column.owner else { return }
             owner.focus(column)
@@ -1055,11 +1063,87 @@ final class TerminalView: NSView, TerminalDelegate {
         lostSession = (host, command, terminal.currentBlock)
         lostRemote = remote
         let th = Config.shared.theme
+        stopSecretWatch()
+        lostNotice?.dismiss()
         lostNotice = showCornerNotice(title: "Lost connection to \(host)", symbol: ("wifi.exclamationmark", th.red),
                                       lines: [Self.place(of: tab), terminal.remoteCwd ?? remote.cwd ?? ""].filter { !$0.isEmpty }, in: tab,
-                                      button: ("Reconnect", { [weak self] in self?.reconnect(command) }), lifetime: 600)
+                                      button: ("Reconnect", { [weak self] in self?.reconnectFromNotice(command, host: host) }),
+                                      keepsOpen: true, lifetime: 600)
         if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
     }
+
+    /// Reconnect on the lost-connection card: logs back in here without leaving the tab you're in, and if the host
+    /// asks for a password, the card asks for it.
+    private func reconnectFromNotice(_ command: String, host: String) {
+        reconnect(command)
+        guard reconnecting || pendingCommand == command, let notice = lostNotice else { return }
+        notice.hideButton()
+        notice.setTitle("Reconnecting to \(host)…")
+        watchForSecret(host: host)
+    }
+
+    /// Until logged in (the card goes then) or 5 minutes pass: a new password question in this pane is asked in the
+    /// card; a wrong password's "try again" asks again.
+    private func watchForSecret(host: String) {
+        stopSecretWatch()
+        let started = Date()
+        secretWatch = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] timer in
+            guard let self, let notice = self.lostNotice, notice.superview != nil, Date().timeIntervalSince(started) < 300 else {
+                timer.invalidate()
+                return
+            }
+            guard let q = self.secretQuestion, q.line != self.secretAskedAt, q.line != self.secretSentAt else { return }
+            let again = self.secretSentAt != nil
+            self.secretAskedAt = q.line
+            notice.setTitle(again ? "Try again: \(host)" : "Log in to \(host)")
+            notice.askSecret(q.text) { [weak self] secret in self?.answerSecret(secret, host: host) }
+        }
+    }
+
+    private func stopSecretWatch() {
+        secretWatch?.invalidate()
+        secretWatch = nil
+        secretAskedAt = nil
+        secretSentAt = nil
+    }
+
+    /// The question ssh is asking at the cursor, if it's one for a secret ("user@host's password:", "Enter passphrase
+    /// for key …:", "Verification code:"), and the line it's on. Not once logged in, nor in a full-screen program.
+    private var secretQuestion: (text: String, line: Int)? {
+        guard terminal.sshControlPath == nil, !terminal.usingAlt else { return nil }
+        let text = terminal.cursorLineText.trimmingCharacters(in: .whitespaces)
+        let lower = text.lowercased()
+        guard text.hasSuffix(":"), text.count < 200,
+              ["password", "passphrase", "passcode", "verification code", "one-time", "otp"].contains(where: lower.contains) else { return nil }
+        return (text, terminal.cursorAbs)
+    }
+
+    /// Only into the very question the card asked: if that's gone (timed out, and back at the shell), a password
+    /// typed there would show on screen and go into its history, so it isn't sent.
+    private func answerSecret(_ secret: String, host: String) {
+        guard let q = secretQuestion, q.line == secretAskedAt else {
+            lostNotice?.endSecret()
+            lostNotice?.setTitle("\(host) stopped asking; open the tab to log in")
+            return
+        }
+        // Straight to the pty: the program asking reads it with echo off; nothing here keeps it.
+        pty?.write(Array((secret + "\r").utf8))
+        secretSentAt = q.line
+        lostNotice?.endSecret()
+        lostNotice?.setTitle("Logging in to \(host)…")
+    }
+
+    /// Dev aids (DevTools lost-notice, notice-reconnect, notice-secret, print-notice): the card as a lost connection
+    /// shows it, with `command` as how to log back in.
+    func devShowLostNotice(host: String, command: String) {
+        guard let tab else { return }
+        lostSession = (host, command, terminal.currentBlock)
+        lostNotice = showCornerNotice(title: "Lost connection to \(host)", symbol: ("wifi.exclamationmark", Config.shared.theme.red),
+                                      lines: [Self.place(of: tab)], in: tab,
+                                      button: ("Reconnect", { [weak self] in self?.reconnectFromNotice(command, host: host) }),
+                                      keepsOpen: true, lifetime: 600)
+    }
+    var devLostNotice: CornerNoticeView? { lostNotice }
 
     /// Logs back in where the connection was lost, as the bar's Reconnect does.
     func reconnectLost() {

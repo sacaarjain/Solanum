@@ -37,8 +37,11 @@ struct TabState: Codable {
     var fileSSH: [String?]?
     var activeFile: Int?
     var terminalHidden: Bool?
-    /// The sidebar's pinned folder for this tab (local folders only; ssh pins don't outlive the connection).
+    /// The sidebar's pinned folder for this tab, and for one on an ssh host, the host and how it was reached (as for
+    /// `fileHosts`): restored waiting for a connection to that host, and pinned there again once logged in.
     var pinnedFolder: String?
+    var pinnedHost: String?
+    var pinnedSSH: String?
 }
 
 struct GroupState: Codable {
@@ -164,6 +167,8 @@ extension TabSession {
             ed.mode == .file && (!ed.fs.isRemote || (remote(ed)?.hostLabel != nil && remote(ed)?.sshArgs?.isEmpty == false))
         }
         let anyRemote = kept.contains { $0.fs.isRemote }
+        // A pin on an ssh host: kept with the host (matched by its user@host once logged in again).
+        let pinHost = pinnedFolder?.fs as? RemoteSession
         return TabState(title: customTitle, group: group,
                  focused: panes.firstIndex(of: focusedPane) ?? 0,
                  layout: root.subviews.first.flatMap(TabSession.node) ?? .pane(PaneState()),
@@ -172,7 +177,9 @@ extension TabSession {
                  fileSSH: anyRemote ? kept.map { remote($0)?.sshArgs } : nil,
                  activeFile: kept.isEmpty ? nil : editor.flatMap { kept.firstIndex(of: $0) } ?? 0,
                  terminalHidden: showsTerminal ? nil : true,
-                 pinnedFolder: pinnedFolder.flatMap { $0.fs.isRemote ? nil : $0.path })
+                 pinnedFolder: pinnedFolder.flatMap { $0.fs.isRemote && pinHost?.hostLabel == nil ? nil : $0.path },
+                 pinnedHost: pinHost?.hostLabel,
+                 pinnedSSH: pinHost.map { $0.sshArgs ?? "" })
     }
 
     fileprivate static func node(_ v: NSView) -> PaneNode? {

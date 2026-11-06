@@ -18,12 +18,17 @@ final class CornerNoticeView: NSView {
     private let lineLabels: [NSTextField]
     private var actionButton: NSButton?
     private let closeButton = NSButton()
+    /// A password asked for in the card (see `askSecret`), with what Return does with it.
+    private var secretField: NSSecureTextField?
+    private var onSecret: ((String) -> Void)?
+    private static let secretHeight: CGFloat = 24
     /// The pointer is on ✕: it's highlighted, so it's clear the click closes the card.
     private var hoverClose = false { didSet { if hoverClose != oldValue { updateCloseImage(); needsDisplay = true } } }
 
     /// `lines` show under the title; the first is brighter (e.g. the tab), the rest dimmer, one line each.
+    /// `keepsOpen`: the button doesn't close the card (it goes on to show what happens, see `askSecret`).
     init(title: String, symbol: (name: String, color: NSColor)? = nil, lines: [String] = [],
-         button: (title: String, action: () -> Void)? = nil, lifetime: TimeInterval) {
+         button: (title: String, action: () -> Void)? = nil, keepsOpen: Bool = false, lifetime: TimeInterval) {
         self.symbol = symbol
         let th = Config.shared.theme
         titleLabel = NSTextField(labelWithString: title)
@@ -49,7 +54,7 @@ final class CornerNoticeView: NSView {
         if let button {
             let b = SettingsPages.linkButton(button.title) { [weak self] in
                 button.action()
-                self?.dismiss()
+                if !keepsOpen { self?.dismiss() }
             }
             actionButton = b
             addSubview(b)
@@ -66,7 +71,76 @@ final class CornerNoticeView: NSView {
 
     override var isFlipped: Bool { true }
 
-    var preferredHeight: CGFloat { lineLabels.isEmpty ? 40 : 38 + CGFloat(lineLabels.count) * Self.lineHeight }
+    var preferredHeight: CGFloat {
+        (lineLabels.isEmpty ? 40 : 38 + CGFloat(lineLabels.count) * Self.lineHeight) + (secretField == nil ? 0 : Self.secretHeight + 10)
+    }
+
+    func setTitle(_ title: String) {
+        titleLabel.stringValue = title
+        needsLayout = true
+    }
+
+    /// Hides the button once it's done its part (Reconnect, pressed).
+    func hideButton() {
+        actionButton?.removeFromSuperview()
+        actionButton = nil
+        needsLayout = true
+    }
+
+    /// A password field in the card, focused, for a question asked elsewhere (an ssh login in a tab not in front):
+    /// Return hands what was typed to `onSubmit`. Shown as dots, and kept nowhere but the field until it's sent.
+    func askSecret(_ placeholder: String, onSubmit: @escaping (String) -> Void) {
+        onSecret = onSubmit
+        if secretField == nil {
+            let f = NSSecureTextField()
+            f.isBordered = false
+            f.drawsBackground = false
+            f.focusRingType = .none
+            f.font = .systemFont(ofSize: 12.5)
+            f.textColor = Config.shared.theme.foreground
+            f.target = self
+            f.action = #selector(submitSecret(_:))
+            secretField = f
+            addSubview(f)
+        }
+        secretField?.stringValue = ""
+        secretField?.placeholderAttributedString = NSAttributedString(string: placeholder, attributes: [
+            .foregroundColor: Config.shared.theme.dimText, .font: NSFont.systemFont(ofSize: 12)])
+        frame.size.height = preferredHeight
+        superview?.needsLayout = true
+        needsLayout = true
+        needsDisplay = true
+        window?.makeFirstResponder(secretField)
+    }
+
+    /// The field goes (sent, or no longer wanted).
+    func endSecret() {
+        guard let f = secretField else { return }
+        let hadFocus = window?.firstResponder === f.currentEditor()
+        f.stringValue = ""
+        f.removeFromSuperview()
+        secretField = nil
+        onSecret = nil
+        frame.size.height = preferredHeight
+        superview?.needsLayout = true
+        needsDisplay = true
+        if hadFocus { window?.makeFirstResponder(nil) }
+    }
+
+    @objc private func submitSecret(_ sender: Any?) {
+        guard let f = secretField, !f.stringValue.isEmpty else { return }
+        let secret = f.stringValue
+        f.stringValue = ""
+        onSecret?(secret)
+    }
+
+    var devHasSecretField: Bool { secretField != nil }
+    var devTitle: String { titleLabel.stringValue }
+    func devSubmitSecret(_ text: String) {
+        secretField?.stringValue = text
+        submitSecret(nil)
+    }
+    func devPressButton() { actionButton?.performClick(nil) }
 
     /// Wide enough for the title and every line (the same insets as `layout`), between `width` and `maxWidth`.
     var preferredWidth: CGFloat {
@@ -92,6 +166,10 @@ final class CornerNoticeView: NSView {
         for (i, l) in lineLabels.enumerated() {
             l.frame = NSRect(x: x, y: top + 22 + CGFloat(i) * Self.lineHeight, width: bounds.width - x - 14, height: 16)
         }
+        if let f = secretField {
+            let y = (lineLabels.last?.frame.maxY ?? titleLabel.frame.maxY) + 8
+            f.frame = NSRect(x: x + 8, y: y + 4, width: bounds.width - x - 30, height: 17)
+        }
     }
 
     private func updateCloseImage() {
@@ -107,6 +185,15 @@ final class CornerNoticeView: NSView {
         path.fill()
         th.border.setStroke()
         path.stroke()
+        if let f = secretField {
+            // The field's box, as the theme draws its inputs.
+            let box = NSRect(x: f.frame.minX - 8, y: f.frame.minY - 4, width: f.frame.width + 16, height: Self.secretHeight)
+            th.background.withAlphaComponent(0.6).setFill()
+            let r = NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6)
+            r.fill()
+            th.accent.withAlphaComponent(0.6).setStroke()
+            r.stroke()
+        }
         if hoverClose {
             th.foreground.withAlphaComponent(0.14).setFill()
             NSBezierPath(roundedRect: closeButton.frame, xRadius: 5, yRadius: 5).fill()
@@ -142,6 +229,10 @@ final class CornerNoticeView: NSView {
     }
 
     override func mouseDown(with e: NSEvent) {
+        if let f = secretField, f.frame.insetBy(dx: -8, dy: -4).contains(convert(e.locationInWindow, from: nil)) {
+            window?.makeFirstResponder(f)
+            return
+        }
         guard let onClick else { return }
         onClick()
         dismiss()
@@ -220,6 +311,83 @@ final class ConnectionLostBar: NSView {
     override func cursorUpdate(with event: NSEvent) { NSCursor.arrow.set() }
 
     func devPress(_ title: String) { [reconnectButton, closeButton].first { $0.title == title }?.performClick(nil) }
+}
+
+/// Over a file: a message and what can be done about it, as link buttons (a file changed on disk while it had
+/// unsaved edits: Compare, Overwrite, Revert, Cancel). Drawn as `ConnectionLostBar` is.
+final class EditorNoticeBar: NSView {
+    static let height: CGFloat = 32
+    private let label: NSTextField
+    private var buttons: [NSButton]
+    private let symbol: String
+
+    init(title: String, symbol: String, actions: [(String, () -> Void)]) {
+        label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = Config.shared.theme.foreground
+        label.lineBreakMode = .byTruncatingMiddle
+        buttons = actions.map { SettingsPages.linkButton($0.0, $0.1) }
+        self.symbol = symbol
+        super.init(frame: .zero)
+        ([label] + buttons).forEach(addSubview)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isFlipped: Bool { true }
+
+    var titles: [String] { buttons.map(\.title) }
+
+    func setTitle(_ title: String, at i: Int) {
+        guard buttons.indices.contains(i) else { return }
+        // As linkButton styles it (setting `title` alone would drop the color).
+        buttons[i].attributedTitle = NSAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 12.5, weight: .medium),
+                                                                                    .foregroundColor: Config.shared.theme.accent])
+        superview?.needsLayout = true
+        needsLayout = true
+    }
+
+    var preferredWidth: CGFloat {
+        32 + ceil(label.fittingSize.width) + 12 + buttons.reduce(0) { $0 + $1.fittingSize.width + 10 } + 2
+    }
+
+    override func layout() {
+        super.layout()
+        var x = bounds.width - 12
+        for b in buttons.reversed() {
+            let w = b.fittingSize.width
+            x -= w
+            b.frame = NSRect(x: x, y: 6, width: w, height: 20)
+            x -= 10
+        }
+        label.frame = NSRect(x: 32, y: 7, width: max(0, x - 34), height: 17)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let th = Config.shared.theme
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
+        th.surface.withAlphaComponent(1).setFill()
+        path.fill()
+        th.border.setStroke()
+        path.stroke()
+        let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold).applying(.init(paletteColors: [th.yellow]))
+        if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(cfg) {
+            img.draw(in: NSRect(x: 11, y: (bounds.height - img.size.height) / 2, width: img.size.width, height: img.size.height))
+        }
+    }
+
+    // Clicks and the pointer stay here, not with the text underneath.
+    override func mouseDown(with e: NSEvent) {}
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.cursorUpdate, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func cursorUpdate(with event: NSEvent) { NSCursor.arrow.set() }
+
+    func devPress(_ title: String) { buttons.first { $0.title == title }?.performClick(nil) }
 }
 
 /// In the corner of a pane with several commands selected: what to do with them all.

@@ -17,14 +17,17 @@ struct DropdownItem {
     var detail: String?
     /// What ⌥-click or ⌥↩ does instead (connect in this pane rather than a new tab, say).
     var optionAction: (() -> Void)?
+    /// Said in place of `detail`, in the accent color, while ⌥ is held ("open in this pane").
+    var optionDetail: String?
     /// A dot of this color where the check mark goes (a tab group's color); checked, it's ringed instead of ticked.
     var color: NSColor?
     /// Picking it doesn't close the dropdown: the search field gets this text instead ("ssh ", to type a host after).
     var fill: String?
 
     static func item(_ title: String, checked: Bool = false, symbol: String? = nil, detail: String? = nil, color: NSColor? = nil,
-                     option: (() -> Void)? = nil, _ action: @escaping () -> Void) -> DropdownItem {
-        DropdownItem(kind: .item, title: title, checked: checked, action: action, symbol: symbol, detail: detail, optionAction: option, color: color)
+                     option: (() -> Void)? = nil, optionDetail: String? = nil, _ action: @escaping () -> Void) -> DropdownItem {
+        DropdownItem(kind: .item, title: title, checked: checked, action: action, symbol: symbol, detail: detail, optionAction: option,
+                     optionDetail: optionDetail, color: color)
     }
     static func fill(_ title: String, symbol: String? = nil, _ text: String) -> DropdownItem {
         DropdownItem(kind: .item, title: title, symbol: symbol, fill: text)
@@ -67,6 +70,8 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
     private var prefix: String?
     /// Rows made from what's typed, above the matches (connecting to a host that isn't listed, say).
     private var extra: ((String) -> [DropdownItem])?
+    /// While open: ⌥ going down or up switches the rows to what ⌥ does (see `DropdownItem.optionDetail`).
+    private var flagsMonitor: Any?
 
     static let rowHeight: CGFloat = 26
     private static let fieldHeight: CGFloat = 34
@@ -157,6 +162,11 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
         FileHandle.standardError.write("dropdown filter \"\(d.field.stringValue)\": \(rows.count) \(rows.prefix(6))\n".data(using: .utf8)!)
     }
 
+    /// Dev aid: the open dropdown as it looks while ⌥ is held.
+    static func devHoldOption() { current?.list.optionHeld = true }
+
+    deinit { if let m = flagsMonitor { NSEvent.removeMonitor(m) } }
+
     /// Dev aid: picks the last dropdown's item called `title`.
     static func devRun(_ title: String) {
         // As a click would: through the open dropdown (closing it first), else straight from its items.
@@ -196,6 +206,13 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
             panel.searchField = field
         }
         list.highlighted = list.items.firstIndex { $0.kind == .item && $0.checked } ?? list.firstSelectable(from: 0, by: 1)
+        if items.contains(where: { $0.optionDetail != nil }) {
+            list.optionHeld = NSEvent.modifierFlags.contains(.option)
+            flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] e in
+                self?.list.optionHeld = e.modifierFlags.contains(.option)
+                return e
+            }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -208,7 +225,8 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
         let font = NSFont.systemFont(ofSize: 13), small = NSFont.systemFont(ofSize: 11.5)
         let widest = all.prefix(400).map { item -> CGFloat in
             let t = (item.title as NSString).size(withAttributes: [.font: font]).width
-            return t + (item.detail.map { ($0 as NSString).size(withAttributes: [.font: small]).width + 8 } ?? 0)
+            let d = [item.detail, item.optionDetail].compactMap { $0 }.map { ($0 as NSString).size(withAttributes: [.font: small]).width + 8 }.max()
+            return t + (d ?? 0)
         }.max() ?? 0
         let w = min(max(minWidth, a.width, ceil(widest) + 56), bounds.width - 16)
         let listH = list.contentHeight
@@ -246,6 +264,7 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
     private var optionHeld: Bool { NSApp.currentEvent?.modifierFlags.contains(.option) ?? false }
 
     func dismiss() {
+        if let m = flagsMonitor { NSEvent.removeMonitor(m); flagsMonitor = nil }
         let w = window, root = superview
         (anchor as? DropdownAnchor)?.dropdownOpen = false
         if Headless.active, superview != nil { FileHandle.standardError.write("dropdown: closed\n".data(using: .utf8)!) }
@@ -425,6 +444,8 @@ final class DropdownTint: NSView {
 final class DropdownListView: NSView {
     var items: [DropdownItem] = [] { didSet { needsDisplay = true } }
     var highlighted: Int? { didSet { if highlighted != oldValue { needsDisplay = true } } }
+    /// ⌥ is down: rows with an `optionDetail` say it instead of their detail.
+    var optionHeld = false { didSet { if optionHeld != oldValue { needsDisplay = true } } }
     /// The row, and whether ⌥ was held.
     var onPick: ((Int, Bool) -> Void)?
     private static let separatorHeight: CGFloat = 11
@@ -541,12 +562,14 @@ final class DropdownListView: NSView {
                 (item.title as NSString).draw(in: NSRect(x: 34, y: r.midY - 8.5, width: r.width - 46, height: 17),
                                               withAttributes: [.font: font, .paragraphStyle: middle,
                                                                .foregroundColor: item.checked && item.color == nil ? th.accent : th.foreground.withAlphaComponent(0.92)])
-                if let detail = item.detail {
+                let alternate = optionHeld ? item.optionDetail : nil
+                if let detail = alternate ?? item.detail {
                     let tw = (item.title as NSString).size(withAttributes: [.font: font]).width
                     let x = 34 + ceil(tw) + 8
                     if x < r.width - 40 {
                         (detail as NSString).draw(in: NSRect(x: x, y: r.midY - 7.5, width: r.width - 12 - x, height: 15),
-                                                  withAttributes: [.font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: th.dimText, .paragraphStyle: para])
+                                                  withAttributes: [.font: NSFont.systemFont(ofSize: 11.5, weight: alternate == nil ? .regular : .medium),
+                                                                   .foregroundColor: alternate == nil ? th.dimText : th.accent, .paragraphStyle: para])
                     }
                 }
             }
