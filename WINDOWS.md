@@ -41,7 +41,7 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
   beside it, because Fn can't be detected.
   - A key the app claims is the app's, whatever's running, Claude Code included. A program can't get that key, by choice:
     Ctrl+T new tab, Ctrl+Shift+T reopen a closed tab, Ctrl+W close tab (no confirmation yet), Ctrl+Shift+W also closes the
-    tab until there are several windows. Later features may claim Ctrl+N, B, O, S, Q and G the same way (Ctrl+F and Ctrl+H
+    tab until there are several windows. Later features may claim Ctrl+N, B, O, S, Q and G the same way (Ctrl+F finds in a file or the terminal, Ctrl+H
     find and replace in a file that has the keyboard).
   - Programs keep the keys the app doesn't claim, including Ctrl+A, D, E, H, J, K, L, R, U and Z.
   - Ctrl+C copies when something's selected and interrupts otherwise; Ctrl+V pastes, except in full-screen programs and for
@@ -64,7 +64,9 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
     or F3 steps on and Shift with them back, Alt+C, Alt+W and Alt+R match case, whole words and regular expressions
     ($1 and the like in the replacement), Tab moves to the Replace field, Ctrl+Enter there replaces all, and Esc closes
     it with the match selected.
-- **Search in Project Folder** (Ctrl+Shift+F), as on the Mac: each file a header with its matching lines under it, a
+  - In the terminal, Ctrl+F is the Mac's ⌘F bar at its top right: All, Commands or Output, "3/12", Enter and
+    Shift+Enter to step, matches in yellow and the current one in orange. From a sidebar it finds in the file showing.
+- **Search in Project Folder** (Ctrl+Shift+F, or a sidebar's magnifying glass for its folder), as on the Mac: each file a header with its matching lines under it, a
   count of results and files, 20 seconds at most, and a result opens its file (on this PC or the ssh host) with the
   query selected on its line.
 - **Logs**, as on the Mac: `.log` files, and any file with a logger's color codes in it, are colored by level, time,
