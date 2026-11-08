@@ -44,6 +44,18 @@ final class TabColumn: NSObject, TabOwner {
         addTab(cwd: Config.shared.newTabFolder == "home" ? nil : currentLocalFolder)
     }
 
+    /// ⌃⌘T: a new tab where the focused terminal is. On an ssh session that's the same host and folder (and the same
+    /// user, after `sudo -i -u`), logged in again over the shared connection, as ⌘D does; on this Mac, its folder.
+    @discardableResult
+    func newTabOnSameHost() -> TabSession {
+        let pane = activeTab?.focusedPane
+        guard let login = pane?.sameHostCommand else { return addTab(cwd: currentLocalFolder) }
+        let tab = addTab(cwd: nil)
+        tab.focusedPane.pendingCommand = login.command
+        if login.switchesUser { tab.focusedPane.expectUserSwitch() }
+        return tab
+    }
+
     /// `openFolders`: the sidebar folders it starts with open (none: everything closed).
     @discardableResult
     func insertTab(cwd: String?, at index: Int, group: TabGroup?, openFolders: [String: Set<String>] = [:]) -> TabSession {
@@ -348,14 +360,36 @@ final class TabColumn: NSObject, TabOwner {
         t.owner = self
         t.customTitle = ts.title
         t.group = group
-        t.pinnedFolder = ts.pinnedFolder.map { (LocalFileSystem.shared, $0) }
-        let files = (ts.files ?? []).filter { FileManager.default.fileExists(atPath: $0) }
+        // Local files that are still there; files on an ssh host, waiting for a connection to it (one per host and
+        // way of reaching it, shared by the tab's files).
+        var waiting: [String: RemoteSession] = [:]
+        let files: [(fs: FileSystem, path: String)] = (ts.files ?? []).enumerated().compactMap { i, path in
+            let host = ts.fileHosts.flatMap { $0.indices.contains(i) ? $0[i] : nil }
+            let ssh = ts.fileSSH.flatMap { $0.indices.contains(i) ? $0[i] : nil }
+            guard let host, let ssh else { return FileManager.default.fileExists(atPath: path) ? (LocalFileSystem.shared, path) : nil }
+            let key = host + "\n" + ssh
+            let session = waiting[key] ?? RemoteSession(awaiting: host, sshArgs: ssh)
+            waiting[key] = session
+            return (session, path)
+        }
+        // The pinned folder: on this Mac, or on an ssh host, waiting (with the tab's files there) for a connection to
+        // it; once the tab's logged in there, the pin moves to that session (see `repinAfterReconnect`).
+        if let pin = ts.pinnedFolder {
+            if let host = ts.pinnedHost {
+                let key = host + "\n" + (ts.pinnedSSH ?? "")
+                let session = waiting[key] ?? RemoteSession(awaiting: host, sshArgs: ts.pinnedSSH ?? "")
+                waiting[key] = session
+                t.pinnedFolder = (session, pin)
+            } else {
+                t.pinnedFolder = (LocalFileSystem.shared, pin)
+            }
+        }
         if ts.terminalHidden == true, let first = files.first {
-            t.fileOrigin = (LocalFileSystem.shared, FilePaths.parent(first))
-            t.showFileOnly(FileEditorView(fs: LocalFileSystem.shared, path: first))
-            files.dropFirst().forEach { t.openFile(LocalFileSystem.shared, $0, focus: false) }
+            t.fileOrigin = (first.fs, FilePaths.parent(first.path))
+            t.showFileOnly(FileEditorView(fs: first.fs, path: first.path))
+            files.dropFirst().forEach { t.openFile($0.fs, $0.path, focus: false) }
         } else {
-            files.forEach { t.openFile(LocalFileSystem.shared, $0, focus: false) }
+            files.forEach { t.openFile($0.fs, $0.path, focus: false) }
         }
         if let a = ts.activeFile { t.activateEditor(a, focus: false) }
         return t

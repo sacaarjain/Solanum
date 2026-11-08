@@ -55,10 +55,196 @@ let maxReadableFileSize = 512 * 1024 * 1024
 /// How much of the end of a file past `maxReadableFileSize` shows.
 let fileTailSize = 10 * 1024 * 1024
 
+/// Tells editors showing files from an ssh host when those files change there. One command runs on the host for
+/// all of them, for as long as any is showing: once a second it stats each, and it prints only what changed (and a
+/// heartbeat every few seconds, so it ends soon after the connection does). A new command for each look would open
+/// a session on the host every time (which many servers write to their auth log) and queue behind the sidebar's
+/// listings; this is one session, with a stat a second. It holds its own channel, beside `ChannelGate`'s.
+final class RemoteFileWatch {
+    final class Token {
+        fileprivate let id = UUID()
+        let path: String
+        fileprivate weak var watch: RemoteFileWatch?
+        fileprivate init(path: String, watch: RemoteFileWatch) {
+            self.path = path
+            self.watch = watch
+        }
+        deinit {
+            let id = id, w = watch
+            DispatchQueue.main.async { w?.remove(id) }
+        }
+        func belongs(to w: RemoteFileWatch) -> Bool { watch === w }
+    }
+
+    /// Posted (object: the watch) when `live` changes.
+    static let liveChanged = Notification.Name("solanumRemoteWatchLive")
+
+    /// Whether the host is reporting: true once it's heard from (it says something at least every 5 seconds), false
+    /// when it can't run or went quiet (the connection's down or hung), nil while it's starting the first time.
+    private(set) var live: Bool? {
+        didSet { if live != oldValue { NotificationCenter.default.post(name: Self.liveChanged, object: self) } }
+    }
+
+    /// The watch script running on the host, or nil when it can't be started (not connected).
+    private let launch: (String) -> Process?
+    private var entries: [UUID: (path: String, call: (String?) -> Void)] = [:]
+    private var process: Process?
+    private var paths: [String] = []
+    private var restartQueued = false
+    private var lastHeard = Date.distantPast
+    /// While anything's watched: starts the watch again when it isn't running (it ended, or the connection wasn't
+    /// up yet) or has gone quiet.
+    private var health: Timer?
+
+    fileprivate convenience init(session: RemoteSession) {
+        self.init { [weak session] script in
+            guard let session, session.isConnected else { return nil }
+            return session.sshProcess(script)
+        }
+    }
+
+    /// `launch`: a process running the script (`sh -c`, over ssh for a host), or nil when it can't now.
+    init(launch: @escaping (String) -> Process?) { self.launch = launch }
+
+    /// `call` gets the file's signature (see `RemoteSession.statCommand`) when watching starts and whenever it
+    /// changes; nil when it's gone. While the token's kept.
+    func watch(_ path: String, _ call: @escaping (String?) -> Void) -> Token {
+        let t = Token(path: path, watch: self)
+        entries[t.id] = (path, call)
+        queueRestart()
+        if health == nil {
+            let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in self?.checkHealth() }
+            RunLoop.main.add(timer, forMode: .common)
+            health = timer
+        }
+        return t
+    }
+
+    fileprivate func remove(_ id: UUID) {
+        guard entries.removeValue(forKey: id) != nil else { return }
+        queueRestart()
+    }
+
+    private func queueRestart() {
+        guard !restartQueued else { return }
+        restartQueued = true
+        DispatchQueue.main.async { [self] in
+            restartQueued = false
+            restart()
+        }
+    }
+
+    private func checkHealth() {
+        guard !entries.isEmpty else {
+            health?.invalidate()
+            health = nil
+            return
+        }
+        if process?.isRunning != true {
+            paths = []
+            restart()
+            if process == nil { live = false }
+        } else if Date().timeIntervalSince(lastHeard) > 12 {
+            // Running but silent: the connection hung. Start over (on a new channel once it's back).
+            live = false
+            paths = []
+            restart()
+        }
+    }
+
+    private func restart() {
+        let wanted = Array(Set(entries.values.map(\.path))).sorted()
+        if wanted == paths, process?.isRunning == true { return }
+        if let p = process { process = nil; p.terminate() }
+        paths = wanted
+        guard !wanted.isEmpty, let p = launch(Self.script(wanted)) else { return }
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        p.standardInput = FileHandle.nullDevice
+        let shown = wanted
+        var pending = Data()
+        out.fileHandleForReading.readabilityHandler = { [weak self] h in
+            let chunk = h.availableData
+            if chunk.isEmpty { h.readabilityHandler = nil; return }
+            pending.append(chunk)
+            var lines: [String] = []
+            while let nl = pending.firstIndex(of: 0x0A) {
+                lines.append(String(decoding: pending[pending.startIndex..<nl], as: UTF8.self))
+                pending.removeSubrange(pending.startIndex...nl)
+            }
+            guard !lines.isEmpty else { return }
+            DispatchQueue.main.async { self?.received(lines, paths: shown) }
+        }
+        p.terminationHandler = { [weak self] ended in
+            DispatchQueue.main.async {
+                guard let self, self.process === ended else { return }
+                // Ended on its own (the connection dropped, say): `checkHealth` starts it again while anything's
+                // still watched and the connection's up.
+                self.process = nil
+                self.paths = []
+                self.live = false
+            }
+        }
+        do {
+            try p.run()
+            process = p
+            // It reports every file straight away; give it a while (a slow login shell) before calling it quiet.
+            lastHeard = Date()
+        } catch {
+            paths = []
+        }
+    }
+
+    /// What runs on the host for `paths`: "<index from 1>\t<signature or ->" for each that changed, "." now and then.
+    static func script(_ paths: [String]) -> String {
+        """
+        set -- \(paths.map(shellQuote).joined(separator: " "))
+        n=0
+        while :; do
+          i=0
+          for f in "$@"; do
+            i=$((i+1))
+            # Opened first: on a network mount (NFS) that makes the client ask the server, where a bare stat can
+            # keep answering from its cache for up to a minute while another machine writes the file.
+            [ -f "$f" ] && { : < "$f"; } 2>/dev/null
+            g=$(\(RemoteSession.statCommand))
+            [ -n "$g" ] || g=-
+            eval "p=\\${s_$i-}"
+            if [ "$g" != "$p" ]; then printf '%s\\t%s\\n' "$i" "$g" || exit 0; eval "s_$i=\\$g"; fi
+          done
+          n=$((n+1))
+          if [ "$n" -ge 5 ]; then printf '.\\n' || exit 0; n=0; fi
+          sleep 1
+        done
+        """
+    }
+
+    private func received(_ lines: [String], paths shown: [String]) {
+        guard shown == paths else { return }
+        lastHeard = Date()
+        live = true
+        for line in lines {
+            let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
+            guard parts.count == 2, let i = Int(parts[0]), shown.indices.contains(i - 1) else { continue }
+            let path = shown[i - 1], sig = parts[1] == "-" ? nil : parts[1]
+            for e in entries.values where e.path == path { e.call(sig) }
+        }
+    }
+
+    deinit {
+        health?.invalidate()
+        process?.terminate()
+    }
+}
+
 /// Bytes read from a file (see `FileSystem.readPart`), and the file's whole size then.
 struct FilePart {
     let size: Int
     let data: Data
+    /// The file's signature, taken just before it was read (see `LocalFileSystem.signature`): should it change while
+    /// it's read, the next look sees a difference.
+    var signature: String? = nil
 }
 
 enum FilePaths {
@@ -146,18 +332,28 @@ final class LocalFileSystem: FileSystem {
 
     func readPart(_ path: String, from offset: Int?, whole: Int, tail: Int, _ done: @escaping (Result<FilePart, Error>) -> Void) {
         async({
+            let signature = Self.signature(path)
             let h = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
             defer { try? h.close() }
             let size = Int(try h.seekToEnd())
             let start = offset.map { min($0, size) } ?? (size <= whole ? 0 : size - tail)
             try h.seek(toOffset: UInt64(start))
-            return FilePart(size: size, data: try h.read(upToCount: offset == nil && size <= whole ? size : tail) ?? Data())
+            return FilePart(size: size, data: try h.read(upToCount: offset == nil && size <= whole ? size : tail) ?? Data(), signature: signature)
         }, done)
     }
 
     /// Not atomic, so the file keeps its permissions (e.g. an executable script stays executable).
     func write(_ data: Data, to path: String, _ done: @escaping (Error?) -> Void) {
         async({ try data.write(to: URL(fileURLWithPath: path)) }) { done($0.error) }
+    }
+
+    /// Something that changes whenever the file does (its modified time, size and inode), to tell an open file it
+    /// changed on disk (an agent edited it, say) without reading it. Nil when it isn't a file there. A stat:
+    /// microseconds, so it's checked often.
+    static func signature(_ path: String) -> String? {
+        var st = stat()
+        guard stat(path, &st) == 0, st.st_mode & S_IFMT == S_IFREG else { return nil }
+        return "\(st.st_mtimespec.tv_sec).\(st.st_mtimespec.tv_nsec) \(st.st_size) \(st.st_ino)"
     }
 
     func perform(_ op: FileOp, _ done: @escaping (Error?) -> Void) {
@@ -247,6 +443,9 @@ final class RemoteSession: FileSystem {
     private(set) var home: String?
     /// The interactive remote shell's folder, when it could be found (Linux hosts, via /proc).
     private(set) var cwd: String?
+    /// Whether the login shell has the terminal (false while a program, or a shell from `sudo -i -u`, runs in front
+    /// of it); nil when it couldn't be told.
+    private(set) var loginShellInForeground: Bool?
     var onChange: (() -> Void)?
     private var readyTimer: Timer?
     private var probing = false
@@ -259,9 +458,22 @@ final class RemoteSession: FileSystem {
     /// How the session was opened (`ssh` arguments, shell-quoted), when the shell integration reported them.
     let sshArgs: String?
 
+    /// Not a connection yet: files restored from a saved session wait on one to their host (see
+    /// `FileEditorView.follow`), and logging in again uses `sshArgs`.
+    let awaitingLogin: Bool
+
     init(controlPath: String, sshArgs: String? = nil) {
         self.controlPath = controlPath
         self.sshArgs = sshArgs
+        awaitingLogin = false
+    }
+
+    /// For files restored from a saved session that were open on `host`, reached with `sshArgs`.
+    init(awaiting host: String, sshArgs: String) {
+        controlPath = ""
+        self.sshArgs = sshArgs
+        hostLabel = host
+        awaitingLogin = true
     }
 
     /// A command that opens another shell on the same host, in `dir` (running `command` there first): the
@@ -335,6 +547,17 @@ final class RemoteSession: FileSystem {
         return "ssh -t -S " + shellQuote(controlPath) + " -o ControlMaster=no solanum-remote" + remote
     }
 
+    /// A command for another terminal on this host, in `dir`: over this connection while it's open (no password asked
+    /// again, as VS Code's terminals share theirs), else logging in again as `reconnectCommand` does. The ssh wrapper
+    /// takes the shared socket as that terminal's, and `SOLANUM_SSH_ARGS` as how to log in again should it drop.
+    func newTerminalCommand(in dir: String?, then command: String? = nil) -> String? {
+        guard isConnected else { return reconnectCommand(in: dir, then: command) }
+        let first = command.map { $0 + "; " } ?? ""
+        let remote = " " + shellQuote((dir.map { "cd " + shellQuote($0) + " 2>/dev/null; " } ?? "") + first + "exec \"$SHELL\" -l")
+        let args = sshArgs.flatMap { $0.isEmpty ? nil : "SOLANUM_SSH_ARGS=" + shellQuote(Data(($0 + " ").utf8).base64EncodedString()) + " " } ?? ""
+        return args + "ssh -t -S " + shellQuote(controlPath) + " -o ControlMaster=no solanum-remote" + remote
+    }
+
     deinit { readyTimer?.invalidate() }
 
     func start() {
@@ -361,9 +584,11 @@ final class RemoteSession: FileSystem {
                 let label = lines.first.flatMap { $0.isEmpty ? nil : $0 }
                 let home = lines.count > 1 && !lines[1].isEmpty ? lines[1] : nil
                 let cwd = lines.count > 2 && lines[2].hasPrefix("/") ? lines[2] : nil
-                if label != self.hostLabel || home != self.home || (cwd != nil && cwd != self.cwd) {
+                let fg: Bool? = lines.count > 3 ? (lines[3] == "fg" ? true : lines[3] == "bg" ? false : nil) : nil
+                if label != self.hostLabel || home != self.home || (cwd != nil && cwd != self.cwd) || fg != self.loginShellInForeground {
                     self.hostLabel = label
                     self.home = home
+                    self.loginShellInForeground = fg
                     if let cwd { self.cwd = cwd }
                     self.onChange?()
                 }
@@ -375,8 +600,9 @@ final class RemoteSession: FileSystem {
         }
     }
 
-    /// Prints user@host, $HOME, then the folder of the session's interactive shell: walk up from this
-    /// command to the per-connection sshd, then take its child whose stdin is a pty.
+    /// Prints user@host, $HOME, then the folder of the session's interactive shell (walk up from this command to the
+    /// per-connection sshd, then take its child whose stdin is a pty), and "fg" or "bg": whether that shell has the
+    /// terminal (its process group is the terminal's foreground one).
     private static let probeScript = #"""
     h=$(hostname 2>/dev/null || uname -n)
     printf '%s@%s\n%s\n' "$(id -un 2>/dev/null)" "${h%%.*}" "$HOME"
@@ -389,7 +615,11 @@ final class RemoteSession: FileSystem {
       kids=$(cat /proc/$p/task/*/children 2>/dev/null)
       [ -n "$kids" ] || kids=$(pgrep -P "$p" 2>/dev/null)
       for k in $kids; do
-        case $(readlink /proc/$k/fd/0 2>/dev/null) in /dev/pts/*) readlink /proc/$k/cwd 2>/dev/null; break ;; esac
+        case $(readlink /proc/$k/fd/0 2>/dev/null) in /dev/pts/*)
+          printf '%s\n' "$(readlink /proc/$k/cwd 2>/dev/null)"
+          set -- $(sed 's/.*) //' /proc/$k/stat 2>/dev/null)
+          if [ -n "$6" ]; then if [ "$3" = "$6" ]; then echo fg; else echo bg; fi; fi
+          break ;; esac
       done
     fi
     """#
@@ -405,11 +635,16 @@ final class RemoteSession: FileSystem {
         return p
     }
 
+    /// Why nothing can be done through it: it ended, or (restored) it hasn't started.
+    var endedMessage: String {
+        awaitingLogin ? "Not connected to \(hostLabel ?? "the host") yet." : "The ssh session has ended."
+    }
+
     /// Runs a POSIX sh script on the host; `done` gets (exit status, stdout, stderr) on the main queue.
     func run(_ script: String, input: Data? = nil, timeout: TimeInterval = 60,
              _ done: @escaping (Int32, Data, String) -> Void) {
         guard isConnected else {
-            done(255, Data(), "The ssh session has ended.")
+            done(255, Data(), endedMessage)
             return
         }
         // Waits its turn: each of these is a channel on the user's own ssh connection (see `ChannelGate`).
@@ -497,18 +732,37 @@ final class RemoteSession: FileSystem {
         let script = """
         f=\(shellQuote(path))
         [ -f "$f" ] || { echo "Not a regular file." >&2; exit 1; }
+        g=$(\(Self.statCommand))
         s=$(wc -c < "$f" | tr -d ' ')
-        printf '%s\\n' "$s"
+        printf '%s\\t%s\\n' "$s" "$g"
         \(part)
         """
         run(script, timeout: 600) { [weak self] status, out, err in
             if let e = self?.check(status, err, "Couldn't read \(path).") { return done(.failure(e)) }
-            guard let nl = out.firstIndex(of: 0x0A), let size = Int(String(decoding: out[..<nl], as: UTF8.self)) else {
+            // "<size>\t<signature>", then the bytes.
+            let head = out.firstIndex(of: 0x0A).map { String(decoding: out[..<$0], as: UTF8.self).components(separatedBy: "\t") } ?? []
+            guard let nl = out.firstIndex(of: 0x0A), let size = head.first.flatMap({ Int($0) }) else {
                 return done(.failure(FileError(message: "Couldn't read \(path).")))
             }
-            done(.success(FilePart(size: size, data: Data(out[out.index(after: nl)...]))))
+            let sig = head.count > 1 && !head[1].isEmpty ? head[1] : nil
+            done(.success(FilePart(size: size, data: Data(out[out.index(after: nl)...]), signature: sig)))
         }
     }
+
+    /// A file's signature on the host, as `LocalFileSystem.signature` is here (its modified time, size and inode), for
+    /// the file in `$f`: GNU stat (Linux, to the nanosecond), else BSD's. Empty when it isn't there.
+    static let statCommand = #"stat -c '%y %s %i' -- "$f" 2>/dev/null || stat -f '%Fm %z %i' -- "$f" 2>/dev/null"#
+
+    /// The signature now (one command; `fileWatch` follows files that are showing without one each time).
+    func signature(_ path: String, _ done: @escaping (String?) -> Void) {
+        run("f=\(shellQuote(path)); [ -f \"$f\" ] || exit 1; \(Self.statCommand)", timeout: 15) { status, out, _ in
+            let sig = String(decoding: out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            done(status == 0 && !sig.isEmpty ? sig : nil)
+        }
+    }
+
+    /// Follows the files showing from this host (see `RemoteFileWatch`).
+    private(set) lazy var fileWatch = RemoteFileWatch(session: self)
 
     /// The bytes land in a temporary file first and only replace the file's contents once they've all arrived, so a
     /// connection lost mid-save leaves the file as it was. `cat >` then rewrites it in place, keeping its
@@ -565,14 +819,14 @@ enum FileTransfer {
         let reader: Process, writer: Process
         switch src {
         case let remote as RemoteSession:
-            guard remote.isConnected else { return done(FileError(message: "The ssh session has ended.")) }
+            guard remote.isConnected else { return done(FileError(message: remote.endedMessage)) }
             reader = remote.sshProcess("tar -C \(shellQuote(parent)) -cf - \(shellQuote(base))")
         default:
             reader = tarProcess(["-cf", "-", "-C", parent, base])
         }
         switch dst {
         case let remote as RemoteSession:
-            guard remote.isConnected else { return done(FileError(message: "The ssh session has ended.")) }
+            guard remote.isConnected else { return done(FileError(message: remote.endedMessage)) }
             writer = remote.sshProcess(unpack)
         default:
             writer = Process()
@@ -668,4 +922,7 @@ extension Notification.Name {
     static let solanumGitStatusChanged = Notification.Name("SolanumGitStatusChanged")
     /// An editor saved a file: `object` is its file system, `userInfo["path"]` its path.
     static let solanumFileSaved = Notification.Name("SolanumFileSaved")
+    /// An ssh session (`object`, a `RemoteSession`) is logged in and knows its host: files and tabs still on a
+    /// lost session to that host move to it.
+    static let solanumRemoteReady = Notification.Name("SolanumRemoteReady")
 }

@@ -113,6 +113,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         if forgettingSession { SessionStore.forget() } else { SessionStore.save(windows, sync: true) }
         SessionStore.stopSaving()
         for w in windows { w.tabs.forEach { $0.terminateAll() } }
+        // A build made while Solanum ran goes in now that nothing of this one is left to need its files.
+        PendingInstall.install()
         if restarting && !Headless.active {
             // A detached shell waits for this process to exit, then opens the app again (picking up a new build).
             let p = Process()
@@ -406,10 +408,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let shell = top("Shell")
         _ = add(shell, "New Window", #selector(newWindow(_:)), "n")
         _ = add(shell, "New Tab", #selector(TerminalWindowController.newTab(_:)), "t")
+        _ = add(shell, "New Tab on This Host", #selector(TerminalWindowController.newTabOnSameHost(_:)), "t", [.command, .control])
         _ = add(shell, "New Tab in Group", #selector(TerminalWindowController.newTabInGroup(_:)), "t", [.command, .option])
         _ = add(shell, "Reopen Closed Tab", #selector(TerminalWindowController.reopenClosedTab(_:)), "t", [.command, .shift])
         _ = add(shell, "Open Folder…", #selector(TerminalWindowController.openFolder(_:)), "o")
         _ = add(shell, "Go to Folder…", #selector(TerminalWindowController.goToFolder(_:)), "o", [.command, .shift])
+        _ = add(shell, "Follow This Shell's Folder (ssh, after sudo)", #selector(TerminalWindowController.followShellFolder(_:)), "")
         _ = add(shell, "Rename Tab…", #selector(TerminalWindowController.renameCurrentTab(_:)), "i", [.command, .shift])
         shell.addItem(.separator())
         _ = add(shell, "Add Tab to New Group", #selector(TerminalWindowController.addCurrentTabToNewGroup(_:)), "g", [.command, .option])
@@ -419,6 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         shell.addItem(.separator())
         _ = add(shell, "Save File", #selector(FileEditorView.saveDocument(_:)), "s")
         _ = add(shell, "Beautify / Format Document", #selector(TerminalWindowController.beautifyDocument(_:)), "f", [.command, .option])
+        _ = add(shell, "Import Log Format…", #selector(TerminalWindowController.importLogFormat(_:)), "")
         shell.addItem(.separator())
         // Two columns, each with its own tabs (like VS Code's editor groups).
         _ = add(shell, "Split Right", #selector(TerminalWindowController.splitIntoColumns(_:)), "d")

@@ -11,12 +11,26 @@ final class GitGraphView: NSView {
     private let scroll = NSScrollView()
     private let rowsView = GraphRowsView()
     private let card = CommitCard()
+    private let toolbar = GraphToolbar()
+    private let branchList = GraphBranchList()
+    private let empty = NSTextField(labelWithString: "")
     private let runner: GitRunner
     private var details: [String: CommitCard.Details] = [:]
     private var cardRow: Int?
     private var scrollObserver: NSObjectProtocol?
+    /// What's shown: every branch, or what the filters leave.
+    private(set) var filter = GraphFilter()
+    private var loadID = 0
     /// A commit's "View Changes", or a double-click on it.
     var onViewChanges: ((String) -> Void)?
+    /// After each load: how many commits, or why there are none.
+    var onLoaded: ((_ count: Int, _ filter: GraphFilter) -> Void)?
+    var onFailed: ((String) -> Void)?
+    /// Authors (most commits first) and the repository's folders and files, read once when a menu needs them.
+    private var authors: [String]?
+    private var me: String?
+    private var paths: [String]?
+    private static let listWidth: CGFloat = 230
 
     init(runner: GitRunner) {
         self.runner = runner
@@ -27,9 +41,20 @@ final class GitGraphView: NSView {
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true
+        addSubview(branchList)
+        addSubview(toolbar)
         addSubview(scroll)
+        empty.alignment = .center
+        empty.isHidden = true
+        addSubview(empty)
         card.isHidden = true
         addSubview(card)
+        toolbar.onChange = { [weak self] f in self?.apply(f) }
+        toolbar.onRefresh = { [weak self] in self?.reload(refreshLists: true) }
+        toolbar.onBranchMenu = { [weak self] b in self?.showBranchMenu(b) }
+        toolbar.onUserMenu = { [weak self] b in self?.showUserMenu(b) }
+        toolbar.onPathMenu = { [weak self] b in self?.showPathPicker(b) }
+        branchList.onPick = { [weak self] name in self?.toolbar.pick(branch: name) }
         // A click on a commit opens its card; on the same commit again, or anywhere else, closes it.
         rowsView.onClick = { [weak self] row in
             guard let self else { return }
@@ -52,6 +77,7 @@ final class GitGraphView: NSView {
                                                                 queue: .main) { [weak self] _ in
             if self?.cardRow != nil { self?.hideCard() }
         }
+        applyTheme()
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -66,6 +92,43 @@ final class GitGraphView: NSView {
     /// Takes focus so ⌘W and the other editor commands reach the editor around it.
     override var acceptsFirstResponder: Bool { true }
 
+    /// ⌘F: the Text or hash field.
+    func focusSearch() { toolbar.focusSearch() }
+
+    private func apply(_ f: GraphFilter) {
+        filter = f
+        branchList.selected = f.branch
+        hideCard()
+        reload(refreshLists: false)
+    }
+
+    /// Reads the history for the filters (and the branch list with it, or when asked).
+    func reload(refreshLists: Bool = true) {
+        loadID += 1
+        let id = loadID, filter = filter
+        if refreshLists || branchList.refs.locals.isEmpty {
+            runner.run(GraphRefs.script, timeout: 30) { [weak self] status, out, _ in
+                guard let self, status == 0 else { return }
+                self.branchList.refs = GraphRefs.parse(out)
+                self.branchList.selected = self.filter.branch
+            }
+            if refreshLists { authors = nil; paths = nil }
+        }
+        runner.run(filter.script(), timeout: 60) { [weak self] status, out, err in
+            guard let self, id == self.loadID else { return }
+            let (log, topology) = GraphFilter.split(out)
+            let (head, commits) = GraphCommit.parse(log)
+            if commits.isEmpty, status != 0, filter.isEmpty {
+                self.onFailed?(err.isEmpty ? "Couldn't read the history." : err)
+                return
+            }
+            self.show(head: head, commits: filter.arrange(commits, topology: topology))
+            self.empty.stringValue = filter.isEmpty ? "No commits yet." : "No commits match these filters."
+            self.empty.isHidden = !commits.isEmpty
+            self.onLoaded?(commits.count, filter)
+        }
+    }
+
     func show(head: String, commits: [GraphCommit]) {
         rowsView.head = head
         rowsView.rows = GraphLayout.rows(commits)
@@ -76,13 +139,94 @@ final class GitGraphView: NSView {
     func applyTheme() {
         rowsView.needsDisplay = true
         card.applyTheme()
+        toolbar.applyTheme()
+        branchList.applyTheme()
+        empty.textColor = Config.shared.theme.dimText
+        empty.font = .systemFont(ofSize: 12.5)
     }
 
     override func layout() {
         super.layout()
-        scroll.frame = bounds
+        // The branch list gives way on a narrow editor.
+        let list = bounds.width >= 640 ? Self.listWidth : 0
+        branchList.isHidden = list == 0
+        branchList.frame = NSRect(x: 0, y: 0, width: list, height: bounds.height)
+        toolbar.frame = NSRect(x: list, y: 0, width: bounds.width - list, height: GraphToolbar.height)
+        scroll.frame = NSRect(x: list, y: GraphToolbar.height, width: bounds.width - list, height: bounds.height - GraphToolbar.height)
+        empty.frame = NSRect(x: list + 20, y: GraphToolbar.height + 40, width: max(0, bounds.width - list - 40), height: 20)
         rowsView.fitSize()
     }
+
+    // MARK: Filter menus
+
+    private func showBranchMenu(_ anchor: NSView) {
+        let refs = branchList.refs
+        var items: [DropdownItem] = [
+            .item("All Branches", checked: filter.branch == nil) { [weak self] in self?.toolbar.pick(branch: nil) },
+            .item("HEAD" + (refs.current.map { " (\($0))" } ?? ""), checked: filter.branch == "HEAD") { [weak self] in self?.toolbar.pick(branch: "HEAD") },
+        ]
+        func section(_ title: String, _ names: [String]) {
+            guard !names.isEmpty else { return }
+            items += [.separator, .header(title)]
+            items += names.map { name in .item(name, checked: filter.branch == name) { [weak self] in self?.toolbar.pick(branch: name) } }
+        }
+        section("Local", refs.locals)
+        section("Remote", refs.remotes)
+        section("Tags", refs.tags)
+        ThemedDropdown.show(items, under: anchor, minWidth: 240)
+    }
+
+    private func showUserMenu(_ anchor: NSView) {
+        guard let authors else {
+            runner.run("git config user.name; printf '\\036'; git log --all -n 5000 --format=%an | sort | uniq -c | sort -rn | head -40", timeout: 30) { [weak self] _, out, _ in
+                guard let self else { return }
+                let parts = String(decoding: out, as: UTF8.self).components(separatedBy: "\u{1e}")
+                let me = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+                self.me = me.isEmpty ? nil : me
+                self.authors = (parts.count > 1 ? parts[1] : "").split(separator: "\n").compactMap { line in
+                    let t = line.trimmingCharacters(in: .whitespaces)
+                    guard let space = t.firstIndex(of: " ") else { return nil }
+                    return String(t[t.index(after: space)...])
+                }
+                self.showUserMenu(anchor)
+            }
+            return
+        }
+        var items: [DropdownItem] = [.item("All Users", checked: filter.user == nil) { [weak self] in self?.toolbar.pick(user: nil) }]
+        if let me {
+            items.append(.item("Me (\(me))", checked: filter.user == me) { [weak self] in self?.toolbar.pick(user: me) })
+        }
+        items.append(.separator)
+        items += authors.filter { $0 != me }.map { name in .item(name, checked: filter.user == name) { [weak self] in self?.toolbar.pick(user: name) } }
+        ThemedDropdown.show(items, under: anchor)
+    }
+
+    /// The repository's folders and files (as HEAD has them) in a dropdown under Paths, with a field to narrow them.
+    private func showPathPicker(_ anchor: NSView) {
+        guard let paths else {
+            runner.run("git ls-tree -r -t --name-only HEAD | head -50000", timeout: 30) { [weak self] _, out, _ in
+                guard let self else { return }
+                let all = String(decoding: out, as: UTF8.self).split(separator: "\n").map(String.init)
+                // Folders first, shallowest first, then files.
+                self.paths = all.sorted { a, b in
+                    let da = a.split(separator: "/").count, db = b.split(separator: "/").count
+                    return da != db ? da < db : a < b
+                }
+                self.showPathPicker(anchor)
+            }
+            return
+        }
+        if Headless.active {
+            FileHandle.standardError.write("graph paths: \(paths.count), first \(paths.prefix(5))\n".data(using: .utf8)!)
+        }
+        var items: [DropdownItem] = [.item("All Paths", checked: filter.path == nil) { [weak self] in self?.toolbar.pick(path: nil) }, .separator]
+        items += paths.map { p in .item(p, checked: filter.path == p) { [weak self] in self?.toolbar.pick(path: p) } }
+        ThemedDropdown.show(items, under: anchor, minWidth: 360, placeholder: "Folder or file")
+    }
+
+    var devToolbar: GraphToolbar { toolbar }
+    var devBranchList: GraphBranchList { branchList }
+    var devRowCount: Int { rowsView.rows.count }
 
     // MARK: Commit card
 
@@ -255,22 +399,38 @@ final class GraphRowsView: NSView {
         }
     }
 
-    /// The subject, then branch and tag labels, then the author; the subject gives way when space runs short.
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .short
+        return f
+    }()
+
+    /// Columns from the right, as IntelliJ's log has them: the date, then the author (each dropped when the view is
+    /// too narrow for them and a readable subject).
+    private var columns: (author: CGFloat, date: CGFloat) {
+        let w = bounds.width
+        return (w >= 620 ? 140 : 0, w >= 480 ? 140 : 0)
+    }
+
+    /// The subject with its branch and tag labels, then the author and date in their columns; the subject gives way
+    /// when space runs short.
     private func drawText(_ row: GraphRow, row r: Int, y: CGFloat, isHead: Bool, th: Theme) {
         let x0 = textX(r)
-        let right = bounds.width - 10
+        let cols = columns
+        let dateX = bounds.width - 10 - cols.date
+        let authorX = dateX - cols.author
+        let right = authorX - 12
         let pills = Self.labels(row.commit.refs)
         let pillWidths = pills.map { pillWidth($0) }
         let pillsW = pillWidths.reduce(0) { $0 + $1 + 5 }
-        let authorAttrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: th.dimText]
-        let authorW = (row.commit.author as NSString).size(withAttributes: authorAttrs).width
         let para = NSMutableParagraphStyle()
         para.lineBreakMode = .byTruncatingTail
         let subjectAttrs: [NSAttributedString.Key: Any] = [.font: isHead ? boldFont : font, .paragraphStyle: para,
                                                            .foregroundColor: th.foreground.withAlphaComponent(0.92)]
         let subjectW = (row.commit.subject as NSString).size(withAttributes: subjectAttrs).width
-        let showAuthor = right - x0 - pillsW - authorW - 8 > 80
-        let room = right - x0 - pillsW - (showAuthor ? authorW + 8 : 0)
+        // Labels keep up to half the room; the subject gets the rest.
+        let room = right - x0 - (pills.isEmpty ? 0 : min(pillsW + 6, (right - x0) / 2))
         let w = max(0, min(subjectW + 1, room))
         let textY = y + (Self.rowHeight - ceil(font.ascender - font.descender)) / 2
         (row.commit.subject as NSString).draw(in: NSRect(x: x0, y: textY, width: w, height: Self.rowHeight), withAttributes: subjectAttrs)
@@ -279,8 +439,13 @@ final class GraphRowsView: NSView {
             drawPill(label, x: x, midY: y + Self.rowHeight / 2, color: Self.color(row.color), th: th)
             x += pillWidths[i] + 5
         }
-        if showAuthor {
-            (row.commit.author as NSString).draw(at: NSPoint(x: x + 2, y: textY), withAttributes: authorAttrs)
+        let dim: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: th.dimText, .paragraphStyle: para]
+        if cols.author > 0 {
+            (row.commit.author as NSString).draw(in: NSRect(x: authorX, y: textY, width: cols.author - 10, height: Self.rowHeight), withAttributes: dim)
+        }
+        if cols.date > 0 {
+            (Self.dateFormatter.string(from: row.commit.date) as NSString).draw(in: NSRect(x: dateX, y: textY, width: cols.date, height: Self.rowHeight),
+                                                                                  withAttributes: dim)
         }
     }
 

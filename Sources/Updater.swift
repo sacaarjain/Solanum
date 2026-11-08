@@ -93,9 +93,10 @@ final class Updater {
         if Date().timeIntervalSince1970 - defaults.double(forKey: Key.lastCheck) >= 24 * 3600 { check(manual: false) }
     }
 
-    /// The commit of the Solanum installed in ~/Applications (read from disk, not the bundle cache).
+    /// The commit of the Solanum installed in ~/Applications, or waiting to be (read from disk, not the bundle cache).
     private var installedCommit: String? {
-        NSDictionary(contentsOfFile: installed + "/Contents/Info.plist")?["SolanumCommit"] as? String
+        let app = PendingInstall.exists ? PendingInstall.pending : installed
+        return NSDictionary(contentsOfFile: app + "/Contents/Info.plist")?["SolanumCommit"] as? String
     }
 
     /// Fetches origin/main and offers it if this build doesn't have it. `manual` (the menu, Settings) reports "up to
@@ -104,7 +105,8 @@ final class Updater {
         guard let repo, let built else {
             if manual {
                 alert("Updates need a build made with build.sh",
-                      "This copy of Solanum doesn't know which repository it came from. Build it with ./build.sh in a clone of the repository.")
+                      "This copy of Solanum doesn't know which repository it came from. Build it with ./build.sh in a clone of the repository.",
+                      problem: true)
             }
             return
         }
@@ -124,7 +126,7 @@ final class Updater {
             guard let self else { return }
             self.checking = false
             guard status == 0 else {
-                if manual { self.alert("Couldn't check for updates", err.isEmpty ? "git fetch from origin failed." : err) }
+                if manual { self.alert("Couldn't check for updates", err.isEmpty ? "git fetch from origin failed." : err, problem: true) }
                 return
             }
             self.defaults.set(Date().timeIntervalSince1970, forKey: Key.lastCheck)
@@ -233,10 +235,68 @@ final class Updater {
         wc?.rootView.showNotice(notice)
     }
 
-    private func alert(_ title: String, _ text: String) {
-        let a = NSAlert()
-        a.messageText = title
-        a.informativeText = text
-        a.runModal()
+    /// In Solanum's own colors (see ThemedAlertView): the flower, or a warning mark for a `problem`.
+    private func alert(_ title: String, _ text: String, problem: Bool = false) {
+        ThemedAlertView.show(title, text.trimmingCharacters(in: .whitespacesAndNewlines),
+                             symbol: problem ? ("exclamationmark", Config.shared.theme.yellow) : nil)
+    }
+}
+
+/// A build made while Solanum runs. Replacing the files of a running app makes macOS lose track of who it is: a while
+/// later its privacy grants stop applying, without a prompt, and every shell in it gets "Operation not permitted" in
+/// ~/Desktop, ~/Documents and the rest until Solanum is restarted. So build.sh (also when updating) leaves a build made
+/// while Solanum is running beside it, in ~/Applications/.Solanum.app.pending, and Solanum moves it into place as it
+/// quits or restarts, or, after a crash, at its next launch (which then reopens into it).
+enum PendingInstall {
+    static var installed: String { NSHomeDirectory() + "/Applications/Solanum.app" }
+    /// build.sh stages here (see PENDING there).
+    static var pending: String { NSHomeDirectory() + "/Applications/.Solanum.app.pending" }
+    private static var old: String { NSHomeDirectory() + "/Applications/.Solanum.app.old" }
+
+    static var exists: Bool { FileManager.default.isExecutableFile(atPath: pending + "/Contents/MacOS/Solanum") }
+
+    /// Only the installed Solanum, the real one (not a snapshot run), moves a build in, and only when no other copy
+    /// is running from it, whose files it would pull out from under it.
+    private static var mayInstall: Bool {
+        guard exists, !Headless.active else { return false }
+        let me = Bundle.main.bundleURL.resolvingSymlinksInPath().path
+        guard me == URL(fileURLWithPath: installed).resolvingSymlinksInPath().path else { return false }
+        let others = NSWorkspace.shared.runningApplications.filter {
+            $0.processIdentifier != getpid() && $0.bundleURL?.resolvingSymlinksInPath().path == me
+        }
+        return others.isEmpty
+    }
+
+    /// Moves the waiting build into place, keeping the old one if that fails part way. True when it was moved.
+    @discardableResult
+    static func install() -> Bool {
+        guard mayInstall else { return false }
+        let fm = FileManager.default
+        try? fm.removeItem(atPath: old)
+        do {
+            if fm.fileExists(atPath: installed) { try fm.moveItem(atPath: installed, toPath: old) }
+            try fm.moveItem(atPath: pending, toPath: installed)
+        } catch {
+            if !fm.fileExists(atPath: installed) { try? fm.moveItem(atPath: old, toPath: installed) }
+            return false
+        }
+        try? fm.removeItem(atPath: old)
+        return true
+    }
+
+    /// At launch: a build left waiting (Solanum crashed or was killed before it could move it in) goes in now, and
+    /// Solanum reopens as it, before anything has started. Never returns when it does.
+    static func installAtLaunch() {
+        guard install() else { return }
+        reopen(after: getpid())
+        exit(0)
+    }
+
+    /// Opens the installed Solanum once process `pid` has exited.
+    static func reopen(after pid: pid_t) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "while kill -0 \(pid) 2>/dev/null; do sleep 0.1; done; open \(shellQuote(installed))"]
+        try? p.run()
     }
 }

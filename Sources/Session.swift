@@ -11,6 +11,9 @@ struct PaneState: Codable {
     var agent: String?
     /// From sessions saved before `agent`: Claude Code was running here.
     var claude: Bool?
+    /// The agent's own session (Claude Code's session id), so restoring resumes this pane's chat rather than the
+    /// folder's newest one, which another pane in the same folder may have.
+    var agentSession: String?
     /// An ssh session was running here: how it was started (`ssh`'s arguments) and the folder it was in on the host.
     /// Restoring logs in again and goes back there, once the tab is first shown.
     var ssh: String?
@@ -29,10 +32,16 @@ struct TabState: Codable {
     var layout: PaneNode
     /// Local files open above the terminal, the one showing, and whether it's a file tab (terminal hidden).
     var files: [String]?
+    /// For each of `files`, the ssh host it's on (nil: this Mac) and how that host was reached (`ssh`'s arguments).
+    var fileHosts: [String?]?
+    var fileSSH: [String?]?
     var activeFile: Int?
     var terminalHidden: Bool?
-    /// The sidebar's pinned folder for this tab (local folders only; ssh pins don't outlive the connection).
+    /// The sidebar's pinned folder for this tab, and for one on an ssh host, the host and how it was reached (as for
+    /// `fileHosts`): restored waiting for a connection to that host, and pinned there again once logged in.
     var pinnedFolder: String?
+    var pinnedHost: String?
+    var pinnedSSH: String?
 }
 
 struct GroupState: Codable {
@@ -151,15 +160,26 @@ extension TabSession {
     /// Everything needed to bring this tab back (panes, folders, scrollback, name, open files), with `group` as
     /// an index into the saved groups.
     func savedState(group: Int?) -> TabState {
-        // Diffs and graphs aren't files to reopen; ssh files can't come back without their connection.
-        let kept = editors.filter { !$0.fs.isRemote && $0.mode == .file }
+        // Diffs and graphs aren't files to reopen. Files on an ssh host come back waiting for a connection to it,
+        // which needs to know how it was reached.
+        func remote(_ ed: FileEditorView) -> RemoteSession? { ed.fs as? RemoteSession }
+        let kept = editors.filter { ed in
+            ed.mode == .file && (!ed.fs.isRemote || (remote(ed)?.hostLabel != nil && remote(ed)?.sshArgs?.isEmpty == false))
+        }
+        let anyRemote = kept.contains { $0.fs.isRemote }
+        // A pin on an ssh host: kept with the host (matched by its user@host once logged in again).
+        let pinHost = pinnedFolder?.fs as? RemoteSession
         return TabState(title: customTitle, group: group,
                  focused: panes.firstIndex(of: focusedPane) ?? 0,
                  layout: root.subviews.first.flatMap(TabSession.node) ?? .pane(PaneState()),
                  files: kept.isEmpty ? nil : kept.map(\.path),
+                 fileHosts: anyRemote ? kept.map { remote($0)?.hostLabel } : nil,
+                 fileSSH: anyRemote ? kept.map { remote($0)?.sshArgs } : nil,
                  activeFile: kept.isEmpty ? nil : editor.flatMap { kept.firstIndex(of: $0) } ?? 0,
                  terminalHidden: showsTerminal ? nil : true,
-                 pinnedFolder: pinnedFolder.flatMap { $0.fs.isRemote ? nil : $0.path })
+                 pinnedFolder: pinnedFolder.flatMap { $0.fs.isRemote && pinHost?.hostLabel == nil ? nil : $0.path },
+                 pinnedHost: pinHost?.hostLabel,
+                 pinnedSSH: pinHost.map { $0.sshArgs ?? "" })
     }
 
     fileprivate static func node(_ v: NSView) -> PaneNode? {
@@ -174,8 +194,11 @@ extension TabSession {
             let ssh = t.remote != nil ? t.terminal.sshArgs.flatMap { $0.isEmpty ? nil : $0 } : nil
             // Also while the agent's continue command is still waiting for the new shell's first prompt.
             let waiting = t.pendingCommand != nil ? t.restoredFrom.flatMap { $0.agent ?? ($0.claude == true ? "claude" : nil) } : nil
+            let running = t.pty?.foregroundAgent
+            let session = running == .claude ? t.pty?.foregroundPID.flatMap(ClaudeSessions.id(group:))
+                : running == nil && waiting != nil ? t.restoredFrom?.agentSession : nil
             return .pane(PaneState(cwd: t.currentDirectory, text: text?.isEmpty == false ? text : nil,
-                                   agent: t.pty?.foregroundAgent?.command ?? waiting,
+                                   agent: running?.command ?? waiting, agentSession: session,
                                    ssh: ssh, remoteCwd: ssh == nil ? nil : t.browseDirectory))
         }
         if let s = v as? PaneSplitView {
@@ -195,7 +218,9 @@ extension TabSession {
                 let v = TerminalView(cwd: p.cwd.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil })
                 v.restoredFrom = p
                 if let text = p.text { v.restoredText = text + TabSession.restoredBanner }
-                if let command = TabSession.continueCommand(agent: p.agent ?? (p.claude == true ? "claude" : nil)) { v.pendingCommand = command }
+                if let command = TabSession.continueCommand(agent: p.agent ?? (p.claude == true ? "claude" : nil), session: p.agentSession) {
+                    v.pendingCommand = command
+                }
                 if let ssh = p.ssh, let login = RemoteSession(controlPath: "", sshArgs: ssh).reconnectCommand(in: p.remoteCwd) {
                     v.pendingCommand = "\u{15}" + login
                 }
@@ -216,11 +241,13 @@ extension TabSession {
     }
 
     /// What continues an agent's session, through the user's alias for it when they have one (aliases need shell
-    /// integration); nil when it's not to be continued.
-    private static func continueCommand(agent: String?) -> String? {
+    /// integration); nil when it's not to be continued. A Claude Code `session` is resumed by its id (see
+    /// `ClaudeSessions.resuming`), since `claude -c` takes whichever chat in the folder is newest.
+    private static func continueCommand(agent: String?, session: String?) -> String? {
         guard Config.shared.continueAgents, let kind = agent.flatMap(AgentKind.named) else { return nil }
-        let command = Config.shared.continueCommand(for: kind)
+        var command = Config.shared.continueCommand(for: kind)
         guard !command.isEmpty else { return nil }
+        if kind == .claude, let session { command = ClaudeSessions.resuming(command, session: session, exists: ClaudeSessions.hasTranscript(session)) }
         let alias = Config.shared.shellIntegration ? AliasStore.shared.alias(running: kind.command) : nil
         // ⌃U first clears anything already sitting on the new shell's prompt line.
         return "\u{15}" + kind.throughAlias(command, alias: alias)
@@ -232,6 +259,50 @@ extension TabSession {
         f.timeStyle = .short
         return "\u{1b}[0m\r\n\u{1b}[2m── restored · \(f.string(from: Date())) ──\u{1b}[0m\r\n"
     }()
+}
+
+// MARK: - Claude Code sessions
+
+/// Which chat a Claude Code process is in. Claude Code writes ~/.claude/sessions/<pid>.json while it runs, naming its
+/// session (updated by /clear and /resume), and keeps each chat's transcript as ~/.claude/projects/<folder>/<id>.jsonl
+/// from its first prompt on.
+enum ClaudeSessions {
+    private static var dir: String { NSHomeDirectory() + "/.claude/sessions" }
+
+    /// The session of the Claude Code running as foreground process group `group`: the group leader's file, else
+    /// (Claude started by a wrapper) a file whose process is in that group.
+    static func id(group: pid_t) -> String? {
+        func read(_ path: String) -> (pid: pid_t, id: String)? {
+            guard let data = FileManager.default.contents(atPath: path),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let id = json["sessionId"] as? String, isID(id), let pid = (json["pid"] as? NSNumber)?.int32Value else { return nil }
+            return (pid, id)
+        }
+        if let s = read(dir + "/\(group).json"), s.pid == group { return s.id }
+        let files = ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".json") }
+        return files.lazy.compactMap { read(dir + "/" + $0) }.first { getpgid($0.pid) == group }?.id
+    }
+
+    /// Session ids are UUIDs; anything else isn't put on a command line.
+    static func isID(_ s: String) -> Bool { !s.isEmpty && s.allSatisfy { $0.isHexDigit || $0 == "-" } }
+
+    /// The chat has a transcript to resume (in any project folder; Claude Code names them after the folder).
+    static func hasTranscript(_ id: String) -> Bool {
+        let projects = NSHomeDirectory() + "/.claude/projects"
+        let fm = FileManager.default
+        return ((try? fm.contentsOfDirectory(atPath: projects)) ?? []).contains { fm.fileExists(atPath: "\(projects)/\($0)/\(id).jsonl") }
+    }
+
+    /// The continue command made to resume `session`: its "-c" / "--continue" becomes "--resume <id>". A chat that
+    /// never got a prompt (no transcript, nothing to resume) starts fresh instead of continuing another one. A
+    /// command without either flag is the user's own and kept as it is.
+    static func resuming(_ command: String, session: String, exists: Bool) -> String {
+        guard isID(session) else { return command }
+        var words = command.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+        guard let i = words.firstIndex(where: { $0 == "-c" || $0 == "--continue" }) else { return command }
+        if exists { words[i] = "--resume " + session } else { words.remove(at: i) }
+        return words.joined(separator: " ")
+    }
 }
 
 // MARK: - Serializing a buffer

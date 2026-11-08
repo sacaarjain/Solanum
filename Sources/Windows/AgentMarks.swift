@@ -30,7 +30,7 @@ enum AgentMarks {
             drawAsterisk(on: canvas, in: r, color: claude, alpha: alpha)
         case .antigravity:
             fill(star, on: canvas, in: r, color: antigravity, alpha: alpha)
-        case .codex, .other("astra"):
+        case .codex:
             fill(AgentKind.openAIPath, on: canvas, in: r, color: TerminalPalette.foreground, alpha: alpha)
         case .other:
             fill(sparkles, on: canvas, in: r, color: TerminalPalette.accent, alpha: alpha)

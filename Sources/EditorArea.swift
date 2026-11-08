@@ -54,6 +54,20 @@ final class FileTabStrip: NSView {
     private var dragging = false
     /// While a sub-tab is dragged along the strip: the slot it would move to (editors.count = the end).
     private var insertBefore: Int?
+    /// How far the sub-tabs are scrolled when they don't all fit beside the terminal button.
+    private var scrollX: CGFloat = 0
+    private var maxScrollX: CGFloat = 0
+    /// The active sub-tab last scrolled into view, so switching or opening a file brings its sub-tab into sight
+    /// without undoing the user's own scrolling otherwise.
+    private weak var revealed: FileEditorView?
+    /// ‹ and ›, when the sub-tabs don't all fit (as the main tab strip has them); the sub-tabs show between them.
+    private var leftArrowRect: CGRect = .null
+    private var rightArrowRect: CGRect = .null
+    private var hoverArrow: Int?
+    private var viewport: CGRect = .zero
+    /// The arrows slide the sub-tabs rather than jump them.
+    private var slide: (from: CGFloat, to: CGFloat, start: CFTimeInterval)?
+    private var slideTimer: Timer?
 
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -65,16 +79,102 @@ final class FileTabStrip: NSView {
         closeRects = []
         guard let tab else { return }
         terminalRect = CGRect(x: bounds.width - 30, y: (bounds.height - 22) / 2, width: 22, height: 22)
-        var x: CGFloat = 6
-        for ed in tab.editors {
-            let name = ed.displayName as NSString
-            let w = min(260, max(90, name.size(withAttributes: [.font: Self.font]).width + 56))
-            let r = CGRect(x: x, y: 3, width: w, height: bounds.height - 4)
-            rects.append(r)
-            closeRects.append(CGRect(x: r.maxX - 20, y: r.midY - 8, width: 16, height: 16))
+        let limit = terminalRect.minX - 4
+        let widths = tab.editors.map { ed in
+            min(260, max(90, (ed.displayName as NSString).size(withAttributes: [.font: Self.font]).width + 56))
+        }
+        let total = widths.reduce(0, +) + CGFloat(max(0, widths.count - 1)) * 2
+        if 6 + total + 4 > limit {
+            let h: CGFloat = 22, y = (bounds.height - h) / 2
+            leftArrowRect = CGRect(x: 4, y: y, width: 20, height: h)
+            rightArrowRect = CGRect(x: limit - 20, y: y, width: 20, height: h)
+            viewport = CGRect(x: leftArrowRect.maxX + 2, y: 0, width: rightArrowRect.minX - 2 - leftArrowRect.maxX - 2, height: bounds.height)
+        } else {
+            leftArrowRect = .null
+            rightArrowRect = .null
+            viewport = CGRect(x: 0, y: 0, width: max(0, limit), height: bounds.height)
+        }
+        let pad: CGFloat = leftArrowRect.isNull ? 6 : 2
+        var laid: [CGRect] = []
+        var x = viewport.minX + pad
+        for w in widths {
+            laid.append(CGRect(x: x, y: 3, width: w, height: bounds.height - 4))
             x += w + 2
         }
+        maxScrollX = max(0, x - 2 + pad - viewport.maxX)
+        if tab.editors.indices.contains(tab.activeEditorIndex), tab.editors[tab.activeEditorIndex] !== revealed {
+            revealed = tab.editors[tab.activeEditorIndex]
+            stopSlide()
+            let r = laid[tab.activeEditorIndex]
+            if r.minX - pad - scrollX < viewport.minX { scrollX = r.minX - pad - viewport.minX }
+            if r.maxX + pad - scrollX > viewport.maxX { scrollX = r.maxX + pad - viewport.maxX }
+        }
+        scrollX = min(max(0, scrollX), maxScrollX)
+        for l in laid {
+            let r = l.offsetBy(dx: -scrollX, dy: 0)
+            rects.append(r)
+            closeRects.append(CGRect(x: r.maxX - 20, y: r.midY - 8, width: 16, height: 16))
+        }
     }
+
+    /// The sub-tab under `p`, if it's in the part of the strip the sub-tabs show in (not under an arrow or the
+    /// terminal button).
+    private func index(at p: NSPoint) -> Int? {
+        guard p.x >= viewport.minX, p.x < viewport.maxX else { return nil }
+        return rects.firstIndex { $0.contains(p) }
+    }
+
+    override func scrollWheel(with e: NSEvent) {
+        guard maxScrollX > 0 else { return super.scrollWheel(with: e) }
+        // Sideways swipes, or an ordinary mouse wheel, move the sub-tabs.
+        let d = abs(e.scrollingDeltaX) > abs(e.scrollingDeltaY) ? e.scrollingDeltaX : e.scrollingDeltaY
+        scroll(by: -(e.hasPreciseScrollingDeltas ? d : d * 24))
+    }
+
+    func scroll(by dx: CGFloat) {
+        stopSlide()
+        let to = min(max(0, scrollX + dx), maxScrollX)
+        guard to != scrollX else { return }
+        set(scrollX: to)
+    }
+
+    private func set(scrollX x: CGFloat) {
+        scrollX = x
+        layoutRects()
+        if let w = window {
+            let p = convert(w.mouseLocationOutsideOfEventStream, from: nil)
+            hover = index(at: p)
+            hoverClose = hover.map { closeRects[$0].contains(p) } ?? false
+        }
+        needsDisplay = true
+    }
+
+    /// ‹ / ›: three quarters of the visible strip that way. Pressing again on the way carries on from where it was heading.
+    func slide(_ dir: Int) {
+        let to = min(max(0, (slide?.to ?? scrollX) + CGFloat(dir) * viewport.width * 0.75), maxScrollX)
+        guard to != scrollX else { return }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { return set(scrollX: to) }
+        slide = (scrollX, to, CACurrentMediaTime())
+        guard slideTimer == nil else { return }
+        let timer = Timer(timeInterval: 1 / 120, repeats: true) { [weak self] _ in self?.slideStep() }
+        RunLoop.main.add(timer, forMode: .common)
+        slideTimer = timer
+    }
+
+    private func slideStep() {
+        guard let s = slide, window != nil else { return stopSlide() }
+        let t = min(1, (CACurrentMediaTime() - s.start) / 0.24)
+        set(scrollX: s.from + (s.to - s.from) * CGFloat(1 - pow(1 - t, 3)))
+        if t >= 1 { stopSlide() }
+    }
+
+    private func stopSlide() {
+        slideTimer?.invalidate()
+        slideTimer = nil
+        slide = nil
+    }
+
+    var devScrollState: String { "scroll=\(Int(scrollX)) of \(Int(maxScrollX)) arrows=\(!leftArrowRect.isNull)" }
 
     override func draw(_ dirtyRect: NSRect) {
         let th = Config.shared.theme
@@ -84,7 +184,12 @@ final class FileTabStrip: NSView {
         th.border.setFill()
         NSRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1).fill()
         guard let tab else { return }
-        for (i, ed) in tab.editors.enumerated() where rects[i].minX < terminalRect.minX - 4 {
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: viewport).addClip()
+        // In a layer of their own, so the edges can fade the sub-tabs out (the bar behind them is see-through).
+        let cg = NSGraphicsContext.current?.cgContext
+        cg?.beginTransparencyLayer(auxiliaryInfo: nil)
+        for (i, ed) in tab.editors.enumerated() where rects[i].maxX > viewport.minX && rects[i].minX < viewport.maxX {
             let r = rects[i]
             let active = i == tab.activeEditorIndex
             if active || hover == i {
@@ -103,9 +208,14 @@ final class FileTabStrip: NSView {
             }
             let para = NSMutableParagraphStyle()
             para.lineBreakMode = .byTruncatingMiddle
-            (name as NSString).draw(in: NSRect(x: r.minX + 30, y: r.midY - 7, width: r.width - 54, height: 16),
-                                    withAttributes: [.font: Self.font, .paragraphStyle: para,
-                                                     .foregroundColor: active ? th.foreground : th.foreground.withAlphaComponent(0.6)])
+            // Deleted from disk: struck through in red, as VS Code shows it.
+            var attrs: [NSAttributedString.Key: Any] = [.font: Self.font, .paragraphStyle: para,
+                                                         .foregroundColor: active ? th.foreground : th.foreground.withAlphaComponent(0.6)]
+            if ed.isDeleted {
+                attrs[.foregroundColor] = th.red.withAlphaComponent(active ? 1 : 0.75)
+                attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            }
+            (name as NSString).draw(in: NSRect(x: r.minX + 30, y: r.midY - 7, width: r.width - 54, height: 16), withAttributes: attrs)
             // Unsaved: a dot where the ✕ goes, until hovered.
             let cr = closeRects[i]
             if hover == i || active {
@@ -136,6 +246,17 @@ final class FileTabStrip: NSView {
             th.accent.setFill()
             NSBezierPath(roundedRect: NSRect(x: x - 1, y: 4, width: 2.5, height: bounds.height - 8), xRadius: 1.25, yRadius: 1.25).fill()
         }
+        // More sub-tabs that way: they fade out at the edge instead of stopping in a hard cut.
+        cg?.setBlendMode(.destinationOut)
+        if scrollX > 0.5, let g = NSGradient(starting: .black, ending: .clear) {
+            g.draw(in: NSRect(x: viewport.minX, y: 0, width: 20, height: bounds.height - 1), angle: 0)
+        }
+        if scrollX < maxScrollX - 0.5, let g = NSGradient(starting: .clear, ending: .black) {
+            g.draw(in: NSRect(x: viewport.maxX - 20, y: 0, width: 20, height: bounds.height - 1), angle: 0)
+        }
+        cg?.endTransparencyLayer()
+        NSGraphicsContext.restoreGraphicsState()
+        drawArrows(th)
 
         // Show / hide this tab's terminal.
         if hoverTerminal {
@@ -147,6 +268,23 @@ final class FileTabStrip: NSView {
         if let img = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Terminal")?.withSymbolConfiguration(config) {
             img.draw(in: NSRect(x: terminalRect.midX - img.size.width / 2, y: terminalRect.midY - img.size.height / 2,
                                 width: img.size.width, height: img.size.height))
+        }
+    }
+
+    /// ‹ and ›, as the main tab strip draws them: bright when there's more that way, faint at the end.
+    private func drawArrows(_ th: Theme) {
+        for (dir, r) in [(-1, leftArrowRect), (1, rightArrowRect)] where !r.isNull {
+            let more = dir < 0 ? scrollX > 0.5 : scrollX < maxScrollX - 0.5
+            if more && hoverArrow == dir {
+                th.surface.withAlphaComponent(0.7).setFill()
+                NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5).fill()
+            }
+            let color = th.foreground.withAlphaComponent(more ? (hoverArrow == dir ? 0.95 : 0.7) : 0.18)
+            let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold).applying(.init(paletteColors: [color]))
+            if let img = NSImage(systemSymbolName: dir < 0 ? "chevron.left" : "chevron.right", accessibilityDescription: nil)?
+                .withSymbolConfiguration(config) {
+                img.draw(in: NSRect(x: r.midX - img.size.width / 2, y: r.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
+            }
         }
     }
 
@@ -177,13 +315,15 @@ final class FileTabStrip: NSView {
 
     override func mouseMoved(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
-        let h = rects.firstIndex { $0.contains(p) }
+        let h = index(at: p)
         let hc = h.map { closeRects[$0].contains(p) } ?? false
         let ht = terminalRect.contains(p)
-        if h != hover || hc != hoverClose || ht != hoverTerminal {
+        let ha = leftArrowRect.contains(p) ? -1 : rightArrowRect.contains(p) ? 1 : nil
+        if h != hover || hc != hoverClose || ht != hoverTerminal || ha != hoverArrow {
             hover = h
             hoverClose = hc
             hoverTerminal = ht
+            hoverArrow = ha
             toolTip = ht ? (tab?.showsTerminal == true ? "Hide Terminal" : "Show Terminal")
                 : h.flatMap { i in tab.map { $0.editors[i].path } }
             needsDisplay = true
@@ -194,6 +334,7 @@ final class FileTabStrip: NSView {
         hover = nil
         hoverClose = false
         hoverTerminal = false
+        hoverArrow = nil
         needsDisplay = true
     }
 
@@ -201,7 +342,9 @@ final class FileTabStrip: NSView {
         guard let tab else { return }
         let p = convert(e.locationInWindow, from: nil)
         if terminalRect.contains(p) { return tab.toggleTerminal() }
-        guard let i = rects.firstIndex(where: { $0.contains(p) }) else { return }
+        if leftArrowRect.contains(p) { return slide(-1) }
+        if rightArrowRect.contains(p) { return slide(1) }
+        guard let i = index(at: p) else { return }
         if closeRects[i].contains(p) { return tab.editors[i].requestClose() }
         pressed = i
         pressPoint = p
@@ -217,6 +360,10 @@ final class FileTabStrip: NSView {
         // Along the strip: reorder. Off it: a tab of its own, or the other column (see editorDragOver).
         if bounds.contains(p) {
             tab.windowController?.clearEditorDrop()
+            // Near either end of a scrolling strip, carry the sub-tab on past the ones out of view.
+            if maxScrollX > 0 {
+                if p.x < viewport.minX + 24 { scroll(by: -14) } else if p.x > viewport.maxX - 24 { scroll(by: 14) }
+            }
             insertBefore = rects.firstIndex { $0.midX > p.x } ?? rects.count
         } else {
             insertBefore = nil
@@ -242,13 +389,13 @@ final class FileTabStrip: NSView {
 
     override func otherMouseUp(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
-        if let i = rects.firstIndex(where: { $0.contains(p) }) { tab?.editors[i].requestClose() }
+        if let i = index(at: p) { tab?.editors[i].requestClose() }
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let tab else { return nil }
         let p = convert(event.locationInWindow, from: nil)
-        guard let i = rects.firstIndex(where: { $0.contains(p) }) else { return nil }
+        guard let i = index(at: p) else { return nil }
         let ed = tab.editors[i]
         let m = NSMenu()
         if tab.showsTerminal || tab.editors.count > 1 {

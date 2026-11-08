@@ -40,6 +40,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var lastTheme = ""
     /// Set while a control here is committing, so our own change doesn't rebuild the page under the pointer.
     var committing = false
+    /// System shows the release history instead of its settings.
+    private(set) var showingReleases = false
+
+    /// Opens (or leaves) System › Release History.
+    func showReleases(_ on: Bool) {
+        page = .system
+        showingReleases = on
+        rebuild()
+        root.scrollToTop()
+    }
+
+    /// The theme being edited, for asking about unsaved changes before leaving it.
+    var themeDraft: ThemeEditor.Model?
+    /// Pinned under the page (the theme editor's Save bar), rebuilt with it.
+    var footer: NSView? { didSet { root.setFooter(footer) } }
 
     private init() {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 640),
@@ -81,15 +96,53 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func show(_ p: Page) {
-        page = p
-        editingTheme = nil
-        rebuild()
-        root.scrollToTop()
+        confirmLeavingTheme { [weak self] in
+            guard let self else { return }
+            self.page = p
+            self.editingTheme = nil
+            self.showingReleases = false
+            self.rebuild()
+            self.root.scrollToTop()
+        }
+    }
+
+    /// Before leaving the theme editor with unsaved changes: Save, Don't Save (back to what's saved), or Cancel.
+    func confirmLeavingTheme(_ then: @escaping () -> Void) {
+        guard let model = themeDraft, model.isDirty, let w = window else {
+            themeDraft = nil
+            return then()
+        }
+        let alert = NSAlert()
+        alert.messageText = "Save changes to “\(model.saved.name)”?"
+        alert.informativeText = "Your changes to this theme will be lost if you don't save them."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Don't Save")
+        alert.beginSheetModal(for: w) { [weak self] resp in
+            switch resp {
+            case .alertFirstButtonReturn: model.save()
+            case .alertThirdButtonReturn:
+                ThemeLibrary.draft = nil
+                Config.shared.commit()
+            default: return
+            }
+            self?.themeDraft = nil
+            then()
+        }
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard let model = themeDraft, model.isDirty else { return true }
+        confirmLeavingTheme { [weak self] in self?.window?.close() }
+        return false
     }
 
     /// Opens a custom theme in the editor, switching to it so edits show live in every window.
     func edit(_ theme: Theme) {
         guard let url = theme.file else { return }
+        if let model = themeDraft, model.isDirty, model.saved.file != url {
+            return confirmLeavingTheme { [weak self] in self?.edit(theme) }
+        }
         page = .appearance
         editingTheme = url
         if Config.shared.themeName != theme.name {
@@ -107,6 +160,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let same = builtPage == page && builtEditing == editingTheme
         builtPage = page
         builtEditing = editingTheme
+        // The editor sets these again as it builds.
+        footer = nil
+        if editingTheme == nil || page != .appearance { themeDraft = nil }
         root.show(SettingsPages.make(page, controller: self), keepScroll: same)
     }
     private var builtPage: Page?
@@ -141,6 +197,8 @@ final class SettingsRootView: NSView {
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
+        scroll.wantsLayer = true
+        scroll.contentView.wantsLayer = true
         addSubview(scroll)
     }
 
@@ -167,13 +225,28 @@ final class SettingsRootView: NSView {
         }
     }
 
+    private var footer: NSView?
+
+    /// Something pinned under the page (nil: none).
+    func setFooter(_ view: NSView?) {
+        footer?.removeFromSuperview()
+        footer = view
+        if let view { addSubview(view) }
+        needsLayout = true
+    }
+
     /// Swaps in a freshly built page; `keepScroll` holds the scroll position (a rebuild of the page already showing).
     func show(_ page: SettingsPageView, keepScroll: Bool = false) {
         let offset = scroll.contentView.bounds.origin.y
         pageView = page
+        // Its own layer: the scroll area is see-through (the window is glass), so a page drawn into the root's layer
+        // left its pixels behind when the next one came in, two pages showing at once.
+        page.wantsLayer = true
         scroll.documentView = page
         needsLayout = true
         layoutSubtreeIfNeeded()
+        needsDisplay = true
+        scroll.contentView.needsDisplay = true
         if keepScroll {
             let maxY = max(0, page.frame.height - scroll.contentSize.height)
             scroll.contentView.scroll(to: NSPoint(x: 0, y: min(offset, maxY)))
@@ -190,7 +263,9 @@ final class SettingsRootView: NSView {
         super.layout()
         effect.frame = bounds
         sidebar.frame = NSRect(x: 0, y: 0, width: Self.sidebarWidth, height: bounds.height)
-        scroll.frame = NSRect(x: Self.sidebarWidth, y: 0, width: bounds.width - Self.sidebarWidth, height: bounds.height)
+        let footerH = footer == nil ? 0 : ThemeSaveBar.height
+        scroll.frame = NSRect(x: Self.sidebarWidth, y: 0, width: bounds.width - Self.sidebarWidth, height: bounds.height - footerH)
+        footer?.frame = NSRect(x: Self.sidebarWidth, y: bounds.height - footerH, width: bounds.width - Self.sidebarWidth, height: footerH)
         guard let page = pageView else { return }
         let w = scroll.contentSize.width
         page.frame = NSRect(x: 0, y: 0, width: w, height: page.height(forWidth: w))
@@ -205,6 +280,9 @@ final class SettingsSidebar: NSView {
     private static let flower = SolanumArt.flowerImage(size: 40)
 
     override var isFlipped: Bool { true }
+
+    /// Dark on a light fill, white on a dark one (the tab badges' rule).
+    private static func ink(on fill: NSColor) -> NSColor { fill.luminance > 0.6 ? NSColor(white: 0.1, alpha: 1) : .white }
 
     private func symbol(_ name: String, _ color: NSColor) -> NSImage? {
         let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium).applying(.init(paletteColors: [color]))
@@ -234,9 +312,10 @@ final class SettingsSidebar: NSView {
                 NSBezierPath(roundedRect: r, xRadius: 8, yRadius: 8).fill()
             }
             let box = NSRect(x: r.minX + 8, y: r.midY - 12, width: 24, height: 24)
-            (selected ? th.accent.withAlphaComponent(0.9) : th.foreground.withAlphaComponent(0.08)).setFill()
+            (selected ? th.accent : th.foreground.withAlphaComponent(0.08)).setFill()
             NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6).fill()
-            if let img = symbol(p.symbol, selected ? .white : th.foreground.withAlphaComponent(0.75)) {
+            // On the accent, ink that reads on it: white washes out on a light accent (a pale blue, a yellow).
+            if let img = symbol(p.symbol, selected ? Self.ink(on: th.accent) : th.foreground.withAlphaComponent(0.75)) {
                 img.draw(in: NSRect(x: box.midX - img.size.width / 2, y: box.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
             }
             (p.title as NSString).draw(at: NSPoint(x: box.maxX + 10, y: r.midY - 8),
@@ -247,7 +326,7 @@ final class SettingsSidebar: NSView {
                 let badge = NSRect(x: r.maxX - 28, y: r.midY - 8, width: 16, height: 16)
                 th.accent.setFill()
                 NSBezierPath(ovalIn: badge).fill()
-                let one = NSAttributedString(string: "1", attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .bold), .foregroundColor: NSColor.white])
+                let one = NSAttributedString(string: "1", attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .bold), .foregroundColor: Self.ink(on: th.accent)])
                 let s = one.size()
                 one.draw(at: NSPoint(x: badge.midX - s.width / 2, y: badge.midY - s.height / 2))
             }
@@ -326,7 +405,10 @@ final class SettingsPageView: NSView {
         var y: CGFloat = 46
         for b in blocks {
             let h = b.height(inner)
-            b.view.frame = NSRect(x: Self.margin, y: y, width: inner, height: h)
+            // A lone button (‹ All Themes, ‹ System) keeps its own width at the left: stretched across the page, its
+            // title sat in the middle, and the empty space beside it was clickable too.
+            let w = (b.view as? NSButton).map { min(inner, ceil($0.fittingSize.width)) } ?? inner
+            b.view.frame = NSRect(x: Self.margin, y: y, width: w, height: h)
             y += h + b.gapAfter
         }
     }
@@ -1242,7 +1324,12 @@ enum SettingsPages {
     static func make(_ page: SettingsWindowController.Page, controller: SettingsWindowController) -> SettingsPageView {
         let v = SettingsPageView()
         let editing = page == .appearance ? controller.editingTheme.flatMap { url in ThemeLibrary.custom.first { $0.file == url } } : nil
-        v.add(settingsLabel(editing == nil ? page.title : "Edit Theme", size: 26, weight: .bold), height: 32, gap: 24)
+        let releases = page == .system && controller.showingReleases
+        v.add(settingsLabel(editing != nil ? "Edit Theme" : releases ? "Release History" : page.title, size: 26, weight: .bold), height: 32, gap: 24)
+        if releases {
+            ReleaseHistoryPage.build(v, controller)
+            return v
+        }
         switch page {
         case .appearance:
             if let editing { ThemeEditor.build(v, controller, editing) } else { appearance(v, controller) }
@@ -1311,6 +1398,8 @@ enum SettingsPages {
         case .building:
             break
         }
+        // Every push to main, whatever the update's doing.
+        if u.repo != nil { actions.append(linkButton("Release History") { [weak ctl] in ctl?.showReleases(true) }) }
         if !actions.isEmpty {
             let row = NSStackView(views: actions)
             row.spacing = 18

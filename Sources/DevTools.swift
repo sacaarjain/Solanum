@@ -199,6 +199,167 @@ enum SelfTest {
             check("file links: worth a look over ssh", FileLinks.looksLikePath("a/b") && FileLinks.looksLikePath("a.txt")
                   && !FileLinks.looksLikePath("word") && !FileLinks.looksLikePath("/") && !FileLinks.looksLikePath("..") && !FileLinks.looksLikePath("dir/"))
             do {
+                // A shell from sudo -i -u reporting its user (Follow This Shell's Folder), and the line that has it do so.
+                let (t, _) = make(20, 80)
+                feed(t, "\u{1b}]1337;SolanumUser=svc:/home/svc\u{07}")
+                check("sudo shell: no user outside ssh", t.remoteUser == nil)
+                feed(t, "\u{1b}]1337;SolanumSSH=/tmp/x\u{07}\u{1b}]7;file://host/opt/app\u{07}\u{1b}]1337;SolanumUser=svc:/home/svc\u{07}")
+                check("sudo shell: its folder and user", t.remoteCwd == "/opt/app" && t.remoteUser?.name == "svc" && t.remoteUser?.home == "/home/svc")
+                feed(t, "\u{1b}]1337;SolanumSSH=\u{07}")
+                check("sudo shell: forgotten when ssh ends", t.remoteUser == nil && t.remoteCwd == nil)
+                check("sudo shell: commands that switch user", ["sudo -i -u pipelineservice", "sudo -iu svc", "sudo su - svc", "sudo -s",
+                    "su - svc", "su", "sudo -u svc bash", "x$ sudo -i"].allSatisfy(TerminalView.switchesUser)
+                      && !["sudo ls", "sudo -u svc ls /tmp", "sudo systemctl restart x", "summary", "ls -s", "sudo cat -s x"].contains(where: TerminalView.switchesUser))
+                let follow = TerminalView.followCommand(promptWidth: 30, columns: 80)
+                check("sudo shell: erases the lines it took", follow.hasSuffix("printf '\\033[\((30 + follow.count - 1) / 80 + 1)A\\033[J'"), follow)
+                let (p, _) = make(40, 5)
+                feed(p, "\u{1b}]1337;SolanumSSH=/tmp/x\u{07}[sudo] password for sjain: ")
+                check("sudo shell: not at a password question", !p.atEmptyHostPrompt())
+                feed(p, "\r\n[svc@host ~]$ ")
+                check("sudo shell: at the new shell's prompt", p.atEmptyHostPrompt())
+                feed(p, "ls")
+                check("sudo shell: not with something typed", !p.atEmptyHostPrompt())
+                check("sudo shell: the follow line", TerminalView.followLine.hasPrefix(" PROMPT_COMMAND=")
+                      && TerminalView.followLine.contains("SolanumUser=%s:%s") && TerminalView.followLine.contains("${PROMPT_COMMAND:+;$PROMPT_COMMAND}"))
+            }
+            do {
+                // A new terminal on an ssh host shares the open connection (no password again); logs in afresh once it's gone.
+                let sock = NSTemporaryDirectory() + "solanum-selftest-sock-\(getpid())"
+                FileManager.default.createFile(atPath: sock, contents: Data())
+                let r = RemoteSession(controlPath: sock, sshArgs: "lanode11")
+                let shared = r.newTerminalCommand(in: "/srv/app") ?? ""
+                check("ssh: new terminals share the connection", shared.hasPrefix("SOLANUM_SSH_ARGS='bGFub2RlMTEg' ssh -t -S ")
+                      && shared.contains("-o ControlMaster=no solanum-remote") && shared.contains("cd '\\''/srv/app'\\''"), shared)
+                try? FileManager.default.removeItem(atPath: sock)
+                check("ssh: and log in again once it's gone", r.newTerminalCommand(in: "/srv/app")?.hasPrefix("ssh -t lanode11 ") == true,
+                      r.newTerminalCommand(in: "/srv/app") ?? "nil")
+            }
+            do {
+                // Only the selection keeps an alpha: the window's transparency is the Background opacity setting.
+                let t = Theme(name: "t", bg: "#11223344", bg2: "#00000080", fg: "#EEEEEE80", selection: "#8ED8FF4D", accent: "#8ED8FF80",
+                              ansi: ["#11111180"])
+                check("themes: only the selection is see-through", t.background.hexString == "#112233" && t.background2?.hexString == "#000000"
+                      && t.foreground.hexString == "#EEEEEE" && t.accent.hexString == "#8ED8FF" && t.ansi[0].hexString == "#111111"
+                      && t.selection.hexString == "#8ED8FF4D", t.background.hexString)
+            }
+            do {
+                // The Git Graph's filters, as git log arguments, and the commits as laid out.
+                var f = GraphFilter()
+                check("graph filter: all branches", f.script().contains("git log --all --parents") && !f.script().contains("--grep"))
+                f.text = "fix"; f.user = "Ben Guo"; f.days = 7; f.path = "Sources/a b.swift"; f.branch = "origin/main"
+                let sc = f.script()
+                check("graph filter: everything", sc.contains("git log 'origin/main' --parents") && sc.contains("--author='^Ben Guo <'")
+                      && sc.contains("--since='7 days ago'") && sc.contains("--grep='fix' -F -i") && sc.contains("-- 'Sources/a b.swift'\n") && sc.hasSuffix("git log 'origin/main' --topo-order -n 50000 --format='%H %P'"), sc)
+                f = GraphFilter(); f.text = "f607a7e"; f.regex = true; f.matchCase = true
+                check("graph filter: a hash too", f.script().contains("--grep='f607a7e' -E\n") && f.script().contains("rev-parse -q --verify 'f607a7e^{commit}'"))
+                let c = { (h: String, p: [String], t: Double) in GraphCommit(hash: h, parents: p, author: "a", date: Date(timeIntervalSince1970: t), subject: h, refs: []) }
+                let arranged = f.arrange([c("b", ["a"], 2), c("c", ["b"], 3), c("b", ["a"], 2)])
+                check("graph filter: a search shows a list", arranged.map(\.hash) == ["c", "b"] && arranged[0].parents == ["b"] && arranged[1].parents.isEmpty)
+                // Shown: d, b. Hidden: c (d's parent) and a. d connects to b through c; b's parent a isn't shown.
+                let topo: [(String, [String])] = [("d", ["c"]), ("c", ["b", "x"]), ("x", ["a"]), ("b", ["a"]), ("a", [])]
+                let linked = f.arrange([c("d", ["c"], 4), c("b", ["a"], 2)], topology: topo)
+                check("graph filter: a search connects through hidden commits", linked.map(\.parents) == [["b"], []], "\(linked.map(\.parents))")
+                let split = GraphFilter.split(Data("h\nrec\u{1e}\u{1d}d c\nc b x\n".utf8))
+                check("graph filter: shape read after the commits", split.topology?.map(\.0) == ["d", "c"] && String(decoding: split.log, as: UTF8.self) == "h\nrec\u{1e}")
+                check("graph refs", GraphRefs.parse(Data("main\n\u{1e}refs/heads/main\nrefs/remotes/origin/HEAD\nrefs/remotes/origin/main\nrefs/tags/v1\n".utf8)).remotes == ["origin/main"])
+            }
+            do {
+                // Logs: a logback file written with %highlight / %cyan, its config imported, and the built-in coloring.
+                let esc = "\u{1B}"
+                let line = "2026-07-21 18:09:05.778 [main] \(esc)[34mINFO \(esc)[0;39m \(esc)[36mVipsLogger\(esc)[0;39m - \(esc)[32mVipsLogger initialized: D:\\x\\y.log\(esc)[0m"
+                let st = ANSIText.strip(line)
+                check("logs: escapes taken out", st.visible == "2026-07-21 18:09:05.778 [main] INFO  VipsLogger - VipsLogger initialized: D:\\x\\y.log", st.visible)
+                check("logs: their colors kept", st.colors.map(\.color) == [.palette(4), .palette(6), .palette(2)]
+                      && (line as NSString).substring(with: st.colors[0].range) == "INFO ")
+                let ns = line as NSString
+                let open = ns.range(of: "\(esc)[34m").location
+                check("logs: an escape found from inside it", ANSIText.escapeStart(ns, open + 3) == open && ANSIText.escapeStart(ns, open + 4) == open
+                      && ANSIText.escapeStart(ns, open + 5) == nil && ANSIText.escapeStart(ns, 0) == nil
+                      && ANSIText.escapeRange(ns, around: open + 2) == NSRange(location: open, length: 5))
+                check("logs: copying leaves escapes out", ANSIText.removing("a\(esc)[1;31mb\(esc)[0mc") == "abc")
+                let xml = """
+                <configuration>
+                  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender"><encoder>
+                    <!-- <pattern>%msg</pattern> -->
+                    <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %highlight(%-5level) %cyan(%logger{0}) - %msg%n</pattern>
+                  </encoder></appender>
+                  <appender name="FILE"><file>{PATH_TO_LOGS}/service-output.log</file><encoder>
+                    <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %highlight(%-5level) %cyan(%logger{0}) - %msg%n</pattern></encoder>
+                    <rollingPolicy><fileNamePattern>{PATH_TO_LOGS}/service-output-%d{yyyy-MM-dd}.%i.log</fileNamePattern></rollingPolicy>
+                  </appender>
+                  <appender name="ERROR_FILE"><file>{PATH_TO_LOGS}/nativelogs/service-error.log</file>
+                    <encoder><pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{0} - %msg%n</pattern></encoder>
+                  </appender>
+                </configuration>
+                """
+                let j = try? LogFormats.convert(xml, name: "logback.xml", folder: "PathoDaemon")
+                check("logs: logback config imported", j?["name"] as? String == "PathoDaemon" && (j?["patterns"] as? [String])?.count == 1
+                      && j?["files"] as? [String] == ["service-output.log", "service-output-*.*.log", "service-error.log"], "\(j ?? [:])")
+                if let j, let f = try? LogFormat(json: j) {
+                    let p = f.paint(line, carried: nil)
+                    let painted = { (p: LogLinePaint, text: String) in p.paints.filter { (line as NSString).substring(with: $0.range) == text }.map(\.color) }
+                    check("logs: the layout's fields", p.isHeader && p.level == .info && painted(p, "2026-07-21 18:09:05.778") == [.dim]
+                          && painted(p, "main") == [.dim] && painted(p, "D:\\x\\y.log") == [.palette(4)], "\(p)")
+                    let err = f.paint("2026-07-21 18:09:06.000 [pool-1] ERROR Main - boom java.io.IOException: disk 'D' full at 99%", carried: nil)
+                    check("logs: an error line", err.level == .error && err.wash == .palette(1) && err.paints.contains { $0.color == .palette(1) && $0.bold })
+                    let frame = f.paint("\tat com.x.Y.z(Y.java:12)", carried: .error)
+                    check("logs: its stack trace goes with it", frame.continues && frame.wash == .palette(1) && !frame.isHeader)
+                    check("logs: caused by", f.paint("Caused by: java.lang.IllegalStateException: x", carried: .warn).wash == .palette(3))
+                    check("logs: a plain line after doesn't", f.paint("plain words", carried: .error).wash == nil)
+                    check("logs: the format chosen by its lines", LogFormats.choose(for: "issue.log", sample: [line, line, ""], among: [f]).name == "PathoDaemon"
+                          && LogFormats.choose(for: "other.log", sample: ["hello", "world"], among: [f]).name == LogFormat.builtIn.name)
+                    check("logs: and by its file names", f.matches(fileName: "service-output-2026-07-21.0.log") && !f.matches(fileName: "issue.log"))
+                } else {
+                    check("logs: imported format reads", false)
+                }
+                let generic = LogFormat.builtIn.paint("2026-07-21T18:09:05.120Z [worker-3] WARN  com.acme.Sync - retrying in 500ms (attempt 2)", carried: nil)
+                check("logs: built-in time, thread, level", generic.isHeader && generic.level == .warn && generic.wash == .palette(3)
+                      && generic.paints.contains { $0.color == .palette(6) } && generic.paints.filter { $0.color == .palette(5) }.count == 2, "\(generic)")
+                check("logs: built-in bracketed and level=", LogFormat.builtIn.paint("[error] x", carried: nil).level == .error
+                      && LogFormat.builtIn.paint("ts=1 level=debug msg=hi", carried: nil).level == .debug
+                      && LogFormat.builtIn.paint("an error occurred", carried: nil).level == nil)
+                let py = LogLayout.regex(fromPattern: "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+                check("logs: Python layouts", py.flatMap { try? NSRegularExpression(pattern: $0) }?.firstMatch(in: "2026-07-21 18:09:05,123 - app.db - WARNING - slow", range: NSRange(location: 0, length: 49)) != nil)
+                check("logs: date patterns", LogLayout.dateRegex("dd/MMM/yyyy:HH:mm:ss Z") == #"\d{2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2}\s+(?:Z|[A-Z]{2,5}|[+-]\d{2}:?\d{2})"#)
+                check("logs: globs", LogFormats.glob("app-*.log", "APP-1.log") && LogFormats.glob("a?c", "abc") && !LogFormats.glob("*.log", "a.txt"))
+                check("logs: color names", LogColor(name: "bright-red") == .palette(9) && LogColor(name: "#ff8800") == .rgb(255, 136, 0) && LogColor(name: "nope") == nil)
+                let rules = try? LogFormat(json: ["name": "R", "rules": [["match": "heartbeat", "color": "dim", "line": true], ["match": "slide (\\d+)", "color": "yellow", "bold": true]]])
+                let ruled = rules?.paint("INFO heartbeat for slide 42", carried: nil)
+                check("logs: rules files", ruled?.wash == .dim && ruled?.paints.last == LogPaint(range: NSRange(location: 25, length: 2), color: .palette(3), bold: true))
+                check("logs: bad rules say why", (try? LogFormat(json: ["rules": [["match": "x", "color": "nope"]]])) == nil
+                      && (try? LogFormats.convert("<configuration/>", name: "logback.xml", folder: "x")) == nil)
+                check("logs: styles in words", LogStyle(text: "bright-red bold tint") == LogStyle(color: .palette(9), bold: true, tint: true)
+                      && LogStyle(text: "dim fade")?.text == "dim fade" && LogStyle(text: "#00FF00")?.text == "#00FF00" && LogStyle(text: "loud") == nil)
+                if let j, let base = try? LogFormat(json: j),
+                   let all = try? LogFormat(json: ["colors": ["time": "yellow", "logger": "red"], "rules": [["text": "[OK]", "style": "green bold"]]], colorsOnly: true),
+                   let mine = try? LogFormat(json: ["colors": ["logger": "magenta bold"], "rules": [["text": "Main", "style": "bright-blue tint"], ["text": "noise", "style": "fade"]]]) {
+                    var f = base
+                    f.styles = mine.styles
+                    f.rules = mine.rules
+                    f = f.merged(over: all)
+                    check("logs: a format's colors over all logs'", f.style(.logger).style.color == .palette(5) && f.style(.time).style.color == .palette(3)
+                          && f.style(.thread).chosen == false && f.markerStyle("[OK]")?.bold == true)
+                    let p = f.paint(line, carried: nil)
+                    let logger = (line as NSString).range(of: "VipsLogger")
+                    // Chosen colors go over the file's own (cyan), which go over the defaults.
+                    check("logs: chosen colors win over the file's", p.paints.last { NSIntersectionRange($0.range, logger).length > 0 }?.color == .palette(5))
+                    let ok = f.paint("2026-07-21 18:11:08.525 [main] INFO  StartupHealthCheck - StartupHealthCheck: [OK]   PLM Auth", carried: nil)
+                    check("logs: a marker", ok.paints.last == LogPaint(range: NSRange(location: 78, length: 4), color: .palette(2), bold: true), "\(ok.paints.last.map { "\($0)" } ?? "")")
+                    let main = f.paint("2026-07-21 18:09:06.733 [main] INFO  Main - Loaded MainWindow", carried: nil)
+                    check("logs: a marker is a whole word, and tints", main.wash == .palette(12) && main.paints.filter { $0.color == .palette(12) }.count == 1)
+                    let faded = f.paint("2026-07-21 18:09:06.733 [main] ERROR Main - noise", carried: nil)
+                    check("logs: fading a line", faded.paints == [LogPaint(range: NSRange(location: 0, length: 49), color: .faint)] && faded.wash == nil)
+                    var spans: [(String, LogStyleKey)] = []
+                    let msg = "GET https://x.io/a?b=1, file C:\\data\\a.svs and /var/log/x.log took 4812ms at 10.0.0.1:8080 id 9f3c2a1e-7b44-4c1a-9d2e-0a1b2c3d4e5f 'ai_retry' \"q\" ok=true v1.2.3 pool-2-thread-1 java.io.IOException 3rd"
+                    let mu = Array(msg.utf16)
+                    LogMessageScanner.scan(mu, in: NSRange(location: 0, length: mu.count)) { r, k in spans.append(((msg as NSString).substring(with: r), k)) }
+                    check("logs: message parts", spans.map(\.0) == ["https://x.io/a?b=1", "C:\\data\\a.svs", "/var/log/x.log", "4812ms", "10.0.0.1:8080",
+                                                                    "9f3c2a1e-7b44-4c1a-9d2e-0a1b2c3d4e5f", "'ai_retry'", "\"q\"", "true", "java.io.IOException"]
+                          && spans.map(\.1) == [.url, .path, .path, .number, .number, .number, .string, .string, .literal, .exception], "\(spans)")
+                }
+                check("logs: log files", SyntaxLanguage(path: "/a/issue.log") == .log && SyntaxLanguage(path: "/a/app.log.1") == .log && SyntaxLanguage(path: "/a/b.txt") == nil)
+            }
+            do {
                 // A question near the top of a tall screen counts, as it does at the bottom; old menus further up don't.
                 let (t, _) = make(40, 50)
                 feed(t, "Trust this folder?\r\n❯ 1. Yes\r\n  2. No\r\n")
@@ -206,15 +367,65 @@ enum SelfTest {
                 feed(t, String(repeating: "line\r\n", count: 30))
                 check("agent status: an old question far above isn't live", t.agentScreenStatus() == .done)
             }
+            check("files: a change on disk changes the signature, even at the same size", {
+                let f = NSTemporaryDirectory() + "solanum-sig-\(UUID().uuidString).txt"
+                defer { try? FileManager.default.removeItem(atPath: f) }
+                try? "alpha\n".write(toFile: f, atomically: false, encoding: .utf8)
+                let before = LocalFileSystem.signature(f)
+                usleep(2000)
+                try? "ALPHA\n".write(toFile: f, atomically: false, encoding: .utf8)
+                return before != nil && LocalFileSystem.signature(f) != before && LocalFileSystem.signature(f + ".gone") == nil
+            }())
+            do {
+                // The ssh watch, run here with sh: not up at first (no connection yet), it keeps trying, and once it
+                // can run it reports the file and then a change to it.
+                let f = NSTemporaryDirectory() + "solanum-watch-\(UUID().uuidString).txt"
+                defer { try? FileManager.default.removeItem(atPath: f) }
+                try? "one\n".write(toFile: f, atomically: false, encoding: .utf8)
+                var up = false
+                let watch = RemoteFileWatch { script in
+                    guard up else { return nil }
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: "/bin/sh")
+                    p.arguments = ["-c", script]
+                    return p
+                }
+                var seen: [String?] = []
+                func spin(_ limit: TimeInterval, until cond: () -> Bool) {
+                    let end = Date(timeIntervalSinceNow: limit)
+                    while !cond(), Date() < end { RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05)) }
+                }
+                let token = watch.watch(f) { seen.append($0) }
+                spin(5) { watch.live == false }
+                check("ssh watch: says it isn't updating while it can't run", watch.live == false && seen.isEmpty)
+                up = true
+                spin(6) { watch.live == true && !seen.isEmpty }
+                check("ssh watch: starts once it can, and reports the file", watch.live == true && seen.count == 1 && seen[0] != nil)
+                try? "one\ntwo\n".write(toFile: f, atomically: false, encoding: .utf8)
+                spin(4) { seen.count >= 2 }
+                check("ssh watch: reports a change within a couple of seconds", seen.count == 2 && seen[1] != nil && seen[1] != seen[0])
+                withExtendedLifetime(token) {}
+            }
+            check("ssh: a typed host to connect to", SSHHosts.newTarget("ssh bob@build9") == "bob@build9"
+                  && SSHHosts.newTarget("  bob@build9 ") == "bob@build9" && SSHHosts.newTarget("ssh -p 2222 bob@h.example.com") == "-p 2222 bob@h.example.com"
+                  && SSHHosts.newTarget("build") == nil && SSHHosts.newTarget("ssh ") == nil && SSHHosts.newTarget("ssh bob@") == nil
+                  && SSHHosts.newTarget("ssh -p") == nil && SSHHosts.newTarget("ssh h; rm x") == nil && SSHHosts.newTarget("ssh $(x)@h") == nil)
             check("chats: commands join oldest first", AgentChats.transcript(["$ a\n1", "$ b\n2"]) == "$ a\n1\n\n$ b\n2")
             check("chats: agents found on PATH", InstalledAgents.parse("noise\nsolanum-agent:codex\nsolanum-agent:claude\nsolanum-agent:nonsense\n").map(\.command) == ["claude", "codex"])
             check("chats: every known agent can start", AgentKind.known.allSatisfy { !$0.command.isEmpty } && AgentKind.known.contains(.other("aider")))
-            check("agents: astra is found by its command", AgentKind.detect(name: "astra", path: "/usr/local/bin/astra", args: []) == .other("astra"))
             check("agents: continue commands", AgentKind.claude.defaultContinueCommand == "claude -c" && AgentKind.codex.defaultContinueCommand == "codex resume --last"
                   && AgentKind.antigravity.defaultContinueCommand == "agy -c" && AgentKind.other("amp").defaultContinueCommand.isEmpty)
             check("agents: known by their commands", AgentKind.known.allSatisfy { AgentKind.named($0.command) == $0 } && AgentKind.named("zsh") == nil)
             check("agents: continue goes through an alias", AgentKind.claude.throughAlias("claude -c", alias: "c") == "c -c"
                   && AgentKind.claude.throughAlias("claudette -c", alias: "c") == "claudette -c" && AgentKind.codex.throughAlias("codex resume --last", alias: nil) == "codex resume --last")
+            check("session: Claude resumes its own chat, not the folder's newest", {
+                let id = "95c88082-9cd8-4ae9-bc0a-c8645ac3bb71"
+                return ClaudeSessions.resuming("claude -c", session: id, exists: true) == "claude --resume \(id)"
+                    && ClaudeSessions.resuming("claude --continue --model opus", session: id, exists: true) == "claude --resume \(id) --model opus"
+                    && ClaudeSessions.resuming("claude -c", session: id, exists: false) == "claude"
+                    && ClaudeSessions.resuming("claude --model opus", session: id, exists: true) == "claude --model opus"
+                    && ClaudeSessions.resuming("claude -c", session: "x; rm -rf ~", exists: true) == "claude -c"
+            }())
             check("session: Claude from an older session still continues", {
                 let old = try? JSONDecoder().decode(PaneState.self, from: Data(#"{"claude":true}"#.utf8))
                 return old?.claude == true && old?.agent == nil
@@ -377,8 +588,27 @@ extension NSWorkspace {
 /// Development aid: SOLANUM_SNAPSHOT=/path.png renders the first window to a PNG after a delay.
 /// SOLANUM_SNAPSHOT_INPUT types text first; SOLANUM_SNAPSHOT_ACTIONS=split,palette,select-block,collapse,jump-prompt,find,find-commands,find-output,click:<col>:<row>,keys:<text>,theme:<name>,
 /// newtab,rename-tab,new-group,edit:<text>,select-tab:<i>,collapse-group:<i>,split-down,save-session,
-/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,screen-boxes,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,crumb-menu[:<item>],crumb-context[:<label>[:<item>]],drop-files:<index>:<path>|<path>,drop-hover:<x>,press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>
+/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,screen-boxes,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,strip-scroll:<points>,strip-activate:<i>,strip-arrow:<-1|1>,print-strip-scroll,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,print-editor-text,open-slow-file-tab:<path>,print-sidebar-rows,lost-notice:<command>,notice-reconnect,notice-secret:<text>,print-notice,editor-insert:<text>,editor-save,editor-conflict:<Compare|Overwrite|Revert|Cancel>,watch-tag:<live|off>,crumb-menu[:<item>],crumb-context[:<label>[:<item>]],drop-files:<index>:<path>|<path>,drop-hover:<x>,press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,git-action:<name>[:<path>],git-message:<text>,git-press:<button>,print-git-box,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>,log-menu[:<menu>>…>item],graph-type:<text>,graph-press:<Branch|User|Date|Paths>,graph-click:<Branch|User|Date|Paths>,dropdown-type:<text>,hosts-dropdown,dropdown-option,chip-dropdown,print-watch-script:<path>|<path>,dropdown-run:<title>,graph-menu-run:<title>,graph-branch:<title>,graph-branch-filter:<text>,graph-path:<path>,print-graph,log-marker-text:<text>,log-select:<text>,editor-end,editor-edge-drag:<fraction>:<seconds>,print-deleted,editor-lost-bar:<host>,print-time,hang-watch,display-time,log-import:<path>,print-log-format,theme-edit:<name>,theme-background:<hex>,theme-ansi:<i>:<hex>,theme-bar:<Save Changes|Reset>,theme-leave:<page>,print-theme,print-samehost,release-history,print-releases,settings-window-png:<path>,settings-sheet-press:<title>,themed-alert[:problem],themed-alert-ok,window-png:<path>,settings-sidebar-png:<path>
 /// (with SOLANUM_SESSION_FILE set, which also makes the run restore from that file).
+/// Dev aid: files on this Mac, served as if from an ssh host whose folder listings take `delay` seconds (DevTools
+/// open-slow-file-tab), to see what the sidebar shows while one is on its way.
+final class DevSlowFileSystem: FileSystem {
+    static let shared = DevSlowFileSystem()
+    var delay: TimeInterval = 3
+    var isRemote: Bool { true }
+    var hostLabel: String? { "slow@test" }
+    var home: String? { NSHomeDirectory() }
+    func list(_ dir: String, _ done: @escaping (Result<[FileItem], Error>) -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { LocalFileSystem.shared.list(dir, done) }
+    }
+    func read(_ path: String, limit: Int, _ done: @escaping (Result<Data, Error>) -> Void) { LocalFileSystem.shared.read(path, limit: limit, done) }
+    func readPart(_ path: String, from offset: Int?, whole: Int, tail: Int, _ done: @escaping (Result<FilePart, Error>) -> Void) {
+        LocalFileSystem.shared.readPart(path, from: offset, whole: whole, tail: tail, done)
+    }
+    func write(_ data: Data, to path: String, _ done: @escaping (Error?) -> Void) { LocalFileSystem.shared.write(data, to: path, done) }
+    func perform(_ op: FileOp, _ done: @escaping (Error?) -> Void) { LocalFileSystem.shared.perform(op, done) }
+}
+
 enum SnapshotHelper {
     static func runIfRequested() {
         let env = ProcessInfo.processInfo.environment
@@ -424,6 +654,12 @@ enum SnapshotHelper {
                     pane.searchScope = action == "find-commands" ? .commands : .output
                     pane.showFind(nil); pane.searchBar?.field.stringValue = q; pane.performSearch(q)
                 case "newtab": c.newTab(nil)
+                case "newtab-host": c.newTabOnSameHost(nil)
+                case "hosts-dropdown": c.devShowHosts()
+                case "dropdown-option": ThemedDropdown.devHoldOption()
+                case "chip-dropdown": c.tabBar.devShowGroupMenu()
+                case let a where a.hasPrefix("print-watch-script:"): print(RemoteFileWatch.script(a.dropFirst(19).split(separator: "|").map(String.init)))
+                case let a where a.hasPrefix("dropdown-run:"): ThemedDropdown.devRun(String(a.dropFirst(13)))
                 case "newtab-group": c.newTabInGroup(nil)
                 case "sidebar": c.toggleFileSidebar(nil)
                 case "pin-sidebar": c.togglePinnedSidebarFolder(nil)
@@ -786,6 +1022,17 @@ enum SnapshotHelper {
                         }
                     }
                     if action.hasPrefix("select-tab:"), let i = Int(action.dropFirst(11)) { c.select(index: i) }
+                    if action.hasPrefix("open-slow-file-tab:") {
+                        c.focused.addFileTab(FileEditorView(fs: DevSlowFileSystem.shared, path: String(action.dropFirst(19))))
+                    }
+                    if action.hasPrefix("lost-notice:") { pane.devShowLostNotice(host: "sjain@box", command: String(action.dropFirst(12))) }
+                    if action == "notice-reconnect" { pane.devLostNotice?.devPressButton() }
+                    if action.hasPrefix("notice-secret:") { pane.devLostNotice?.devSubmitSecret(String(action.dropFirst(14))) }
+                    if action == "print-notice" {
+                        let n = pane.devLostNotice
+                        FileHandle.standardError.write("notice: \(n.map { "\($0.devTitle.debugDescription) field=\($0.devHasSecretField) shown=\($0.superview != nil)" } ?? "none")\n".data(using: .utf8)!)
+                    }
+                    if action == "print-sidebar-rows" { FileHandle.standardError.write("sidebar rows: \(c.rootView.sidebar.devRowsState)\n".data(using: .utf8)!) }
                     if action.hasPrefix("tab-drop:") || action.hasPrefix("tab-drop-hold:"), let w = c.window {
                         // tab-drop:<i>:<fx>:<fy> — press on tab i of the focused column's strip, drag to (fx, fy) as
                         // fractions of the window, release. tab-drop-hold: stops before releasing (to see the preview).
@@ -823,14 +1070,81 @@ enum SnapshotHelper {
                     if action.hasPrefix("open-diff:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(10)), mode: .diff) }
                     if action.hasPrefix("open-preview:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(13)), mode: .preview) }
                     if action == "format-file" { c.activeTab?.editor?.formatDocument(nil) }
+                    if action == "log-menu" || action.hasPrefix("log-menu:") {
+                        c.activeTab?.editor?.devLogMenu(run: action.hasPrefix("log-menu:") ? String(action.dropFirst(9)) : nil)
+                    }
+                    if action.hasPrefix("editor-lost-bar:") {
+                        c.activeTab?.editor?.devShowLostBar(host: String(action.dropFirst(16)))
+                        c.activeTab?.editor?.layoutSubtreeIfNeeded()
+                        let f = c.activeTab?.editor?.devLostBar?.frame ?? .zero
+                        FileHandle.standardError.write("lost bar: \(f) in \(c.activeTab?.editor?.bounds ?? .zero)\n".data(using: .utf8)!)
+                    }
+                    if action == "print-deleted" {
+                        FileHandle.standardError.write("deleted: \(c.activeTab?.editor?.devIsDeleted == true) title \(c.activeTab?.title ?? "-")\n".data(using: .utf8)!)
+                    }
+                    if action.hasPrefix("editor-edge-drag:") {
+                        let n = action.dropFirst(17).split(separator: ":").compactMap { Double($0) }
+                        if n.count == 2 { c.activeTab?.editor?.devEdgeDrag(fraction: CGFloat(n[0]), seconds: n[1]) }
+                    }
+                    if action == "editor-end" { c.activeTab?.editor?.devScrollToEnd() }
+                    if action == "display-time" {
+                        let a = Date()
+                        if let v = c.window?.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+                            v.layoutSubtreeIfNeeded()
+                            v.cacheDisplay(in: v.bounds, to: rep)
+                        }
+                        FileHandle.standardError.write("display: \(Int(Date().timeIntervalSince(a) * 1000)) ms\n".data(using: .utf8)!)
+                    }
+                    if action == "hang-watch" {
+                        // Prints each stall of the main thread past 250 ms, as it ends.
+                        var last = Date()
+                        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+                            let gap = Date().timeIntervalSince(last)
+                            if gap > 0.25 { FileHandle.standardError.write("hang: \(Int(gap * 1000)) ms at \(Date().timeIntervalSince1970)\n".data(using: .utf8)!) }
+                            last = Date()
+                        }
+                    }
+                    if action == "print-time" { FileHandle.standardError.write("time: \(Date().timeIntervalSince1970)\n".data(using: .utf8)!) }
+                    if action.hasPrefix("log-select:") { c.activeTab?.editor?.devSelect(String(action.dropFirst(11))) }
+                    if action.hasPrefix("log-marker-text:") { LogColorMenu.devMarkerText = String(action.dropFirst(16)) }
+                    if action.hasPrefix("log-import:") { c.activeTab?.editor?.devImportLogFormat(String(action.dropFirst(11))) }
+                    if action == "print-log-format" {
+                        FileHandle.standardError.write("log format: \(c.activeTab?.editor?.devLogFormatName ?? "none")\n".data(using: .utf8)!)
+                    }
                     if action.hasPrefix("open-status:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(12)), mode: .status) }
                     if action.hasPrefix("status-click:") { c.activeTab?.editor?.devStatusView?.devClick(String(action.dropFirst(13))) }
                     if action.hasPrefix("graph-changes:"), let r = Int(action.dropFirst(14)) { c.activeTab?.editor?.devGraphView?.devViewChanges(r) }
                     if action.hasPrefix("status-open:") { c.activeTab?.editor?.devStatusView?.devOpen(String(action.dropFirst(12))) }
+                    if action.hasPrefix("git-action:") {
+                        // git-action:<name>[:<path>], as the Git Changes page's buttons and links.
+                        let f = action.dropFirst(11).split(separator: ":", maxSplits: 1).map(String.init)
+                        c.activeTab?.editor?.devStatusView?.devAction(f[0], f.count > 1 ? f[1] : nil)
+                    }
+                    if action.hasPrefix("git-message:") { c.activeTab?.editor?.devStatusView?.devCommitBox.text.string = String(action.dropFirst(12)) }
+                    if action.hasPrefix("git-press:") { c.activeTab?.editor?.devStatusView?.devCommitBox.devPress(String(action.dropFirst(10))) }
+                    if action == "print-git-box" {
+                        FileHandle.standardError.write("git box: \(c.activeTab?.editor?.devStatusView?.devCommitBox.devState ?? "-")\n".data(using: .utf8)!)
+                    }
                     if action == "status-all" { c.activeTab?.editor?.devStatusView?.devToggleAll() }
                     if action.hasPrefix("open-graph:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(11)), mode: .graph) }
                     if action.hasPrefix("hover-graph:"), let row = Int(action.dropFirst(12)) { c.activeTab?.editor?.devHoverGraph(row) }
+                    if let g = c.activeTab?.editor?.devGraphView {
+                        if action.hasPrefix("graph-type:") { g.devToolbar.devType(String(action.dropFirst(11))) }
+                        if action.hasPrefix("graph-press:") { g.devToolbar.devPress(String(action.dropFirst(12))) }
+                        if action.hasPrefix("graph-click:") { g.devToolbar.devClick(String(action.dropFirst(12))) }
+                        if action.hasPrefix("graph-path:") { g.devToolbar.devPath(String(action.dropFirst(11))) }
+                        if action.hasPrefix("graph-menu-run:") { ThemedDropdown.devRun(String(action.dropFirst(15))) }
+                        if action.hasPrefix("graph-branch:") { g.devBranchList.devPick(String(action.dropFirst(13))) }
+                        if action.hasPrefix("graph-branch-filter:") { g.devBranchList.devFilter(String(action.dropFirst(20))) }
+                        if action == "print-graph" {
+                            FileHandle.standardError.write("graph: \(g.devRowCount) rows, filters \(g.devToolbar.devButtons), list \(g.devBranchList.devTitles.prefix(12))\n".data(using: .utf8)!)
+                        }
+                    }
                     if action == "toggle-terminal" { c.activeTab?.toggleTerminal() }
+                    if action.hasPrefix("strip-scroll:"), let x = Double(action.dropFirst(13)) { c.activeTab?.editorArea.strip.scroll(by: CGFloat(x)) }
+                    if action.hasPrefix("strip-activate:"), let i = Int(action.dropFirst(15)) { c.activeTab?.activateEditor(i) }
+                    if action.hasPrefix("strip-arrow:"), let d = Int(action.dropFirst(12)) { c.activeTab?.editorArea.strip.slide(d) }
+                    if action == "print-strip-scroll", let st = c.activeTab?.editorArea.strip { print("strip: \(st.devScrollState)") }
                     if action == "restore-prompt" { (NSApp.delegate as? AppDelegate)?.offerRestore(SessionState(windows: [c.sessionState])) }
                     if action == "editor-drag-out", let tab = c.activeTab, let ed = tab.editor {
                         // Drags the active file's sub-tab onto the middle of the focused column's tab strip and drops it.
@@ -914,6 +1228,15 @@ enum SnapshotHelper {
                        let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                                 windowNumber: w.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
                                                 isARepeat: false, keyCode: 36) { w.sendEvent(e) }
+                    if action == "print-editor-text" {
+                        for ed in c.allTabs.flatMap(\.editors) {
+                            FileHandle.standardError.write("editor text: \(ed.displayName): \(ed.devTextState)\n".data(using: .utf8)!)
+                        }
+                    }
+                    if action.hasPrefix("editor-insert:") { c.activeTab?.editor?.devInsert(String(action.dropFirst(14))) }
+                    if action == "editor-save" { c.activeTab?.editor?.devSave() }
+                    if action.hasPrefix("editor-conflict:") { c.activeTab?.editor?.devConflict(String(action.dropFirst(16))) }
+                    if action.hasPrefix("watch-tag:") { c.activeTab?.editor?.devWatchTag(String(action.dropFirst(10))) }
                     if action == "print-editors" {
                         let eds = c.allTabs.flatMap { $0.editors.map { "\($0.displayName) @ \($0.path)" } }
                         FileHandle.standardError.write("editors: \(eds)\n".data(using: .utf8)!)
@@ -959,6 +1282,55 @@ enum SnapshotHelper {
                         SettingsWindowController.shared.present()
                         if let p = SettingsWindowController.Page.allCases.first(where: { $0.title == action.dropFirst(14) }) { SettingsWindowController.shared.show(p) }
                     }
+                    if action.hasPrefix("theme-edit:") {
+                        SettingsWindowController.shared.present()
+                        if let t = ThemeLibrary.custom.first(where: { $0.name == String(action.dropFirst(11)) }) { SettingsWindowController.shared.edit(t) }
+                    }
+                    if action.hasPrefix("theme-background:"), let model = SettingsWindowController.shared.themeDraft {
+                        model.theme.background = NSColor(hex: String(action.dropFirst(17)))
+                        model.changed()
+                    }
+                    if action.hasPrefix("theme-ansi:"), let model = SettingsWindowController.shared.themeDraft {
+                        let f = action.dropFirst(11).split(separator: ":")
+                        if f.count == 2, let i = Int(f[0]) { model.palette?.devSet(i, String(f[1])) }
+                        FileHandle.standardError.write("palette: \(model.palette?.devEditing ?? "-")\n".data(using: .utf8)!)
+                    }
+                    if action.hasPrefix("theme-bar:") {
+                        (SettingsWindowController.shared.footer as? ThemeSaveBar)?.devPress(String(action.dropFirst(10)))
+                    }
+                    if action.hasPrefix("theme-leave:") {
+                        // Leaves the editor for a page, as the sidebar does (an unsaved-changes sheet shows first).
+                        if let p = SettingsWindowController.Page.allCases.first(where: { $0.title == action.dropFirst(12) }) { SettingsWindowController.shared.show(p) }
+                    }
+                    if action.hasPrefix("settings-window-png:"), let root = SettingsWindowController.shared.window?.contentView,
+                       let rep = root.bitmapImageRepForCachingDisplay(in: root.bounds) {
+                        root.cacheDisplay(in: root.bounds, to: rep)
+                        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: String(action.dropFirst(20))))
+                    }
+                    if action == "release-history" {
+                        SettingsWindowController.shared.present(.system)
+                        SettingsWindowController.shared.showReleases(true)
+                    }
+                    if action == "print-releases" {
+                        func timelines(_ v: NSView) -> [ReleaseTimelineView] { ((v as? ReleaseTimelineView).map { [$0] } ?? []) + v.subviews.flatMap(timelines) }
+                        let t = SettingsWindowController.shared.window?.contentView.map(timelines)?.first
+                        FileHandle.standardError.write("releases: \(t?.releases.count ?? -1): \(t?.devSummary ?? "-")\n".data(using: .utf8)!)
+                    }
+                    if action == "print-samehost" {
+                        let r = RemoteSession(awaiting: "sjain@lanode11", sshArgs: "lanode11")
+                        let dir = "/tmp/solanum q test/a b'c"
+                        let inner = "cd \(shellQuote(dir)) 2>/dev/null; exec \"$SHELL\" -l"
+                        FileHandle.standardError.write("samehost-sudo: \(r.reconnectCommand(in: dir, then: "sudo -i -u \(shellQuote("pipelineservice")) sh -c \(shellQuote(inner))")!)\nsamehost: \(r.reconnectCommand(in: dir)!)\n".data(using: .utf8)!)
+                    }
+                    if action == "print-theme" {
+                        let bar = (SettingsWindowController.shared.footer as? ThemeSaveBar)?.devState ?? "no bar"
+                        let file = ThemeLibrary.custom.first { $0.file == SettingsWindowController.shared.editingTheme }
+                        FileHandle.standardError.write("theme: \(bar); live bg \(Config.shared.theme.background.hexString); saved bg \(file?.background.hexString ?? "-"); sheet \(SettingsWindowController.shared.window?.attachedSheet != nil)\n".data(using: .utf8)!)
+                    }
+                    if action.hasPrefix("settings-sheet-press:") {
+                        func buttons(_ v: NSView) -> [NSButton] { ((v as? NSButton).map { [$0] } ?? []) + v.subviews.flatMap(buttons) }
+                        SettingsWindowController.shared.window?.attachedSheet?.contentView.map(buttons)?.first { $0.title == action.dropFirst(21) }?.performClick(nil)
+                    }
                     if action.hasPrefix("settings-press:") {
                         // A real press on the toggle of the row with this title, on the page showing.
                         func rows(_ v: NSView) -> [SettingRow] { ((v as? SettingRow).map { [$0] } ?? []) + v.subviews.flatMap(rows) }
@@ -977,6 +1349,40 @@ enum SnapshotHelper {
                            let rep = page.bitmapImageRepForCachingDisplay(in: page.bounds) {
                             page.cacheDisplay(in: page.bounds, to: rep)
                             try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: String(action.dropFirst(18))))
+                        }
+                    }
+                    if action == "themed-alert" || action == "themed-alert:problem" {
+                        // The updater's alert over Settings (or this window): themed-alert[:problem].
+                        let w = SettingsWindowController.shared.window?.isVisible == true ? SettingsWindowController.shared.window : c.window
+                        if action.hasSuffix(":problem") {
+                            ThemedAlertView.show("Couldn't check for updates", "fatal: unable to access 'https://example.com/solanum.git/': Could not resolve host: example.com",
+                                                 symbol: ("exclamationmark", Config.shared.theme.yellow), in: w)
+                        } else {
+                            ThemedAlertView.show("Solanum is up to date", "This build (6de9362) has everything on main.", in: w)
+                        }
+                    }
+                    if action == "themed-alert-ok" {
+                        func alerts(_ v: NSView) -> [ThemedAlertView] { ((v as? ThemedAlertView).map { [$0] } ?? []) + v.subviews.flatMap(alerts) }
+                        let w = SettingsWindowController.shared.window?.isVisible == true ? SettingsWindowController.shared.window : c.window
+                        let found = w?.contentView.map(alerts) ?? []
+                        found.first?.devPress()
+                        FileHandle.standardError.write("themed-alert-ok: \(found.count) alert(s), first responder after: \(w?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil")\n".data(using: .utf8)!)
+                    }
+                    if action.hasPrefix("window-png:") {
+                        // The Settings window (or this one), whole, to a PNG.
+                        let w = SettingsWindowController.shared.window?.isVisible == true ? SettingsWindowController.shared.window : c.window
+                        if let v = w?.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+                            v.cacheDisplay(in: v.bounds, to: rep)
+                            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: String(action.dropFirst(11))))
+                        }
+                    }
+                    if action.hasPrefix("settings-sidebar-png:") {
+                        // The Settings page list, to a PNG.
+                        func bars(_ v: NSView) -> [SettingsSidebar] { ((v as? SettingsSidebar).map { [$0] } ?? []) + v.subviews.flatMap(bars) }
+                        if let bar = SettingsWindowController.shared.window?.contentView.map(bars)?.first,
+                           let rep = bar.bitmapImageRepForCachingDisplay(in: bar.bounds) {
+                            bar.cacheDisplay(in: bar.bounds, to: rep)
+                            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: String(action.dropFirst(21))))
                         }
                     }
                     if action == "settings-bottom" {
@@ -1114,6 +1520,7 @@ enum SnapshotHelper {
                     }
                     if action == "print-anim" { FileHandle.standardError.write("\(c.tabBar.animSummary)\n".data(using: .utf8)!) }
                     if action.hasPrefix("close-tab:"), let i = Int(action.dropFirst(10)) { c.closeTab(at: i) }
+                    if action.hasPrefix("dropdown-type:") { ThemedDropdown.devType(String(action.dropFirst(14))) }
                     if action.hasPrefix("palette-query:"), let w = c.window {
                         CommandPalette.show(in: w, items: CommandPalette.collectItems(), tracksRecents: true, query: String(action.dropFirst(14)))
                     }

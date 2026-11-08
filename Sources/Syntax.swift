@@ -24,6 +24,10 @@ enum SyntaxHighlighter {
     /// Colors `text` in place (foreground only); call after resetting it to the plain foreground.
     static func highlight(_ text: NSMutableAttributedString, as language: SyntaxLanguage, theme th: Theme = Config.shared.theme) {
         guard text.length <= maxLength else { return }
+        if language == .log {
+            LogPainter.paint(text, in: NSRange(location: 0, length: text.length), format: .builtIn, theme: th)
+            return
+        }
         for (range, token) in SyntaxScanner.tokens(in: text.string, as: language) {
             text.addAttribute(.foregroundColor, value: color(token, th), range: range)
         }

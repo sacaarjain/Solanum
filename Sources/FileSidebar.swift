@@ -58,6 +58,9 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
     /// The terminal folder last followed; the tree re-roots only when that changes.
     private var followed: String?
     private var loadToken = 0
+    /// The machine and folder the rows were listed from (nil: none yet). While the tree moves somewhere else, the old
+    /// rows give way to "Loading…" rather than sit under the new folder's name (a slow ssh listing, say).
+    private var listedRoot: (fs: FileSystem, path: String)?
     /// Folders left open in the active tab, per machine (keyed by host label, "" for this Mac), so moving to
     /// another folder and back re-opens them. Each tab keeps its own (see `applyTabOpenFolders`).
     private var openFolders: [String: Set<String>] = [:]
@@ -295,6 +298,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
             followed = nil
             rootPath = nil
             watchRoot()
+            listedRoot = nil
             rootNodes = []; shownRoot = []
             outline.reloadData()
             updateHeader()
@@ -518,14 +522,28 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         loadToken += 1
         let token = loadToken
         let fs = self.fs
+        // Rows from another folder (or machine) mustn't stay up under this one's name while it's listed. Over ssh
+        // that takes a while, so they go now; on this Mac only if the listing is slow (no flash for a quick one).
+        if let listed = listedRoot, listed.fs !== fs || listed.path != root {
+            if fs.isRemote || listed.fs.isRemote {
+                showLoading()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                    guard let self, token == self.loadToken, self.listedRoot.map({ $0.fs !== fs || $0.path != root }) ?? false else { return }
+                    self.showLoading()
+                }
+            }
+        }
         fs.list(root) { [weak self] result in
             guard let self, token == self.loadToken, fs === self.fs else { return }
             switch result {
             case .failure(let e):
+                self.listedRoot = nil
                 self.rootNodes = []; self.shownRoot = []
                 self.outline.reloadData()
                 self.showPlaceholder(e.localizedDescription)
             case .success(let items):
+                self.listedRoot = (fs, root)
                 self.rootNodes = FilePaths.sortedForDisplay(self.withDeleted(items, in: root)).map { FileNode($0, parent: nil) }
                 self.shownRoot = self.filter(self.rootNodes)
                 self.outline.reloadData()
@@ -538,6 +556,19 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
                 self.refreshMarks()
             }
         }
+    }
+
+    private func showLoading() {
+        listedRoot = nil
+        rootNodes = []; shownRoot = []
+        outline.reloadData()
+        showPlaceholder("Loading…")
+    }
+
+    /// Dev aid (DevTools print-sidebar-rows): the folder shown, where the rows came from, and the first few.
+    var devRowsState: String {
+        "root=\(fs.hostLabel.map { $0 + ":" } ?? "")\(rootPath ?? "nil") listed=\(listedRoot.map { ($0.fs.hostLabel.map { $0 + ":" } ?? "") + $0.path } ?? "nil") "
+            + "placeholder=\(placeholder.isHidden ? "none" : placeholder.stringValue.debugDescription) rows=\(shownRoot.prefix(4).map(\.item.name))"
     }
 
     private func reexpand(_ nodes: [FileNode], _ paths: Set<String>, _ token: Int) {

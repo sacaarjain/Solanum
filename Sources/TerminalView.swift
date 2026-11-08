@@ -321,10 +321,19 @@ final class TerminalView: NSView, TerminalDelegate {
     /// The ssh session here lost its connection and nothing's been decided yet: where it was, how to log back in, and
     /// the command that ended it (another one finishing means this shell has moved on).
     private var lostSession: (host: String, command: String, block: Block?)?
+    /// The ssh session whose connection this pane lost, while it's still lost: files opened from it offer to
+    /// reconnect through this pane.
+    private(set) var lostRemote: RemoteSession?
     private var lostBar: ConnectionLostBar?
     private weak var lostNotice: CornerNoticeView?
     /// Logging back in was asked for; if that doesn't work out, the bar comes back.
     private var reconnecting = false
+    /// Reconnect from the lost-connection card: it watches this pane for a password (or passphrase, or code) question
+    /// and asks it in the card, so logging back in doesn't mean going to the tab (see `watchForSecret`).
+    private var secretWatch: Timer?
+    /// The line (absolute) of the question the card asked, and of the one last answered.
+    private var secretAskedAt: Int?
+    private var secretSentAt: Int?
 
     init(cwd: String?) {
         initialDirectory = cwd
@@ -490,7 +499,12 @@ final class TerminalView: NSView, TerminalDelegate {
         // In an ssh session, Enter at the host's prompt marks a command there (see Terminal.remoteEnterPressed).
         // Not while an agent is running: its input box isn't a shell's prompt.
         if terminal.sshControlPath != nil, agent == nil {
-            if bytes == [13] { terminal.remoteEnterPressed() } else { terminal.remoteKeyPressed() }
+            if bytes == [13] {
+                noteUserSwitch()
+                terminal.remoteEnterPressed()
+            } else {
+                terminal.remoteKeyPressed()
+            }
         }
         pty?.write(bytes)
         // A command was entered in an ssh session: look up the remote shell's folder once it has had a moment to cd.
@@ -511,10 +525,108 @@ final class TerminalView: NSView, TerminalDelegate {
     /// Where this pane's files live: the ssh host while a session is running in it, otherwise this Mac.
     var fileSystem: FileSystem { remote ?? LocalFileSystem.shared }
 
+    /// The ssh login's user name (from user@host).
+    var loginUser: String? { remote?.hostLabel.flatMap { $0.split(separator: "@").first.map(String.init) } }
+
+    /// user@host for the shell in this pane: the user it says it runs as (see Follow This Shell's Folder), else the login.
+    var shellHostLabel: String? {
+        guard let label = remote?.hostLabel else { return nil }
+        guard let user = terminal.remoteUser?.name, let at = label.firstIndex(of: "@") else { return label }
+        return user + label[at...]
+    }
+
+    /// The home folder of the user the shell in this pane runs as, for ~ in Go to.
+    var shellHome: String? {
+        if let home = terminal.remoteUser?.home, home.hasPrefix("/") { return home }
+        return remote?.home
+    }
+
+    /// The user the shell runs as, when it isn't the ssh login (a shell from `sudo -i -u`).
+    var borrowedUser: String? {
+        guard let user = terminal.remoteUser?.name, user != loginUser else { return nil }
+        return user
+    }
+
+    /// The line Follow This Shell's Folder types: from then on, each prompt of that shell (bash) reports its folder
+    /// (OSC 7) and its user and home, so the sidebar, status bar and Go to follow a shell from `sudo -i -u`. A
+    /// leading space keeps it out of the shell's history.
+    static let followLine = #" PROMPT_COMMAND='printf "\033]7;file://%s%s\007\033]1337;SolanumUser=%s:%s\007" "${HOSTNAME:-$(hostname)}" "$PWD" "${USER:-$(id -un)}" "$HOME"'"${PROMPT_COMMAND:+;$PROMPT_COMMAND}""#
+
+    /// Types `followLine` at the prompt of the shell on the host, then erases what it typed (and its echo), so the
+    /// next prompt comes up where this one was.
+    func followShellFolder() {
+        guard remote != nil, !terminal.usingAlt else { return NSSound.beep() }
+        send("\u{15}" + Self.followCommand(promptWidth: terminal.cursorX, columns: terminal.cols) + "\r")
+    }
+
+    /// `followLine`, then a printf that moves back up over the lines the prompt and the echoed command took and clears
+    /// from there.
+    static func followCommand(promptWidth: Int, columns: Int) -> String {
+        var lines = 1, text = ""
+        for _ in 0..<3 {
+            text = followLine + "; printf '\\033[\(lines)A\\033[J'"
+            lines = max(1, (promptWidth + text.count - 1) / max(columns, 1) + 1)
+        }
+        return text
+    }
+
+    /// Commands at the host's prompt that start a shell as someone else: sudo -i / -s / su, su.
+    private static let switchesUser = try! NSRegularExpression(pattern:
+        #"(^|[\s;&|])(sudo\s+((-u\s+\S+|-\S+)\s+)*?(-[a-zA-Z]*[is][a-zA-Z]*\b|su\b|(bash|sh|zsh)\b)|su(\s+-|\s+-l|\s+--login)?(\s+[A-Za-z_][\w.-]*)?\s*$)"#)
+
+    static func switchesUser(_ command: String) -> Bool {
+        let ns = command as NSString
+        return switchesUser.firstMatch(in: command, range: NSRange(location: 0, length: ns.length)) != nil
+    }
+
+    /// Enter on a sudo -i (or su) at the host's prompt: once that shell's prompt is up, Follow This Shell's Folder.
+    private var followAfterSwitch: Date?
+    private var followTimer: Timer?
+
+    private func noteUserSwitch() {
+        guard terminal.sshControlPath != nil, agent == nil, Self.switchesUser(terminal.cursorLineText) else { return }
+        expectUserSwitch()
+    }
+
+    /// A shell as another user is on its way here (a sudo just entered, or a new terminal logging in as one): once its
+    /// prompt is up, Follow This Shell's Folder.
+    func expectUserSwitch() {
+        guard Config.shared.followSudoShells else { return }
+        followAfterSwitch = Date()
+        followTimer?.invalidate()
+        followTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] t in
+            guard let self, let at = self.followAfterSwitch, Date().timeIntervalSince(at) < 120 else {
+                t.invalidate()
+                self?.followAfterSwitch = nil
+                return
+            }
+            // The new shell's prompt, settled (not sudo's password question, which isn't a prompt).
+            guard Date().timeIntervalSince(at) > 0.4, Date().timeIntervalSince(self.lastOutputAt) > 0.35,
+                  self.terminal.atEmptyHostPrompt() else { return }
+            t.invalidate()
+            self.followAfterSwitch = nil
+            self.followShellFolder()
+        }
+    }
+
     /// The folder the shell is in, on whichever machine `fileSystem` points at.
     var browseDirectory: String? {
         guard let remote else { return currentDirectory }
         return terminal.remoteCwd ?? remote.cwd ?? remote.home
+    }
+
+    /// For a new terminal beside this one (⌘D, a split): log in to the same ssh host, in the folder this shell is in;
+    /// as the same user too, when this is a shell from `sudo -i -u` (it then follows itself, see `expectUserSwitch`).
+    /// nil when this isn't an ssh session.
+    var sameHostCommand: (command: String, switchesUser: Bool)? {
+        guard let remote, remote.isReady else { return nil }
+        let dir = browseDirectory
+        if let user = borrowedUser {
+            let inner = (dir.map { "cd \(shellQuote($0)) 2>/dev/null; " } ?? "") + "exec \"$SHELL\" -l"
+            guard let c = remote.newTerminalCommand(in: dir, then: "sudo -i -u \(shellQuote(user)) sh -c \(shellQuote(inner))") else { return nil }
+            return (c, true)
+        }
+        return remote.newTerminalCommand(in: dir).map { ($0, false) }
     }
 
     /// Whether a typed `cd` would reach a shell: not while a program (Claude Code, an editor…) has the terminal.
@@ -538,7 +650,15 @@ final class TerminalView: NSView, TerminalDelegate {
         remote = terminal.sshControlPath.map { RemoteSession(controlPath: $0, sshArgs: terminal.sshArgs) }
         remote?.onChange = { [weak self] in
             guard let self else { return }
-            if self.remote?.isReady == true { self.clearLostSession() }
+            if let remote = self.remote, remote.isReady {
+                self.clearLostSession()
+                NotificationCenter.default.post(name: .solanumRemoteReady, object: remote)
+                // Back at the login shell (the sudo shell exited): its user and folder stop applying.
+                if remote.loginShellInForeground == true, let other = self.terminal.remoteUser?.name, other != self.loginUser {
+                    self.terminal.remoteUser = nil
+                    self.terminal.remoteCwd = nil
+                }
+            }
             self.tab?.paneCwdChanged(self)
         }
         remote?.start()
@@ -546,7 +666,9 @@ final class TerminalView: NSView, TerminalDelegate {
 
     private func clearLostSession() {
         lostSession = nil
+        lostRemote = nil
         reconnecting = false
+        stopSecretWatch()
         lostNotice?.dismiss()
         updateLostBar()
     }
@@ -899,9 +1021,10 @@ final class TerminalView: NSView, TerminalDelegate {
     /// said otherwise. Clicking it goes to the tab.
     @discardableResult
     func showCornerNotice(title: String, symbol: (name: String, color: NSColor), lines: [String], in tab: TabSession,
-                                  button: (title: String, action: () -> Void)? = nil, lifetime: TimeInterval = 30) -> CornerNoticeView? {
+                                  button: (title: String, action: () -> Void)? = nil, keepsOpen: Bool = false,
+                                  lifetime: TimeInterval = 30) -> CornerNoticeView? {
         guard let wc = (NSApp.keyWindow?.windowController as? TerminalWindowController) ?? tab.windowController else { return nil }
-        let notice = CornerNoticeView(title: title, symbol: symbol, lines: lines, button: button, lifetime: lifetime)
+        let notice = CornerNoticeView(title: title, symbol: symbol, lines: lines, button: button, keepsOpen: keepsOpen, lifetime: lifetime)
         notice.onClick = { [weak tab] in
             guard let tab, let column = tab.owner as? TabColumn, let i = column.tabs.firstIndex(of: tab), let owner = column.owner else { return }
             owner.focus(column)
@@ -923,15 +1046,98 @@ final class TerminalView: NSView, TerminalDelegate {
               let command = remote.reconnectCommand(in: terminal.remoteCwd ?? remote.cwd) else { return }
         let host = remote.hostLabel ?? "the ssh host"
         lostSession = (host, command, terminal.currentBlock)
+        lostRemote = remote
         let th = Config.shared.theme
+        stopSecretWatch()
+        lostNotice?.dismiss()
         lostNotice = showCornerNotice(title: "Lost connection to \(host)", symbol: ("wifi.exclamationmark", th.red),
                                       lines: [Self.place(of: tab), terminal.remoteCwd ?? remote.cwd ?? ""].filter { !$0.isEmpty }, in: tab,
-                                      button: ("Reconnect", { [weak self] in self?.reconnect(command) }), lifetime: 600)
+                                      button: ("Reconnect", { [weak self] in self?.reconnectFromNotice(command, host: host) }),
+                                      keepsOpen: true, lifetime: 600)
         if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
     }
 
+    /// Reconnect on the lost-connection card: logs back in here without leaving the tab you're in, and if the host
+    /// asks for a password, the card asks for it.
+    private func reconnectFromNotice(_ command: String, host: String) {
+        reconnect(command)
+        guard reconnecting || pendingCommand == command, let notice = lostNotice else { return }
+        notice.hideButton()
+        notice.setTitle("Reconnecting to \(host)…")
+        watchForSecret(host: host)
+    }
+
+    /// Until logged in (the card goes then) or 5 minutes pass: a new password question in this pane is asked in the
+    /// card; a wrong password's "try again" asks again.
+    private func watchForSecret(host: String) {
+        stopSecretWatch()
+        let started = Date()
+        secretWatch = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] timer in
+            guard let self, let notice = self.lostNotice, notice.superview != nil, Date().timeIntervalSince(started) < 300 else {
+                timer.invalidate()
+                return
+            }
+            guard let q = self.secretQuestion, q.line != self.secretAskedAt, q.line != self.secretSentAt else { return }
+            let again = self.secretSentAt != nil
+            self.secretAskedAt = q.line
+            notice.setTitle(again ? "Try again: \(host)" : "Log in to \(host)")
+            notice.askSecret(q.text) { [weak self] secret in self?.answerSecret(secret, host: host) }
+        }
+    }
+
+    private func stopSecretWatch() {
+        secretWatch?.invalidate()
+        secretWatch = nil
+        secretAskedAt = nil
+        secretSentAt = nil
+    }
+
+    /// The question ssh is asking at the cursor, if it's one for a secret ("user@host's password:", "Enter passphrase
+    /// for key …:", "Verification code:"), and the line it's on. Not once logged in, nor in a full-screen program.
+    private var secretQuestion: (text: String, line: Int)? {
+        guard terminal.sshControlPath == nil, !terminal.usingAlt else { return nil }
+        let text = terminal.cursorLineText.trimmingCharacters(in: .whitespaces)
+        let lower = text.lowercased()
+        guard text.hasSuffix(":"), text.count < 200,
+              ["password", "passphrase", "passcode", "verification code", "one-time", "otp"].contains(where: lower.contains) else { return nil }
+        return (text, terminal.cursorAbs)
+    }
+
+    /// Only into the very question the card asked: if that's gone (timed out, and back at the shell), a password
+    /// typed there would show on screen and go into its history, so it isn't sent.
+    private func answerSecret(_ secret: String, host: String) {
+        guard let q = secretQuestion, q.line == secretAskedAt else {
+            lostNotice?.endSecret()
+            lostNotice?.setTitle("\(host) stopped asking; open the tab to log in")
+            return
+        }
+        // Straight to the pty: the program asking reads it with echo off; nothing here keeps it.
+        pty?.write(Array((secret + "\r").utf8))
+        secretSentAt = q.line
+        lostNotice?.endSecret()
+        lostNotice?.setTitle("Logging in to \(host)…")
+    }
+
+    /// Dev aids (DevTools lost-notice, notice-reconnect, notice-secret, print-notice): the card as a lost connection
+    /// shows it, with `command` as how to log back in.
+    func devShowLostNotice(host: String, command: String) {
+        guard let tab else { return }
+        lostSession = (host, command, terminal.currentBlock)
+        lostNotice = showCornerNotice(title: "Lost connection to \(host)", symbol: ("wifi.exclamationmark", Config.shared.theme.red),
+                                      lines: [Self.place(of: tab)], in: tab,
+                                      button: ("Reconnect", { [weak self] in self?.reconnectFromNotice(command, host: host) }),
+                                      keepsOpen: true, lifetime: 600)
+    }
+    var devLostNotice: CornerNoticeView? { lostNotice }
+
+    /// Logs back in where the connection was lost, as the bar's Reconnect does.
+    func reconnectLost() {
+        guard let command = lostSession?.command else { return NSSound.beep() }
+        reconnect(command)
+    }
+
     /// Runs `command` at this pane's prompt (once the shell is back at one); not while something else has the pane.
-    private func reconnect(_ command: String) {
+    func reconnect(_ command: String) {
         guard !exited, terminal.sshControlPath == nil, !terminal.usingAlt, !hasRunningJob else { return NSSound.beep() }
         reconnecting = lostSession != nil
         updateLostBar()
@@ -1247,7 +1453,77 @@ final class TerminalView: NSView, TerminalDelegate {
             ctx.setLineWidth(1)
             ctx.addPath(path)
             ctx.strokePath()
+            drawBoxSelection(b, in: rect, rows: r0...r1, ctx)
         }
+    }
+
+    /// Whether a selection on line `a` is drawn by `drawBoxSelection` rather than cell by cell.
+    private func selectionDrawnByBox(line a: Int) -> Bool {
+        guard let s = selection, !s.rect else { return false }
+        return codeBoxes.contains { $0.kind == .code && $0.contains(line: a) }
+    }
+
+    /// The selection inside a code box, as an editor draws it: one rounded shape kept within the panel, starting
+    /// at the selection's first character and ending after its last, full width on the lines between.
+    private func drawBoxSelection(_ b: CodeBox, in box: CGRect, rows: ClosedRange<Int>, _ ctx: CGContext) {
+        guard let s = selection, !s.rect else { return }
+        let cw = fonts.cellW
+        let left = box.minX + 4, right = box.maxX - 4
+        var group: [(lo: CGFloat, hi: CGFloat)] = []
+        var groupTop: CGFloat = 0
+        func flush() {
+            if !group.isEmpty { ctx.addPath(Self.roundedStaircase(group, top: groupTop, rowH: fonts.cellH, radius: 4)) }
+            group = []
+        }
+        for r in rows {
+            let a = rowMap[r]
+            guard a >= 0, let cols = selectionCols(forLine: a) else { flush(); continue }
+            let lo = a == s.start.line && cols.lowerBound > b.indent ? max(left, padX + CGFloat(cols.lowerBound) * cw) : left
+            let hi = a == s.end.line ? min(right, padX + CGFloat(cols.upperBound + 1) * cw) : right
+            guard hi > lo else { flush(); continue }
+            // Lines whose highlights don't touch (the end of one, the start of the next) are separate shapes.
+            if let prev = group.last, lo >= prev.hi || hi <= prev.lo { flush() }
+            if group.isEmpty { groupTop = rowY(r) }
+            group.append((lo, hi))
+        }
+        flush()
+        ctx.setFillColor(palette.selection)
+        ctx.fillPath()
+    }
+
+    /// The outline of stacked row spans (each overlapping the next), with every corner rounded, inside and out.
+    static func roundedStaircase(_ spans: [(lo: CGFloat, hi: CGFloat)], top: CGFloat, rowH: CGFloat, radius: CGFloat) -> CGPath {
+        var pts: [CGPoint] = []
+        for (i, s) in spans.enumerated() {
+            pts.append(CGPoint(x: s.hi, y: top + CGFloat(i) * rowH))
+            pts.append(CGPoint(x: s.hi, y: top + CGFloat(i + 1) * rowH))
+        }
+        for (i, s) in spans.enumerated().reversed() {
+            pts.append(CGPoint(x: s.lo, y: top + CGFloat(i + 1) * rowH))
+            pts.append(CGPoint(x: s.lo, y: top + CGFloat(i) * rowH))
+        }
+        // Drop repeated points and the middle of straight runs, so only real corners are left.
+        var changed = true
+        while changed && pts.count > 4 {
+            changed = false
+            for i in pts.indices.reversed() where pts.count > 4 {
+                let p = pts[(i + pts.count - 1) % pts.count], v = pts[i], n = pts[(i + 1) % pts.count]
+                let same = abs(p.x - v.x) < 0.5 && abs(p.y - v.y) < 0.5
+                let straight = (abs(p.x - v.x) < 0.5 && abs(v.x - n.x) < 0.5) || (abs(p.y - v.y) < 0.5 && abs(v.y - n.y) < 0.5)
+                if same || straight { pts.remove(at: i); changed = true }
+            }
+        }
+        let path = CGMutablePath()
+        let last = pts[pts.count - 1]
+        path.move(to: CGPoint(x: (last.x + pts[0].x) / 2, y: (last.y + pts[0].y) / 2))
+        for i in pts.indices {
+            let p = pts[(i + pts.count - 1) % pts.count], v = pts[i], n = pts[(i + 1) % pts.count]
+            let before: CGFloat = hypot(v.x - p.x, v.y - p.y), after: CGFloat = hypot(n.x - v.x, n.y - v.y)
+            let r = min(radius, before / 2, after / 2)
+            path.addArc(tangent1End: v, tangent2End: n, radius: r)
+        }
+        path.closeSubpath()
+        return path
     }
 
     /// "Copy" at the top right of each box whose first line is on screen.
@@ -1384,6 +1660,8 @@ final class TerminalView: NSView, TerminalDelegate {
             let y = rowY(r)
             let n = min(line.cells.count, cols)
             let sel = selectionCols(forLine: a)
+            // Inside a code box the selection is already drawn, as one shape within the panel (drawBoxSelection).
+            let boxSel = sel != nil && selectionDrawnByBox(line: a)
             let lineMatches = matchesByLine[a]
             // "[Image #N]" with its picture drawn there instead (see ImageChips.swift).
             let hiddenText = imageChipState.hidden[a]
@@ -1414,7 +1692,7 @@ final class TerminalView: NSView, TerminalDelegate {
                         }
                     }
                 }
-                if let sel, sel.contains(x) { bg = palette.selection }
+                if let sel, sel.contains(x) { bg = boxSel ? nil : palette.selection }
                 if let hiddenText, hiddenText.contains(where: { $0.contains(x) }) { fg = .clear }
                 rowFG[x] = fg
                 rowBG[x] = bg

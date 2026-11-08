@@ -7,8 +7,15 @@ import Foundation
 
 enum SyntaxLanguage {
     case json, yaml, xml
+    /// Logs: colored by LogFormat (time, level, logger, stack traces…), their own ANSI colors shown, not printed.
+    case log
+
+    /// JSON, YAML and XML can be beautified; logs can't.
+    var canFormat: Bool { self != .log }
 
     init?(path: String) {
+        let name = path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? ""
+        if LogFormats.isLogFile(name: name) { self = .log; return }
         switch (path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map { name -> String in
             guard let dot = name.lastIndex(of: "."), dot != name.startIndex else { return "" }
             return String(name[name.index(after: dot)...])
@@ -73,6 +80,9 @@ enum SyntaxScanner {
             if r.location != NSNotFound, r.length > 0 { out.append((r, t)) }
         }
         switch language {
+        case .log:
+            // Painted by LogFormat instead.
+            break
         case .json:
             let kinds: [SyntaxToken] = [.comment, .key, .string, .number, .literal]
             json.enumerateMatches(in: text, range: whole) { m, _, _ in

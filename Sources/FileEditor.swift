@@ -4,7 +4,8 @@ import AppKit
 /// Works on local and ssh files alike through `FileSystem`. ⌘S saves, ⌘W closes, ⌥Z toggles wrapping.
 /// Images, PDFs, video and audio show as a read-only preview instead (see `MediaPreviewView`).
 final class FileEditorView: NSView, NSTextViewDelegate {
-    let fs: FileSystem
+    /// Where the file is. Over ssh, a lost session gives way to the next one logged in to the same host.
+    private(set) var fs: FileSystem
     /// The file, or for a graph the repository's top folder.
     private(set) var path: String
     let mode: EditorMode
@@ -26,6 +27,8 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     var onPathChanged: (() -> Void)?
     /// The header's Preview and Working Tree buttons: this file, shown another way in another sub-tab.
     var onOpenAs: ((EditorMode) -> Void)?
+    /// Git Changes: a git command to run in this tab's terminal, in `dir` (one that needs a password, say).
+    var onRunInTerminal: ((_ command: String, _ dir: String) -> Void)?
     /// Git Status: another file, in a sub-tab of its own.
     var onOpenOther: ((String, EditorMode) -> Void)?
 
@@ -42,6 +45,22 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private var revealWhenLoaded: (line: Int, text: String)?
     private var saving = false
     private(set) var isDirty = false { didSet { header.dirty = isDirty } }
+    /// The file is gone from disk (deleted, or moved away by something else): shown struck through, as in VS Code,
+    /// and saving puts it back.
+    private(set) var isDeleted = false {
+        didSet {
+            guard isDeleted != oldValue else { return }
+            header.deleted = isDeleted
+            onPathChanged?()
+        }
+    }
+    private var existsTimer: Timer?
+    private var existsTicks = 0
+    private var checkingExists = false
+    /// Over the file while its ssh connection is lost: Reconnect, or Close.
+    private var lostBar: ConnectionLostBar?
+    /// Reconnect on that bar: the tab logs back in to the host (see `TabSession.reconnect`).
+    var onReconnect: ((RemoteSession) -> Void)?
     /// Too big to edit (past `maxEditableFileSize`): shown read-only, in full or (past `maxReadableFileSize`) its end.
     private var partial = false
     /// What's known of the file on disk, to follow it as it grows: its size, and its last few bytes (a change
@@ -50,14 +69,39 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private var diskTail = Data()
     /// Bytes at the end of the last read that stop partway through a character, kept for the next.
     private var carry = Data()
-    /// The eye in the header: re-read the file every 5 seconds while it's on screen (and on coming back to it).
-    private var watching = false { didSet { header.watching = watching; updateWatchTimer() } }
-    private var watchTimer: Timer?
+    /// Tail File, in the header: the end stays in view as the file grows (tail -f), even after scrolling up. Without
+    /// it a growing file scrolls along only while its end is showing. Either way the file keeps up with the disk.
+    private var tailing = false {
+        didSet {
+            header.tailing = tailing
+            if tailing { textView.scrollToEndOfDocument(nil); syncWithDisk() }
+        }
+    }
     private var refreshing = false
+    /// The file as last read or saved (see `LocalFileSystem.signature`, `RemoteSession.statCommand`): when what's on
+    /// disk differs, something else changed it (an agent, git, a formatter) and the text catches up.
+    private var diskSignature: String?
+    /// On this Mac: its folder, watched while the file's open (see `DiskWatch`).
+    private var diskWatch: DiskWatch.Token?
+    /// Over ssh: the file, followed on the host while it's showing (see `RemoteFileWatch`).
+    private var remoteWatch: RemoteFileWatch.Token?
+    /// It changed on disk while there were unsaved edits here: they stay, the header says so, and saving asks first.
+    private var changedOnDisk = false { didSet { header.changedOnDisk = changedOnDisk } }
+    /// Saving over a file changed on disk: Compare, Overwrite or Revert (see `showConflict`).
+    private var conflictBar: EditorNoticeBar?
+    private var compareView: DiffView?
+    /// What was to happen after the save that hit the conflict (closing the editor, say).
+    private var afterConflict: (() -> Void)?
     private var wraps = false
-    /// Colored as JSON, YAML or XML (see Syntax.swift); other files stay plain.
-    private var language: SyntaxLanguage?
+    /// Colored as JSON, YAML, XML or a log (see Syntax.swift, LogFormat.swift); other files stay plain.
+    private var language: SyntaxLanguage? { didSet { header.canFormat = language?.canFormat ?? false } }
     private var pendingHighlight: DispatchWorkItem?
+    /// A log's coloring: the format chosen for it (an imported one, or the built-in), and the one picked from the
+    /// header's menu instead, by name.
+    private var logFormat: LogFormat? { didSet { header.logFormatName = logFormat?.name } }
+    private var logFormatPick: String?
+    /// The characters of a log already colored: a big one is colored as it scrolls into view.
+    private var logPainted = IndexSet()
     private var observers: [NSObjectProtocol] = []
     private var media: MediaPreviewView?
     private var diffView: DiffView?
@@ -72,7 +116,6 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         self.fs = fs
         self.path = path
         self.mode = mode
-        language = SyntaxLanguage(path: path)
         let storage = NSTextStorage()
         let layout = NSLayoutManager()
         storage.addLayoutManager(layout)
@@ -81,6 +124,9 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         textView = EditorTextView(frame: .zero, textContainer: container)
         ruler = LineNumberRuler(scrollView: scroll, orientation: .verticalRuler)
         super.init(frame: .zero)
+        layout.delegate = textView
+        language = SyntaxLanguage(path: path)
+        header.canFormat = language?.canFormat ?? false
 
         // The file's sub-tab above carries its name; the header just shows where it lives.
         header.subtitle = location
@@ -88,13 +134,13 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         header.onClose = { [weak self] in self?.requestClose() }
         header.onSave = { [weak self] in self?.saveDocument(nil) }
         header.onFormat = { [weak self] in self?.formatDocument(nil) }
-        header.canFormat = language != nil
         header.canPreview = MarkdownHTML.isMarkdown(path: path)
+        header.onLogFormat = { [weak self] in self?.showLogFormatMenu() }
         header.onPreview = { [weak self] in self?.onOpenAs?(.preview) }
         header.onShowChanges = { [weak self] in self?.onOpenAs?(.diff) }
         header.onToggleWrap = { [weak self] in self?.toggleWrap(nil) }
         header.onCopyPath = { [weak self] in self?.copyPath() }
-        header.onToggleWatch = { [weak self] in self?.watching.toggle() }
+        header.onToggleTail = { [weak self] in self?.tailing.toggle() }
         addSubview(header)
 
         textView.coveredBy = { [weak self] p in
@@ -145,16 +191,31 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         observers.append(NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak self] _ in
             self?.ruler.needsDisplay = true
             self?.refreshFindHighlights()
+            self?.paintVisibleLog()
+        })
+        observers.append(NotificationCenter.default.addObserver(forName: .solanumRemoteReady, object: nil, queue: .main) { [weak self] note in
+            if let session = note.object as? RemoteSession { self?.follow(session) }
+        })
+        observers.append(NotificationCenter.default.addObserver(forName: .solanumLogFormatsChanged, object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.loaded, self.language == .log else { return }
+            self.chooseLogFormat()
+            self.highlightSyntax()
         })
         observers.append(NotificationCenter.default.addObserver(forName: .solanumFileRenamed, object: fs, queue: .main) { [weak self] note in
             guard let old = note.userInfo?["old"] as? String, let new = note.userInfo?["new"] as? String else { return }
             self?.followRename(from: old, to: new)
         })
         if mode == .file {
-            for name in [NSApplication.didBecomeActiveNotification, .solanumFileSaved, .solanumGitStatusChanged] {
+            observers.append(NotificationCenter.default.addObserver(forName: RemoteFileWatch.liveChanged, object: nil, queue: .main) { [weak self] _ in
+                self?.updateWatchTag()
+            })
+            for name in [NSApplication.didBecomeActiveNotification, .solanumFileSaved, .solanumGitStatusChanged, .solanumFilesChanged] {
                 observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                     guard let self, note.name == NSApplication.didBecomeActiveNotification || note.object as AnyObject? === self.fs else { return }
-                    self.refreshGitChanges()
+                    if note.name != .solanumFilesChanged { self.refreshGitChanges() }
+                    self.checkExists()
+                    // In case an event was missed.
+                    if note.name == NSApplication.didBecomeActiveNotification { self.syncWithDisk() }
                 })
             }
             refreshGitChanges()
@@ -176,13 +237,29 @@ final class FileEditorView: NSView, NSTextViewDelegate {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        updateWatchTimer()
-        // Coming back to a watched file: catch up straight away.
-        if watching, window != nil { refreshFromDisk() }
+        updateDiskWatch()
+        // Whether the file is still there: a stat every 2 seconds here; over ssh, whether the connection is (a
+        // local check, as often) and a folder listing every 16.
+        existsTimer?.invalidate()
+        existsTimer = nil
+        if window != nil, mode == .file || fs.isRemote {
+            existsTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                self.existsTicks += 1
+                self.updateConnection()
+                if !self.fs.isRemote || self.existsTicks % 8 == 0 { self.checkExists() }
+                // A stat, in case the folder's events can't be had (a network drive, say).
+                if !self.fs.isRemote { self.syncWithDisk() }
+            }
+            updateConnection()
+            checkExists()
+        }
+        // Coming back to the file: catch up straight away (over ssh, the watch's first report does).
+        if window != nil { syncWithDisk() }
     }
 
     deinit {
-        watchTimer?.invalidate()
+        existsTimer?.invalidate()
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         if let dir = mediaCopy?.deletingLastPathComponent() { try? FileManager.default.removeItem(at: dir) }
     }
@@ -203,8 +280,11 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private func followRename(from old: String, to new: String) {
         guard path == old || path.hasPrefix(old + "/") else { return }
         path = new + path.dropFirst(old.count)
-        language = SyntaxLanguage(path: path)
-        header.canFormat = language != nil
+        if !fs.isRemote { diskSignature = LocalFileSystem.signature(path) }
+        updateDiskWatch()
+        let wasLog = language == .log
+        language = SyntaxLanguage(path: path) ?? (wasLog && textView.hidesEscapes ? .log : nil)
+        if language == .log { chooseLogFormat() } else { logFormat = nil }
         header.canPreview = MarkdownHTML.isMarkdown(path: path)
         refreshGitChanges()
         header.subtitle = location
@@ -216,7 +296,9 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             if language != nil {
                 highlightSyntax()
             } else {
-                storage.addAttribute(.foregroundColor, value: Config.shared.theme.foreground, range: NSRange(location: 0, length: storage.length))
+                storage.removeAttribute(.solanumLogWash, range: NSRange(location: 0, length: storage.length))
+                storage.addAttributes([.foregroundColor: Config.shared.theme.foreground, .font: FontSet.current.regular as NSFont],
+                                      range: NSRange(location: 0, length: storage.length))
             }
         }
         onPathChanged?()
@@ -243,6 +325,75 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             bar.frame = NSRect(x: bounds.width - w - 12, y: scroll.frame.minY + 6, width: w, height: bar.preferredHeight)
         }
         previewView?.frame = scroll.frame
+        compareView?.frame = scroll.frame
+        if let bar = conflictBar {
+            let w = min(bar.preferredWidth, bounds.width - 16)
+            bar.frame = NSRect(x: max(8, bounds.width - w - 12), y: bounds.height - EditorNoticeBar.height - 10, width: w, height: EditorNoticeBar.height)
+        }
+        if let bar = lostBar {
+            let w = min(bar.preferredWidth, bounds.width - 16)
+            bar.frame = NSRect(x: max(8, bounds.width - w - 12), y: bounds.height - ConnectionLostBar.height - 10, width: w, height: ConnectionLostBar.height)
+        }
+    }
+
+    // MARK: Connection
+
+    /// Shows the lost-connection bar while the file's ssh session is down.
+    private func updateConnection() {
+        guard !devLostBarShown else { return }
+        let remote = fs as? RemoteSession
+        let lost = remote.map { $0.isReady && !$0.isConnected } ?? false
+        // Already logged in to that host somewhere (a restored ssh tab, another tab): carry on there.
+        if lost, let host = remote?.hostLabel, let live = TabSession.liveSession(host: host) { return follow(live) }
+        guard lost != (lostBar != nil) else { return }
+        if lost, let remote {
+            let host = remote.hostLabel ?? "the ssh host"
+            let bar = ConnectionLostBar(host: host, title: remote.awaitingLogin ? "Not connected to \(host)" : nil, onReconnect: { [weak self] in
+                self?.onReconnect?(remote)
+            }, onClose: { [weak self] in self?.requestClose() })
+            // Its own layer, or the text's (layer-backed) scroll view draws over it.
+            bar.wantsLayer = true
+            lostBar = bar
+            addSubview(bar)
+            needsLayout = true
+        } else {
+            lostBar?.removeFromSuperview()
+            lostBar = nil
+        }
+    }
+
+    /// A session logged in to the host this file's lost session was on: the file carries on there, catching up
+    /// with what changed meanwhile (unsaved edits stay).
+    private func follow(_ session: RemoteSession) {
+        guard let old = fs as? RemoteSession, old !== session, !old.isConnected, session.isReady, session.isConnected,
+              old.hostLabel == session.hostLabel else { return }
+        fs = session
+        updateDiskWatch()
+        updateConnection()
+        refreshGitChanges()
+        onPathChanged?()
+        switch mode {
+        case .file:
+            // Restored and never read: open it now.
+            if media != nil || !loaded { load() } else { refreshFromDisk() }
+            checkExists()
+        default:
+            load()
+        }
+    }
+
+    var devLostBar: ConnectionLostBar? { lostBar }
+    private var devLostBarShown = false
+
+    /// Dev aid (DevTools editor-lost-bar): the bar as a lost connection to `host` shows it.
+    func devShowLostBar(host: String) {
+        devLostBarShown = true
+        lostBar?.removeFromSuperview()
+        let bar = ConnectionLostBar(host: host, onReconnect: {}, onClose: {})
+        bar.wantsLayer = true
+        lostBar = bar
+        addSubview(bar)
+        needsLayout = true
     }
 
     /// Search in Project Folder and file links: a line (from 1) in view, with `text` on it selected. With no such
@@ -307,6 +458,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         if let storage = textView.textStorage, storage.length > 0 {
             storage.addAttributes([.font: font, .foregroundColor: th.foreground, .paragraphStyle: para],
                                   range: NSRange(location: 0, length: storage.length))
+            storage.removeAttribute(.solanumLogWash, range: NSRange(location: 0, length: storage.length))
             highlightSyntax()
         }
         message.textColor = th.dimText
@@ -345,6 +497,10 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         if mode == .graph { return loadGraph() }
         if mode == .status { return loadStatus() }
         if mode == .preview { return loadPreview() }
+        // Restored from a saved session: there's nothing to read it through until a session to its host is in.
+        if let remote = fs as? RemoteSession, remote.awaitingLogin {
+            return showMessage("Waiting for a connection to \(remote.hostLabel ?? "the ssh host").\nIt opens here once a tab is logged in there again, or press Reconnect.")
+        }
         if let kind = MediaKind(path: path) { return loadMedia(kind) }
         showMessage("Loading…")
         loadText(keepPlace: false)
@@ -360,6 +516,10 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             case .failure(let e):
                 if !keepPlace { self.showMessage(e.localizedDescription) }
             case .success(let part):
+                // Typed into while it was read: what's typed stays (it isn't replaced under you).
+                if keepPlace && self.isDirty { return }
+                self.diskSignature = part.signature
+                self.changedOnDisk = false
                 var data = part.data
                 let cut = part.size > data.count
                 let partial = part.size > maxEditableFileSize
@@ -373,11 +533,27 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 let (bytes, crlf) = Self.droppingCR(whole)
                 if crlf { self.usesCRLF = true }
                 let text = String(decoding: bytes, as: UTF8.self)
+                // The same as shown (a touch, or a save of the same text): nothing to redo, and the undo history stays.
+                if keepPlace, self.loaded, !cut, !partial, text == self.textView.string {
+                    self.diskSize = part.size
+                    self.diskTail = Data(part.data.suffix(256))
+                    self.carry = rest
+                    return
+                }
+                // Color codes a logger wrote into the file (logback's %highlight…) are hidden and shown as colors;
+                // a file with them, or one an imported log format names, is a log whatever it's called.
+                let escapes = Self.hasEscapes(bytes)
+                self.textView.hidesEscapes = escapes
+                if self.language == nil, escapes || LogFormatStore.formats.contains(where: { $0.matches(fileName: (self.path as NSString).lastPathComponent) }) {
+                    self.language = .log
+                }
+                self.logPainted = IndexSet()
                 let caret = self.textView.selectedRange()
                 let origin = self.scroll.contentView.bounds.origin
                 // Long texts lay out only what's on screen.
                 self.textView.layoutManager?.allowsNonContiguousLayout = text.utf16.count > 100_000
                 self.textView.string = text
+                if self.language == .log { self.chooseLogFormat() }
                 self.findTextChanged()
                 self.applyTheme()
                 self.partial = partial
@@ -400,12 +576,15 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 }
                 self.loaded = true
                 self.isDirty = false
+                self.updateDiskWatch()
                 self.message.isHidden = true
                 self.scroll.isHidden = false
                 self.ruler.invalidateLines()
                 // Only if asked for: a file shown by clicking it in the sidebar leaves the focus on the sidebar.
                 if self.focusWhenLoaded { self.focus() }
                 self.focusWhenLoaded = false
+                // Once laid out, color what a big log shows.
+                if self.language == .log { DispatchQueue.main.async { [weak self] in self?.paintVisibleLog() } }
                 if let r = self.revealWhenLoaded {
                     self.revealWhenLoaded = nil
                     self.reveal(line: r.line, text: r.text)
@@ -457,32 +636,172 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         return (Data(data[data.startIndex..<cut]), Data(data[cut...]))
     }
 
-    // MARK: Watching
+    @objc func toggleTail(_ sender: Any?) { tailing.toggle() }
 
-    @objc func toggleWatch(_ sender: Any?) { watching.toggle() }
+    // MARK: Changes on disk
 
-    /// Every 5 seconds while watched and on screen (a tab not in front, or a file sub-tab not showing, has no window).
-    private func updateWatchTimer() {
-        let wanted = watching && window != nil && mode == .file
-        if wanted, watchTimer == nil {
-            watchTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refreshFromDisk() }
-        } else if !wanted {
-            watchTimer?.invalidate()
-            watchTimer = nil
+    /// The file is kept current, VS Code style. On this Mac, whether it's showing or not: its folder is watched, and
+    /// when the file changes there it's checked (see `syncWithDisk`). Over ssh, while it's showing: the host checks
+    /// it every second (see `RemoteFileWatch`), and it catches up on coming back to it. Not media.
+    private func updateDiskWatch() {
+        let wanted = mode == .file && media == nil && loaded
+        if let remote = fs as? RemoteSession {
+            diskWatch = nil
+            defer { updateWatchTag() }
+            guard wanted, window != nil else { remoteWatch = nil; return }
+            if let t = remoteWatch, t.path == path, t.belongs(to: remote.fileWatch) { return }
+            remoteWatch = remote.fileWatch.watch(path) { [weak self] sig in self?.diskSignatureNow(sig) }
+            return
         }
+        remoteWatch = nil
+        header.watchLive = nil
+        if !wanted { diskWatch = nil; return }
+        guard diskWatch?.folder != DiskWatch.realPath((path as NSString).deletingLastPathComponent) else { return }
+        diskWatch = DiskWatch.shared.watch(folderOf: path) { [weak self] events in self?.diskChanged(events) }
+    }
+
+    /// Something in the file's folder changed: if it's this file, see whether it really did. Renamed within its
+    /// folder (the same file under a new name, by its inode): the editor follows it there.
+    private func diskChanged(_ events: [DiskWatch.Event]) {
+        let real = DiskWatch.realPath((path as NSString).deletingLastPathComponent) + "/" + (path as NSString).lastPathComponent
+        guard events.contains(where: { $0.path == real || $0.rescan }) else { return }
+        if LocalFileSystem.signature(path) == nil, let inode = diskSignature?.split(separator: " ").last,
+           let moved = events.first(where: { $0.renamed && $0.path != real && LocalFileSystem.signature($0.path)?.split(separator: " ").last == inode }) {
+            let folder = (moved.path as NSString).deletingLastPathComponent
+            let realFolder = (real as NSString).deletingLastPathComponent
+            // Named as the editor had it (/tmp, not /private/tmp) when it's the same folder.
+            let to = folder == realFolder ? ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent((moved.path as NSString).lastPathComponent)
+                : moved.path
+            followRename(from: path, to: to)
+            return
+        }
+        syncWithDisk()
+    }
+
+    /// Over ssh, whether the host's watch is reporting, in the header ("Live", or "Not Updating" when it isn't).
+    private func updateWatchTag() {
+        guard let remote = fs as? RemoteSession, let t = remoteWatch, t.belongs(to: remote.fileWatch) else {
+            header.watchLive = nil
+            return
+        }
+        header.watchLive = remote.fileWatch.live
+    }
+
+    /// On this Mac: a stat, and what it means (see `diskSignatureNow`). Over ssh the host's watch reports instead.
+    func syncWithDisk() {
+        guard !fs.isRemote, mode == .file, loaded, media == nil else { return }
+        diskSignatureNow(LocalFileSystem.signature(path))
+    }
+
+    /// The file's signature on disk now (nil: it isn't there). If it changed from what was read or saved (its
+    /// modified time, size or inode), the text catches up quietly (see `refreshFromDisk`), keeping the caret and
+    /// scroll. With unsaved edits it only says so: they stay, and saving asks first.
+    private func diskSignatureNow(_ sig: String?) {
+        guard mode == .file, loaded, media == nil else { return }
+        // Busy reading or saving: look again in a moment (the host's watch reports a change only once).
+        if refreshing || saving {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self else { return }
+                self.fs.isRemote ? self.diskSignatureNow(sig) : self.syncWithDisk()
+            }
+            return
+        }
+        guard let sig else { return checkExists() }
+        if isDeleted { checkExists() }
+        guard sig != diskSignature else { return }
+        if isDirty {
+            changedOnDisk = true
+            return
+        }
+        diskSignature = sig
+        refreshFromDisk(changed: true)
+    }
+
+    /// The signature on disk now: a stat here, a command over ssh.
+    private func currentSignature(_ done: @escaping (String?) -> Void) {
+        if let remote = fs as? RemoteSession { remote.signature(path, done) } else { done(LocalFileSystem.signature(path)) }
+    }
+
+    /// Saving over a file that changed on disk since it was read: a bar over the file asks what to do.
+    private func showConflict(then next: (() -> Void)?) {
+        afterConflict = next
+        changedOnDisk = true
+        guard conflictBar == nil else { return }
+        let name = (path as NSString).lastPathComponent
+        let bar = EditorNoticeBar(title: "“\(name)” changed on disk", symbol: "exclamationmark.triangle.fill", actions: [
+            ("Compare", { [weak self] in self?.toggleCompare() }),
+            ("Overwrite", { [weak self] in self?.resolveConflict(overwrite: true) }),
+            ("Revert", { [weak self] in self?.resolveConflict(overwrite: false) }),
+            ("Cancel", { [weak self] in self?.endConflict() }),
+        ])
+        bar.toolTip = "Compare: what's on disk (left) beside your edits (right). Overwrite: save yours over it. Revert: drop yours and show what's on disk."
+        bar.wantsLayer = true
+        conflictBar = bar
+        addSubview(bar)
+        needsLayout = true
+    }
+
+    /// What's on disk on the left, the unsaved text on the right; again to go back to editing.
+    private func toggleCompare() {
+        if let v = compareView {
+            v.removeFromSuperview()
+            compareView = nil
+            scroll.isHidden = false
+            conflictBar?.setTitle("Compare", at: 0)
+            window?.makeFirstResponder(textView)
+            return
+        }
+        let mine = textView.string
+        fs.read(path) { [weak self] result in
+            guard let self, self.conflictBar != nil, self.compareView == nil else { return }
+            let disk = (try? result.get()).map { String(decoding: Self.droppingCR($0).0, as: UTF8.self) } ?? ""
+            let v = DiffView()
+            v.show(old: disk, new: mine, language: self.language)
+            self.compareView = v
+            self.addSubview(v, positioned: .below, relativeTo: self.conflictBar)
+            self.scroll.isHidden = true
+            self.conflictBar?.setTitle("Back to Editing", at: 0)
+            self.needsLayout = true
+        }
+    }
+
+    private func resolveConflict(overwrite: Bool) {
+        let next = afterConflict
+        endConflict()
+        if overwrite {
+            save(force: true, then: next)
+        } else {
+            isDirty = false
+            changedOnDisk = false
+            loadText(keepPlace: true)
+            next?()
+        }
+    }
+
+    private func endConflict() {
+        afterConflict = nil
+        compareView?.removeFromSuperview()
+        compareView = nil
+        scroll.isHidden = false
+        conflictBar?.removeFromSuperview()
+        conflictBar = nil
+        if window?.firstResponder == nil || window?.firstResponder === window { window?.makeFirstResponder(textView) }
     }
 
     /// Catches up with the file on disk: new bytes at the end are added (scrolling along if the end was in view,
     /// as with tail -f); anything else (rewritten, truncated, rotated) reloads it, keeping the place. Unsaved
     /// edits are never overwritten.
-    func refreshFromDisk() {
+    /// `changed`: it's known to have changed (its stat did), so with nothing added at the end it's read again.
+    func refreshFromDisk(changed: Bool = false) {
         guard mode == .file, loaded, media == nil, !isDirty, !refreshing, !saving else { return }
         refreshing = true
         let from = max(0, diskSize - diskTail.count)
         fs.readPart(path, from: from, whole: 0, tail: fileTailSize) { [weak self] result in
             guard let self else { return }
             self.refreshing = false
-            guard case .success(let part) = result, !self.isDirty else { return }
+            guard case .success(let part) = result else { return self.checkExists() }
+            guard !self.isDirty else { return }
+            if let sig = part.signature { self.diskSignature = sig }
             let known = self.diskSize - from
             guard part.size >= self.diskSize, part.data.count >= known, part.data.prefix(known) == self.diskTail else {
                 return self.loadText(keepPlace: true)
@@ -490,21 +809,30 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             let added = Data(part.data.dropFirst(known))
             // More arrived than one read brings: start again from the end.
             if part.size - self.diskSize > added.count { return self.loadText(keepPlace: true) }
-            guard !added.isEmpty else { return }
+            guard !added.isEmpty else { return changed ? self.loadText(keepPlace: true) : () }
             self.diskSize = part.size
             self.diskTail = Data((self.diskTail + added).suffix(256))
             let (whole, rest) = Self.splitUTF8(self.carry + added)
             self.carry = rest
-            let text = String(decoding: Self.droppingCR(whole).0, as: UTF8.self)
+            let bytes = Self.droppingCR(whole).0
+            let text = String(decoding: bytes, as: UTF8.self)
             guard !text.isEmpty, let storage = self.textView.textStorage else { return }
+            if !self.textView.hidesEscapes, Self.hasEscapes(bytes) {
+                self.textView.hidesEscapes = true
+                if self.language == nil { self.language = .log; self.chooseLogFormat() }
+            }
             let visible = self.scroll.contentView.bounds
             let atEnd = visible.maxY >= self.textView.frame.maxY - (self.textView.font?.pointSize ?? 13) * 3
             let end = storage.length
             storage.append(NSAttributedString(string: text, attributes: self.textView.typingAttributes))
-            if self.language != nil, storage.length <= SyntaxHighlighter.maxLength { self.highlightSyntax() }
+            if self.language == .log {
+                // Only what arrived (and the line it may finish) needs coloring.
+                self.logPainted.remove(integersIn: max(0, end - 1)..<storage.length)
+            } else if self.language != nil, storage.length <= SyntaxHighlighter.maxLength { self.highlightSyntax() }
             self.ruler.linesAppended(from: end)
             self.findTextChanged()
-            if atEnd { self.textView.scrollToEndOfDocument(nil) }
+            if atEnd || self.tailing { self.textView.scrollToEndOfDocument(nil) }
+            self.paintVisibleLog()
         }
     }
 
@@ -612,7 +940,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     /// ⌥⌘F or the header's button: JSON, YAML or XML re-indented (see `Prettifier`), as one step ⌘Z undoes.
     @objc func formatDocument(_ sender: Any?) {
         guard mode == .file, loaded, media == nil else { return NSSound.beep() }
-        guard let language else {
+        guard let language, language.canFormat else {
             header.status = "Can't beautify this kind of file"
             return clearStatus(after: 2.5)
         }
@@ -651,32 +979,35 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private func loadGraph() {
         header.editable = false
         header.textTools = false
-        if graphView == nil { showMessage("Loading…") }
-        let git = GitRunner(dir: path, remote: fs as? RemoteSession)
-        git.run(GraphCommit.script, timeout: 60) { [weak self] status, out, err in
+        if let view = graphView { return view.reload() }
+        showMessage("Loading…")
+        let view = GitGraphView(runner: GitRunner(dir: path, remote: fs as? RemoteSession))
+        graphView = view
+        view.isHidden = true
+        view.onViewChanges = { [weak self] hash in
             guard let self else { return }
-            let (head, commits) = GraphCommit.parse(out)
-            guard !commits.isEmpty else {
-                return self.showMessage(status == 0 ? "No commits yet." : err.isEmpty ? "Couldn't read the history." : err)
-            }
-            let view = self.graphView ?? GitGraphView(runner: git)
-            if self.graphView == nil {
-                self.graphView = view
-                view.onViewChanges = { [weak self] hash in
-                    guard let self else { return }
-                    self.onOpenOther?(self.path, .commit(hash))
-                }
-                self.addSubview(view)
-                self.needsLayout = true
-                self.layoutSubtreeIfNeeded()
-            }
-            view.show(head: head, commits: commits)
-            let count = commits.count >= GraphCommit.limit ? "latest \(commits.count) commits" : "\(commits.count) commit\(commits.count == 1 ? "" : "s")"
-            self.header.subtitle = "\(self.location) · all branches · \(count)"
-            self.message.isHidden = true
-            self.scroll.isHidden = true
-            if self.window?.firstResponder === self.window { self.focus() }
+            self.onOpenOther?(self.path, .commit(hash))
         }
+        view.onFailed = { [weak self] message in
+            guard let self, self.graphView?.isHidden != false else { return }
+            self.showMessage(message)
+        }
+        view.onLoaded = { [weak self] count, filter in
+            guard let self, let view = self.graphView else { return }
+            let shown = count >= GraphCommit.limit ? "latest \(count) commits" : "\(count) commit\(count == 1 ? "" : "s")"
+            let what = filter.isEmpty ? "all branches" : filter.branch.map { $0 == "HEAD" ? "HEAD" : $0 } ?? "filtered"
+            self.header.subtitle = "\(self.location) · \(what) · \(shown)"
+            if view.isHidden {
+                view.isHidden = false
+                self.message.isHidden = true
+                self.scroll.isHidden = true
+                if self.window?.firstResponder === self.window { self.focus() }
+            }
+        }
+        addSubview(view)
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+        view.reload()
     }
 
     /// The repository's state as a page (GitStatusView.swift).
@@ -701,6 +1032,10 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 // A commit doesn't change.
                 if hash == nil { view.onRefresh = { [weak self] in self?.load() } }
                 view.onOpen = { [weak self] path, mode in self?.onOpenOther?(path, mode) }
+                view.onRunInTerminal = { [weak self] command in
+                    guard let self else { return }
+                    self.onRunInTerminal?(command, self.path)
+                }
                 self.addSubview(view)
                 self.needsLayout = true
                 self.layoutSubtreeIfNeeded()
@@ -737,6 +1072,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         ruler.invalidateLines()
         findTextChanged()
         guard language != nil else { return }
+        if language == .log { logPainted = IndexSet() }
         // Re-color once typing pauses rather than on every keystroke.
         pendingHighlight?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.highlightSyntax() }
@@ -744,8 +1080,182 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
+    /// Whether these bytes hold an ANSI escape sequence (ESC [).
+    private static func hasEscapes(_ data: Data) -> Bool {
+        data.withUnsafeBytes { raw -> Bool in
+            guard var p = raw.baseAddress, raw.count > 1 else { return false }
+            let end = raw.baseAddress! + raw.count
+            while let hit = memchr(p, 0x1B, end - p) {
+                let q = UnsafeRawPointer(hit)
+                if q + 1 < end, q.load(fromByteOffset: 1, as: UInt8.self) == 0x5B { return true }
+                p = q + 1
+            }
+            return false
+        }
+    }
+
+    // MARK: Logs
+
+    /// The format for this log: the one picked from the header's menu, else one that names the file or fits its
+    /// first lines (see `LogFormats.choose`), else the built-in coloring.
+    private func chooseLogFormat() {
+        let formats = LogFormatStore.formats
+        if let pick = logFormatPick {
+            logFormat = pick == LogFormat.builtIn.name ? LogFormatStore.builtIn : formats.first { $0.name == pick }
+            if logFormat != nil { return }
+            logFormatPick = nil
+        }
+        let s = textView.textStorage?.mutableString ?? NSMutableString()
+        var sample: [String] = []
+        var at = 0
+        while at < s.length, sample.count < 40 {
+            let r = s.lineRange(for: NSRange(location: at, length: 0))
+            sample.append(s.substring(with: r).trimmingCharacters(in: .newlines))
+            at = NSMaxRange(r)
+        }
+        let chosen = LogFormats.choose(for: (path as NSString).lastPathComponent, sample: sample, among: formats)
+        logFormat = chosen.file == nil ? LogFormatStore.builtIn : chosen
+    }
+
+    /// Colors the part of a log on screen (and a screen either side) that isn't yet; a smaller log all at once.
+    private func paintVisibleLog() {
+        guard language == .log, let format = logFormat, let storage = textView.textStorage, storage.length > 0,
+              let lm = textView.layoutManager, let tc = textView.textContainer else { return }
+        let target: NSRange
+        if storage.length <= 300_000 {
+            target = NSRange(location: 0, length: storage.length)
+        } else {
+            let visible = textView.visibleRect
+            guard !visible.isEmpty else { return }
+            let glyphs = lm.glyphRange(forBoundingRect: visible.insetBy(dx: 0, dy: -visible.height), in: tc)
+            target = lm.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        }
+        guard let span = Range(target), !span.isEmpty else { return }
+        let todo = IndexSet(integersIn: span).subtracting(logPainted)
+        guard !todo.isEmpty else { return }
+        let started = Date()
+        storage.beginEditing()
+        for r in todo.rangeView {
+            let done = LogPainter.paint(storage, in: NSRange(r), format: format)
+            if let d = Range(done) { logPainted.insert(integersIn: d) }
+        }
+        storage.endEditing()
+        if ProcessInfo.processInfo.environment["SOLANUM_LOG_PAINT_DEBUG"] != nil {
+            FileHandle.standardError.write("log paint: \(todo.count) chars in \(todo.rangeView.count) runs, \(Int(Date().timeIntervalSince(started) * 1000)) ms\n".data(using: .utf8)!)
+        }
+        textView.needsDisplay = true
+    }
+
+    /// The header's palette: which format colors this log, and importing another.
+    private func showLogFormatMenu() {
+        let menu = logFormatMenu()
+        let r = header.rect(ofButton: "Log Coloring") ?? NSRect(x: header.bounds.maxX - 120, y: 0, width: 22, height: header.bounds.height)
+        menu.popUp(positioning: nil, at: NSPoint(x: r.minX, y: r.maxY + 2), in: header)
+    }
+
+    private func logFormatMenu() -> NSMenu {
+        let menu = NSMenu()
+        let auto = logFormatPick == nil
+        let title = NSMenuItem(title: "Log Coloring", action: nil, keyEquivalent: "")
+        title.isEnabled = false
+        menu.addItem(title)
+        menu.addItem(ActionMenuItem(auto ? "Automatic (\(logFormat?.name ?? LogFormat.builtIn.name))" : "Automatic", checked: auto) { [weak self] in
+            self?.pickLogFormat(nil)
+        })
+        menu.addItem(.separator())
+        for format in [LogFormat.builtIn] + LogFormatStore.formats {
+            menu.addItem(ActionMenuItem(format.name, checked: !auto && logFormat?.name == format.name) { [weak self] in
+                self?.pickLogFormat(format.name)
+            })
+        }
+        menu.addItem(.separator())
+        if let format = logFormat {
+            LogColorMenu.add(to: menu, format: format, selection: logSelection(), window: window)
+            menu.addItem(.separator())
+        }
+        menu.addItem(ActionMenuItem("Import Log Format…") { [weak self] in
+            LogFormatStore.runImportPanel(for: self?.window) { self?.imported($0) }
+        })
+        menu.addItem(ActionMenuItem("Show Log Formats Folder") {
+            try? FileManager.default.createDirectory(at: LogFormatStore.folder, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(LogFormatStore.folder)
+        })
+        return menu
+    }
+
+    private func pickLogFormat(_ name: String?) {
+        logFormatPick = name
+        chooseLogFormat()
+        highlightSyntax()
+    }
+
+    /// A format was imported from this log's menu: it colors this log, picked if it wouldn't be chosen anyway.
+    private func imported(_ format: LogFormat) {
+        // Formats-changed has already chosen again; pick it only if that didn't land on it.
+        if loaded, language == .log, logFormat?.name != format.name { pickLogFormat(format.name) }
+        header.status = "Coloring with “\(format.name)”"
+        clearStatus(after: 2.5)
+    }
+
+    /// The selected text, if it's short and on one line: offered as a marker.
+    private func logSelection() -> String? {
+        let r = textView.selectedRange()
+        guard r.length > 0, r.length <= 200, let s = textView.textStorage?.mutableString, NSMaxRange(r) <= s.length else { return nil }
+        let text = ANSIText.removing(s.substring(with: r)).trimmingCharacters(in: .whitespaces)
+        return text.isEmpty || text.contains("\n") ? nil : text
+    }
+
+    func devEdgeDrag(fraction: CGFloat, seconds: Double) { textView.devEdgeDrag(fraction: fraction, seconds: seconds) }
+
+    /// Dev aid: to the end, as a followed log sits.
+    func devScrollToEnd() { textView.scrollToEndOfDocument(nil) }
+
+    /// Dev aid: selects `text`'s first occurrence (to offer it as a marker).
+    func devSelect(_ text: String) {
+        guard let s = textView.textStorage?.mutableString else { return }
+        let r = s.range(of: text)
+        if r.location != NSNotFound { textView.setSelectedRange(r) }
+    }
+
+    /// Dev aid (DevTools log-menu): the header's menu, or the submenu at `path` (titles joined by >), printed; an item
+    /// at the end of the path that isn't a submenu is chosen.
+    func devLogMenu(run path: String?) {
+        var menu = logFormatMenu()
+        func show(_ m: NSMenu) -> [String] { m.items.map { $0.isSeparatorItem ? "---" : ($0.state == .on ? "✓ " : "") + $0.title + ($0.submenu != nil ? " ›" : "") } }
+        for part in (path ?? "").split(separator: ">").map({ $0.trimmingCharacters(in: .whitespaces) }) {
+            guard let i = menu.items.firstIndex(where: { $0.title == part || $0.title.hasPrefix(part + " (") }) ?? menu.items.firstIndex(where: {
+                ($0.attributedTitle?.string ?? "").hasPrefix(part + " ")
+            }) else {
+                FileHandle.standardError.write("log menu: no “\(part)” in \(show(menu))\n".data(using: .utf8)!)
+                return
+            }
+            if let sub = menu.items[i].submenu { menu = sub } else { menu.performActionForItem(at: i); return }
+        }
+        FileHandle.standardError.write("log menu: \(show(menu))\n".data(using: .utf8)!)
+    }
+
+    /// Dev aid: imports a format from a file, as the menu's Import does once a file is chosen.
+    func devImportLogFormat(_ path: String) {
+        do { imported(try LogFormatStore.importFile(URL(fileURLWithPath: path))) } catch {
+            FileHandle.standardError.write("log import failed: \(error.localizedDescription)\n".data(using: .utf8)!)
+        }
+    }
+
+    var devLogFormatName: String? { language == .log ? logFormat?.name : nil }
+
+    /// The caret steps over a hidden escape sequence as over nothing, instead of seeming stuck on it.
+    func textView(_ tv: NSTextView, willChangeSelectionFromCharacterRange old: NSRange, toCharacterRange new: NSRange) -> NSRange {
+        guard textView.hidesEscapes, new.length == 0, let s = tv.textStorage?.mutableString, new.location < s.length,
+              let r = ANSIText.escapeRange(s, around: new.location), r.location < new.location else { return new }
+        return NSRange(location: new.location >= old.location ? NSMaxRange(r) : r.location, length: 0)
+    }
+
     private func highlightSyntax() {
         guard let language, let storage = textView.textStorage, storage.length > 0 else { return }
+        if language == .log {
+            logPainted = IndexSet()
+            return paintVisibleLog()
+        }
         storage.beginEditing()
         storage.addAttribute(.foregroundColor, value: Config.shared.theme.foreground, range: NSRange(location: 0, length: storage.length))
         SyntaxHighlighter.highlight(storage, as: language)
@@ -756,8 +1266,24 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         save(then: nil)
     }
 
-    private func save(then next: (() -> Void)?) {
+    /// `force`: save even over changes made on disk since it was read (Overwrite, from the conflict bar).
+    private func save(force: Bool = false, then next: (() -> Void)?) {
         guard loaded, !saving else { return }
+        // Changed on disk since it was read (not just deleted, which saving puts back): ask before writing over it.
+        if !force, let known = diskSignature {
+            saving = true
+            currentSignature { [weak self] now in
+                guard let self else { return }
+                self.saving = false
+                if let now, now != known { return self.showConflict(then: next) }
+                self.write(then: next)
+            }
+            return
+        }
+        write(then: next)
+    }
+
+    private func write(then next: (() -> Void)?) {
         saving = true
         var text = textView.string
         if usesCRLF { text = text.replacingOccurrences(of: "\n", with: "\r\n") }
@@ -765,19 +1291,28 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         header.status = "Saving…"
         fs.write(Data(text.utf8), to: path) { [weak self] error in
             guard let self else { return }
-            self.saving = false
             if let error {
+                self.saving = false
                 self.header.status = nil
                 self.presentAlert("Couldn't save “\((self.path as NSString).lastPathComponent)”", error.localizedDescription)
                 return
             }
             // Only clean if nothing was typed while the save was in flight.
             if self.textView.string == undoMark { self.isDirty = false }
+            self.isDeleted = false
             // Our own write isn't a change to catch up with.
             let saved = Data(text.utf8)
             self.diskSize = saved.count
             self.diskTail = Data(saved.suffix(256))
             self.carry = Data()
+            // Our own write: its signature is what's on disk now, so the change it makes is nothing new. Still saving
+            // until it's known, so the watch doesn't take the write for someone else's.
+            self.currentSignature { [weak self] sig in
+                self?.diskSignature = sig
+                self?.saving = false
+            }
+            self.changedOnDisk = false
+            self.endConflict()
             NotificationCenter.default.post(name: .solanumFileSaved, object: self.fs, userInfo: ["path": self.path])
             self.header.status = "Saved"
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
@@ -786,6 +1321,42 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             next?()
         }
     }
+
+    /// Notices the file going (or coming back). Over ssh only while connected: a dropped connection isn't a deletion.
+    func checkExists() {
+        guard mode == .file, loaded || media != nil, !saving, !checkingExists else { return }
+        let checked = path
+        if !fs.isRemote {
+            isDeleted = !FileManager.default.fileExists(atPath: checked)
+            return
+        }
+        guard (fs as? RemoteSession)?.isConnected == true else { return }
+        checkingExists = true
+        let name = (checked as NSString).lastPathComponent
+        fs.list((checked as NSString).deletingLastPathComponent) { [weak self] result in
+            guard let self else { return }
+            self.checkingExists = false
+            guard self.path == checked, (self.fs as? RemoteSession)?.isConnected == true else { return }
+            switch result {
+            case .success(let items): self.isDeleted = !items.contains { $0.name == name && !$0.isDeleted }
+            // The folder itself can't be listed: gone along with the file, unless the connection is what failed.
+            case .failure(let e): if e.localizedDescription.lowercased().contains("no such file") { self.isDeleted = true }
+            }
+        }
+    }
+
+    var devIsDeleted: Bool { isDeleted }
+    /// Dev aids (DevTools print-editor-text, editor-insert, editor-save, editor-conflict): the text shown, whether
+    /// it's unsaved, changed on disk, can be undone, and the conflict bar; typing at the caret; saving; the bar's buttons.
+    var devTextState: String {
+        "\(textView.string.debugDescription.prefix(120)) dirty=\(isDirty) changedOnDisk=\(changedOnDisk) undo=\(textView.undoManager?.canUndo ?? false)"
+            + " bar=\(conflictBar.map { "\($0.titles)" } ?? "none") compare=\(compareView.map { $0.summary } ?? "none") path=\(path)"
+    }
+    func devInsert(_ text: String) { textView.insertText(text, replacementRange: textView.selectedRange()) }
+    func devSave() { save(then: nil) }
+    func devConflict(_ title: String) { conflictBar?.devPress(title) }
+    /// The ssh watch tag as it would show (a local file has none): "live", "off", or anything else for none.
+    func devWatchTag(_ state: String) { header.watchLive = state == "live" ? true : state == "off" ? false : nil }
 
     /// Clicking the path in the header copies it in full (not the ~-abbreviated form shown).
     private func copyPath() {
@@ -850,6 +1421,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
 
     /// ⌘F: the bar, with what's selected to search for, as in VS Code. Again: back to its field.
     @objc func showFind(_ sender: Any?) {
+        if mode == .graph, let graphView { return graphView.focusSearch() }
         guard mode == .file, media == nil, loaded else { return }
         let selection = textView.selectedRange()
         findAnchor = selection.location
@@ -1129,7 +1701,121 @@ enum EditorMode: Equatable { case file, diff, stagedDiff, graph, status, preview
 }
 
 /// ⌥Z toggles wrapping, as in VS Code.
-final class EditorTextView: NSTextView {
+final class EditorTextView: NSTextView, NSLayoutManagerDelegate {
+    /// The text has ANSI escape sequences (a log written with colors): they take no room and aren't drawn (the
+    /// log painter shows their colors), and copying leaves them out. The file keeps them.
+    var hidesEscapes = false {
+        didSet {
+            guard hidesEscapes != oldValue, let lm = layoutManager, let n = textStorage?.length, n > 0 else { return }
+            lm.invalidateGlyphs(forCharacterRange: NSRange(location: 0, length: n), changeInLength: 0, actualCharacterRange: nil)
+        }
+    }
+
+    func layoutManager(_ lm: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
+                       properties props: UnsafePointer<NSLayoutManager.GlyphProperty>, characterIndexes chars: UnsafePointer<Int>,
+                       font: NSFont, forGlyphRange range: NSRange) -> Int {
+        guard hidesEscapes, let s = lm.textStorage?.mutableString else { return 0 }
+        var changed: [NSLayoutManager.GlyphProperty]?
+        for k in 0..<range.length where ANSIText.escapeStart(s, chars[k]) != nil {
+            if changed == nil { changed = Array(UnsafeBufferPointer(start: props, count: range.length)) }
+            changed![k] = .null
+        }
+        guard let changed else { return 0 }
+        changed.withUnsafeBufferPointer { lm.setGlyphs(glyphs, properties: $0.baseAddress!, characterIndexes: chars, font: font, forGlyphRange: range) }
+        return range.length
+    }
+
+    /// A log's error and warning tints, across the whole width, under the text and the selection.
+    override func draw(_ dirtyRect: NSRect) {
+        if let lm = layoutManager, let tc = textContainer, let storage = textStorage, storage.length > 0 {
+            let origin = textContainerOrigin
+            let glyphs = lm.glyphRange(forBoundingRect: dirtyRect.offsetBy(dx: -origin.x, dy: -origin.y), in: tc)
+            let chars = lm.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+            storage.enumerateAttribute(.solanumLogWash, in: chars) { value, r, _ in
+                guard let color = value as? NSColor else { return }
+                color.setFill()
+                lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(forCharacterRange: r, actualCharacterRange: nil)) { rect, _, _, _, _ in
+                    NSRect(x: self.bounds.minX, y: rect.minY + origin.y, width: self.bounds.width, height: rect.height).fill(using: .sourceOver)
+                }
+            }
+        }
+        super.draw(dirtyRect)
+    }
+
+    // MARK: Scrolling sideways while selecting
+
+    /// While a selection is being dragged out (NSTextView tracks it inside `mouseDown`), a timer scrolls sideways
+    /// whenever the pointer is near the left or right edge (or past it), and nudges the drag along so the selection
+    /// follows. AppKit's own autoscroll only goes when the pointer moves past the edge, which it can't with the
+    /// window against the side of the screen.
+    private var edgeTimer: Timer?
+    /// Dev aid: where the pointer is (in the window) for a drag that isn't a real one.
+    var devPointer: NSPoint?
+
+    override func mouseDown(with e: NSEvent) {
+        edgeTimer?.invalidate()
+        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.edgeScrollTick() }
+        // .common includes the event-tracking mode NSTextView's drag loop runs in.
+        RunLoop.current.add(timer, forMode: .common)
+        edgeTimer = timer
+        super.mouseDown(with: e)
+        // Back here once the button is up.
+        edgeTimer?.invalidate()
+        edgeTimer = nil
+    }
+
+    private func edgeScrollTick() {
+        guard let w = window, let clip = enclosingScrollView?.contentView, isHorizontallyResizable else { return }
+        let loc = devPointer ?? w.mouseLocationOutsideOfEventStream
+        guard devPointer != nil || NSEvent.pressedMouseButtons & 1 != 0 else { return }
+        let p = clip.convert(loc, from: nil)
+        let b = clip.bounds, edge: CGFloat = 30
+        func clamped(_ x: CGFloat) -> CGFloat { clip.constrainBoundsRect(NSRect(x: x, y: b.minY, width: b.width, height: b.height)).minX }
+        // Faster the nearer the edge (and past it), up to a screenful a second or so.
+        var dx: CGFloat = 0
+        if p.x > b.maxX - edge { dx = min(60, 6 + (p.x - (b.maxX - edge)) * 1.2) }
+        else if p.x < b.minX + edge { dx = -min(60, 6 + ((b.minX + edge) - p.x) * 1.2) }
+        guard dx != 0 else { return }
+        let x = clamped(b.minX + dx)
+        guard x != b.minX else { return }
+        clip.scroll(to: NSPoint(x: x, y: b.minY))
+        enclosingScrollView?.reflectScrolledClipView(clip)
+        // The text under the pointer changed: the drag loop extends the selection to it on its next event.
+        if let ev = NSEvent.mouseEvent(with: .leftMouseDragged, location: loc, modifierFlags: NSEvent.modifierFlags,
+                                       timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
+                                       context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+            NSApp.postEvent(ev, atStart: false)
+        }
+    }
+
+    /// Dev aid (DevTools editor-edge-drag): presses at the start of the first line, holds the pointer at `fraction` of
+    /// the visible width for `seconds` (through NSTextView's own drag loop), lets go, and prints where it got to.
+    func devEdgeDrag(fraction: CGFloat, seconds: Double) {
+        guard let clip = enclosingScrollView?.contentView, let w = window else { return }
+        let b = clip.bounds
+        let start = clip.convert(NSPoint(x: b.minX + 60, y: b.minY + 20), to: nil)
+        let held = clip.convert(NSPoint(x: b.minX + b.width * fraction, y: b.minY + 20), to: nil)
+        devPointer = held
+        func event(_ type: NSEvent.EventType, _ at: NSPoint) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: at, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        if let drag = event(.leftMouseDragged, held) { NSApp.postEvent(drag, atStart: false) }
+        // Lets go of the button only after the up event, as a real drag does.
+        let up = Timer(timeInterval: seconds, repeats: false) { _ in if let e = event(.leftMouseUp, held) { NSApp.postEvent(e, atStart: false) } }
+        RunLoop.current.add(up, forMode: .common)
+        if let down = event(.leftMouseDown, start) { mouseDown(with: down) }
+        devPointer = nil
+        FileHandle.standardError.write("edge drag: x \(Int(clip.bounds.minX)) selected \(selectedRange().length)\n".data(using: .utf8)!)
+    }
+
+    override func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        guard hidesEscapes, let s = textStorage?.mutableString else { return super.writeSelection(to: pboard, types: types) }
+        let text = selectedRanges.map { s.substring(with: $0.rangeValue) }.joined(separator: "\n")
+        pboard.declareTypes([.string], owner: nil)
+        return pboard.setString(ANSIText.removing(text), forType: .string)
+    }
+
     /// Something floats over the text here (the find bar), which picks the cursor: a text view that has the focus sets
     /// its I-beam on every mouse move, wherever the mouse is.
     var coveredBy: ((NSPoint) -> Bool)?
@@ -1170,6 +1856,10 @@ final class EditorHeaderView: NSView {
     var dirty = false { didSet { needsDisplay = true } }
     var wraps = false { didSet { needsDisplay = true } }
     var status: String? { didSet { needsDisplay = true } }
+    /// The file is gone from disk: the header says so, and saving (which puts it back) is offered.
+    var deleted = false { didSet { needsDisplay = true } }
+    /// It changed on disk under unsaved edits: said in yellow, as deleted is in red.
+    var changedOnDisk = false { didSet { needsDisplay = true } }
     /// Off for read-only text (the end of a big file): no save button.
     var editable = true { didSet { needsDisplay = true } }
     /// Off for previews, diffs and graphs: only the close button shows.
@@ -1178,11 +1868,17 @@ final class EditorHeaderView: NSView {
     var canFormat = false { didSet { needsDisplay = true } }
     /// A Markdown file: the preview button shows.
     var canPreview = false { didSet { needsDisplay = true } }
+    /// A log: its coloring's palette button shows, with this format's name.
+    var logFormatName: String? { didSet { needsDisplay = true } }
+    var onLogFormat: (() -> Void)?
     /// Git has changes for this file: the working tree button shows.
     var hasGitChanges = false { didSet { needsDisplay = true } }
-    /// The eye is on: the file is re-read every few seconds.
-    var watching = false { didSet { needsDisplay = true } }
-    var onToggleWatch: (() -> Void)?
+    /// Tail File is on: the file's end stays in view as it grows.
+    var tailing = false { didSet { needsDisplay = true } }
+    /// Over ssh: whether the host is reporting changes (a green "Live"), or not (a yellow "Not Updating"); nil: no
+    /// tag (on this Mac, or starting).
+    var watchLive: Bool? { didSet { if watchLive != oldValue { needsDisplay = true } } }
+    var onToggleTail: (() -> Void)?
     var onClose: (() -> Void)?
     var onSave: (() -> Void)?
     var onFormat: (() -> Void)?
@@ -1236,22 +1932,30 @@ final class EditorHeaderView: NSView {
         }
     }
 
+    /// Where the button whose tooltip starts with `tip` was last drawn.
+    func rect(ofButton tip: String) -> NSRect? {
+        guard let i = buttons.firstIndex(where: { $0.tip.hasPrefix(tip) }), i < buttonRects.count else { return nil }
+        return buttonRects[i]
+    }
+
     /// Dev aid (DevTools header-press, print-header): the buttons showing, and pressing one by its tooltip's start.
     var devButtons: [String] { buttons.map(\.tip) }
     func devPress(_ tip: String) { buttons.first { $0.tip.hasPrefix(tip) }?.action?() }
 
-    /// Right to left: close, save, format, wrap, watch, working tree, preview. No action: greyed out (save, with nothing to save).
+    /// Right to left: close, save, format, wrap, tail, working tree, preview. No action: greyed out (save, with nothing to save).
     private var buttons: [(symbol: String, tip: String, active: Bool, action: (() -> Void)?)] {
         var b: [(symbol: String, tip: String, active: Bool, action: (() -> Void)?)] = [("xmark", "Close (⌘W)", false, onClose)]
         guard textTools else { return b }
-        if editable { b.append((Self.saveIcon, dirty ? "Save (⌘S)" : "No Changes to Save", dirty, dirty ? onSave : nil)) }
+        if editable {
+            b.append(dirty || deleted ? (Self.saveIcon, deleted ? "Save (⌘S), Putting the Deleted File Back" : "Save (⌘S)", true, onSave)
+                                      : (Self.saveIcon, "No Changes to Save", false, nil))
+        }
         if editable, canFormat { b.append(("list.bullet.indent", "Beautify / Format Document (⌥⌘F)", false, onFormat)) }
         b.append(("text.word.spacing", wraps ? "Don't Wrap Lines (⌥Z)" : "Wrap Lines (⌥Z)", wraps, onToggleWrap))
-        b.append((watching ? "eye.fill" : "eye",
-                  watching ? "Stop Watching for Changes" : "Watch for Changes (re-reads the file every 5 seconds while it's showing)",
-                  watching, onToggleWatch))
+        b.append(("chevron.down.2", tailing ? "Stop Tailing" : "Tail File (keep the end in view as it grows)", tailing, onToggleTail))
         if hasGitChanges { b.append(("plusminus", "Open Working Tree (this file's uncommitted changes)", false, onShowChanges)) }
         if canPreview { b.append(("doc.richtext", "Open Preview", false, onPreview)) }
+        if let logFormatName { b.append(("paintpalette", "Log Coloring: \(logFormatName)", false, onLogFormat)) }
         return b
     }
 
@@ -1296,6 +2000,37 @@ final class EditorHeaderView: NSView {
             th.foreground.withAlphaComponent(0.8).setFill()
             NSBezierPath(ovalIn: NSRect(x: x, y: bounds.midY - 3.5, width: 7, height: 7)).fill()
             x += 13
+        }
+        // Gone from disk: said in red before where it was.
+        if deleted, status == nil {
+            let tag = editable ? "Deleted · ⌘S saves it again" : "Deleted"
+            let tagAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: th.red]
+            let w = (tag as NSString).size(withAttributes: tagAttrs).width + 1
+            if right - x > w + 30 {
+                (tag as NSString).draw(in: NSRect(x: x, y: bounds.midY - 7.5, width: w, height: 15), withAttributes: tagAttrs)
+                x += w + 8
+            }
+        }
+        if changedOnDisk, !deleted, status == nil {
+            let tag = "Changed on Disk"
+            let tagAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: th.yellow]
+            let w = (tag as NSString).size(withAttributes: tagAttrs).width + 1
+            if right - x > w + 30 {
+                (tag as NSString).draw(in: NSRect(x: x, y: bounds.midY - 7.5, width: w, height: 15), withAttributes: tagAttrs)
+                x += w + 8
+            }
+        }
+        if let live = watchLive, !deleted, !changedOnDisk, status == nil {
+            let tag = live ? "Live" : "Not Updating"
+            let color = live ? th.green : th.yellow
+            let tagAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: color]
+            let w = (tag as NSString).size(withAttributes: tagAttrs).width + 1
+            if right - x > w + 44 {
+                color.setFill()
+                NSBezierPath(ovalIn: NSRect(x: x, y: bounds.midY - 3, width: 6, height: 6)).fill()
+                (tag as NSString).draw(in: NSRect(x: x + 10, y: bounds.midY - 7.5, width: w, height: 15), withAttributes: tagAttrs)
+                x += w + 18
+            }
         }
         let sub = status ?? subtitle
         let subAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .paragraphStyle: para,

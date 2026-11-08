@@ -150,6 +150,9 @@ final class Terminal {
     var sshArgs: String?
     /// Folder reported by the remote shell over OSC 7 while an ssh session is running.
     var remoteCwd: String?
+    /// The user (and their home) a shell on the host says it runs as (`SolanumUser=`, from Follow This Shell's Folder),
+    /// for a shell started with `sudo -i -u`: browsing and Go to name them rather than the ssh login.
+    var remoteUser: (name: String, home: String)?
 
     private(set) var blocks: [Block] = []
     private(set) var currentBlock: Block?
@@ -1047,6 +1050,12 @@ final class Terminal {
                 delegate?.terminalCwdChanged(self)
             } else if rest == "SolanumOpenSettings" {
                 delegate?.terminalOpenSettings(self)
+            } else if rest.hasPrefix("SolanumUser="), sshControlPath != nil {
+                let f = rest.dropFirst("SolanumUser=".count).split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+                if let name = f.first, !name.isEmpty {
+                    remoteUser = (name, f.count > 1 ? f[1] : "")
+                    delegate?.terminalCwdChanged(self)
+                }
             } else if rest.hasPrefix("SolanumSSHArgs=") {
                 let b64 = String(rest.dropFirst("SolanumSSHArgs=".count))
                 sshArgs = Data(base64Encoded: b64).map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1057,6 +1066,7 @@ final class Terminal {
                 if path.isEmpty { endHostSession() }
                 sshControlPath = path.isEmpty ? nil : path
                 remoteCwd = nil
+                remoteUser = nil
                 delegate?.terminalCwdChanged(self)
             }
         default:
@@ -1221,6 +1231,23 @@ final class Terminal {
         guard HostPrompt.isPrompt(prefix, heads: hostPromptHeads) else { return pending }
         finishHostCommand(before: cursorAbs)
         return true
+    }
+
+    /// The cursor's line as it reads.
+    var cursorLineText: String {
+        guard let l = line(abs: cursorAbs), cols > 0 else { return "" }
+        return l.text(from: 0, to: cols - 1, trim: true)
+    }
+
+    /// At an ssh host's shell prompt with nothing typed after it: what's before the cursor ends with a prompt character,
+    /// and isn't a password (or other) question.
+    func atEmptyHostPrompt() -> Bool {
+        guard sshControlPath != nil, !usingAlt, cursorX > 0, let l = line(abs: cursorAbs), l.trimmedLength <= cursorX else { return false }
+        let prefix = l.text(from: 0, to: cursorX - 1, trim: false)
+        let lower = prefix.lowercased()
+        guard !lower.contains("password"), !lower.contains("passphrase"), !lower.contains("verification"),
+              let last = prefix.trimmingCharacters(in: .whitespaces).last else { return false }
+        return HostPrompt.endings.contains(last)
     }
 
     private func finishHostCommand(before line: Int) {

@@ -30,6 +30,28 @@ enum SSHHosts {
         return (configured, known.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending })
     }
 
+    /// Hosts typed into the hosts dropdown ("user@host", "-p 2222 host"), most recent first.
+    static var recent: [String] { UserDefaults.standard.stringArray(forKey: "solanum.ssh.recent") ?? [] }
+
+    static func remember(_ target: String) {
+        let list = [target] + recent.filter { $0 != target }
+        UserDefaults.standard.set(Array(list.prefix(10)), forKey: "solanum.ssh.recent")
+    }
+
+    /// What follows `ssh` in what was typed into the hosts dropdown, when it names a host to connect to: anything
+    /// after "ssh ", or a bare "user@host". Nil for a search (a plain word) or for something that isn't an ssh
+    /// argument list (it's run in a shell, so no ; | & $ ` < > or quotes).
+    static func newTarget(_ typed: String) -> String? {
+        var t = typed.trimmingCharacters(in: .whitespaces)
+        let ssh = t.lowercased().hasPrefix("ssh ")
+        if ssh { t = String(t.dropFirst(4)).trimmingCharacters(in: .whitespaces) }
+        guard !t.isEmpty, ssh || (t.contains("@") && !t.contains(" ")),
+              !t.contains(where: { ";|&$`<>\\\"'\n(){}*?!#~".contains($0) }) else { return nil }
+        // A host after the options: the last word, not an option or something like "user@".
+        guard let host = t.split(separator: " ").last, !host.hasPrefix("-"), !host.hasSuffix("@"), !host.hasPrefix("@") else { return nil }
+        return t
+    }
+
     /// Git hosting services: they take ssh keys but don't give you a shell.
     private static let gitHosts: Set<String> = ["github.com", "gitlab.com", "bitbucket.org", "ssh.dev.azure.com",
                                                 "vs-ssh.visualstudio.com", "ssh.github.com", "altssh.bitbucket.org"]

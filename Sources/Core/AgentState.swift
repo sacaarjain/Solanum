@@ -12,7 +12,7 @@ enum AgentKind: Equatable {
     case other(String)
 
     /// Command names of other terminal agents, as they appear in argv.
-    private static let others = ["astra", "aider", "opencode", "cursor-agent", "amp", "goose", "crush", "qwen", "copilot", "droid", "kiro-cli", "auggie"]
+    private static let others = ["aider", "opencode", "cursor-agent", "amp", "goose", "crush", "qwen", "copilot", "droid", "kiro-cli", "auggie"]
 
     var name: String {
         switch self {

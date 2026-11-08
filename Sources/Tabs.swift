@@ -193,6 +193,18 @@ final class TabSession: NSObject {
         return focusedPane.fileSystem
     }
 
+    /// user@host and ~ for browsing an ssh host from this tab: the focused pane's shell user (a `sudo -i -u` shell
+    /// that reports itself), else the login.
+    var browseHostLabel: String? {
+        guard let remote = browseRemote else { return nil }
+        return focusedPane.remote === remote ? focusedPane.shellHostLabel : remote.hostLabel
+    }
+
+    var browseHome: String? {
+        guard let remote = browseRemote else { return nil }
+        return focusedPane.remote === remote ? focusedPane.shellHome : remote.home
+    }
+
     var browseDirectory: String? {
         if let o = fileOrigin, !focusedPane.hasStarted { return o.dir }
         return focusedPane.browseDirectory
@@ -224,6 +236,89 @@ final class TabSession: NSObject {
         view.addArrangedSubview(root)
         for p in panes { p.tab = self }
         updateDimming()
+        remoteObserver = NotificationCenter.default.addObserver(forName: .solanumRemoteReady, object: nil, queue: .main) { [weak self] note in
+            guard let self, let session = note.object as? RemoteSession else { return }
+            self.repinAfterReconnect(to: session)
+            // A file tab from a lost session browses the new one.
+            if let o = self.fileOrigin, let old = o.fs as? RemoteSession, old !== session, !old.isConnected,
+               old.hostLabel == session.hostLabel { self.fileOrigin = (session, o.dir) }
+            self.owner?.tabDidUpdate(self)
+        }
+    }
+
+    private var remoteObserver: NSObjectProtocol?
+
+    /// Runs `command` in `dir` in this tab's terminal (showing it), where it can ask for a password: at the focused
+    /// pane's prompt when it's free and in the same place (this Mac, or that ssh host); else in a new tab there.
+    func runInTerminal(_ command: String, in dir: String, remote: RemoteSession?) {
+        if !showsTerminal {
+            showsTerminal = true
+            arrange()
+            owner?.tabDidUpdate(self)
+        }
+        let p = focusedPane
+        let samePlace = remote == nil ? p.remote == nil : p.remote?.hostLabel == remote?.hostLabel
+        if p.hasStarted, !p.exited, !p.terminal.usingAlt, samePlace, p.remote != nil || !p.hasRunningJob {
+            p.send("\u{15}cd \(shellQuote(dir)) && \(command)\r")
+            p.window?.makeFirstResponder(p)
+            return
+        }
+        if !p.hasStarted {
+            p.pendingCommand = remote.flatMap { $0.newTerminalCommand(in: dir, then: command) } ?? "cd \(shellQuote(dir)) && \(command)"
+            focus()
+            return
+        }
+        guard let column = owner as? TabColumn else { return NSSound.beep() }
+        let t = column.addTab(cwd: remote == nil ? dir : nil)
+        t.focusedPane.pendingCommand = remote.flatMap { $0.newTerminalCommand(in: dir, then: command) } ?? command
+    }
+
+    /// A pane logged in to `host` right now, in any window, for files waiting on (or cut off from) that host.
+    static func liveSession(host: String) -> RemoteSession? {
+        for wc in NSApp.windows.compactMap({ $0.windowController as? TerminalWindowController }) {
+            for tab in wc.allTabs {
+                for p in tab.panes {
+                    if let r = p.remote, r.isReady, r.isConnected, r.hostLabel == host { return r }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Logs back in to the host of `session`, whose connection was lost, for a file open here: in the pane that had
+    /// that session if this tab has it, else in this tab's terminal, in `dir`. The terminal shows (if hidden), as
+    /// logging in may ask for a password; open files move to the new session once it's in (see
+    /// `FileEditorView.follow`).
+    func reconnect(_ session: RemoteSession, in dir: String) {
+        let pane = panes.first { $0.lostRemote === session }
+        let command = pane == nil ? session.reconnectCommand(in: dir) : nil
+        if pane == nil, command == nil {
+            // No way to log in from here (how ssh was run wasn't reported): the tab that had the session does it.
+            for wc in NSApp.windows.compactMap({ $0.windowController as? TerminalWindowController }) {
+                for column in wc.columns {
+                    for (i, tab) in column.tabs.enumerated() {
+                        guard let p = tab.panes.first(where: { $0.lostRemote === session }) else { continue }
+                        wc.focus(column)
+                        column.select(index: i)
+                        wc.window?.makeKeyAndOrderFront(nil)
+                        return p.reconnectLost()
+                    }
+                }
+            }
+            return NSSound.beep()
+        }
+        if !showsTerminal {
+            showsTerminal = true
+            arrange()
+            owner?.tabDidUpdate(self)
+        }
+        if let pane { return pane.reconnectLost() }
+        if !focusedPane.hasStarted {
+            focusedPane.pendingCommand = command
+            focus()
+        } else {
+            focusedPane.reconnect(command!)
+        }
     }
 
     var panes: [TerminalView] {
@@ -238,7 +333,7 @@ final class TabSession: NSObject {
 
     var title: String {
         if let customTitle { return customTitle }
-        if !showsTerminal, let ed = editor { return ed.displayName }
+        if !showsTerminal, let ed = editor { return ed.displayName + (ed.isDeleted ? " (deleted)" : "") }
         return focusedPane.displayTitle
     }
     var isRunningCommand: Bool { panes.contains { $0.isRunningCommand } }
@@ -292,6 +387,11 @@ final class TabSession: NSObject {
     func split(_ pane: TerminalView, vertical: Bool) {
         let newPane = TerminalView(cwd: pane.currentDirectory)
         newPane.tab = self
+        // In an ssh session: the same host and folder (and user), logged in again.
+        if let login = pane.sameHostCommand {
+            newPane.pendingCommand = login.command
+            if login.switchesUser { newPane.expectUserSwitch() }
+        }
         if let parent = pane.superview as? PaneSplitView, parent.isVertical == vertical {
             let idx = parent.arrangedSubviews.firstIndex(of: pane) ?? parent.arrangedSubviews.count - 1
             parent.insertArrangedSubview(newPane, at: idx + 1)
@@ -426,9 +526,18 @@ final class TabSession: NSObject {
             guard let self, let ed else { return }
             self.openFile(ed.fs, path, mode: mode)
         }
+        ed.onRunInTerminal = { [weak self, weak ed] command, dir in
+            guard let self, let ed else { return }
+            self.runInTerminal(command, in: dir, remote: ed.fs as? RemoteSession)
+        }
+        ed.onReconnect = { [weak self, weak ed] session in
+            guard let self, let ed else { return }
+            self.reconnect(session, in: FilePaths.parent(ed.path))
+        }
         ed.onPathChanged = { [weak self, weak ed] in
             guard let self, let ed else { return }
-            if let o = self.fileOrigin, !self.showsTerminal { self.fileOrigin = (o.fs, FilePaths.parent(ed.path)) }
+            // A file tab browses where its file is (on the session it moved to, after reconnecting).
+            if self.fileOrigin != nil, !self.showsTerminal, ed === self.editor { self.fileOrigin = (ed.fs, FilePaths.parent(ed.path)) }
             self.editorArea.strip.needsDisplay = true
             self.owner?.tabDidUpdate(self)
         }
@@ -485,7 +594,7 @@ final class TabSession: NSObject {
         showsTerminal.toggle()
         // First time a file tab from an ssh host shows its terminal: log back in there, in the file's folder.
         if showsTerminal, !focusedPane.hasStarted, let o = fileOrigin, let remote = o.fs as? RemoteSession {
-            focusedPane.pendingCommand = remote.reconnectCommand(in: o.dir)
+            focusedPane.pendingCommand = remote.newTerminalCommand(in: o.dir)
         }
         arrange()
         focus()
@@ -1001,6 +1110,9 @@ final class StatusBarView: NSView {
         needsDisplay = true
     }
 
+    /// Where the ssh hosts button is, for its dropdown to open from.
+    var hostsButtonRect: NSRect? { buttons.first { $0.kind == .hosts }?.rect }
+
     /// Dev aid (DevTools nomai-read): clicks the Quantum Moon when it's by the folders.
     func devClickMoon() {
         if let b = buttons.first(where: { $0.kind == .moon }) { QuantumMoon.toggleReading(from: self, moon: b.rect) }
@@ -1460,6 +1572,11 @@ final class WindowRootView: NSView {
         }
         // And whatever floats over the window stays above all of it, strips and overlay included.
         for v in floating where subviews.last !== v { addSubview(v) }
+        overlaysChanged()
+    }
+
+    /// Something floating over the window opened, closed or moved: the resize strips' cursors leave it out.
+    func overlaysChanged() {
         window?.invalidateCursorRects(for: sidebarHandle)
         window?.invalidateCursorRects(for: rightSidebarHandle)
         window?.invalidateCursorRects(for: divider)
@@ -1717,7 +1834,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             let fs = tab.browseFS
             let remote = tab.browseRemote
             let connecting = remote.map { !$0.isReady } ?? false
-            bar.host = remote.map { $0.hostLabel ?? "ssh" }
+            bar.host = remote.map { _ in tab.browseHostLabel ?? "ssh" }
             bar.home = fs.home
             bar.path = connecting ? nil : tab.browseDirectory
         }
@@ -1771,56 +1888,57 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
 
     // MARK: SSH hosts
 
+    func devShowHosts() { showHostsMenu(at: .zero) }
+
+    /// The status bar's ssh hosts: those in ~/.ssh/config, then the known ones, in Solanum's own dropdown (searchable,
+    /// as every one is). Picking one connects in a new tab; ⌥ connects in the focused pane.
     private func showHostsMenu(at point: NSPoint) {
         let bar = rootView.statusBar
         let (configured, known) = SSHHosts.load()
-        let menu = NSMenu()
-        let dim: [NSAttributedString.Key: Any] = [.font: NSFont.menuFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]
-        func addHost(_ h: SSHHost, to menu: NSMenu) {
-            let item = ActionMenuItem(h.title) { [weak self] in self?.connect(h) }
-            if let detail = h.detail {
-                let t = NSMutableAttributedString(string: h.title + "  ", attributes: [.font: NSFont.menuFont(ofSize: 13)])
-                t.append(NSAttributedString(string: detail, attributes: dim))
-                item.attributedTitle = t
+        // `remember`: one typed in (not from the config or known_hosts) is kept under Recent, user and all.
+        func item(_ h: SSHHost, title: String? = nil, symbol: String = "server.rack", detail: String? = nil, remember: Bool = false) -> DropdownItem {
+            func go(_ here: Bool) {
+                if remember { SSHHosts.remember(h.target) }
+                connect(h, inNewTab: !here, fallBackToNewTab: !here)
             }
-            item.image = NSImage(systemSymbolName: "server.rack", accessibilityDescription: nil)
-            item.keyEquivalentModifierMask = []
-            menu.addItem(item)
-            // Hold ⌥ to connect in the focused pane instead of a new tab.
-            let here = ActionMenuItem("\(h.title) — in This Pane") { [weak self] in self?.connect(h, inNewTab: false) }
-            here.isAlternate = true
-            here.keyEquivalentModifierMask = [.option]
-            menu.addItem(here)
+            return .item(title ?? h.title, symbol: symbol, detail: detail ?? h.detail, option: { go(true) }, optionDetail: "open in this pane") { go(false) }
         }
-        let header = NSMenuItem(title: configured.isEmpty ? "No hosts in ~/.ssh/config" : "Connect in a new tab (⌥: this pane)",
-                                action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        menu.addItem(header)
-        configured.forEach { addHost($0, to: menu) }
+        let recent = SSHHosts.recent.map { SSHHost(target: $0, title: $0) }
+        var items: [DropdownItem] = [.fill("New Connection…", symbol: "plus", "ssh "), .separator]
+        if !recent.isEmpty {
+            items += [.header("Recent")] + recent.map { item($0, symbol: "clock.arrow.circlepath", remember: true) } + [.separator]
+        }
+        items += [.header(configured.isEmpty ? "No hosts in ~/.ssh/config" : "SSH Config")]
+        items += configured.map { item($0) }
         if !known.isEmpty {
-            let sub = NSMenu()
-            known.prefix(200).forEach { addHost($0, to: sub) }
-            let item = NSMenuItem(title: "Known Hosts", action: nil, keyEquivalent: "")
-            item.submenu = sub
-            menu.addItem(.separator())
-            menu.addItem(item)
+            items += [.separator, .header("Known Hosts")]
+            items += known.prefix(200).map { item($0) }
         }
-        menu.addItem(.separator())
-        menu.addItem(ActionMenuItem("Edit SSH Config…") { [weak self] in
+        items += [.separator, .item("Edit SSH Config…", symbol: "square.and.pencil") { [weak self] in
             SSHHosts.ensureConfigExists()
             self?.activeTab?.openFile(LocalFileSystem.shared, SSHHosts.configPath)
-        })
-        menu.popUpAbove(point, in: bar)
+        }]
+        let rect = bar.hostsButtonRect ?? NSRect(x: point.x, y: point.y, width: 1, height: 1)
+        let listed = (configured + known + recent).flatMap { [$0.title.lowercased(), $0.target.lowercased()] }
+        ThemedDropdown.show(items, under: bar, rect: rect, minWidth: 320, placeholder: "Connect to a host… (⌥ for this pane)",
+                            prefix: "ssh ") { typed in
+            // "ssh user@host" (or just "user@host") that isn't listed: a row to connect to it, kept under Recent after.
+            guard let target = SSHHosts.newTarget(typed), !listed.contains(target.lowercased()) else { return [] }
+            return [item(SSHHost(target: target, title: target), title: "ssh " + target, symbol: "arrow.right.circle",
+                         detail: "new connection", remember: true)]
+        }
     }
 
-    private func connect(_ host: SSHHost, inNewTab: Bool = true) {
+    /// ssh to `host`: in a new tab, or in the focused pane when it's at a prompt on this Mac (otherwise a new tab
+    /// after all, from the command palette; a beep from the hosts menu, which says "in This Pane").
+    func connect(_ host: SSHHost, inNewTab: Bool = true, fallBackToNewTab: Bool = true) {
         let command = "ssh " + host.target
-        if inNewTab {
-            let tab = focused.addTab(cwd: nil)
-            tab.focusedPane.pendingCommand = command
-        } else if let pane = activeTab?.focusedPane, !pane.exited, !pane.terminal.usingAlt, pane.remote == nil, !pane.hasRunningJob {
+        if !inNewTab, let pane = activeTab?.focusedPane, pane.hasStarted, !pane.exited, !pane.terminal.usingAlt, pane.remote == nil, !pane.hasRunningJob {
             pane.send("\u{15}" + command + "\r")
             window?.makeFirstResponder(pane)
+        } else if inNewTab || fallBackToNewTab {
+            let tab = focused.addTab(cwd: nil)
+            tab.focusedPane.pendingCommand = command
         } else {
             NSSound.beep()
         }
@@ -1850,6 +1968,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         focused.newTab()
     }
 
+    /// ⌃⌘T: a new tab on the focused terminal's ssh host, in its folder (here, its folder on this Mac).
+    @objc func newTabOnSameHost(_ sender: Any?) { focused.newTabOnSameHost() }
+
     /// ⌥⌘T: a new tab in the current tab's group (or a new group with the current tab).
     @objc func newTabInGroup(_ sender: Any?) { focused.newTabInGroup() }
 
@@ -1859,9 +1980,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         guard let w = window else { return }
         // An ssh tab: the host's folders, browsed in the palette (Finder can't see them), from the terminal's folder.
         if let tab = activeTab, let remote = tab.browseRemote, remote.isReady {
-            let dir = tab.browseDirectory ?? remote.home ?? "/"
-            let shown = FilePaths.abbreviate(dir, home: remote.home)
-            CommandPalette.showGoTo(in: w, path: shown + (shown.hasSuffix("/") ? "" : "/"))
+            let dir = tab.browseDirectory ?? tab.browseHome ?? "/"
+            let shown = FilePaths.abbreviate(dir, home: tab.browseHome)
+            CommandPalette.showGoTo(in: w, path: shown + (shown.hasSuffix("/") ? "" : "/"), on: tab.browseHostLabel)
             return
         }
         let panel = NSOpenPanel()
@@ -1880,6 +2001,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     /// ⌥⌘F: on the window rather than the editor, so it works (and the palette lists it) wherever the focus is,
     /// such as on the sidebar after clicking a file.
     @objc func beautifyDocument(_ sender: Any?) { activeTab?.editor?.formatDocument(sender) }
+
+    /// In an ssh tab: has the shell report its folder and user at each prompt, so the sidebar, status bar and Go to
+    /// follow a shell from `sudo -i -u` (run it in that shell).
+    @objc func followShellFolder(_ sender: Any?) { activeTab?.focusedPane.followShellFolder() }
+
+    /// Import Log Format…: a logging config (logback.xml, log4j2.xml, …) or a JSON rules file, which then colors
+    /// the logs it fits (see LogFormat.swift).
+    @objc func importLogFormat(_ sender: Any?) { LogFormatStore.runImportPanel(for: window) }
 
     /// ⇧⌘F, Search in Project Folder: searches the text of the files in the folder the sidebar is on (the focused column's, if it's open), else
     /// the pinned or current folder. Choosing a result opens the file there.
@@ -1910,11 +2039,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     @objc func goToFolder(_ sender: Any?) {
         guard let w = window else { return }
         let remote = activeTab?.browseRemote.flatMap { $0.isReady ? $0 : nil }
-        guard let dir = remote != nil ? activeTab?.browseDirectory ?? remote?.home : focused.currentLocalFolder else {
-            return CommandPalette.showGoTo(in: w)
+        let on = remote != nil ? activeTab?.browseHostLabel : nil
+        guard let dir = remote != nil ? activeTab?.browseDirectory ?? activeTab?.browseHome : focused.currentLocalFolder else {
+            return CommandPalette.showGoTo(in: w, on: on)
         }
-        let shown = FilePaths.abbreviate(dir, home: remote?.home ?? NSHomeDirectory())
-        CommandPalette.showGoTo(in: w, path: shown + (shown.hasSuffix("/") ? "" : "/"))
+        let shown = FilePaths.abbreviate(dir, home: remote != nil ? activeTab?.browseHome : NSHomeDirectory())
+        CommandPalette.showGoTo(in: w, path: shown + (shown.hasSuffix("/") ? "" : "/"), on: on)
     }
 
     /// The focused column's repository history, as a graph above its terminal.
@@ -1994,11 +2124,17 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
 
     /// ⌘D: opens a second column to the right with a new tab in the current folder; with the split already
     /// open, a new tab in the right column.
+    /// ⌘D: a terminal in the right column, where the focused one is: its folder here, or on its ssh host the same
+    /// folder (and the same user, after `sudo -i -u`), logged in again.
     @objc func splitIntoColumns(_ sender: Any?) {
         let pane = activeTab?.focusedPane
         let cwd = pane?.remote == nil ? pane?.currentDirectory : nil
         if columns.count == 1 { addColumn() }
-        columns[1].addTab(cwd: cwd)
+        let tab = columns[1].addTab(cwd: cwd)
+        if let login = pane?.sameHostCommand {
+            tab.focusedPane.pendingCommand = login.command
+            if login.switchesUser { tab.focusedPane.expectUserSwitch() }
+        }
         focus(columns[1])
     }
 
@@ -2204,6 +2340,13 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             return true
         case #selector(reopenClosedTab(_:)):
             return !closedTabs.isEmpty
+        case #selector(newTabOnSameHost(_:)):
+            let pane = activeTab?.focusedPane
+            if pane?.sameHostCommand != nil, let host = pane?.shellHostLabel { item.title = "New Tab on \(host)" }
+            else { item.title = "New Tab in This Folder" }
+            return true
+        case #selector(followShellFolder(_:)):
+            return activeTab?.focusedPane.remote != nil
         case #selector(beautifyDocument(_:)):
             return activeTab?.editor?.mode == .file
         case #selector(closeSplit(_:)), #selector(focusOtherColumn(_:)), #selector(toggleRightSidebar(_:)):
@@ -3569,26 +3712,29 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         return m
     }
 
-    private func menu(forGroup g: TabGroup) -> NSMenu {
-        let m = NSMenu()
-        guard let c = controller else { return m }
-        m.addItem(ActionMenuItem("Rename Group…") { [weak self] in self?.beginEditing(group: g) })
-        m.addItem(.separator())
+    /// A group chip's menu, in our own dropdown under the chip: rename, its color, and what to do with its tabs.
+    func showGroupMenu(_ g: TabGroup) {
+        guard let c = controller, let chip = chips.first(where: { $0.group === g }) else { return }
+        var items: [DropdownItem] = [.item("Rename Group…") { [weak self] in self?.beginEditing(group: g) }, .separator]
         for color in TabGroupColor.allCases {
-            let item = ActionMenuItem(color.title, checked: g.color == color) { [weak self] in
+            items.append(.item(color.title, checked: g.color == color, color: color.color) { [weak self] in
                 g.color = color
                 self?.needsDisplay = true
-            }
-            item.image = swatch(color)
-            m.addItem(item)
+            })
         }
-        m.addItem(.separator())
-        m.addItem(ActionMenuItem("New Tab in Group") { [weak c] in c?.newTab(in: g) })
-        m.addItem(ActionMenuItem(g.collapsed ? "Expand Group" : "Collapse Group") { [weak c] in c?.setCollapsed(g, !g.collapsed) })
-        m.addItem(ActionMenuItem("Ungroup") { [weak c] in c?.ungroup(g) })
-        m.addItem(ActionMenuItem("Close Group") { [weak c] in c?.closeTabs(c?.tabs(in: g) ?? []) })
-        return m
+        items += [
+            .separator,
+            .item("New Tab in Group") { [weak c] in c?.newTab(in: g) },
+            .item(g.collapsed ? "Expand Group" : "Collapse Group") { [weak c] in c?.setCollapsed(g, !g.collapsed) },
+            .item("Ungroup") { [weak c] in c?.ungroup(g) },
+            .item("Close Group") { [weak c] in c?.closeTabs(c?.tabs(in: g) ?? []) },
+        ]
+        let r = shownRect(ObjectIdentifier(g)) ?? chip.rect
+        ThemedDropdown.show(items, under: self, rect: r, minWidth: 200, searchable: false)
     }
+
+    /// Dev aid (DevTools chip-dropdown): the first group's menu.
+    func devShowGroupMenu() { if let g = chips.first?.group { showGroupMenu(g) } }
 
     /// Right-clicking one of several ⌘/⇧-picked tabs: actions on all of them.
     private func menu(forTabs list: [TabSession]) -> NSMenu {
@@ -3638,7 +3784,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         let p = convert(e.locationInWindow, from: nil)
         let menu: NSMenu
         if let ci = chipIndex(at: p) {
-            menu = self.menu(forGroup: chips[ci].group)
+            return showGroupMenu(chips[ci].group)
         } else if let i = tabIndex(at: p) {
             if selectedTabs.count > 1 && selectedTabs.contains(c.tabs[i]) {
                 menu = self.menu(forTabs: c.tabs.filter { selectedTabs.contains($0) })
@@ -3650,6 +3796,9 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             // Empty space on the strip.
             menu = NSMenu()
             menu.addItem(ActionMenuItem("New Tab") { [weak c] in c?.newTab() })
+            if let pane = c.activeTab?.focusedPane, pane.sameHostCommand != nil, let host = pane.shellHostLabel {
+                menu.addItem(ActionMenuItem("New Tab on \(host)") { [weak c] in c?.newTabOnSameHost() })
+            }
             if let w = c.owner, w.columns.count > 1 {
                 menu.addItem(.separator())
                 menu.addItem(ActionMenuItem("Close Split (Tabs Move to the Left)") { [weak w] in w?.closeSplit(nil) })
