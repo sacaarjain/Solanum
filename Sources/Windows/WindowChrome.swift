@@ -23,9 +23,11 @@ enum GitIcons {
             return (["M8 14.6 V10.2", "M8 10.2 C8 8.2 6.8 6.9 5.4 5.5", "M8 10.2 C8 8.2 9.2 6.9 10.6 5.5"],
                     ["M3.2 3.4 L6.53 4.25 L4.19 6.69 Z", "M12.8 3.4 L9.47 4.25 L11.81 6.69 Z"])
         case .sync:
-            // Two arcs chasing each other round, an arrowhead at the end of each.
-            return (["M2.88 8.9 A5.2 5.2 0 0 1 11.98 4.66", "M13.12 7.1 A5.2 5.2 0 0 1 4.02 11.34"],
-                    ["M13.53 6.5 L13.44 3.44 L10.53 5.88 Z", "M2.47 9.5 L2.56 12.56 L5.47 10.12 Z"])
+            // Two arcs of one circle chasing each other clockwise, as the Mac's arrow.triangle.2.circlepath: over the top
+            // from the left to the upper right, a triangle there pointing on round; under the bottom from the right to the
+            // lower left, the same. A clear gap between each arrowhead and the next arc's tail.
+            return (["M2.98 6.65 A5.2 5.2 0 0 1 12.26 5.02", "M13.02 9.35 A5.2 5.2 0 0 1 3.74 10.98"],
+                    ["M13.81 7.23 L13.98 3.81 L10.54 6.22 Z", "M2.19 8.77 L2.02 12.19 L5.46 9.78 Z"])
         case .publish:
             // A cloud, an arrow up out of it.
             return (["M4.6 12.6 H11.6 A3 3 0 0 0 12.1 6.7 A4.2 4.2 0 0 0 4.2 7.5 A2.6 2.6 0 0 0 4.6 12.6 Z",
@@ -471,7 +473,9 @@ struct WindowChrome {
             let text = UIRect(x: r.x + 21 * scale, y: r.y, width: max(r.width - 23 * scale, 0), height: r.height)
             switch part {
             case .branch:
-                GitIcons.draw(.branch, in: iconRect, on: canvas, scale: scale, color: TerminalPalette.accent, alpha: 1)
+                // A pixel higher than the others, where it sits level with the branch's name.
+                GitIcons.draw(.branch, in: UIRect(x: iconRect.x, y: iconRect.y - 1, width: iconRect.width, height: iconRect.height),
+                              on: canvas, scale: scale, color: TerminalPalette.accent, alpha: 1)
                 label(g.branch, text, pixels: pixels, semibold: true, alpha: 0.85)
             case .sync:
                 if let busy = g.busy {

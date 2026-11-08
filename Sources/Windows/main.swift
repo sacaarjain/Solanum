@@ -73,16 +73,16 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-notices"), CommandLin
 
 // The status bar's git marks at 200%, for comparing with the Mac's by eye: up to date, then 1 ahead. --draw-git-bar <png>
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-git-bar"), CommandLine.arguments.indices.contains(flag + 1) {
-    let width: Float = 1300, height: Float = 120
+    // The bar up to date, and below it each mark large.
+    let width: Float = 1300, height: Float = 260
     guard let canvas = Canvas(width: Int(width), height: Int(height), fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
     var info = GitInfo(root: "C:\\repo", branch: "EZ-578-vsi-support", upstream: "origin/EZ-578-vsi-support")
     info.changes = (0..<4).map { GitChange(code: "M", path: "f\($0)") }
-    for (i, ahead) in [0, 1].enumerated() {
-        let layout = WindowLayout(width: width, height: Float(60 * (i + 1)), scale: 2, tabCount: 1)
-        var chrome = WindowChrome(canvas: canvas, layout: layout, tabs: ["~"], activeTab: 0)
-        info.ahead = ahead
-        chrome.git = GitBadge(info, busy: nil)
-        chrome.draw()
+    var chrome = WindowChrome(canvas: canvas, layout: WindowLayout(width: width, height: 120, scale: 2, tabCount: 1), tabs: ["~"], activeTab: 0)
+    chrome.git = GitBadge(info, busy: nil)
+    chrome.draw()
+    for (i, kind) in [GitIcons.Kind.branch, .sync, .publish, .changes].enumerated() {
+        GitIcons.draw(kind, in: UIRect(x: 40 + Float(i) * 140, y: 130, width: 120, height: 120), on: canvas, scale: 7, color: TerminalPalette.foreground, alpha: 0.8)
     }
     guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
