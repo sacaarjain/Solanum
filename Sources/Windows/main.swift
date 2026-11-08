@@ -71,6 +71,23 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-notices"), CommandLin
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }
 
+// The status bar's git marks at 200%, for comparing with the Mac's by eye: up to date, then 1 ahead. --draw-git-bar <png>
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-git-bar"), CommandLine.arguments.indices.contains(flag + 1) {
+    let width: Float = 1300, height: Float = 120
+    guard let canvas = Canvas(width: Int(width), height: Int(height), fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    var info = GitInfo(root: "C:\\repo", branch: "EZ-578-vsi-support", upstream: "origin/EZ-578-vsi-support")
+    info.changes = (0..<4).map { GitChange(code: "M", path: "f\($0)") }
+    for (i, ahead) in [0, 1].enumerated() {
+        let layout = WindowLayout(width: width, height: Float(60 * (i + 1)), scale: 2, tabCount: 1)
+        var chrome = WindowChrome(canvas: canvas, layout: layout, tabs: ["~"], activeTab: 0)
+        info.ahead = ahead
+        chrome.git = GitBadge(info, busy: nil)
+        chrome.draw()
+    }
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
+}
+
 // A file changed on disk under unsaved edits, saved: its header, the conflict bar, and Compare when asked:
 // --draw-file-conflict <png> [compare]
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-file-conflict"), CommandLine.arguments.indices.contains(flag + 1) {

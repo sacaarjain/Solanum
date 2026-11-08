@@ -18,9 +18,10 @@ enum GitIcons {
     private static func paths(_ kind: Kind) -> (lines: [String], fills: [String]) {
         switch kind {
         case .branch:
-            // An arrow straight up, and a branch curving off it to the right, an arrowhead on each.
-            return (["M6 14.6 V4.6", "M6 11.4 C6 8.2 8 6.4 11.4 6.1"],
-                    ["M6 2 L8.4 5.2 L3.6 5.2 Z", "M14.4 6 L11.1 8.3 L10.8 3.6 Z"])
+            // A Y: a stem up from the bottom, splitting into two arms that curve out to the upper left and right, a
+            // triangle at the end of each.
+            return (["M8 14.6 V10.2", "M8 10.2 C8 8.2 6.8 6.9 5.4 5.5", "M8 10.2 C8 8.2 9.2 6.9 10.6 5.5"],
+                    ["M3.2 3.4 L6.53 4.25 L4.19 6.69 Z", "M12.8 3.4 L9.47 4.25 L11.81 6.69 Z"])
         case .sync:
             // Two arcs chasing each other round, an arrowhead at the end of each.
             return (["M2.88 8.9 A5.2 5.2 0 0 1 11.98 4.66", "M13.12 7.1 A5.2 5.2 0 0 1 4.02 11.34"],
@@ -421,11 +422,11 @@ struct WindowChrome {
     private func gitWidths(_ g: GitBadge?) -> [(GitPart, Float)] {
         guard let g else { return [] }
         let pixels = 12 * scale
-        var out: [(GitPart, Float)] = [(.branch, 22 * scale + min(width(of: g.branch, pixels: pixels), 200 * scale) + 8 * scale)]
-        if let busy = g.busy { out.append((.sync, 22 * scale + width(of: busy, pixels: pixels) + 6 * scale)) }
-        else if g.upstream { out.append((.sync, 22 * scale + (syncCounts(g).isEmpty ? 0 : width(of: syncCounts(g), pixels: pixels) + 6 * scale))) }
+        var out: [(GitPart, Float)] = [(.branch, 22 * scale + min(width(of: g.branch, pixels: pixels, semibold: true), 200 * scale) + 8 * scale)]
+        if let busy = g.busy { out.append((.sync, 22 * scale + width(of: busy, pixels: pixels, semibold: true) + 6 * scale)) }
+        else if g.upstream { out.append((.sync, 22 * scale + (syncCounts(g).isEmpty ? 0 : width(of: syncCounts(g), pixels: pixels, semibold: true) + 6 * scale))) }
         else if !g.detached { out.append((.sync, 22 * scale)) }
-        if g.changes > 0 { out.append((.changes, 22 * scale + width(of: "\(g.changes)", pixels: pixels) + 6 * scale)) }
+        if g.changes > 0 { out.append((.changes, 22 * scale + width(of: "\(g.changes)", pixels: pixels, semibold: true) + 6 * scale)) }
         return out
     }
 
@@ -471,22 +472,22 @@ struct WindowChrome {
             switch part {
             case .branch:
                 GitIcons.draw(.branch, in: iconRect, on: canvas, scale: scale, color: TerminalPalette.accent, alpha: 1)
-                label(g.branch, text, pixels: pixels, alpha: 0.85)
+                label(g.branch, text, pixels: pixels, semibold: true, alpha: 0.85)
             case .sync:
                 if let busy = g.busy {
                     GitIcons.draw(.sync, in: iconRect, on: canvas, scale: scale, color: fg, alpha: dim)
-                    label(busy, text, pixels: pixels, alpha: dim)
+                    label(busy, text, pixels: pixels, semibold: true, alpha: dim)
                 } else if g.upstream {
                     let counts = syncCounts(g)
                     GitIcons.draw(.sync, in: iconRect, on: canvas, scale: scale, color: counts.isEmpty ? fg : TerminalPalette.accent, alpha: counts.isEmpty ? dim : 1)
-                    if !counts.isEmpty { label(counts, text, pixels: pixels, alpha: 0.85) }
+                    if !counts.isEmpty { label(counts, text, pixels: pixels, semibold: true, alpha: 0.85) }
                 } else {
                     // Not on a remote yet: the cloud publishes it.
                     GitIcons.draw(.publish, in: iconRect, on: canvas, scale: scale, color: fg, alpha: dim)
                 }
             case .changes:
                 GitIcons.draw(.changes, in: iconRect, on: canvas, scale: scale, color: fg, alpha: dim)
-                label("\(g.changes)", text, pixels: pixels, alpha: dim)
+                label("\(g.changes)", text, pixels: pixels, semibold: true, alpha: dim)
             }
         }
         if let d = h.dividerX, (column == 0 ? folder : rightFolder) != nil || !h.mirrored {
