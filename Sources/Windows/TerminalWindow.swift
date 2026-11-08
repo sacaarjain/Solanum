@@ -171,6 +171,8 @@ final class TerminalWindow {
         canvas.padding = scaledPadding()
         applyBackdrop()
         AppSettings.shared.onChange.append { [weak self] in self?.settingsChanged() }
+        // WSL's distributions, for the shell menus, once known.
+        Shells.findWSL(post: { [weak self] work in self?.runOnWindowThread(work) }, done: {})
         Self.windows[created] = self
         askpass = Askpass.Server(post: { [weak self] work in self?.runOnWindowThread(work) })
         askpass.handler = { [weak self] request, reply in self?.answerAskpass(request, reply) ?? reply(nil) }
@@ -448,9 +450,12 @@ final class TerminalWindow {
     private var layout: WindowLayout { layout(leftWidth: (sidebarWidth(left) * left.shown).rounded()) }
 
     private func layout(leftWidth: Float) -> WindowLayout {
-        WindowLayout(width: Float(clientWidth), height: Float(clientHeight), scale: scale, tabCount: panes.count, tabScroll: tabScroll,
-                     chips: chipWidths(), hiddenTabs: hiddenTabs, leftWidth: leftWidth, rightWidth: rightIsShowing ? sidebarWidth(right) : 0,
-                     showsRightToggle: isSplit, splitCount: splitCount, rightTabScroll: rightTabScroll, splitFraction: splitFraction)
+        var l = WindowLayout(width: Float(clientWidth), height: Float(clientHeight), scale: scale, tabCount: panes.count, tabScroll: tabScroll,
+                             chips: chipWidths(), hiddenTabs: hiddenTabs, leftWidth: leftWidth, rightWidth: rightIsShowing ? sidebarWidth(right) : 0,
+                             showsRightToggle: isSplit, splitCount: splitCount, rightTabScroll: rightTabScroll, splitFraction: splitFraction)
+        // Windows' shells, beside the ssh hosts button.
+        l.hasShellButton = true
+        return l
     }
 
     /// The layout once the left sidebar has finished sliding.
@@ -535,11 +540,15 @@ final class TerminalWindow {
 
     /// A new tab: at `index`, or at the end of `column` (the active tab's column unless given).
     @discardableResult
-    private func addPane(at index: Int? = nil, cwd: String? = nil, restoring text: String? = nil, place: SidebarPlace? = nil, column: Int? = nil) -> Bool {
+    private func addPane(at index: Int? = nil, cwd: String? = nil, restoring text: String? = nil, place: SidebarPlace? = nil, column: Int? = nil,
+                         shell: ShellOption? = nil) -> Bool {
         let wasSplit = isSplit
         let col = column ?? index.flatMap { i in panes.indices.contains(i - 1) ? panes[i - 1].column : nil } ?? (panes.isEmpty ? 0 : activePane.column)
         let grid = clientWidth > 0 ? self.grid(for: col == 1 ? rightTerminalArea : terminalArea) : (cols: 110, rows: 32)
-        guard let pane = TerminalPane(host: self, commandLine: commandLine, cols: grid.cols, rows: grid.rows, cwd: cwd, restoring: text) else { return false }
+        // A shell asked for, else the default as Settings has it now (a window started with its own command keeps that).
+        let line = shell.map(Shells.commandLine) ?? (usesDefaultShell ? AppSettings.shared.shellCommandLine : commandLine)
+        guard let pane = TerminalPane(host: self, commandLine: line, cols: grid.cols, rows: grid.rows, cwd: cwd, restoring: text) else { return false }
+        pane.shell = shell ?? Shells.identify(line)
         pane.column = col
         pane.onRemoteChange = { [weak self, weak pane] in
             guard let self, let pane, self.visiblePanes.contains(where: { $0 === pane }) else { return }
@@ -575,11 +584,87 @@ final class TerminalWindow {
         addPane(at: at, cwd: closed.folder, restoring: closed.text, place: closed.place, column: column)
     }
 
-    /// In the current tab's folder, unless Settings says the home folder; in the active tab's column, or `column`.
-    func newTab(column: Int? = nil) {
+    /// In the current tab's folder, unless Settings says the home folder; in the active tab's column, or `column`; in the
+    /// default shell, or `shell`.
+    func newTab(column: Int? = nil, shell: ShellOption? = nil) {
         let from = column.flatMap { $0 == 1 ? rightActivePane : leftActivePane } ?? (panes.isEmpty ? nil : activePane)
         let here = AppSettings.shared.newTabFolder == "current" ? from?.terminal.cwd : nil
-        addPane(cwd: here, column: column)
+        addPane(cwd: here, column: column, shell: shell)
+    }
+
+    // MARK: - Shells
+
+    /// The window was started with the default shell, so new tabs follow Settings when it changes.
+    private lazy var usesDefaultShell = commandLine == AppSettings.shared.shellCommandLine
+
+    /// Every shell here, each opening a new tab with it; the default one checked. Then changing the default.
+    private func shellItems(newTabIn column: Int?) -> [MenuItem] {
+        let fallback = Shells.defaultShell
+        var items = Shells.available.map { shell in
+            MenuItem(title: shell.name, isChecked: shell == fallback, shortcut: shell == fallback ? "Default" : "") { [weak self] in
+                self?.newTab(column: column, shell: shell)
+            }
+        }
+        items.append(.separator)
+        items.append(MenuItem(title: "Change Default Shell\u{2026}") { [weak self] in self?.showDefaultShellMenu() })
+        return items
+    }
+
+    /// Right-click on +: a new tab with any shell here.
+    private func showNewTabShells(column: Int) {
+        let r = layout.newTab(column: column)
+        openMenu([MenuItem(title: "New Tab With", isEnabled: false)] + shellItems(newTabIn: column), x: r.x, y: r.maxY + 4 * scale, above: false)
+    }
+
+    /// The status bar's shell button: what this tab runs, switching it to another, a new tab with one, and the default.
+    private func showShellMenu() {
+        guard !panes.isEmpty else { return }
+        let pane = activePane, current = pane.shell
+        var items = [MenuItem(title: "This tab: " + (current?.name ?? "another program"), isEnabled: false), .separator,
+                     MenuItem(title: "Switch This Tab To", isEnabled: false)]
+        for shell in Shells.available where shell != current {
+            items.append(MenuItem(title: "    " + shell.name) { [weak self, weak pane] in
+                if let self, let pane { self.switchShell(of: pane, to: shell) }
+            })
+        }
+        items += [.separator, MenuItem(title: "New Tab With", isEnabled: false)]
+        items += shellItems(newTabIn: pane.column).map { item in
+            var item = item
+            if !item.isSeparator && item.title != "Change Default Shell\u{2026}" { item.title = "    " + item.title }
+            return item
+        }
+        let b = layout.shellButton
+        openMenu(items, x: b.x, y: b.y - 4 * scale, above: true)
+    }
+
+    /// Which shell new tabs start with: kept in Settings › Preferences › Shell.
+    private func showDefaultShellMenu() {
+        let fallback = Shells.defaultShell
+        let items = Shells.available.map { shell in
+            MenuItem(title: shell.name, isChecked: shell == fallback) { AppSettings.shared.set("shell", Shells.setting(for: shell)) }
+        }
+        let b = layout.shellButton
+        openMenu([MenuItem(title: "Default Shell", isEnabled: false)] + items, x: b.x, y: b.y - 4 * scale, above: true)
+    }
+
+    /// A tab started again in another shell, in the same place and folder; the old one closes (Reopen Closed Tab brings it
+    /// back). Something running there is asked about first.
+    func switchShell(of pane: TerminalPane, to shell: ShellOption) {
+        guard let i = panes.firstIndex(where: { $0 === pane }) else { return }
+        let replace = { [weak self, weak pane] in
+            guard let self, let pane, let i = self.panes.firstIndex(where: { $0 === pane }) else { return }
+            let group = pane.group, title = pane.customTitle
+            let folder = pane.sshArguments == nil ? pane.terminal.cwd : nil
+            guard self.addPane(at: i, cwd: folder, column: pane.column, shell: shell) else { return }
+            self.activePane.group = group
+            self.activePane.customTitle = title
+            if let old = self.panes.firstIndex(where: { $0 === pane }) { self.closeTab(old) }
+            self.invalidate()
+        }
+        if panes[i].atPrompt || panes[i].terminal.currentBlock == nil { return replace() }
+        ask(DialogModel(title: "Switch this tab to \(shell.name)?",
+                        message: "Something is still running in it, and switching stops it. Reopen Closed Tab brings back what it showed.",
+                        primary: "Switch", run: replace))
     }
 
     func selectTab(_ i: Int) {
@@ -723,6 +808,7 @@ final class TerminalWindow {
         }
         chrome.hovered = hovered
         chrome.pressed = pressed
+        chrome.shell = panes.isEmpty ? nil : activePane.shell
         chrome.maximized = IsZoomed(hwnd)
         chrome.focused = isFocused
         // Over ssh, the host's folder, when it's known. While split, each column's half has its own.
@@ -1562,6 +1648,7 @@ final class TerminalWindow {
                 case .flower: SettingsWindow.shared.show()
                 case .toggleLeft: toggleSidebar(left)
                 case .hosts: showHostsMenu()
+                case .shell: showShellMenu()
                 case .toggleRight: toggleSidebar(right)
                 default: break
                 }
@@ -1573,6 +1660,10 @@ final class TerminalWindow {
             if case .tab(let i) = part { showTabMenu(i, at: x, y: y + 4 * scale) }
             if case .tabClose(let i) = part { showTabMenu(i, at: x, y: y + 4 * scale) }
             if case .chip(let first) = part, let g = panes[first].group { showGroupMenu(g, at: x, y: y + 4 * scale) }
+            // Right-click on +: which shell the new tab runs.
+            if part == .newTab { showNewTabShells(column: 0) }
+            if part == .newTabRight { showNewTabShells(column: 1) }
+            if part == .shell { showShellMenu() }
         default: break
         }
         invalidate()
@@ -2335,6 +2426,7 @@ final class TerminalWindow {
             var tab = SavedSession.Tab(folder: pane.sshArguments == nil ? pane.terminal.cwd : nil, title: pane.customTitle, column: pane.column,
                                        group: group, text: pane.terminal.restorableText(maxLines: SavedSession.lines),
                                        resume: pane.resumeCommand ?? pane.resumeOnShow)
+            if let shell = pane.shell, shell != Shells.defaultShell { tab.shell = shell.id }
             // Its files on this PC, and their previews, as on the Mac (an ssh host's, and git's pages, aren't kept).
             var pages: [SavedSession.Page] = [], active: Int?
             for (i, item) in pane.editors.enumerated() {
@@ -2382,7 +2474,7 @@ final class TerminalWindow {
         for tab in session.tabs {
             // A folder that's gone starts the shell where it would otherwise.
             let folder = tab.folder.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
-            guard addPane(cwd: folder, restoring: tab.text, column: tab.column) else { continue }
+            guard addPane(cwd: folder, restoring: tab.text, column: tab.column, shell: Shells.option(tab.shell)) else { continue }
             panes.last?.customTitle = tab.title
             panes.last?.resumeOnShow = tab.resume
             panes.last?.group = tab.group.flatMap { groups.indices.contains($0) ? groups[$0] : nil }
@@ -4702,6 +4794,7 @@ final class TerminalWindow {
     private func paletteItems() -> [PaletteItem] {
         var items = [
             PaletteItem(title: "New Tab", category: "Shell", shortcut: "Ctrl+T") { [weak self] in self?.newTab() },
+            PaletteItem(title: "Change Default Shell\u{2026}", category: "Shell") { [weak self] in self?.showDefaultShellMenu() },
             PaletteItem(title: "Reopen Closed Tab", category: "Shell", shortcut: "Ctrl+Shift+T") { [weak self] in self?.reopenClosedTab() },
             PaletteItem(title: "Go to Folder…", category: "Shell", shortcut: "Ctrl+Shift+O") { [weak self] in self?.showGoToFolder() },
             PaletteItem(title: "Split Right", category: "Shell", shortcut: "Ctrl+Alt+D") { [weak self] in self?.splitRight() },
@@ -4754,6 +4847,17 @@ final class TerminalWindow {
             items.append(PaletteItem(title: "Close Split", category: "Shell", shortcut: "Ctrl+Alt+W") { [weak self] in self?.closeSplit() })
             items.append(PaletteItem(title: "Focus Other Split", category: "Window") { [weak self] in self?.focusOtherColumn() })
             items.append(PaletteItem(title: "Toggle Right Sidebar", category: "View", shortcut: "Ctrl+Alt+B") { [weak self] in self.map { $0.toggleSidebar($0.right) } })
+        }
+        // Each shell here: a new tab with it, or this tab started again in it.
+        let current = panes.isEmpty ? nil : activePane.shell
+        for shell in Shells.available {
+            items.append(PaletteItem(title: "New Tab: \(shell.name)", category: "Shell") { [weak self] in self?.newTab(shell: shell) })
+        }
+        for shell in Shells.available where shell != current {
+            items.append(PaletteItem(title: "Switch Tab to \(shell.name)", category: "Shell") { [weak self] in
+                guard let self, !self.panes.isEmpty else { return }
+                self.switchShell(of: self.activePane, to: shell)
+            })
         }
         for spec in AppSettings.shared.allThemes {
             items.append(PaletteItem(title: "Theme: \(spec.name)", category: "Appearance") { [weak self] in self?.useTheme(spec.name) })

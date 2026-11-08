@@ -114,6 +114,16 @@ final class ConPTY {
     }
 
     /// Writes in order, without blocking the caller when the program isn't reading.
+    /// A big paste, in pieces a moment apart (see Core's PasteChunks): Windows 10's console host garbles or drops input
+    /// written all at once. In order with everything else written.
+    func writePaced(_ bytes: [UInt8]) {
+        let pieces = PasteChunks.split(bytes)
+        for (i, piece) in pieces.enumerated() {
+            write(piece)
+            if i < pieces.count - 1 { writeQueue.async { Thread.sleep(forTimeInterval: 0.008) } }
+        }
+    }
+
     func write(_ bytes: [UInt8]) {
         writeQueue.async { [self] in
             var offset = 0

@@ -281,6 +281,34 @@ enum ConPTYSelfTest {
             let done = s.map { x in wait { x.code != nil } } ?? false
             check("conpty: unicode input in cmd", done && s?.text.contains("\ntyped-é-✦") == true, s?.rawDescription ?? "didn't start")
         }
+        do {
+            // A big paste, as the window sends one (in pieces), all of it read by the program: lines are counted and summed.
+            let lines = (1...400).map { i in "line \(i) h\u{e9}llo " + String(repeating: "abcdefghij", count: 12) }
+            let script = #"powershell.exe -NoLogo -NoProfile -Command "[Console]::InputEncoding = [Text.Encoding]::UTF8; $n = 0; $c = 0; while (($l = [Console]::In.ReadLine()) -ne 'END') { $n++; $c += $l.Length }; Write-Output ('GOT ' + $n + ' ' + $c)""#
+            let s = Session(script)
+            Thread.sleep(forTimeInterval: 1.5)
+            let text = lines.joined(separator: "\r") + "\rEND\r"
+            s?.pty?.writePaced(Array(text.utf8))
+            let done = s.map { x in wait(60) { x.code != nil } } ?? false
+            let expected = "GOT 400 \(lines.reduce(0) { $0 + $1.count })"
+            check("conpty: a big paste arrives whole", done && s?.text.contains(expected) == true,
+                  "wanted \(expected): " + (s?.text.split(separator: "\n").last { $0.hasPrefix("GOT") }.map(String.init) ?? s?.rawDescription ?? "didn't start"))
+        }
+        print("Shells")
+        print("  found: " + Shells.available.map { "\($0.name) (\($0.executable))" }.joined(separator: ", "))
+        check("shells: PowerShell and Command Prompt are found", Shells.available.contains { $0.id == "cmd" } && Shells.available.contains { $0.isPowerShell })
+        check("shells: a tab's command line tells its shell", Shells.available.allSatisfy { Shells.identify(Shells.commandLine($0))?.id == $0.id },
+              Shells.available.map { "\($0.id) -> \(Shells.identify(Shells.commandLine($0))?.id ?? "none")" }.joined(separator: ", "))
+        check("shells: the default is PowerShell's", Shells.identify(AppSettings.shared.shellCommandLine)?.isPowerShell == true || !AppSettings.shared.shell.isEmpty)
+        for shell in Shells.available where !shell.id.hasPrefix("wsl:") {
+            // Each one starts, and runs what's typed into it.
+            let s = Session(Shells.commandLine(shell))
+            Thread.sleep(forTimeInterval: shell.isPowerShell ? 2.5 : 1.0)
+            s?.send("echo solanum-\(shell.id)-ok\r")
+            let ran = s.map { x in wait(20) { x.text.contains("\nsolanum-\(shell.id)-ok") } } ?? false
+            check("shells: \(shell.name) runs a command", ran, s?.rawDescription ?? "didn't start")
+            s?.pty?.terminate()
+        }
         print("PowerShell hook")
         for executable in ["powershell.exe", "pwsh.exe"] {
             var path = [UInt16](repeating: 0, count: Int(MAX_PATH))

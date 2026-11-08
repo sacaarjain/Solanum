@@ -26,6 +26,8 @@ struct SavedSession: Codable {
         var terminalHidden: Bool?
         /// How much of the tab its files took.
         var editorFraction: Float?
+        /// Its shell (see Shells), when it isn't the default one.
+        var shell: String?
     }
     struct Page: Codable {
         var path: String

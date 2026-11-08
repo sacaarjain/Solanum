@@ -19,7 +19,7 @@ enum WindowPart: Equatable {
     /// The empty part of the tab bar, which drags the window.
     case titleBar
     case statusBar, terminal
-    case leftSidebar, rightSidebar, leftEdge, rightEdge, toggleLeft, toggleRight, hosts
+    case leftSidebar, rightSidebar, leftEdge, rightEdge, toggleLeft, toggleRight, hosts, shell
     /// The band between the two columns, which drags to resize them.
     case columnDivider
     /// While split: the right column's new tab button and scroll arrows, and the button that closes the split.
@@ -218,12 +218,18 @@ struct WindowLayout {
     var toggleLeft: UIRect { UIRect(x: (8 * scale).rounded(), y: statusBar.y + 2 * scale, width: toggleSide, height: statusBarHeight - 4 * scale) }
     /// The ssh hosts button, beside the left sidebar's switch, as on the Mac.
     var hostsButton: UIRect { UIRect(x: toggleLeft.maxX + (2 * scale).rounded(), y: toggleLeft.y, width: toggleSide, height: toggleLeft.height) }
+    /// Windows only: the tab's shell, beside the ssh hosts button (see Shells). Zero wide where there's none.
+    var hasShellButton = false
+    var shellButton: UIRect {
+        UIRect(x: hostsButton.maxX + (2 * scale).rounded(), y: toggleLeft.y, width: hasShellButton ? toggleSide : 0, height: toggleLeft.height)
+    }
     var toggleRight: UIRect { UIRect(x: width - toggleSide - (8 * scale).rounded(), y: statusBar.y + 2 * scale, width: toggleSide, height: statusBarHeight - 4 * scale) }
 
     func part(atX x: Float, y: Float) -> WindowPart {
         if statusBar.contains(x, y) {
             if toggleLeft.contains(x, y) { return .toggleLeft }
             if hostsButton.contains(x, y) { return .hosts }
+            if hasShellButton && shellButton.contains(x, y) { return .shell }
             if showsRightToggle && toggleRight.contains(x, y) { return .toggleRight }
             return .statusBar
         }

@@ -507,6 +507,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
     private(set) var agent: AgentInfo?
     /// Images pasted into Claude Code, drawn where it lists them (see ImageChips).
     let imageChips = ImageChips()
+    /// The shell it runs, when it's one Solanum knows (see Shells).
+    var shell: ShellOption?
 
     // MARK: Claude's code boxes (see Core's CodeBoxFinder)
 
@@ -1023,7 +1025,9 @@ final class TerminalPane: TerminalDelegate, Groupable {
     }
 
     private func write(_ bytes: [UInt8]) {
-        pty?.write(terminal.win32InputMode ? Win32Input.encode(bytes) : bytes)
+        let encoded = terminal.win32InputMode ? Win32Input.encode(bytes) : bytes
+        // A big paste goes in pieces, so Windows 10's console host takes it all.
+        if encoded.count > 512 { pty?.writePaced(encoded) } else { pty?.write(encoded) }
     }
 
     private func send(_ text: String) { pty?.write(Array(text.utf8)) }
@@ -1761,7 +1765,10 @@ final class TerminalPane: TerminalDelegate, Groupable {
         text = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
         // Pasted text could otherwise end the bracketing early, and run what follows.
         text = text.replacingOccurrences(of: "\u{1b}", with: "")
-        input(Array((terminal.bracketedPaste ? "\u{1b}[200~" + text + "\u{1b}[201~" : text).utf8), replacesSelection: true)
+        // Coding agents always take a bracketed paste (Claude Code shows "[Pasted text +N lines]" for one), but Windows 10's
+        // console host doesn't pass on their asking for it, so for them it's bracketed regardless.
+        let bracketed = terminal.bracketedPaste || agent != nil
+        input(Array((bracketed ? "\u{1b}[200~" + text + "\u{1b}[201~" : text).utf8), replacesSelection: true)
     }
 
     // MARK: - For tests

@@ -9,6 +9,43 @@ private enum Icon {
     static let dockLeft: UInt16 = 0xE90C, dockRight: UInt16 = 0xE90D
 }
 
+/// Git's marks in the status bar, drawn as the Mac's are (its arrow.triangle.branch, arrow.triangle.2.circlepath,
+/// icloud.and.arrow.up and square.and.pencil): Solanum's own drawings of the same shapes, as paths on a 16-point square.
+enum GitIcons {
+    enum Kind { case branch, sync, publish, changes }
+
+    /// Lines, and shapes filled (arrowheads), for each.
+    private static func paths(_ kind: Kind) -> (lines: [String], fills: [String]) {
+        switch kind {
+        case .branch:
+            // An arrow straight up, and a branch curving off it to the right, an arrowhead on each.
+            return (["M6 14.6 V4.6", "M6 11.4 C6 8.2 8 6.4 11.4 6.1"],
+                    ["M6 2 L8.4 5.2 L3.6 5.2 Z", "M14.4 6 L11.1 8.3 L10.8 3.6 Z"])
+        case .sync:
+            // Two arcs chasing each other round, an arrowhead at the end of each.
+            return (["M2.88 8.9 A5.2 5.2 0 0 1 11.98 4.66", "M13.12 7.1 A5.2 5.2 0 0 1 4.02 11.34"],
+                    ["M13.53 6.5 L13.44 3.44 L10.53 5.88 Z", "M2.47 9.5 L2.56 12.56 L5.47 10.12 Z"])
+        case .publish:
+            // A cloud, an arrow up out of it.
+            return (["M4.6 12.6 H11.6 A3 3 0 0 0 12.1 6.7 A4.2 4.2 0 0 0 4.2 7.5 A2.6 2.6 0 0 0 4.6 12.6 Z",
+                     "M8.1 11.2 V7.4 M6.6 8.9 L8.1 7.4 L9.6 8.9"], [])
+        case .changes:
+            // A square open at its top right, a pencil writing across it.
+            return (["M7.6 3.4 H4.6 A1.6 1.6 0 0 0 3 5 V11.9 A1.6 1.6 0 0 0 4.6 13.5 H11.5 A1.6 1.6 0 0 0 13.1 11.9 V8.9",
+                     "M6.4 10.1 L6.8 8.1 L11.9 3 A0.95 0.95 0 0 1 13.3 4.4 L8.2 9.5 Z"], [])
+        }
+    }
+
+    /// The mark centered in `r`, 14 points across.
+    static func draw(_ kind: Kind, in r: UIRect, on canvas: Canvas, scale: Float, color: UInt32, alpha: Float) {
+        let k = scale * 14 / 16, side = 16 * k
+        let x = (r.x + (r.width - side) / 2).rounded(), y = (r.y + (r.height - side) / 2).rounded()
+        let shape = paths(kind)
+        for d in shape.lines { sol_canvas_stroke_svg_path(canvas.raw, d, x, y, k, color, alpha, 1.35) }
+        for d in shape.fills { sol_canvas_fill_svg_path(canvas.raw, d, x, y, k, color, alpha) }
+    }
+}
+
 /// A column's git state in the status bar: branch, sync, and how many files have changed.
 struct GitBadge: Equatable {
     var branch: String
@@ -34,6 +71,8 @@ enum GitPart: Equatable { case branch, sync, changes }
 
 /// The tab bar and status bar. One function for the window and for snapshots.
 struct WindowChrome {
+    /// The active tab's shell, for the status bar's shell button (see Shells).
+    var shell: ShellOption?
     let canvas: Canvas
     let layout: WindowLayout
     var tabs: [String]
@@ -401,7 +440,7 @@ struct WindowChrome {
         let parts = gitWidths(g)
         func spot(_ x: Float, _ w: Float) -> UIRect { UIRect(x: x, y: bar.y + 3 * scale, width: w, height: bar.height - 6 * scale) }
         if column == 0 {
-            var x = layout.hostsButton.maxX + 6 * scale
+            var x = (layout.hasShellButton ? layout.shellButton : layout.hostsButton).maxX + 6 * scale
             var h = Half(folderX: 0, limit: !layout.isSplit ? themeX - 34 * scale : layout.divider - 10 * scale)
             if host != nil { h.hostX = x + 4 * scale; x += 4 * scale + hostW }
             for (part, w) in parts { h.git.append((part, spot(x, w))); x += w + 2 * scale }
@@ -431,37 +470,27 @@ struct WindowChrome {
             let text = UIRect(x: r.x + 21 * scale, y: r.y, width: max(r.width - 23 * scale, 0), height: r.height)
             switch part {
             case .branch:
-                drawBranchIcon(x: r.x + 8 * scale, midY: r.midY)
+                GitIcons.draw(.branch, in: iconRect, on: canvas, scale: scale, color: TerminalPalette.accent, alpha: 1)
                 label(g.branch, text, pixels: pixels, alpha: 0.85)
             case .sync:
                 if let busy = g.busy {
-                    icon(0xE72C, iconRect, pixels: 10 * scale, alpha: dim)
+                    GitIcons.draw(.sync, in: iconRect, on: canvas, scale: scale, color: fg, alpha: dim)
                     label(busy, text, pixels: pixels, alpha: dim)
                 } else if g.upstream {
                     let counts = syncCounts(g)
-                    icon(0xE72C, iconRect, pixels: 10 * scale, color: counts.isEmpty ? nil : TerminalPalette.accent, alpha: counts.isEmpty ? dim : 1)
+                    GitIcons.draw(.sync, in: iconRect, on: canvas, scale: scale, color: counts.isEmpty ? fg : TerminalPalette.accent, alpha: counts.isEmpty ? dim : 1)
                     if !counts.isEmpty { label(counts, text, pixels: pixels, alpha: 0.85) }
                 } else {
                     // Not on a remote yet: the cloud publishes it.
-                    icon(0xE753, iconRect, pixels: 11 * scale, alpha: dim)
+                    GitIcons.draw(.publish, in: iconRect, on: canvas, scale: scale, color: fg, alpha: dim)
                 }
             case .changes:
-                icon(0xE70F, iconRect, pixels: 10 * scale, alpha: dim)
+                GitIcons.draw(.changes, in: iconRect, on: canvas, scale: scale, color: fg, alpha: dim)
                 label("\(g.changes)", text, pixels: pixels, alpha: dim)
             }
         }
         if let d = h.dividerX, (column == 0 ? folder : rightFolder) != nil || !h.mirrored {
             sol_canvas_fill_rect(canvas.raw, d.rounded(), layout.statusBar.y + 6 * scale, 1, layout.statusBar.height - 12 * scale, fg, 0.14)
-        }
-    }
-
-    /// Git's branch mark: two commits on a line, and a branch off it, in the accent colour as on the Mac.
-    private func drawBranchIcon(x: Float, midY: Float) {
-        let t = 1.3 * scale, top = midY - 5 * scale, bottom = midY + 5 * scale, side = x + 7 * scale, c = TerminalPalette.accent
-        sol_canvas_line(canvas.raw, x, top, x, bottom, c, 0.9, t)
-        sol_canvas_line(canvas.raw, side, top + 2 * scale, x + 1 * scale, midY + 2 * scale, c, 0.9, t)
-        for (cx, cy) in [(x, top), (x, bottom), (side, top + 1 * scale)] {
-            sol_canvas_fill_ellipse(canvas.raw, cx, cy, 2 * scale, 2 * scale, c, 1)
         }
     }
 
@@ -561,7 +590,15 @@ struct WindowChrome {
         }
         let hosts = layout.hostsButton, art = (16 * scale).rounded()
         if hovered == .hosts { sol_canvas_fill_rounded(canvas.raw, hosts.x, hosts.y, hosts.width, hosts.height, 4 * scale, fg, 0.10) }
-        canvas.drawArt("serverRack", UIRect(x: hosts.x + ((hosts.width - art) / 2).rounded(), y: (hosts.midY - art / 2).rounded(), width: art, height: art), scale: scale)
+        // In the theme's text color, full strength (the picture's own lines are partly see-through, so less looks grey).
+        canvas.drawArt("serverRack", UIRect(x: hosts.x + ((hosts.width - art) / 2).rounded(), y: (hosts.midY - art / 2 - 0.5 * scale).rounded() + 1, width: art, height: art),
+                       scale: scale, alpha: 1, tint: fg)
+        if layout.hasShellButton {
+            // The shells: a terminal in outline, drawn as the icons beside it are (and as the Mac's console button).
+            let b = layout.shellButton
+            if hovered == .shell { sol_canvas_fill_rounded(canvas.raw, b.x, b.y, b.width, b.height, 4 * scale, fg, 0.10) }
+            EditorStrip.drawTerminalSymbol(on: canvas, centerX: b.x + b.width / 2, centerY: b.midY, scale: scale, color: fg, alpha: 0.75, thin: true)
+        }
 
         // Each column's half: over ssh the host, git, then the folder's parts, each of which opens a menu of what's in it.
         // `hoveredCrumb` counts the left half's parts first, then the right's.

@@ -103,12 +103,23 @@ final class Canvas {
     private var loadedArt: [String: Int32] = [:]
 
     /// Draws a piece of Solanum's art (`ArtData`) into a rectangle, from the rendering made for this display scale.
-    func drawArt(_ name: String, _ r: UIRect, scale: Float, alpha: Float = 1) {
-        let key = "\(name)@\(min(max(Int(scale.rounded(.up)), 1), 4))"
+    /// `tint`: every pixel in that color, keeping its shape (a grey symbol drawn in the theme's text color).
+    func drawArt(_ name: String, _ r: UIRect, scale: Float, alpha: Float = 1, tint: UInt32? = nil) {
+        let art = "\(name)@\(min(max(Int(scale.rounded(.up)), 1), 4))"
+        let key = art + (tint.map { ":\($0)" } ?? "")
         var image = loadedArt[key]
         if image == nil {
-            guard let encoded = ArtData.images[key], let png = Data(base64Encoded: encoded) else { return }
-            image = png.withUnsafeBytes { sol_canvas_load_image(raw, $0.bindMemory(to: UInt8.self).baseAddress, Int32($0.count)) }
+            guard let encoded = ArtData.images[art], let png = Data(base64Encoded: encoded) else { return }
+            if let tint {
+                var pixels: UnsafeMutablePointer<UInt8>?
+                var w: Int32 = 0, h: Int32 = 0
+                let decoded = png.withUnsafeBytes { sol_canvas_decode_png(raw, $0.bindMemory(to: UInt8.self).baseAddress, Int32(png.count), &pixels, &w, &h) }
+                guard decoded == 0, let pixels else { return }
+                image = sol_canvas_load_rgba(raw, pixels, w, h, tint)
+                sol_canvas_free(pixels)
+            } else {
+                image = png.withUnsafeBytes { sol_canvas_load_image(raw, $0.bindMemory(to: UInt8.self).baseAddress, Int32($0.count)) }
+            }
             loadedArt[key] = image
         }
         sol_canvas_draw_image(raw, image ?? -1, r.x, r.y, r.width, r.height, alpha)

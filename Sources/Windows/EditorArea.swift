@@ -233,8 +233,11 @@ struct EditorStrip {
     }
 
     /// The Mac's terminal symbol (SF Symbols' "terminal", as its strip shows): a rounded window with a prompt, `>_`.
-    static func drawTerminalSymbol(on canvas: Canvas, centerX: Float, centerY: Float, scale s: Float, color: UInt32, alpha: Float) {
-        let c = canvas.raw, t = max((1.25 * s * 2).rounded() / 2, 1)
+    /// `thin`: the size and line of the icon font's icons beside it (the status bar), rather than the strip's bolder one.
+    static func drawTerminalSymbol(on canvas: Canvas, centerX: Float, centerY: Float, scale: Float, color: UInt32, alpha: Float, thin: Bool = false) {
+        // The status bar's is drawn smaller throughout, as its neighbors are.
+        let s = thin ? scale * 0.8 : scale
+        let c = canvas.raw, t = thin ? max((0.75 * scale * 2).rounded() / 2, 1) : max((1.25 * s * 2).rounded() / 2, 1)
         let w = (15 * s).rounded(), h = (12 * s).rounded()
         let x = (centerX - w / 2).rounded() + t / 2, y = (centerY - h / 2).rounded() + t / 2
         sol_canvas_stroke_rounded(c, x, y, w - t, h - t, 3 * s, color, alpha, t)

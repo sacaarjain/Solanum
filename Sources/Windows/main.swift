@@ -158,6 +158,30 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-icon-packs"), Command
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }
 
+// The status bar's left end at 175%, with guides through the middle of each icon: --draw-status-bar <png>
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-status-bar"), CommandLine.arguments.indices.contains(flag + 1) {
+    let scale: Float = Float(CommandLine.arguments.indices.contains(flag + 2) ? CommandLine.arguments[flag + 2] : "1.75") ?? 1.75
+    var layout = WindowLayout(width: 700 * scale, height: 120 * scale, scale: scale, tabCount: 1)
+    layout.hasShellButton = true
+    guard let canvas = Canvas(width: Int(700 * scale), height: Int(120 * scale), fontPixels: 13 * scale), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    var chrome = WindowChrome(canvas: canvas, layout: layout, tabs: ["PowerShell"], activeTab: 0)
+    chrome.shell = Shells.defaultShell
+    // Git on a branch with work to push and pull, and changes; a second bar below with a branch not yet published.
+    var info = GitInfo(root: "C:/work")
+    info.branch = "windows-compat"
+    info.upstream = "origin/windows-compat"
+    info.ahead = 2
+    info.behind = 1
+    info.changes = Array(repeating: GitChange(code: "M", path: "a"), count: 13)
+    chrome.git = GitBadge(info, busy: nil)
+    chrome.folder = "C:/work"
+    chrome.draw()
+    // A line through the bar's middle, to see each icon against.
+    sol_canvas_fill_rect(canvas.raw, 0, layout.toggleLeft.midY, 100 * scale, 1, 0xFF0000, 0.8)
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
+}
+
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-agent-marks"), CommandLine.arguments.indices.contains(flag + 1) {
     let kinds: [AgentKind] = [.claude, .codex, .antigravity, .other("aider")]
     let statuses: [AgentStatus] = [.working, .waiting, .done, .failed]

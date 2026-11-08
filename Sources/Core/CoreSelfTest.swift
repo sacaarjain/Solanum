@@ -164,6 +164,28 @@ enum CoreSelfTest {
             check("code boxes: a quote copies without its bar", quote?.copyText == "One more from the same incident.")
             check("code boxes: Claude's folder for a Windows path", ClaudeTranscript.projectFolder(cwd: "C:\\nowhere at all", home: "C:\\nope") == nil)
 
+            // Big pastes in pieces, none cutting a character or a sequence.
+            var pasteBytes: [UInt8] = []
+            for i in 0..<300 { pasteBytes += Array("\u{1b}[0;0;233;1;0;1_\u{1b}[0;0;233;0;0;1_ line \(i) é ✦ 🌱 \u{1b}[200~x\u{1b}[201~\r".utf8) }
+            let pieces = PasteChunks.split(pasteBytes, size: 512)
+            let rejoined = pieces.flatMap { $0 }
+            let cleanCuts = pieces.dropFirst().allSatisfy { p in
+                guard let first = p.first else { return false }
+                return first & 0xC0 != 0x80
+            } && pieces.allSatisfy { p in
+                // Every escape sequence a piece starts, it finishes.
+                var esc = false, body = false
+                for b in p {
+                    if esc { if body { if b >= 0x40 && b <= 0x7E { esc = false; body = false } } else if b == 0x5B { body = true } else { esc = false } }
+                    else if b == 0x1B { esc = true }
+                }
+                return !esc
+            }
+            check("paste: pieces join up to the paste", rejoined == pasteBytes && pieces.count > 10)
+            check("paste: no piece cuts a character or an escape sequence", cleanCuts)
+            check("paste: pieces stay near the size", pieces.allSatisfy { $0.count <= 512 + 40 })
+            check("paste: small ones go as they are", PasteChunks.split(Array("hi".utf8)) == [Array("hi".utf8)])
+
             // Icon packs.
             check("icon packs: icons one folder up from the manifest, never outside the extension",
                   IconThemeManifest.inside("C:/p/ext/dist", "./../icons/git.svg", within: "C:/p/ext") == "C:/p/ext/icons/git.svg"
