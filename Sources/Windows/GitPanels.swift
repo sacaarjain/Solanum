@@ -61,11 +61,11 @@ struct PanelPaint {
     }
 
     /// A line of text in the terminal's font, one cell a character, cut at `maxCells`.
-    func mono(_ text: String, x: Float, y: Float, maxCells: Int, color: UInt32) {
+    func mono(_ text: String, x: Float, y: Float, maxCells: Int, color: UInt32, bold: Bool = false) {
         var scalars = Array(text.replacingOccurrences(of: "\t", with: "    ").unicodeScalars.prefix(max(maxCells, 0)).map(\.value))
         guard !scalars.isEmpty else { return }
         var widths = [UInt8](repeating: 1, count: scalars.count)
-        sol_canvas_draw_cells(canvas.raw, x, y, &scalars, &widths, Int32(scalars.count), color, 0)
+        sol_canvas_draw_cells(canvas.raw, x, y, &scalars, &widths, Int32(scalars.count), color, bold ? Int32(SOL_STYLE_BOLD) : 0)
     }
 
     /// A button with an icon, highlighted under the pointer.

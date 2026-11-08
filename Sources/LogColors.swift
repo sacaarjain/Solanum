@@ -1,104 +1,12 @@
 import AppKit
 
-extension Notification.Name {
-    /// A log format was imported (or the formats folder changed): open logs choose their format again.
-    static let solanumLogFormatsChanged = Notification.Name("SolanumLogFormatsChanged")
-}
-
 extension NSAttributedString.Key {
     /// A log line's tint (an error's red, a warning's yellow), drawn across the editor's whole width.
     static let solanumLogWash = NSAttributedString.Key("SolanumLogWash")
 }
 
-/// Imported log formats: JSON rules files in ~/.config/solanum/log-formats/ (see LogFormat.swift and the README).
-enum LogFormatStore {
-    static var folder: URL {
-        if let dir = ProcessInfo.processInfo.environment["SOLANUM_LOG_FORMATS_DIR"], !dir.isEmpty { return URL(fileURLWithPath: dir) }
-        return Config.shared.dir.appendingPathComponent("log-formats")
-    }
-
-    /// Colors for every log (chosen while the built-in coloring is on); imported formats start from them.
-    static var allLogsFile: URL { folder.appendingPathComponent("_all-logs.json") }
-
-    static var allLogs: LogFormat {
-        guard let data = try? Data(contentsOf: allLogsFile), let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let f = try? LogFormat(json: j, file: allLogsFile, colorsOnly: true) else { return LogFormat(name: "All Logs") }
-        return f
-    }
-
-    /// Read fresh each time (a log being opened): a handful of small files, and edits to them apply straight away.
-    /// Each over the all-logs colors.
-    static var formats: [LogFormat] {
-        let base = allLogs
-        return LogFormats.load(from: folder).formats.map { $0.merged(over: base) }
-    }
-
-    /// The built-in coloring, with the all-logs colors.
-    static var builtIn: LogFormat {
-        var f = LogFormat.builtIn.merged(over: allLogs)
-        f.file = nil
-        return f
-    }
-
-    /// Where colors chosen while `format` colors a log are kept: its own file, or (built-in) the all-logs one.
-    static func colorsFile(for format: LogFormat) -> URL { format.file ?? allLogsFile }
-
-    /// Changes a rules file's JSON (made if missing), then has open logs color again.
-    static func edit(_ file: URL, _ change: (inout [String: Any]) -> Void) {
-        var j = (try? Data(contentsOf: file)).flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] } ?? [:]
-        if j.isEmpty, file == allLogsFile { j["name"] = "All Logs" }
-        change(&j)
-        if var colors = j["colors"] as? [String: String] {
-            colors = colors.filter { !$0.value.isEmpty }
-            j["colors"] = colors.isEmpty ? nil : colors
-        }
-        if let rules = j["rules"] as? [[String: Any]], rules.isEmpty { j["rules"] = nil }
-        do {
-            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONSerialization.data(withJSONObject: j, options: [.prettyPrinted, .sortedKeys]).write(to: file)
-        } catch {
-            FileHandle.standardError.write("log colors: couldn't save \(file.path): \(error)\n".data(using: .utf8)!)
-        }
-        NotificationCenter.default.post(name: .solanumLogFormatsChanged, object: nil)
-    }
-
-    static func setStyle(_ key: LogStyleKey, _ style: LogStyle?, in file: URL) {
-        edit(file) { j in
-            var colors = j["colors"] as? [String: String] ?? [:]
-            colors[key.rawValue] = style?.text
-            j["colors"] = colors
-        }
-    }
-
-    /// A marker's style; nil takes its rule out.
-    static func setMarker(_ text: String, _ style: LogStyle?, in file: URL) {
-        edit(file) { j in
-            var rules = j["rules"] as? [[String: Any]] ?? []
-            let i = rules.firstIndex { $0["text"] as? String == text }
-            if let style, !style.isEmpty {
-                let rule: [String: Any] = ["text": text, "style": style.text]
-                if let i { rules[i] = rule } else { rules.append(rule) }
-            } else if let i {
-                rules.remove(at: i)
-            }
-            j["rules"] = rules
-        }
-    }
-
-    /// Takes the chosen styles and markers out (regular-expression rules written by hand stay).
-    static func resetColors(in file: URL) {
-        edit(file) { j in
-            j["colors"] = nil
-            j["rules"] = (j["rules"] as? [[String: Any]] ?? []).filter { $0["text"] == nil }
-        }
-    }
-
-    static func importFile(_ url: URL) throws -> LogFormat {
-        let format = try LogFormats.importFile(url, into: folder)
-        NotificationCenter.default.post(name: .solanumLogFormatsChanged, object: nil)
-        return format
-    }
-
+/// Importing a log format from the Mac's open panel (the store itself is Core's LogFormatStore).
+extension LogFormatStore {
     /// Asks for a logging config (logback.xml, log4j2.xml, log4j.properties, a Python logging ini) or a rules file
     /// and imports it; problems come up as an alert.
     static func runImportPanel(for window: NSWindow?, done: ((LogFormat) -> Void)? = nil) {

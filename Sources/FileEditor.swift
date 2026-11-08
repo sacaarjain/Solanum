@@ -1539,7 +1539,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         let text = expression == nil ? nil : (textView.string as NSString).copy() as? NSString
         let work = DispatchWorkItem {
             DispatchQueue.global(qos: .userInitiated).async {
-                let (ranges, capped) = expression.flatMap { e in text.map { EditorFind.matches(of: e, in: $0) } } ?? buffer.matches(of: query, options)
+                let (ranges, capped) = expression.flatMap { e in text.map { EditorFind.matches(of: e, in: $0 as String) } } ?? buffer.matches(of: query, options)
                 DispatchQueue.main.async { finish(ranges, capped) }
             }
         }
@@ -1663,7 +1663,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         let t2 = CACurrentMediaTime()
         let again = b.matches(of: q, o)
         let t3 = CACurrentMediaTime()
-        let regex = (try? EditorFind.expression(q, o)).map { EditorFind.matches(of: $0, in: textView.string as NSString) }
+        let regex = (try? EditorFind.expression(q, o)).map { EditorFind.matches(of: $0, in: textView.string) }
         let t4 = CACurrentMediaTime()
         func ms(_ a: Double, _ b: Double) -> String { String(format: "%.2fms", (b - a) * 1000) }
         return "chars=\(b.chars.count) copy=\(ms(t0, t1)) plain=\(ms(t1, t2)) again=\(ms(t2, t3)) (\(again.ranges.count)) regex=\(ms(t3, t4)) (\(regex?.ranges.count ?? -1)) plainCount=\(plain.ranges.count)"

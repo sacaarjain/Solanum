@@ -76,42 +76,6 @@ enum SelfTest {
             check("find: trims indentation", WorkspaceMatch.excerpt("    let a = 1", query: "a") == "let a = 1")
         }
         do {
-            // Find in a file: the three toggles, separately and together.
-            let text = "Cat cat concat\ncat.dog (cat)\nline three\n" as NSString
-            func count(_ q: String, _ o: EditorFindOptions) -> Int? {
-                (try? EditorFind.expression(q, o)).map { EditorFind.matches(of: $0, in: text).ranges.count }
-            }
-            check("find in file: ignores case by default", count("cat", EditorFindOptions()) == 5)
-            check("find in file: match case", count("Cat", EditorFindOptions(matchCase: true)) == 1)
-            check("find in file: whole word", count("cat", EditorFindOptions(wholeWord: true)) == 4)
-            check("find in file: both", count("cat", EditorFindOptions(matchCase: true, wholeWord: true)) == 3)
-            check("find in file: text isn't a pattern", count("cat.dog", EditorFindOptions()) == 1 && count(".", EditorFindOptions()) == 1 && count("(cat)", EditorFindOptions()) == 1)
-            check("find in file: regex", count("c.t", EditorFindOptions(regex: true)) == 5 && count("^cat", EditorFindOptions(regex: true)) == 2)
-            check("find in file: bad regex", count("(", EditorFindOptions(regex: true)) == nil)
-            check("find in file: empty matches don't count", count("x*", EditorFindOptions(regex: true)) == 0)
-            // Plain search has to find exactly what the regex engine does, on awkward text and on random text.
-            func same(_ q: String, _ t: String, _ o: EditorFindOptions) -> Bool {
-                guard let e = try? EditorFind.expression(q, o) else { return false }
-                return FindBuffer(t as NSString).matches(of: q, o).ranges == EditorFind.matches(of: e, in: t as NSString).ranges
-            }
-            let combos = [EditorFindOptions(), EditorFindOptions(matchCase: true), EditorFindOptions(wholeWord: true), EditorFindOptions(matchCase: true, wholeWord: true)]
-            let awkward = [("aa", "aaaaa"), ("cat", "cat"), ("cat", "ca"), ("a", "a a_a a-a 1a"), ("ab", "abab ab"), (".", "a.b."), ("(x", "(x (x)"), ("-a", "b-a -a"), ("é", "é cé é"), ("x", "😀x😀 x"), ("cat", "“cat” cat’s")]
-            check("find in file: plain matches regex on awkward text", awkward.allSatisfy { q, t in combos.allSatisfy { same(q, t, $0) } })
-            var seed: UInt64 = 42
-            func next(_ n: Int) -> Int { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Int((seed >> 33) % UInt64(n)) }
-            let alphabet = Array("abAB_ 1.-\n")
-            var agree = true
-            for _ in 0..<400 {
-                let t = String((0..<next(60)).map { _ in alphabet[next(alphabet.count)] })
-                let q = String((0..<(1 + next(4))).map { _ in alphabet[next(alphabet.count)] })
-                if !combos.allSatisfy({ same(q, t, $0) }) { agree = false }
-            }
-            check("find in file: plain matches regex on random text", agree)
-            check("find in file: plain search used when it can be", FindBuffer.canSearch("cat", EditorFindOptions()) && !FindBuffer.canSearch("cat", EditorFindOptions(regex: true)) && !FindBuffer.canSearch("é", EditorFindOptions()) && FindBuffer.canSearch("é", EditorFindOptions(matchCase: true)))
-            let ranges = [NSRange(location: 5, length: 1), NSRange(location: 10, length: 1)]
-            check("find in file: starts at or after the caret, then wraps", EditorFind.index(of: ranges, from: 0) == 0 && EditorFind.index(of: ranges, from: 6) == 1 && EditorFind.index(of: ranges, from: 11) == 0 && EditorFind.index(of: [], from: 0) == nil)
-        }
-        do {
             // Reconnecting keeps just how to reach the host, whatever the session ran there.
             let c = RemoteSession.connectionArgs
             check("ssh args: plain", c("myhost") == "myhost" && c("-p 2222 me@host") == "-p 2222 me@host" && c("-p2222 -i ~/k host") == "-p2222 -i ~/k host")

@@ -77,7 +77,7 @@ struct PaletteView {
         if item.isHeader {
             if visible > 0 { sol_canvas_fill_rect(canvas.raw, r.x + 10 * scale, r.y + 8 * scale, r.width - 20 * scale, 1, fg, 0.10) }
             let lowered = UIRect(x: r.x + 14 * scale, y: r.y + 10 * scale, width: r.width - 28 * scale, height: r.height - 10 * scale)
-            label(item.title.uppercased(), lowered, pixels: 11 * scale, semibold: true, alpha: 0.5)
+            label(item.keepsCase ? item.title : item.title.uppercased(), lowered, pixels: 11 * scale, semibold: true, alpha: item.keepsCase ? 0.75 : 0.5)
             return
         }
         let inset = 2 * scale

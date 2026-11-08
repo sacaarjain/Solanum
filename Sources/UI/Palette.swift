@@ -7,6 +7,8 @@ struct PaletteItem {
     var category = ""
     var shortcut = ""
     var isHeader = false
+    /// A header shown as written (a file's path), rather than in capitals.
+    var keepsCase = false
     /// Go to Folder: what Tab puts in the field, to go into this folder rather than open it.
     var completion: String?
     var run: () -> Void = {}

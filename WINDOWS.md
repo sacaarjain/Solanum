@@ -41,7 +41,8 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
   beside it, because Fn can't be detected.
   - A key the app claims is the app's, whatever's running, Claude Code included. A program can't get that key, by choice:
     Ctrl+T new tab, Ctrl+Shift+T reopen a closed tab, Ctrl+W close tab (no confirmation yet), Ctrl+Shift+W also closes the
-    tab until there are several windows. Later features may claim Ctrl+N, B, F, O, S, Q and G the same way.
+    tab until there are several windows. Later features may claim Ctrl+N, B, O, S, Q and G the same way (Ctrl+F and Ctrl+H
+    find and replace in a file that has the keyboard).
   - Programs keep the keys the app doesn't claim, including Ctrl+A, D, E, H, J, K, L, R, U and Z.
   - Ctrl+C copies when something's selected and interrupts otherwise; Ctrl+V pastes, except in full-screen programs and for
     an image going to Claude Code; Ctrl+X cuts a selection in the line being typed; Ctrl+1 to 9 pick a tab.
@@ -59,6 +60,19 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
     Claude Code session), Ctrl+J searches the prompts sent and commands run, Ctrl+Shift+C copies the command (a
     selection, when there is one), Ctrl+Alt+C copies it with its output, and Ctrl+Alt+R runs it again. Shift+Enter makes
     a new line in Claude Code and at a shell's prompt, sending the line feed Ctrl+J used to.
+  - In a file, as the Mac's ⌘F and VS Code's: Ctrl+F finds and Ctrl+H replaces ("3 of 12", every match shaded), Enter
+    or F3 steps on and Shift with them back, Alt+C, Alt+W and Alt+R match case, whole words and regular expressions
+    ($1 and the like in the replacement), Tab moves to the Replace field, Ctrl+Enter there replaces all, and Esc closes
+    it with the match selected.
+- **Search in Project Folder** (Ctrl+Shift+F), as on the Mac: each file a header with its matching lines under it, a
+  count of results and files, 20 seconds at most, and a result opens its file (on this PC or the ssh host) with the
+  query selected on its line.
+- **Logs**, as on the Mac: `.log` files, and any file with a logger's color codes in it, are colored by level, time,
+  thread, logger, stack trace and the message's numbers, strings and paths; error and warning entries are tinted, stack
+  traces and all, and color codes are hidden and shown as the colors they ask for. The header's palette button picks
+  the format (Automatic, the built-in one or an imported logging config) and the colors of each level and field, and
+  adds markers: text picked out wherever it appears, such as `[FAIL]` (the selection is offered). They're kept in
+  `%APPDATA%\Solanum\log-formats`, in the Mac's rules files. A custom color is a hex in the rules file for now.
 - **Pages above the terminal:** as on the Mac, Git Graph, Git Changes, a commit's changes and files open in sub-tabs above
   the tab's terminal, which stays below (the line between drags, and the strip's terminal button hides it). Clicking
   them gives them the keyboard and clicking the terminal takes it back; Ctrl+W closes the page that has it. In Git
@@ -67,7 +81,9 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
 - **Shared with the Mac, in `Sources/Core`:** syntax for JSON, YAML and XML (`Syntax.swift`: the Mac colors it in
   AppKit, Windows draws it), Beautify (`Prettifier.swift`: XML through Foundation's XMLDocument on the Mac, re-indented
   elsewhere), the kinds of file for icons (`FileKind.swift`), VS Code's languages by file name (`VSCodeLanguages.swift`),
-  git's models, Markdown parsing, and the emulator. The Mac's own files keep only what draws.
+  git's models, Markdown parsing, find in a file (`EditorFind.swift`), project search (`SearchModel.swift`), log
+  coloring and its formats and markers (`LogFormat.swift`, `LogFormatStore.swift`), and the emulator. The Mac's own
+  files keep only what draws.
 - **Art:** `Tools/MakeWindowsArt.swift` renders the Mac's flower, tab prompt and app icon into `Sources/Windows/ArtData.swift`
   and `Support/Windows/Solanum.ico`, until the drawing itself is shared.
 - **Closing the last window:** it saves the session (`%APPDATA%\Solanum\session.json`: tabs, their folders, names, groups

@@ -121,6 +121,72 @@ enum WindowSelfTest {
         panel.press(button: .tail)
         results.check("live files: Tail File", panel.tailing)
 
+        // Find and replace in a file, as the Mac's ⌘F (Core's EditorFind).
+        var findDisk = Data("Cat cat concat\ncat.dog (cat)\nline three\n".utf8)
+        let found = FileEditorPanel(path: "C:\\find.txt", name: "find.txt", folder: "C:\\", isLocal: true, read: { _, done in done(findDisk, false) },
+                                    write: { data, done in findDisk = data; done(nil) })
+        found.reload()
+        FileEditorPanel.findOptions = EditorFindOptions()
+        _ = found.key(0x46, shift: false, ctrl: true)
+        "cat".forEach { found.typed(String($0)) }
+        results.check("find: Ctrl+F and typing finds every match, the first current", found.findStateForTesting == "1 of 5 current='Cat'" && found.findFocused,
+                      found.findStateForTesting ?? "closed")
+        _ = found.key(Win.VK_RETURN, shift: false, ctrl: false)
+        _ = found.key(Win.VK_RETURN, shift: true, ctrl: false)
+        _ = found.key(0x72, shift: true, ctrl: false)
+        results.check("find: Enter steps on, Shift+Enter and Shift+F3 back round", found.findStateForTesting == "5 of 5 current='cat'", found.findStateForTesting ?? "")
+        _ = found.findAltKey(0x43)
+        results.check("find: Alt+C matches case", found.findStateForTesting?.hasSuffix("of 4 current='cat'") == true, found.findStateForTesting ?? "")
+        _ = found.findAltKey(0x57)
+        results.check("find: Alt+W whole words", found.findStateForTesting?.contains(" of 3 ") == true, found.findStateForTesting ?? "")
+        _ = found.findAltKey(0x43)
+        _ = found.findAltKey(0x57)
+        _ = found.findAltKey(0x52)
+        _ = found.key(Win.VK_BACK, shift: false, ctrl: true)
+        "c.t".forEach { found.typed(String($0)) }
+        results.check("find: Alt+R as a regular expression", found.findStateForTesting?.contains(" of 5 ") == true, found.findStateForTesting ?? "")
+        "(".forEach { found.typed(String($0)) }
+        results.check("find: a regular expression that doesn't parse says so", found.findStateForTesting?.hasSuffix(" bad") == true, found.findStateForTesting ?? "")
+        _ = found.key(Win.VK_BACK, shift: false, ctrl: false)
+        _ = found.findAltKey(0x52)
+        _ = found.key(Win.VK_BACK, shift: false, ctrl: true)
+        "cat".forEach { found.typed(String($0)) }
+        // Ctrl+F again starts from the caret, at the top.
+        _ = found.key(0x46, shift: false, ctrl: true)
+        found.setReplaceForTesting("dog")
+        found.replaceForTesting(all: false)
+        results.check("find: Replace changes the current match and goes on to the next", found.textLines?.first == "dog cat concat"
+                      && found.findStateForTesting == "1 of 4 current='cat'", "\(found.textLines?.first ?? "") \(found.findStateForTesting ?? "")")
+        found.replaceForTesting(all: true)
+        results.check("find: Replace All", found.textLines == ["dog dog condog", "dog.dog (dog)", "line three", ""], "\(found.textLines ?? [])")
+        _ = found.key(0x5A, shift: false, ctrl: true)
+        results.check("find: Ctrl+Z undoes Replace All in one step", found.textLines?.first == "dog cat concat", found.textLines?.first ?? "")
+        _ = found.key(Win.VK_ESCAPE, shift: false, ctrl: false)
+        results.check("find: Esc closes it, the match selected", found.findStateForTesting == nil && found.selectedText == "cat", found.selectedText ?? "nothing")
+        found.reveal(line: 2, text: "DOG")
+        results.check("search: a result opens with its query selected on its line", found.selectedText == "dog" && found.caretForTesting().line == 1)
+
+        // A log, colored as on the Mac (Core's LogFormat): color codes hidden and shown, an error's line tinted.
+        let esc = "\u{1b}"
+        let logText = "2026-11-08 10:00:01 \(esc)[31mERROR\(esc)[0m app.Db - query failed\n    at app.Db.run(Db.java:42)\n2026-11-08 10:00:02 INFO app.Main - fine\n"
+        let log = FileEditorPanel(path: "C:\\app.txt", name: "app.txt", folder: "C:\\", isLocal: true, read: { _, done in done(Data(logText.utf8), false) },
+                                  write: { _, done in done(nil) })
+        log.reload()
+        results.check("logs: a file with color codes is a log, whatever it's called", log.language == .log && log.hidesEscapes)
+        results.check("logs: the color codes take no room", log.shownForTesting(0) == "2026-11-08 10:00:01 ERROR app.Db - query failed", log.shownForTesting(0))
+        let red = TerminalPalette.indexed(1)
+        let errorCell = log.logLookForTesting(line: 0, cell: 20)
+        results.check("logs: shown in the colors they ask for, the line tinted", errorCell?.color == red && errorCell?.wash == red,
+                      "\(errorCell.map { "\($0)" } ?? "none")")
+        results.check("logs: a stack trace's line takes its error's tint", log.logLookForTesting(line: 1, cell: 4)?.wash == red)
+        results.check("logs: an info line isn't tinted", log.logLookForTesting(line: 2, cell: 0)?.wash == nil)
+        let logMenu = log.logMenuForTesting().map(\.title)
+        results.check("logs: the palette's menu picks the format and the colors", logMenu.contains("Automatic (Built-in)") && logMenu.contains("Levels  \u{203A}")
+                      && logMenu.contains("Add Marker\u{2026}") && logMenu.contains("Import Log Format\u{2026}"), "\(logMenu)")
+        _ = log.key(Win.VK_HOME, shift: false, ctrl: true)
+        for _ in 0..<21 { _ = log.key(Win.VK_RIGHT, shift: false, ctrl: false) }
+        results.check("logs: the caret steps over a hidden color code as nothing", log.caretForTesting().col == 26, "\(log.caretForTesting().col)")
+
         let roundTrip = ["#A584E8", "#111312", "#FFFFFF", "#000000", "#E3573F", "#56F0B4"].allSatisfy { HSVColor(HexColor($0)!).hex == $0 }
         results.check("theme editor: a color through hue, saturation and brightness comes back the same", roundTrip)
         results.check("theme editor: hex typed in reads as Solanum writes it", ColorPicker.parse("a5e", allowsAlpha: false) == "#AA55EE"
@@ -1104,8 +1170,23 @@ enum WindowSelfTest {
         steps.append(Step(name: "search: Ctrl+Shift+F finds text in the folder", action: {
             _ = window.keyDown(0x46, shift: true, ctrl: true, alt: false)
             window.typeIntoWindow("solanum")
-        }, done: { window.paletteRows.contains { $0.category == "tracked.txt:1" && $0.title.contains("hello solanum") } }))
-        steps.append(Step(name: "search: and closes", action: { pane.pressEscape() }, done: { !window.isPaletteOpen }))
+        }, done: {
+            let rows = window.paletteRows
+            guard let i = rows.firstIndex(where: { $0.category == "line 1" && $0.title.contains("hello solanum") }) else { return false }
+            // Under its file's header, as on the Mac, with the count above them.
+            return i > 0 && rows[i - 1].isHeader && rows[i - 1].title == "tracked.txt" && rows.first?.title.contains("in 1 file") == true
+        }))
+        steps.append(Step(name: "search: a result opens its file, the query selected", action: { window.pressPaletteEnterForTest() }, done: {
+            guard let file = window.activePanel as? FileEditorPanel else { return false }
+            return file.path.hasSuffix("tracked.txt") && file.selectedText?.lowercased() == "solanum" && !window.isPaletteOpen
+        }))
+        steps.append(Step(name: "search: Ctrl+F finds in that file", action: {
+            _ = window.keyDown(0x46, shift: false, ctrl: true, alt: false)
+        }, done: { (window.activePanel as? FileEditorPanel)?.findStateForTesting == "1 of 1 current='solanum'" }))
+        steps.append(Step(name: "search: Esc closes find, then Ctrl+W the file", action: {
+            _ = window.keyDown(Win.VK_ESCAPE, shift: false, ctrl: false, alt: false)
+            _ = window.keyDown(0x57, shift: false, ctrl: true, alt: false)
+        }, done: { window.activePanel == nil && !window.isPaletteOpen }))
         // Links in what's printed.
         func cell(_ text: String) -> (line: Int, col: Int)? {
             guard let row = pane.terminal.screen.firstIndex(where: { $0.text().contains(text) }), let r = pane.terminal.screen[row].text().range(of: text) else { return nil }

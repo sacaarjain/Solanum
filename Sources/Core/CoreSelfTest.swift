@@ -56,6 +56,83 @@ enum CoreSelfTest {
             results.check(name, cond, detail())
         }
         do {
+            // Find in a file: the three toggles, separately and together.
+            let text = "Cat cat concat\ncat.dog (cat)\nline three\n"
+            func count(_ q: String, _ o: EditorFindOptions) -> Int? {
+                (try? EditorFind.expression(q, o)).map { EditorFind.matches(of: $0, in: text).ranges.count }
+            }
+            check("find in file: ignores case by default", count("cat", EditorFindOptions()) == 5)
+            check("find in file: match case", count("Cat", EditorFindOptions(matchCase: true)) == 1)
+            check("find in file: whole word", count("cat", EditorFindOptions(wholeWord: true)) == 4)
+            check("find in file: both", count("cat", EditorFindOptions(matchCase: true, wholeWord: true)) == 3)
+            check("find in file: text isn't a pattern", count("cat.dog", EditorFindOptions()) == 1 && count(".", EditorFindOptions()) == 1 && count("(cat)", EditorFindOptions()) == 1)
+            check("find in file: regex", count("c.t", EditorFindOptions(regex: true)) == 5 && count("^cat", EditorFindOptions(regex: true)) == 2)
+            check("find in file: bad regex", count("(", EditorFindOptions(regex: true)) == nil)
+            check("find in file: empty matches don't count", count("x*", EditorFindOptions(regex: true)) == 0)
+            // Plain search has to find exactly what the regex engine does, on awkward text and on random text.
+            func same(_ q: String, _ t: String, _ o: EditorFindOptions) -> Bool {
+                guard let e = try? EditorFind.expression(q, o) else { return false }
+                return FindBuffer(t).matches(of: q, o).ranges == EditorFind.matches(of: e, in: t).ranges
+            }
+            let combos = [EditorFindOptions(), EditorFindOptions(matchCase: true), EditorFindOptions(wholeWord: true), EditorFindOptions(matchCase: true, wholeWord: true)]
+            let awkward = [("aa", "aaaaa"), ("cat", "cat"), ("cat", "ca"), ("a", "a a_a a-a 1a"), ("ab", "abab ab"), (".", "a.b."), ("(x", "(x (x)"), ("-a", "b-a -a"), ("é", "é cé é"), ("x", "😀x😀 x"), ("cat", "“cat” cat’s")]
+            check("find in file: plain matches regex on awkward text", awkward.allSatisfy { q, t in combos.allSatisfy { same(q, t, $0) } })
+            var seed: UInt64 = 42
+            func next(_ n: Int) -> Int { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Int((seed >> 33) % UInt64(n)) }
+            let alphabet = Array("abAB_ 1.-\n")
+            var agree = true
+            for _ in 0..<400 {
+                let t = String((0..<next(60)).map { _ in alphabet[next(alphabet.count)] })
+                let q = String((0..<(1 + next(4))).map { _ in alphabet[next(alphabet.count)] })
+                if !combos.allSatisfy({ same(q, t, $0) }) { agree = false }
+            }
+            check("find in file: plain matches regex on random text", agree)
+            check("find in file: plain search used when it can be", FindBuffer.canSearch("cat", EditorFindOptions()) && !FindBuffer.canSearch("cat", EditorFindOptions(regex: true)) && !FindBuffer.canSearch("é", EditorFindOptions()) && FindBuffer.canSearch("é", EditorFindOptions(matchCase: true)))
+            let ranges = [NSRange(location: 5, length: 1), NSRange(location: 10, length: 1)]
+            check("find in file: starts at or after the caret, then wraps", EditorFind.index(of: ranges, from: 0) == 0 && EditorFind.index(of: ranges, from: 6) == 1 && EditorFind.index(of: ranges, from: 11) == 0 && EditorFind.index(of: [], from: 0) == nil)
+            check("find in file: a plain search from lines as UTF-16", FindBuffer(units: Array("ab\nAB".utf16)).matches(of: "ab", EditorFindOptions()).ranges
+                  == [NSRange(location: 0, length: 2), NSRange(location: 3, length: 2)])
+            let e = try? EditorFind.expression("(\\w+)@(\\w+)", EditorFindOptions(regex: true))
+            let mail = "me@host"
+            let m = e.flatMap { $0.firstMatch(in: mail, range: NSRange(location: 0, length: mail.utf16.count)) }
+            check("find in file: a regex's replacement fills in its groups", m.map { EditorFind.replacement("$2/$1", for: $0, in: mail, e!, regex: true) } == "host/me"
+                  && m.map { EditorFind.replacement("$2", for: $0, in: mail, e!, regex: false) } == "$2")
+        }
+        do {
+            // Logs, line by line as an editor draws them (Windows): a stack trace takes its exception's level, from wherever
+            // the drawing starts.
+            let log = ["2026-11-08 10:00:00 INFO  app.Main - started",
+                       "2026-11-08 10:00:01 ERROR app.Db - query failed",
+                       "java.lang.IllegalStateException: closed",
+                       "    at app.Db.run(Db.java:42)",
+                       "    at app.Main.main(Main.java:7)",
+                       "2026-11-08 10:00:02 INFO  app.Main - [OK] retried"]
+            let cache = LogPaintCache(format: .builtIn)
+            let fromBelow = cache.paint(4, in: log)
+            check("logs: a stack trace's line takes its entry's level, drawn first", fromBelow.continues && fromBelow.level == .error && fromBelow.wash == .palette(1))
+            check("logs: lines after it don't", cache.paint(5, in: log).level == .info && cache.paint(5, in: log).wash == nil, "\(cache.paint(5, in: log))")
+            check("logs: the error line tints", cache.paint(1, in: log).wash == .palette(1) && cache.paint(0, in: log).wash == nil)
+            // Markers chosen in one app are a rules file both read: kept in the folder for log formats.
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("solanum-logformats-\(ProcessInfo.processInfo.processIdentifier)")
+            let was = LogFormatStore.configFolder
+            LogFormatStore.configFolder = dir
+            defer {
+                LogFormatStore.configFolder = was
+                try? FileManager.default.removeItem(at: dir)
+            }
+            if ProcessInfo.processInfo.environment["SOLANUM_LOG_FORMATS_DIR"] == nil {
+                LogFormatStore.setMarker("[OK]", LogStyle(color: .palette(2), bold: true), in: LogFormatStore.allLogsFile)
+                let format = LogFormatStore.builtIn
+                check("logs: a marker is saved and read back", format.markerStyle("[OK]") == LogStyle(color: .palette(2), bold: true))
+                cache.reset(format: format)
+                let ok = cache.paint(5, in: log)
+                let at = NSString(string: log[5]).range(of: "[OK]")
+                check("logs: a marker colors its text", ok.paints.last == LogPaint(range: at, color: .palette(2), bold: true), "\(ok.paints.last.map { "\($0)" } ?? "none")")
+                LogFormatStore.setMarker("[OK]", nil, in: LogFormatStore.allLogsFile)
+                check("logs: and taken out again", LogFormatStore.builtIn.markerStyle("[OK]") == nil)
+            }
+        }
+        do {
             // Under ConPTY: nothing comes back from scrollback, rows move only to keep the cursor on screen.
             let (t, _) = make(20, 5)
             t.repaintedByConsole = true

@@ -1852,13 +1852,14 @@ final class TerminalWindow {
 
     /// A file shown above a tab's terminal, as on the Mac: a sub-tab of its own, or the one it has already. From this PC,
     /// or from the ssh host a sidebar shows.
-    func showFile(_ path: String, in pane: TerminalPane, remote: RemoteConnection? = nil, line: Int? = nil, focus: Bool = true) {
+    /// `line` (from 1) in view, with `text` (a search's query) selected on it.
+    func showFile(_ path: String, in pane: TerminalPane, remote: RemoteConnection? = nil, line: Int? = nil, text: String? = nil, focus: Bool = true) {
         if AnyPath.isUnix(path) && remote == nil { return fileProblem() }
         let key = "file\n" + (remote.map { "\(ObjectIdentifier($0).hashValue)" } ?? "local") + "\n" + path
         if let i = pane.editors.firstIndex(where: { $0.key == key }) {
             pane.activeEditor = i
             revealActiveSubTab(pane)
-            if let line, let panel = pane.editors[i].panel as? FileEditorPanel { panel.reveal(line: line) }
+            if let line, let panel = pane.editors[i].panel as? FileEditorPanel { panel.reveal(line: line, text: text) }
             if focus { setEditorFocus(true, in: pane) }
             invalidate()
             return
@@ -1878,7 +1879,14 @@ final class TerminalWindow {
         panel.paste = { [weak pane] in pane?.clipboardText() }
         panel.openPreview = { [weak self, weak panel] in if let self, let panel, let pane = self.owner(of: panel) { self.showPreview(path, in: pane, remote: remote) } }
         panel.cellSize = (canvas.metrics.cellWidth, canvas.metrics.cellHeight)
-        if let line { panel.reveal(line: line) }
+        panel.showMenu = { [weak self] items, r in
+            guard let self else { return }
+            self.openMenu(items, x: r.x, y: r.maxY + 4 * self.scale, above: false)
+        }
+        panel.askText = { [weak self] placeholder, action, done in self?.askForText(placeholder: placeholder, action: action, done) }
+        panel.pickFile = { [weak self] title in self?.pickOneFile(title: title) }
+        panel.openFolder = { [weak self] path in self?.onOpenFile(path) }
+        if let line { panel.reveal(line: line, text: text) }
         openEditor(EditorItem(key: key, title: name, glyph: FileKind(name: name).glyph, panel: panel), in: pane, focus: focus)
     }
 
@@ -3033,6 +3041,8 @@ final class TerminalWindow {
         var query = ""
         var results: [WorkspaceMatch] = []
         var running = false
+        /// It hit the time limit.
+        var stopped = false
         var generation = 0
     }
     private var search: Search?
@@ -3054,6 +3064,8 @@ final class TerminalWindow {
         invalidate()
     }
 
+    /// As the Mac's: a header for each file and its matching lines under it, the query highlighted by being selected
+    /// when one's opened, and a count of results and files.
     private func searchRows(_ typed: String) -> [PaletteItem] {
         guard var s = search else { return [] }
         let query = typed.trimmingCharacters(in: .whitespaces)
@@ -3061,43 +3073,62 @@ final class TerminalWindow {
             s.query = query
             s.results = []
             s.generation += 1
-            s.running = !query.isEmpty
+            s.running = query.count >= 2
+            s.stopped = false
             search = s
-            if !query.isEmpty { startSearch(query, generation: s.generation) }
+            if query.count >= 2 { startSearch(query, generation: s.generation) }
         }
+        let shown = AnyPath.name(s.folder)
         guard !query.isEmpty else { return [] }
-        let folder = s.folder, onHost = s.place.onHost
-        var rows = s.results.prefix(WorkspaceMatch.limit).map { m -> PaletteItem in
-            PaletteItem(title: WorkspaceMatch.excerpt(m.text, query: query), category: "\(m.path):\(m.line)") { [weak self] in
-                guard let self else { return }
-                if onHost {
-                    self.activePane.setClipboard(AnyPath.join(folder, m.path) + ":\(m.line)")
-                } else {
-                    self.showFile(WindowsPath.join(folder, m.path.replacingOccurrences(of: "/", with: "\\")), in: self.activePane, line: m.line)
-                }
+        guard query.count >= 2 else { return [.header("Keep typing\u{2026}")] }
+        let folder = s.folder, remote = s.place.remote
+        let matches = Array(s.results.prefix(WorkspaceMatch.limit))
+        var rows: [PaletteItem] = []
+        var last: String?
+        for m in matches {
+            if m.path != last {
+                var header = PaletteItem.header(m.path)
+                header.keepsCase = true
+                rows.append(header)
+                last = m.path
             }
+            rows.append(PaletteItem(title: WorkspaceMatch.excerpt(m.text, query: query), category: "line \(m.line)") { [weak self] in
+                guard let self else { return }
+                let path = remote != nil ? AnyPath.join(folder, m.path) : WindowsPath.join(folder, m.path.replacingOccurrences(of: "/", with: "\\"))
+                self.showFile(path, in: self.activePane, remote: remote, line: m.line, text: query)
+            })
         }
-        if s.running { rows.insert(.header(rows.isEmpty ? "Searching…" : "Searching… \(rows.count) so far"), at: 0) }
-        else if rows.isEmpty { rows = [.header("Nothing in \(AnyPath.name(folder)) has “\(query)”")] }
-        else if s.results.count > WorkspaceMatch.limit { rows.insert(.header("The first \(WorkspaceMatch.limit): narrow it down for the rest"), at: 0) }
+        let files = Set(matches.map(\.path)).count
+        let count = s.results.count > matches.count ? "The first \(matches.count) results"
+            : s.running ? "Searching\u{2026} \(matches.count) so far"
+            : s.stopped ? "\(matches.count), stopped after 20 seconds"
+            : "\(matches.count) result\(matches.count == 1 ? "" : "s")"
+        if rows.isEmpty {
+            return [.header(s.running ? "Searching\u{2026}" : s.stopped ? "Nothing found before the 20 second limit"
+                            : "Nothing in \(shown) has \u{201C}\(query)\u{201D}")]
+        }
+        rows.insert(.header("\(count) in \(files) file\(files == 1 ? "" : "s") \u{00B7} \(shown)"), at: 0)
         return rows
     }
 
-    /// After a moment without typing, so each key doesn't start a search of its own.
+    /// After a moment without typing, so each key doesn't start a search of its own. Stopped after 20 seconds, as on the Mac.
     private func startSearch(_ query: String, generation: Int) {
         Thread.detachNewThread { [weak self] in
-            Thread.sleep(forTimeInterval: 0.25)
+            Thread.sleep(forTimeInterval: 0.18)
             self?.runOnWindowThread {
                 guard let self, let s = self.search, s.generation == generation else { return }
                 let script = s.place.onHost ? WorkspaceMatch.remoteScript(query: query) : WorkspaceMatch.localScript(query: query, dir: GitPlace.shPath(s.folder))
                 // The local script goes to its folder itself.
                 let place = s.place.onHost ? s.place : GitPlace(dir: s.folder, remote: nil)
-                place.run(script, timeout: 30) { [weak self] _, out, _ in
+                let started = Date()
+                place.run(script, timeout: 20) { [weak self] status, out, _ in
                     let found = WorkspaceMatch.parse(out)
+                    let stopped = status == 124 || (status != 0 && status != 1 && Date().timeIntervalSince(started) >= 19.5)
                     self?.runOnWindowThread {
                         guard let self, var s = self.search, s.generation == generation else { return }
                         s.results = found
                         s.running = false
+                        s.stopped = stopped
                         self.search = s
                         self.palette?.refresh()
                         self.invalidate()
@@ -3105,6 +3136,40 @@ final class TerminalWindow {
                 }
             }
         }
+    }
+
+    // MARK: - A line of text, asked for in the palette
+
+    /// The palette as a one-line question (a log marker's text): Enter takes what's typed.
+    private func askForText(placeholder: String, action: String, _ done: @escaping (String) -> Void) {
+        palette = PaletteModel(query: "", placeholder: placeholder, icon: 0xE790, emptyMessage: "Type it, then press Enter") { typed in
+            let text = typed.trimmingCharacters(in: .whitespaces)
+            guard !text.isEmpty else { return [] }
+            return [PaletteItem(title: "\(action): \u{201C}\(text)\u{201D}") { done(text) }]
+        }
+        activePane.setFocused(false)
+        invalidate()
+    }
+
+    /// Windows' Open dialog for one file; nil when cancelled, and always in tests.
+    private func pickOneFile(title: String) -> String? {
+        guard !isTesting else { return nil }
+        var buffer = [UInt16](repeating: 0, count: 4096)
+        var titleText = wide(title)
+        let picked = buffer.withUnsafeMutableBufferPointer { file -> Bool in
+            titleText.withUnsafeMutableBufferPointer { t -> Bool in
+                var info = OPENFILENAMEW()
+                info.lStructSize = DWORD(MemoryLayout<OPENFILENAMEW>.size)
+                info.hwndOwner = hwnd
+                info.lpstrFile = file.baseAddress
+                info.nMaxFile = DWORD(file.count)
+                info.lpstrTitle = UnsafePointer(t.baseAddress)
+                info.Flags = DWORD(OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR)
+                return GetOpenFileNameW(&info)
+            }
+        }
+        guard picked, let end = buffer.firstIndex(of: 0), end > 0 else { return nil }
+        return String(decoding: buffer[..<end], as: UTF16.self)
     }
 
     // MARK: - Links
@@ -4778,6 +4843,8 @@ final class TerminalWindow {
 
     var isPaletteOpen: Bool { palette != nil }
     var paletteRows: [PaletteItem] { palette?.rows ?? [] }
+    /// Enter in the palette, for tests.
+    func pressPaletteEnterForTest() { _ = paletteKey(Win.VK_RETURN, ctrl: false) }
     var paletteSelection: PaletteItem? { palette?.selectedItem }
     var paletteQuery: String? { palette?.query }
 
@@ -5180,6 +5247,8 @@ final class TerminalWindow {
         if let editor = activePane.focusedPanel as? FileEditorPanel, alt && !ctrl {
             if key == 0x5A && !shift { editor.toggleWrap(); return true }
             if key == 0x46 && shift { editor.beautify(); return true }
+            // Find's toggles, as VS Code's: Alt+C case, Alt+W whole words, Alt+R regular expressions.
+            if !shift && editor.findAltKey(key) { return true }
         }
         if let panel = activePane.focusedPanel {
             // Keys the app doesn't claim are the page's, while it has the keyboard.
