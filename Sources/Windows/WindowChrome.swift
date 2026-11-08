@@ -473,10 +473,10 @@ struct WindowChrome {
             let text = UIRect(x: r.x + 21 * scale, y: r.y, width: max(r.width - 23 * scale, 0), height: r.height)
             switch part {
             case .branch:
-                // A pixel higher than the others, where it sits level with the branch's name.
-                GitIcons.draw(.branch, in: UIRect(x: iconRect.x, y: iconRect.y - 1, width: iconRect.width, height: iconRect.height),
+                // The branch's mark two pixels higher than the others and its name one, where they sit best on the bar.
+                GitIcons.draw(.branch, in: UIRect(x: iconRect.x, y: iconRect.y - 2, width: iconRect.width, height: iconRect.height),
                               on: canvas, scale: scale, color: TerminalPalette.accent, alpha: 1)
-                label(g.branch, text, pixels: pixels, semibold: true, alpha: 0.85)
+                label(g.branch, UIRect(x: text.x, y: text.y - 1, width: text.width, height: text.height), pixels: pixels, semibold: true, alpha: 0.85)
             case .sync:
                 if let busy = g.busy {
                     GitIcons.draw(.sync, in: iconRect, on: canvas, scale: scale, color: fg, alpha: dim)
