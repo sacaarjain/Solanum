@@ -164,6 +164,22 @@ enum CoreSelfTest {
             check("code boxes: a quote copies without its bar", quote?.copyText == "One more from the same incident.")
             check("code boxes: Claude's folder for a Windows path", ClaudeTranscript.projectFolder(cwd: "C:\\nowhere at all", home: "C:\\nope") == nil)
 
+            // Icon packs.
+            check("icon packs: icons one folder up from the manifest, never outside the extension",
+                  IconThemeManifest.inside("C:/p/ext/dist", "./../icons/git.svg", within: "C:/p/ext") == "C:/p/ext/icons/git.svg"
+                  && IconThemeManifest.inside("C:/p/ext/dist", "../../evil.svg", within: "C:/p/ext") == nil
+                  && IconThemeManifest.inside("C:/p/ext", "icons/a.svg") == "C:/p/ext/icons/a.svg")
+            check("icon packs: Catppuccin follows light and dark", IconPackCatalog.shownID(setting: "catppuccin-frappe", isDark: false) == "catppuccin-latte"
+                  && IconPackCatalog.shownID(setting: "catppuccin-latte", isDark: true) == "catppuccin-mocha"
+                  && IconPackCatalog.shownID(setting: "catppuccin-frappe", isDark: true) == "catppuccin-frappe"
+                  && IconPackCatalog.shownID(setting: "material-icon-theme", isDark: false) == "material-icon-theme")
+            check("icon packs: font icons' glyphs and colors", IconThemeManifest.glyph("\\E001") == "\u{E001}"
+                  && IconThemeManifest.color("#519aba")?.rgb == 0x519ABA && IconThemeManifest.color("#fff8")?.alpha == Float(0x88) / 255)
+            check("icon packs: a pack's folder name stays in the packs folder",
+                  IconPackCatalog.folderName(packageJSON: Data(#"{"publisher":"pub","name":"a/../b"}"#.utf8)) == "pub.a-..-b"
+                  && IconPackCatalog.folderName(packageJSON: Data(#"{"publisher":"../x","name":"b"}"#.utf8)) == nil
+                  && IconPackCatalog.folderName(packageJSON: nil) == nil)
+
             // Pasted images, as Claude Code shows them.
             let (im, _) = make(40, 6)
             feed(im, "\u{276F} look at [Image #3] please\r\n  \u{23BF}  [Image #3] [Image #12]\r\n  \u{23BF}  see [Image #4]\r\n")

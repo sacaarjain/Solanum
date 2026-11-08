@@ -940,7 +940,10 @@ final class FileEditorPanel: ColumnPanel {
         let h = header(a, s), buttons = buttonRects(a, s)
         p.backdrop(h, TerminalPalette.chrome)
         p.fill(UIRect(x: a.x, y: h.maxY - 1, width: a.width, height: 1), fg, 0.10)
-        p.icon(FileKind(name: name).glyph, UIRect(x: a.x + 10 * s, y: h.y, width: 18 * s, height: h.height), pixels: 12, alpha: 0.65)
+        let side = (16 * s).rounded()
+        if !FileIcons.draw(name: name, directory: false, x: a.x + 11 * s, y: (h.midY - side / 2).rounded(), size: side, on: p.canvas) {
+            p.icon(FileKind(name: name).glyph, UIRect(x: a.x + 10 * s, y: h.y, width: 18 * s, height: h.height), pixels: 12, alpha: 0.65)
+        }
         let right = (buttons.last?.1.x ?? a.maxX) - 10 * s
         let nameW = min(p.width(name, pixels: 13, semibold: true), max(right - a.x - 36 * s, 0))
         p.label(name, UIRect(x: a.x + 34 * s, y: h.y, width: nameW + 2, height: h.height), pixels: 13, semibold: true)

@@ -170,7 +170,12 @@ struct SidebarView {
             icon(tree.isExpanded(entry.path) ? 0xE70D : 0xE76C, chevron, pixels: 8 * scale, alpha: 0.7)
         }
         let iconRect = UIRect(x: chevron.maxX + 3 * scale, y: r.y, width: 16 * scale, height: r.height)
-        icon(entry.isDirectory ? 0xE8B7 : FileKind(name: entry.name).glyph, iconRect, pixels: 13 * scale, color: entry.isDirectory ? TerminalPalette.accent : nil, alpha: entry.isDirectory ? 0.85 : 0.65)
+        // The icon pack's icon (see IconPacks), else Solanum's own.
+        let side = (16 * scale).rounded()
+        if !FileIcons.draw(name: entry.name, directory: entry.isDirectory, expanded: entry.isDirectory && tree.isExpanded(entry.path),
+                           x: iconRect.x, y: (r.midY - side / 2).rounded(), size: side, on: canvas) {
+            icon(entry.isDirectory ? 0xE8B7 : FileKind(name: entry.name).glyph, iconRect, pixels: 13 * scale, color: entry.isDirectory ? TerminalPalette.accent : nil, alpha: entry.isDirectory ? 0.85 : 0.65)
+        }
         let textX = iconRect.maxX + 6 * scale
         // A name being typed: a field in the row, with its caret.
         if let editing = tree.editing, tree.editingRow == tree.rows.firstIndex(of: row) {

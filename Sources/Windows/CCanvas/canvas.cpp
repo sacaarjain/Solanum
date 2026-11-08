@@ -3,6 +3,9 @@
 #include <windows.h>
 #include <d2d1.h>
 #include <d2d1_1.h>
+#include <d2d1_3.h>
+#include <shlwapi.h>
+#include <urlmon.h>
 #include <dwmapi.h>
 #include <dpapi.h>
 #include <dwrite.h>
@@ -27,6 +30,8 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "urlmon.lib")
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "crypt32.lib")
 
@@ -118,6 +123,15 @@ struct SolCanvas {
     /// While a layer's being drawn into: the target to go back to.
     ComPtr<ID2D1RenderTarget> savedTarget;
 
+    /// File icons from an icon pack (see `sol_canvas_load_svg`): each SVG's bytes, and its document for each size it's
+    /// drawn at (lost with the device; a size that couldn't be made is remembered as null).
+    std::vector<std::vector<uint8_t>> svgData;
+    std::map<std::pair<int, int>, ComPtr<ID2D1SvgDocument>> svgDocuments;
+    /// Icon packs' fonts (Seti's), each a face of its own.
+    std::vector<ComPtr<IDWriteFontFace>> iconFaces;
+    std::vector<std::vector<uint8_t>> iconFontData;
+    ComPtr<IDWriteInMemoryFontFileLoader> iconFontLoader;
+
     /// Fonts that came with Solanum rather than the system (Space Mono), and text formats in them.
     ComPtr<IDWriteFontCollection> privateFonts;
     std::map<std::pair<std::wstring, int>, ComPtr<IDWriteTextFormat>> privateFormats;
@@ -129,6 +143,7 @@ struct SolCanvas {
         for (auto &image : deviceImages) image.Reset();
         for (auto &layer : layers) layer.Reset();
         wallpaperBrush.Reset();
+        svgDocuments.clear();
         HRESULT hr;
         // 96 DPI makes one Direct2D unit one pixel.
         if (hwnd) {
@@ -1310,6 +1325,134 @@ int32_t sol_canvas_decode_png(SolCanvas *canvas, const uint8_t *png, int32_t len
 }
 
 void sol_canvas_free(void *memory) { free(memory); }
+
+int32_t sol_canvas_load_svg(SolCanvas *canvas, const uint8_t *data, int32_t length) {
+    if (!data || length <= 0) return -1;
+    canvas->svgData.emplace_back(data, data + length);
+    return static_cast<int32_t>(canvas->svgData.size()) - 1;
+}
+
+int32_t sol_canvas_draw_svg(SolCanvas *canvas, int32_t svg, float x, float y, float size) {
+    if (svg < 0 || svg >= static_cast<int32_t>(canvas->svgData.size()) || size < 1) return 0;
+    // SVG takes Direct2D 1.3 (Windows 10 1703 and later).
+    ComPtr<ID2D1DeviceContext5> dc;
+    if (FAILED(canvas->target.As(&dc))) return 0;
+    const int px = static_cast<int>(size + 0.5f);
+    auto key = std::make_pair(static_cast<int>(svg), px);
+    auto found = canvas->svgDocuments.find(key);
+    if (found == canvas->svgDocuments.end()) {
+        ComPtr<ID2D1SvgDocument> doc;
+        const auto &bytes = canvas->svgData[static_cast<size_t>(svg)];
+        IStream *stream = SHCreateMemStream(bytes.data(), static_cast<UINT>(bytes.size()));
+        if (stream) {
+            if (FAILED(dc->CreateSvgDocument(stream, D2D1::SizeF(static_cast<float>(px), static_cast<float>(px)), &doc))) doc.Reset();
+            stream->Release();
+        }
+        // Icon files usually say their own size (width="16" height="16"), which Direct2D keeps over the square asked
+        // for: they'd draw at 16 real pixels whatever the display's scale. Their drawing is made to fill the square
+        // instead, through a viewBox of that size when they haven't one.
+        ComPtr<ID2D1SvgElement> root;
+        if (doc) doc->GetRoot(&root);
+        if (root) {
+            D2D1_SVG_LENGTH w = {}, h = {};
+            const bool hasW = SUCCEEDED(root->GetAttributeValue(L"width", D2D1_SVG_ATTRIBUTE_POD_TYPE_LENGTH, &w, sizeof(w)));
+            const bool hasH = SUCCEEDED(root->GetAttributeValue(L"height", D2D1_SVG_ATTRIBUTE_POD_TYPE_LENGTH, &h, sizeof(h)));
+            if (!root->IsAttributeSpecified(L"viewBox", nullptr)) {
+                D2D1_SVG_VIEWBOX box = {0, 0, hasW && w.units == D2D1_SVG_LENGTH_UNITS_NUMBER && w.value > 0 ? w.value : 16,
+                                        hasH && h.units == D2D1_SVG_LENGTH_UNITS_NUMBER && h.value > 0 ? h.value : 16};
+                root->SetAttributeValue(L"viewBox", D2D1_SVG_ATTRIBUTE_POD_TYPE_VIEWBOX, &box, sizeof(box));
+            }
+            D2D1_SVG_LENGTH full = {100, D2D1_SVG_LENGTH_UNITS_PERCENTAGE};
+            root->SetAttributeValue(L"width", D2D1_SVG_ATTRIBUTE_POD_TYPE_LENGTH, &full, sizeof(full));
+            root->SetAttributeValue(L"height", D2D1_SVG_ATTRIBUTE_POD_TYPE_LENGTH, &full, sizeof(full));
+        }
+        found = canvas->svgDocuments.emplace(key, doc).first;
+    }
+    if (!found->second) return 0;
+    D2D1_MATRIX_3X2_F old;
+    canvas->target->GetTransform(&old);
+    canvas->target->SetTransform(D2D1::Matrix3x2F::Translation(x, y) * old);
+    canvas->smooth([&] { dc->DrawSvgDocument(found->second.Get()); });
+    canvas->target->SetTransform(old);
+    return 1;
+}
+
+int32_t sol_canvas_load_icon_font(SolCanvas *canvas, const uint8_t *data, int32_t length) {
+    if (!data || length < 4) return -1;
+    ComPtr<IDWriteFactory5> factory;
+    if (FAILED(canvas->dwrite.As(&factory))) return -1;
+    if (!canvas->iconFontLoader) {
+        if (FAILED(factory->CreateInMemoryFontFileLoader(&canvas->iconFontLoader)) || FAILED(factory->RegisterFontFileLoader(canvas->iconFontLoader.Get()))) {
+            canvas->iconFontLoader.Reset();
+            return -1;
+        }
+    }
+    std::vector<uint8_t> bytes(data, data + length);
+    // WOFF and WOFF2, as VS Code's themes ship them, unwrapped by DirectWrite itself.
+    DWRITE_CONTAINER_TYPE container = factory->AnalyzeContainerType(data, static_cast<UINT32>(length));
+    if (container != DWRITE_CONTAINER_TYPE_UNKNOWN) {
+        ComPtr<IDWriteFontFileStream> stream;
+        if (FAILED(factory->UnpackFontFile(container, data, static_cast<UINT32>(length), &stream))) return -1;
+        UINT64 size = 0;
+        const void *fragment = nullptr;
+        void *context = nullptr;
+        if (FAILED(stream->GetFileSize(&size)) || size == 0 || FAILED(stream->ReadFileFragment(&fragment, 0, size, &context))) return -1;
+        bytes.assign(static_cast<const uint8_t *>(fragment), static_cast<const uint8_t *>(fragment) + size);
+        stream->ReleaseFileFragment(context);
+    }
+    canvas->iconFontData.push_back(std::move(bytes));
+    const auto &kept = canvas->iconFontData.back();
+    ComPtr<IDWriteFontFile> file;
+    if (FAILED(canvas->iconFontLoader->CreateInMemoryFontFileReference(factory.Get(), kept.data(), static_cast<UINT32>(kept.size()), nullptr, &file))) return -1;
+    BOOL supported = FALSE;
+    DWRITE_FONT_FILE_TYPE fileType;
+    DWRITE_FONT_FACE_TYPE faceType;
+    UINT32 faces = 0;
+    if (FAILED(file->Analyze(&supported, &fileType, &faceType, &faces)) || !supported) return -1;
+    ComPtr<IDWriteFontFace> face;
+    IDWriteFontFile *files[] = {file.Get()};
+    if (FAILED(canvas->dwrite->CreateFontFace(faceType, 1, files, 0, DWRITE_FONT_SIMULATIONS_NONE, &face))) return -1;
+    canvas->iconFaces.push_back(face);
+    return static_cast<int32_t>(canvas->iconFaces.size()) - 1;
+}
+
+int32_t sol_canvas_draw_icon_glyph(SolCanvas *canvas, int32_t font, uint32_t codepoint, float x, float y, float size, float scale,
+                                   uint32_t rgb, float alpha) {
+    if (font < 0 || font >= static_cast<int32_t>(canvas->iconFaces.size())) return 0;
+    IDWriteFontFace *face = canvas->iconFaces[static_cast<size_t>(font)].Get();
+    UINT16 glyph = 0;
+    if (FAILED(face->GetGlyphIndices(&codepoint, 1, &glyph)) || glyph == 0) return 0;
+    DWRITE_FONT_METRICS fm;
+    face->GetMetrics(&fm);
+    DWRITE_GLYPH_METRICS gm;
+    if (FAILED(face->GetDesignGlyphMetrics(&glyph, 1, &gm, FALSE)) || fm.designUnitsPerEm == 0) return 0;
+    // Its ink, in design units: across from its left side bearing, and up from the baseline.
+    const float left = static_cast<float>(gm.leftSideBearing);
+    const float width = static_cast<float>(static_cast<INT32>(gm.advanceWidth) - gm.leftSideBearing - gm.rightSideBearing);
+    const float top = static_cast<float>(gm.verticalOriginY - gm.topSideBearing);
+    const float height = static_cast<float>(static_cast<INT32>(gm.advanceHeight) - gm.topSideBearing - gm.bottomSideBearing);
+    if (width <= 0 || height <= 0) return 0;
+    // VS Code sizes font icons against its 13px UI font, in a 16px square; one bigger than the square is shrunk to fit.
+    float em = 13.0f * scale * size / 16.0f;
+    float unit = em / fm.designUnitsPerEm;
+    const float fit = (std::min)(1.0f, (std::min)(size / (width * unit), size / (height * unit)));
+    em *= fit;
+    unit *= fit;
+    const float originX = x + size / 2 - (left + width / 2) * unit;
+    const float baseline = y + size / 2 + (top - height / 2) * unit;
+    DWRITE_GLYPH_RUN run = {};
+    run.fontFace = face;
+    run.fontEmSize = em;
+    run.glyphCount = 1;
+    run.glyphIndices = &glyph;
+    canvas->brush->SetColor(color(rgb, alpha));
+    canvas->target->DrawGlyphRun(D2D1::Point2F(originX, baseline), &run, canvas->brush.Get());
+    return 1;
+}
+
+int32_t sol_download_file(const uint16_t *url, const uint16_t *path) {
+    return URLDownloadToFileW(nullptr, reinterpret_cast<const wchar_t *>(url), reinterpret_cast<const wchar_t *>(path), 0, nullptr);
+}
 
 void sol_canvas_draw_image(SolCanvas *canvas, int32_t image, float x, float y, float width, float height, float alpha) {
     if (image < 0 || image >= static_cast<int32_t>(canvas->images.size()) || !canvas->images[static_cast<size_t>(image)]) return;

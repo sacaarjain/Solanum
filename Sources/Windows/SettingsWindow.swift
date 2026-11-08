@@ -425,6 +425,21 @@ final class SettingsWindow {
                 .themes(vsCode: false),
                 .header("VS Code"),
                 .themes(vsCode: true),
+                .header("File Icons"),
+                .card([Row(glyph: 0xE8B7, title: "Icon pack",
+                           detail: IconPacks.downloading.map { "Downloading \($0)\u{2026}" } ?? IconPacks.flavorNote
+                               ?? "For the sidebars, file tabs and git pages. VS Code icon themes work.",
+                           control: .choice(options: ["Solanum"] + IconPacks.installed.map(\.label),
+                                            get: { IconPacks.label(for: IconPacks.shownID) ?? "Solanum" },
+                                            set: { label in
+                                                let id = IconPacks.installed.first { $0.label == label }?.id ?? IconPackCatalog.solanumID
+                                                // The one already showing changes nothing: Latte shouldn't replace the dark flavor picked.
+                                                guard id != IconPacks.shownID else { return }
+                                                s.set("file-icons", id)
+                                            }))]),
+                .links([(IconPacks.downloading == nil ? "Download\u{2026}" : "Downloading\u{2026}", { [weak self] in self?.showIconDownloads() }),
+                        ("Import Icon Pack\u{2026}", { [weak self] in self?.importIconPack() }),
+                        ("Open Icon Packs Folder", { IconPacks.openFolder() })]),
                 .header("Window"),
                 .card([Row(glyph: 0xE793, title: "Background opacity", detail: "How much of the desktop shows through.",
                            control: .slider(min: 0.5, max: 1, get: { s.opacity }, set: { s.set("background-opacity", String(format: "%.2f", $0)) },
@@ -574,6 +589,47 @@ final class SettingsWindow {
         let made = wide(url.path).withUnsafeBufferPointer { sol_canvas_load_image_file(target.raw, $0.baseAddress, 480) }
         thumbnails[key] = made
         return made >= 0 ? made : nil
+    }
+
+    // MARK: Icon packs
+
+    /// The link last clicked, for a menu that opens under it (Download…).
+    private var pressedLink: UIRect?
+
+    /// The packs to download, as on the Mac, in a menu under the link.
+    private func showIconDownloads() {
+        guard IconPacks.downloading == nil, let r = pressedLink, canvas != nil else { return }
+        let items = IconPackCatalog.packs.map { pack in
+            MenuItem(title: pack.label) { [weak self] in
+                IconPacks.download(pack.label, pack.source, post: { work in TerminalWindow.onAnyWindowThread(work) },
+                                   changed: { self?.invalidate() }) { problem in
+                    guard let problem else { return }
+                    self?.ask(DialogModel(title: "Couldn't install \(pack.label)", message: problem, primary: "OK", cancel: "Close") {})
+                }
+            }
+        }
+        menu = MenuModel(items: items, anchorX: r.x, anchorY: r.maxY + 4 * scale, above: false, width: MenuView.width(for: items, canvas: canvas, scale: scale),
+                         window: UIRect(x: 0, y: 0, width: Float(width), height: Float(height)), scale: scale)
+        invalidate()
+    }
+
+    /// A .vsix from VS Code's marketplace or Open VSX, picked with Windows' Open dialog, installed and put to use.
+    private func importIconPack() {
+        guard let path = ThemeFiles.pickFile(owner: hwnd, title: "Import Icon Pack", filter: "VS Code extensions (*.vsix)\u{0}*.vsix\u{0}All files\u{0}*.*\u{0}\u{0}") else { return }
+        Thread.detachNewThread { [weak self] in
+            var problem: String?
+            var first: IconPackEntry?
+            do { first = try IconPacks.install(from: path).first } catch let e as IconPacks.InstallError { problem = e.message } catch { problem = error.localizedDescription }
+            TerminalWindow.onAnyWindowThread {
+                IconPacks.reload()
+                if let first { AppSettings.shared.set("file-icons", first.id) }
+                self?.invalidate()
+                if let problem {
+                    let name = URL(fileURLWithPath: path).lastPathComponent
+                    self?.ask(DialogModel(title: "Couldn't import \u{201C}\(name)\u{201D}", message: problem, primary: "OK", cancel: "Close") {})
+                }
+            }
+        }
     }
 
     private static let deleteTitle = "Delete Theme…"
@@ -1301,6 +1357,7 @@ final class SettingsWindow {
                 return
             case .link(_, let r, let action) where r.contains(x, y):
                 commitEditing()
+                pressedLink = r
                 action()
                 invalidate()
                 return

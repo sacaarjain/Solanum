@@ -15,6 +15,13 @@ final class EditorItem {
     let glyph: UInt16
     let panel: ColumnPanel
 
+    /// The file it shows, for its icon from an icon pack; nil for pages that aren't a file (git's).
+    var fileName: String? {
+        if let f = panel as? FileEditorPanel { return f.name }
+        if let m = panel as? MarkdownPreviewPanel { return m.name }
+        return nil
+    }
+
     init(key: String, title: String, glyph: UInt16, panel: ColumnPanel) {
         self.key = key
         self.title = title
@@ -190,7 +197,11 @@ struct EditorStrip {
                 sol_canvas_fill_rounded(c, r.x + 8 * scale, r.maxY - 2 * scale, r.width - 16 * scale, 2 * scale, 1 * scale, TerminalPalette.accent, (focused ? 1 : 0.5) * faint)
             }
             let item = items[i]
-            sol_canvas_draw_icon(c, r.x + 6 * scale, r.y, 18 * scale, r.height, item.glyph, 10.5 * scale, isActive ? TerminalPalette.accent : fg, (isActive ? 0.95 : 0.55) * faint)
+            // A file's icon from the icon pack in use, else Solanum's own.
+            let side = (14 * scale).rounded()
+            if !(item.fileName.map { FileIcons.draw(name: $0, directory: false, x: r.x + 8 * scale, y: (r.midY - side / 2).rounded(), size: side, on: canvas, alpha: faint) } ?? false) {
+                sol_canvas_draw_icon(c, r.x + 6 * scale, r.y, 18 * scale, r.height, item.glyph, 10.5 * scale, isActive ? TerminalPalette.accent : fg, (isActive ? 0.95 : 0.55) * faint)
+            }
             let units = Array(item.title.utf16)
             sol_canvas_draw_label(c, r.x + 28 * scale, r.y, r.width - 52 * scale, r.height, units, Int32(units.count), Self.pixels * scale, 0, fg, (isActive ? 1 : 0.6) * faint)
             if (isActive || hoveredHere) && dragged == nil {

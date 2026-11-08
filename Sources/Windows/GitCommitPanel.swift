@@ -263,8 +263,11 @@ final class GitCommitPanel: ColumnPanel {
         let clean = isFolder ? String(e.path.dropLast()) : e.path
         let name = clean.split(separator: "/").last.map(String.init) ?? clean
         var x = rect.x + l + 36 * s
-        p.icon(isFolder ? 0xE8B7 : FileKind(name: name).glyph, UIRect(x: x, y: rect.y, width: 16 * s, height: rect.height), pixels: 12,
-               color: isFolder ? TerminalPalette.accent : nil, alpha: isFolder ? 0.85 : 0.6)
+        let side = (15 * s).rounded()
+        if !FileIcons.draw(name: name, directory: isFolder, x: x, y: (rect.midY - side / 2).rounded(), size: side, on: p.canvas) {
+            p.icon(isFolder ? 0xE8B7 : FileKind(name: name).glyph, UIRect(x: x, y: rect.y, width: 16 * s, height: rect.height), pixels: 12,
+                   color: isFolder ? TerminalPalette.accent : nil, alpha: isFolder ? 0.85 : 0.6)
+        }
         x += 22 * s
         // The line counts on the right first, then the name, then as much of the folder as fits.
         var r = rect.maxX - l - 8 * s

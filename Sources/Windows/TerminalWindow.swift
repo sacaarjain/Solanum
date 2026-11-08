@@ -8,6 +8,12 @@ import WinSDK
 final class TerminalWindow {
     private static let className = wide("SolanumTerminalWindow")
     private static var windows: [HWND: TerminalWindow] = [:]
+    /// Runs work on a Solanum window's thread (the one all windows share), from another thread: for Settings, which has
+    /// no queue of its own. With no window open it runs straight away.
+    static func onAnyWindowThread(_ work: @escaping () -> Void) {
+        if let w = windows.values.first { w.runOnWindowThread(work) } else { work() }
+    }
+
     /// The window that last had the keyboard, for what's opened from elsewhere (Settings).
     private static weak var lastFocused: TerminalWindow?
 
@@ -710,7 +716,9 @@ final class TerminalWindow {
         var chrome = WindowChrome(canvas: target, layout: layout, tabs: panes.map(\.tabTitle), activeTab: activeIndex)
         chrome.tabIcons = panes.map { p -> TabIcon in
             if let agent = p.agent { return .agent(agent) }
-            if !p.showsTerminal, p.editors.indices.contains(p.activeEditor) { return .file(p.editors[p.activeEditor].glyph) }
+            if !p.showsTerminal, p.editors.indices.contains(p.activeEditor) {
+                return .file(p.editors[p.activeEditor].glyph, name: p.editors[p.activeEditor].fileName)
+            }
             return .prompt
         }
         chrome.hovered = hovered

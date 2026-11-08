@@ -42,6 +42,8 @@ final class AppSettings {
     var shell: String { file["shell"] ?? "" }
     var shellIntegration: Bool { file.bool("shell-integration", true) }
     var themeIcon: Bool { file.bool("theme-icon", true) }
+    /// The file icon theme in use, by its id: "solanum" for Solanum's own (see IconPacks).
+    var fileIcons: String { file["file-icons"].flatMap { $0.isEmpty ? nil : $0 } ?? IconPackCatalog.solanumID }
     /// A command or an agent that runs at least this long in a tab you're not watching gets a card when it stops; 0 is off.
     var notifyAfterSeconds: Double { file.number("notify-after-seconds", 10, in: 0...86_400) }
     /// How solid the window's background is, as on the Mac: below 1 the desktop shows through, blurred if `blur`.
@@ -102,6 +104,9 @@ final class AppSettings {
 
     func set(_ key: String, _ value: Bool) { set(key, value ? "true" : "false") }
 
+    /// For off-screen drawing: a value for now, not written to the config file.
+    func setForTesting(_ key: String, _ value: String) { file[key] = value }
+
     // MARK: The file
 
     /// Reads the file again if it's changed since, as when it's edited by hand. Cheap enough for a timer.
@@ -153,7 +158,7 @@ final class AppSettings {
     static let defaults: [String: String] = [
         "theme": ThemeSpecs.defaultName, "font-family": "", "font-size": "11", "line-height": "1.2", "padding": "6",
         "cursor-style": "bar", "cursor-blink": "true", "audible-bell": "false", "bold-is-bright": "false", "copy-on-select": "false", "scroll-speed": "3",
-        "scrollback-lines": "10000", "shell": "", "shell-integration": "true", "theme-icon": "true", "new-tab-folder": "current", "background-opacity": "0.95", "background-blur": "true", "see-through": "wallpaper",
+        "scrollback-lines": "10000", "shell": "", "shell-integration": "true", "theme-icon": "true", "file-icons": "solanum", "new-tab-folder": "current", "background-opacity": "0.95", "background-blur": "true", "see-through": "wallpaper",
         "window-columns": "110", "window-rows": "32", "notify-after-seconds": "10", "keep-awake-seconds": "28800",
         "confirm-quit": "true", "restore-session": "true", "restore-scrollback": "true", "continue-agents": "true",
         "check-for-updates": "true", "minimum-contrast": "true", "remember-ssh-passwords": "true",
@@ -163,6 +168,7 @@ final class AppSettings {
         (nil, ["theme"]),
         ("Font: any monospaced font installed (empty for Cascadia Mono, else Consolas). Size in points.", ["font-family", "font-size", "line-height", "padding"]),
         ("The flower or planet beside the theme's name in the status bar.", ["theme-icon"]),
+        ("File icons: solanum, or the id of a VS Code icon theme in the icon-packs folder.", ["file-icons"]),
         ("How solid the window's background is (0.3 to 1; 1 is solid), and whether what shows through is blurred.", ["background-opacity", "background-blur"]),
         ("What shows through it: wallpaper (your desktop picture, always) | windows (whatever is behind the window).", ["see-through"]),
         ("bar | block | underline", ["cursor-style", "cursor-blink"]),

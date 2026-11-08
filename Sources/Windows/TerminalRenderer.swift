@@ -57,6 +57,8 @@ final class Canvas {
     private(set) var metrics: SolMetrics
     /// Empty space around the terminal, in pixels: 6 at 100% display scaling.
     var padding: Float = 6
+    /// An icon pack's SVGs, images and fonts made on this canvas, by their file (see FileIcons); -1 for one that can't be.
+    var iconCache: [String: Int32] = [:]
     /// The part of the canvas the terminal has, before padding: all of it unless a window's chrome takes some.
     var terminalArea: UIRect?
     var contentX: Float { (terminalArea?.x ?? 0) + padding }

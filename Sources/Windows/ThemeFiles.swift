@@ -230,7 +230,7 @@ enum ThemeFiles {
                  filter: "Pictures\u{0}*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp;*.heic;*.tif;*.tiff\u{0}All files\u{0}*.*\u{0}\u{0}")
     }
 
-    private static func pickFile(owner: HWND?, title titleText: String, filter filterText: String) -> String? {
+    static func pickFile(owner: HWND?, title titleText: String, filter filterText: String) -> String? {
         var buffer = [UInt16](repeating: 0, count: 4096)
         var filter = Array(filterText.utf16)
         var title = wide(titleText)

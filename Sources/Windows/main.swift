@@ -125,6 +125,39 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-code-boxes"), Command
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }
 
+// Every catalog pack downloaded into a folder (unless it's there already), and a row of icons from each theme:
+// --draw-icon-packs <png> <packs folder>
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-icon-packs"), CommandLine.arguments.indices.contains(flag + 2) {
+    IconPacks.folderOverride = CommandLine.arguments[flag + 2].replacingOccurrences(of: "\\", with: "/")
+    if IconPacks.installed.isEmpty {
+        for pack in IconPackCatalog.packs {
+            do { print("\(pack.label): \(try IconPacks.fetchAndInstall(pack.source).map(\.id))") } catch { print("\(pack.label): \(error)") }
+        }
+        IconPacks.reload()
+    }
+    let names: [(String, Bool, Bool)] = [("src", true, false), ("src", true, true), ("node_modules", true, false), ("package.json", false, false),
+        ("README.md", false, false), ("main.swift", false, false), ("index.ts", false, false), ("app.py", false, false), ("Dockerfile", false, false),
+        (".gitignore", false, false), ("style.css", false, false), ("logo.png", false, false), ("notes.txt", false, false), ("Cargo.toml", false, false)]
+    // Icons at 28 pixels, as a display scaled to 175% draws them, so a pack that only draws at its own size shows it.
+    let rowH: Float = 40, labelW: Float = 220
+    guard let canvas = Canvas(width: Int(labelW) + names.count * 40 + 20, height: Int(rowH) * (IconPacks.installed.count + 1) + 20, fontPixels: 13),
+          sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    for (k, entry) in ([IconPackEntry(id: "solanum", label: "Solanum", manifest: "", root: "")] + IconPacks.installed).enumerated() {
+        AppSettings.shared.setForTesting("file-icons", entry.id)
+        let y = 10 + Float(k) * rowH
+        let units = Array(entry.label.utf16)
+        sol_canvas_draw_label(canvas.raw, 10, y, labelW - 20, rowH, units, Int32(units.count), 13, 0, TerminalPalette.foreground, 0.8)
+        for (i, n) in names.enumerated() {
+            let x = labelW + Float(i) * 40
+            if !FileIcons.draw(name: n.0, directory: n.1, expanded: n.2, x: x, y: y + 6, size: 28, on: canvas) {
+                sol_canvas_draw_icon(canvas.raw, x, y, 16, rowH, n.1 ? 0xE8B7 : FileKind(name: n.0).glyph, 13, TerminalPalette.foreground, 0.65)
+            }
+        }
+    }
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
+}
+
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-agent-marks"), CommandLine.arguments.indices.contains(flag + 1) {
     let kinds: [AgentKind] = [.claude, .codex, .antigravity, .other("aider")]
     let statuses: [AgentStatus] = [.working, .waiting, .done, .failed]

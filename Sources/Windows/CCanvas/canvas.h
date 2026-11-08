@@ -130,6 +130,18 @@ int32_t sol_canvas_add_font(SolCanvas *canvas, const uint8_t *data, int32_t leng
 /// the first `shown` characters show, the rest laid out but unseen. Returns its height, and its widest line's width.
 float sol_canvas_text_in(SolCanvas *canvas, const uint16_t *family, float x, float y, float width, const uint16_t *text, int32_t length,
                          float pixels, float lineSpacing, uint32_t color, float alpha, int32_t shown, int32_t measureOnly, float *usedWidth);
+/// An SVG file's bytes kept for drawing (an icon pack's file icon); its number, or -1.
+int32_t sol_canvas_load_svg(SolCanvas *canvas, const uint8_t *data, int32_t length);
+/// Draws a kept SVG into a `size` square at (x, y). 0 when it can't (an SVG Direct2D can't read, or before Windows 10 1703).
+int32_t sol_canvas_draw_svg(SolCanvas *canvas, int32_t svg, float x, float y, float size);
+/// An icon pack's font (TrueType, OpenType, WOFF or WOFF2) from its bytes; its number, or -1.
+int32_t sol_canvas_load_icon_font(SolCanvas *canvas, const uint8_t *data, int32_t length);
+/// A character of an icon font, centered in a `size` square at (x, y), sized as VS Code does (`scale` of its 13px font
+/// in a 16px square) and shrunk to fit. 0 when the font hasn't it.
+int32_t sol_canvas_draw_icon_glyph(SolCanvas *canvas, int32_t font, uint32_t codepoint, float x, float y, float size, float scale,
+                                   uint32_t color, float alpha);
+/// Downloads a URL to a file, waiting for it: an HRESULT, 0 when it worked. Run it off the window's thread.
+int32_t sol_download_file(const uint16_t *url, const uint16_t *path);
 /// Fills SVG path data (a <path>'s `d`) drawn at `scale` from (x, y): moves, lines, curves and arcs.
 void sol_canvas_fill_svg_path(SolCanvas *canvas, const char *d, float x, float y, float scale, uint32_t color, float alpha);
 void sol_canvas_push_clip(SolCanvas *canvas, float x, float y, float width, float height);

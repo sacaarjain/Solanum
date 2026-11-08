@@ -6,8 +6,8 @@ import Foundation
 enum TabIcon {
     case prompt
     case agent(AgentInfo)
-    /// A file tab's icon (Segoe Fluent Icons), as its sub-tab shows.
-    case file(UInt16)
+    /// A file tab's icon (Segoe Fluent Icons), as its sub-tab shows, and its file's name for the icon pack's.
+    case file(UInt16, name: String?)
 }
 
 /// Coding agents' marks, drawn as the Mac draws them (AgentKind.drawMark there): Claude Code's coral ✳, Antigravity's

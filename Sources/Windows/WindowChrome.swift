@@ -275,9 +275,12 @@ struct WindowChrome {
             // The agent's mark, then its status's dot; the title after both, as on the Mac.
             Self.drawAgent(agent, on: canvas, atX: promptX, midY: r.midY, scale: scale)
             titleX = promptX + (AgentMarks.side + 3 + 6 + 7) * scale
-        case .file(let glyph):
-            // In the prompt's place, so the title starts where a terminal tab's does.
-            sol_canvas_draw_icon(canvas.raw, promptX, r.y, (15 * scale).rounded(), r.height, glyph, 11 * scale, fg, active ? 1 : 0.65)
+        case .file(let glyph, let name):
+            // In the prompt's place, so the title starts where a terminal tab's does: the icon pack's, else Solanum's own.
+            let side = (14 * scale).rounded()
+            if !(name.map { FileIcons.draw(name: $0, directory: false, x: promptX, y: (r.midY - side / 2).rounded(), size: side, on: canvas, alpha: active ? 1 : 0.65) } ?? false) {
+                sol_canvas_draw_icon(canvas.raw, promptX, r.y, (15 * scale).rounded(), r.height, glyph, 11 * scale, fg, active ? 1 : 0.65)
+            }
         case .prompt:
             drawPrompt(atX: promptX, midY: r.midY, active: active)
         }
