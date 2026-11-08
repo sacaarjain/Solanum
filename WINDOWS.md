@@ -42,7 +42,7 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
   - A key the app claims is the app's, whatever's running, Claude Code included. A program can't get that key, by choice:
     Ctrl+T new tab, Ctrl+Shift+T reopen a closed tab, Ctrl+W close tab (no confirmation yet), Ctrl+Shift+W also closes the
     tab until there are several windows. Later features may claim Ctrl+N, B, O, S, Q and G the same way (Ctrl+F finds in a file or the terminal, Ctrl+H
-    find and replace in a file that has the keyboard).
+    replaces in a file that has the keyboard).
   - Programs keep the keys the app doesn't claim, including Ctrl+A, D, E, H, J, K, L, R, U and Z.
   - Ctrl+C copies when something's selected and interrupts otherwise; Ctrl+V pastes, except in full-screen programs and for
     an image going to Claude Code; Ctrl+X cuts a selection in the line being typed; Ctrl+1 to 9 pick a tab.
