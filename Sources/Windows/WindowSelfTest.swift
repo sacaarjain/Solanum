@@ -96,6 +96,31 @@ enum WindowSelfTest {
         } else {
             results.check("themes: what Solanum writes reads back the same", false)
         }
+        // A table copied for Word and Excel: the clipboard's HTML header says where everything starts and ends, in bytes.
+        let wrapped = TerminalPane.clipboardHTML("<table><tr><td>é</td></tr></table>"), bytes = Array(wrapped.utf8)
+        func at(_ key: String) -> Int { Int(wrapped.components(separatedBy: key + ":")[1].prefix(10)) ?? -1 }
+        let fragment = String(decoding: bytes[at("StartFragment")..<at("EndFragment")], as: UTF8.self)
+        results.check("code boxes: HTML on the clipboard as Windows wants it", fragment == "<table><tr><td>é</td></tr></table>" && at("EndHTML") == bytes.count, fragment)
+
+        // An open file keeping up with the disk, as on the Mac: read here from a file kept in memory.
+        var disk = Data("one\ntwo\n".utf8), stamp = 1
+        let panel = FileEditorPanel(path: "C:\\notes.txt", name: "notes.txt", folder: "C:\\", isLocal: true, read: { _, done in done(disk, false) },
+                                    write: { data, done in disk = data; stamp += 1; done(nil) }, signature: { done in done(true, "\(stamp)") })
+        panel.reload()
+        disk = Data("one\ntwo\nthree\n".utf8); stamp += 1
+        panel.syncNowForTesting()
+        results.check("live files: a change on disk shows", panel.textLines == ["one", "two", "three", ""])
+        panel.typeForTesting("X")
+        disk = Data("ONE\n".utf8); stamp += 1
+        panel.syncNowForTesting()
+        results.check("live files: unsaved edits stay, and say it changed on disk", panel.changedOnDisk && panel.textLines?.first == "Xone")
+        panel.save()
+        results.check("live files: saving over a change asks first", panel.hasConflict && disk == Data("ONE\n".utf8))
+        panel.pressConflict("Overwrite")
+        results.check("live files: Overwrite saves the edits", !panel.hasConflict && String(decoding: disk, as: UTF8.self).hasPrefix("Xone") && !panel.changedOnDisk)
+        panel.press(button: .tail)
+        results.check("live files: Tail File", panel.tailing)
+
         let roundTrip = ["#A584E8", "#111312", "#FFFFFF", "#000000", "#E3573F", "#56F0B4"].allSatisfy { HSVColor(HexColor($0)!).hex == $0 }
         results.check("theme editor: a color through hue, saturation and brightness comes back the same", roundTrip)
         results.check("theme editor: hex typed in reads as Solanum writes it", ColorPicker.parse("a5e", allowsAlpha: false) == "#AA55EE"

@@ -4,16 +4,21 @@ import WinSDK
 
 /// The buttons along the top of a sidebar, in order. Each has its icon and what it says when hovered.
 enum SidebarButton: Int, CaseIterable {
-    case pin, parent, refresh, more
+    case pin, parent, newFile, newFolder, refresh, more
 
     var glyph: UInt16 {
         switch self {
         case .pin: return 0xE718
         case .parent: return 0xE74A
+        case .newFile: return 0xE8A5
+        case .newFolder: return 0xE8B7
         case .refresh: return 0xE72C
         case .more: return 0xE712
         }
     }
+
+    /// New File and New Folder carry a plus, as the Mac's doc.badge.plus and folder.badge.plus do.
+    var hasPlus: Bool { self == .newFile || self == .newFolder }
 }
 
 /// What a tab remembers about the left sidebar, as on the Mac: a pin in one tab says nothing about the others.
@@ -101,6 +106,12 @@ struct SidebarView {
             let on = button == .pin && sidebar.pinned != nil
             if sidebar.hoveredButton == button { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 4 * scale, fg, 0.10) }
             icon(button.glyph, r, pixels: 12 * scale, color: on ? TerminalPalette.accent : nil, alpha: on ? 1 : 0.7)
+            if button.hasPlus {
+                // The badge: a small plus at the bottom right, cut out of what's behind it.
+                let b = UIRect(x: r.x + r.width / 2 + 1 * scale, y: r.y + r.height / 2 + 0.5 * scale, width: 9 * scale, height: 9 * scale)
+                sol_canvas_fill_ellipse(canvas.raw, b.x + b.width / 2, b.y + b.height / 2, 4.8 * scale, 4.8 * scale, TerminalPalette.chrome, 1)
+                icon(0xE710, b, pixels: 7 * scale, alpha: 0.85)
+            }
         }
         let path = folder.map { AnyPath.isUnix($0) ? (crumbs.first == "~" ? "~/" + crumbs.dropFirst().joined(separator: "/") : $0) : crumbs.joined(separator: "\\") } ?? ""
         if let transfer = sidebar.transfer {

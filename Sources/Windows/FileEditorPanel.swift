@@ -3,9 +3,13 @@ import Foundation
 import WinSDK
 
 /// A file open above the terminal, as on the Mac's editor (FileEditor.swift there): its text, to edit and save, with the
-/// header's buttons from left to right: Open Preview (Markdown), the eye (follow the file as it changes, reading it every
-/// 5 seconds), wrap lines, Beautify (JSON, YAML, XML), Save (dimmed until there's something to save) and close. Images
-/// show fitted to the page. Ctrl+S saves, Alt+Z wraps, Shift+Alt+F beautifies.
+/// header's buttons from left to right: Open Preview (Markdown), Tail File (the double chevron: the end stays in view as
+/// the file grows), wrap lines, Beautify (JSON, YAML, XML), Save (dimmed until there's something to save) and close.
+/// Images show fitted to the page. Ctrl+S saves, Alt+Z wraps, Shift+Alt+F beautifies.
+///
+/// The file keeps up with the disk, as VS Code's do (see Core's FileSync): on this PC it's looked at every second, open
+/// or not; over ssh, every second while it's showing, with "Live" or "Not Updating" in the header. Unsaved edits are
+/// never replaced: the header says "Changed on Disk", and saving over a change asks: Compare, Overwrite, Revert or Cancel.
 final class FileEditorPanel: ColumnPanel {
     enum Content: Equatable {
         case loading
@@ -20,7 +24,7 @@ final class FileEditorPanel: ColumnPanel {
         static func < (a: Pos, b: Pos) -> Bool { a.line < b.line || (a.line == b.line && a.col < b.col) }
     }
 
-    enum Button: String, CaseIterable { case preview, live, wrap, beautify, save, close }
+    enum Button: String, CaseIterable { case preview, tail, wrap, beautify, save, close }
 
     let path: String
     let name: String
@@ -29,6 +33,11 @@ final class FileEditorPanel: ColumnPanel {
     /// Reads the file (up to `limit` bytes): its bytes and whether there was more. Writes it, `done` with what went wrong.
     private let read: (_ limit: Int, _ done: @escaping (Data?, Bool) -> Void) -> Void
     private let write: (_ data: Data, _ done: @escaping (String?) -> Void) -> Void
+    /// The file's signature on disk now (see FileSync): `answered` false when there was no telling (the ssh connection
+    /// down or hung), else the signature, nil when the file isn't there.
+    private let signature: (_ done: @escaping (_ answered: Bool, _ signature: String?) -> Void) -> Void
+    /// On this PC: the bytes from an offset to the end, and the file's size, for following a file that grows.
+    private let readFrom: ((_ offset: Int, _ done: @escaping (Data?, Int) -> Void) -> Void)?
     private(set) var content: Content = .loading
     let language: SyntaxLanguage?
     var isMarkdown: Bool { MarkdownDoc.isMarkdown(path: path) }
@@ -56,9 +65,28 @@ final class FileEditorPanel: ColumnPanel {
 
     // View.
     private(set) var wraps = false
-    private(set) var live = false
-    private var lastLiveRead = Date()
+    /// Tail File: the end stays in view as the file grows (tail -f), even after scrolling up. Without it a growing file
+    /// scrolls along only while its end is showing. Either way the file keeps up with the disk.
+    private(set) var tailing = false
     private var reading = false
+    /// The file as last read or saved: when what's on disk differs, something else changed it (an agent, git, a formatter).
+    private var diskSignature: String?
+    /// It changed on disk while there were unsaved edits: they stay, the header says so, and saving asks first.
+    private(set) var changedOnDisk = false
+    /// Gone from disk: the header says so, and saving puts it back.
+    private(set) var deletedOnDisk = false
+    private var syncing = false, saving = false
+    private var lastSync = Date.distantPast
+    /// Over ssh: whether the host is answering (a green "Live"), or not (a yellow "Not Updating"); nil on this PC, or
+    /// before the first answer.
+    private(set) var watchLive: Bool?
+    private var lastHeard: Date?
+    /// Saving hit a change on disk: the bar over the file asks what to do, and what was to happen after the save.
+    private var conflict: ((Bool) -> Void)?
+    /// Compare, from that bar: what's on disk on the left beside the unsaved text on the right.
+    private var compareRows: [TextDiff.Row]?
+    private var compareScroll = 0
+    private var hoveredBarButton: Int?
     private var scrollRow = 0, scrollColumn = 0
     private var visibleRows = 20, columns = 80
     /// Where each line's first wrapped row is, while wrapping, and the total.
@@ -94,13 +122,17 @@ final class FileEditorPanel: ColumnPanel {
 
     init(path: String, name: String, folder: String, isLocal: Bool,
          read: @escaping (_ limit: Int, _ done: @escaping (Data?, Bool) -> Void) -> Void,
-         write: @escaping (_ data: Data, _ done: @escaping (String?) -> Void) -> Void) {
+         write: @escaping (_ data: Data, _ done: @escaping (String?) -> Void) -> Void,
+         signature: @escaping (_ done: @escaping (_ answered: Bool, _ signature: String?) -> Void) -> Void = { $0(false, nil) },
+         readFrom: ((_ offset: Int, _ done: @escaping (Data?, Int) -> Void) -> Void)? = nil) {
         self.path = path
         self.name = name
         self.folder = folder
         self.isLocal = isLocal
         self.read = read
         self.write = write
+        self.signature = signature
+        self.readFrom = readFrom
         language = SyntaxLanguage(path: path)
     }
 
@@ -114,13 +146,47 @@ final class FileEditorPanel: ColumnPanel {
     func reload() {
         guard !reading, !hasUnsavedChanges else { return }
         reading = true
+        // Its signature first: should it change while it's read, the next look sees a difference.
+        signature { [weak self] answered, sig in
+            self?.post {
+                guard let self else { return }
+                if answered { self.diskSignature = sig }
+                self.readNow()
+            }
+        }
+    }
+
+    private func readNow() {
         let image = isImage
+        // A file on this PC that only grew (a log): just what was added, when the end of what's here is still there.
+        if !image, let readFrom, case .text = content, !readOnly, original.count > 0 {
+            let keep = min(256, original.count), from = original.count - keep
+            readFrom(from) { [weak self] data, size in
+                self?.post {
+                    guard let self else { return }
+                    guard let data, size >= self.original.count, data.count >= keep, data.prefix(keep) == self.original.suffix(keep),
+                          self.original.count + data.count - keep <= Self.textLimit else { return self.readWhole(image) }
+                    self.reading = false
+                    guard !self.hasUnsavedChanges else { return }
+                    let grown = self.original + data.dropFirst(keep)
+                    if grown != self.original { self.load(grown, cut: false) }
+                    self.changedOnDisk = false
+                    self.deletedOnDisk = false
+                    self.invalidate()
+                }
+            }
+            return
+        }
+        readWhole(image)
+    }
+
+    private func readWhole(_ image: Bool) {
         read(image ? Self.imageLimit : Self.textLimit) { [weak self] data, cut in
             self?.post {
                 guard let self else { return }
                 self.reading = false
-                self.lastLiveRead = Date()
                 guard !self.hasUnsavedChanges else { return }
+                if data != nil { self.changedOnDisk = false; self.deletedOnDisk = false }
                 guard let data else {
                     if case .loading = self.content { self.content = .failed("Couldn't read this file.") }
                     return self.invalidate()
@@ -173,7 +239,10 @@ final class FileEditorPanel: ColumnPanel {
         }
         original = data
         lineEnding = text.contains("\r\n") ? "\r\n" : "\n"
-        let followingEnd = live && caret.line >= lines.count - 1
+        // Tailing, or with the end showing: the end stays in view as it grows, as tail -f does.
+        let wasText = content == .text
+        rebuildRows()
+        let followingEnd = wasText && (tailing || scrollRow + visibleRows >= rowCount)
         lines = text.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" }).map(String.init)
         if lines.isEmpty { lines = [""] }
         readOnly = cut
@@ -184,8 +253,7 @@ final class FileEditorPanel: ColumnPanel {
         savedVersion = version
         undoStack = []
         redoStack = []
-        // Following a file that grows (a log), the end stays in view, as tail -f does.
-        if followingEnd { caret = Pos(line: lines.count - 1, col: 0); revealCaret() }
+        if followingEnd { scrollToEnd() }
         applyPendingLine()
     }
 
@@ -203,27 +271,173 @@ final class FileEditorPanel: ColumnPanel {
         return data
     }
 
-    func save(_ done: @escaping (Bool) -> Void = { _ in }) {
+    func save(_ done: @escaping (Bool) -> Void = { _ in }) { save(force: false, done) }
+
+    /// `force`: save even over changes made on disk since it was read (Overwrite, from the conflict bar).
+    private func save(force: Bool, _ done: @escaping (Bool) -> Void) {
         guard case .text = content, !readOnly else { return done(false) }
-        guard hasUnsavedChanges else { return done(true) }
+        guard hasUnsavedChanges || deletedOnDisk else { return done(true) }
+        // Changed on disk since it was read (not just deleted, which saving puts back): ask before writing over it.
+        if !force, let known = diskSignature, !saving {
+            saving = true
+            signature { [weak self] answered, now in
+                self?.post {
+                    guard let self else { return }
+                    self.saving = false
+                    if answered, let now, now != known { return self.showConflict(then: done) }
+                    self.writeNow(done)
+                }
+            }
+            return
+        }
+        writeNow(done)
+    }
+
+    private func writeNow(_ done: @escaping (Bool) -> Void) {
         guard let data = encoded() else {
             say("Can't write it in \(encoding == .windowsCP1252 ? "Windows-1252" : "its encoding"): it has characters that can't be", problem: true)
             return done(false)
         }
-        let saving = version
+        let savingVersion = version
+        saving = true
         write(data) { [weak self] problem in
             self?.post {
                 guard let self else { return }
                 if let problem {
+                    self.saving = false
                     self.say("Couldn't save: \(problem)", problem: true)
                     return done(false)
                 }
                 self.original = data
-                self.savedVersion = saving
+                self.savedVersion = savingVersion
+                self.changedOnDisk = false
+                self.deletedOnDisk = false
+                self.endConflict()
+                // Our own write: its signature is what's on disk now, so the change it makes is nothing new. Still saving
+                // until it's known, so the watch doesn't take the write for someone else's.
+                self.signature { [weak self] answered, sig in
+                    self?.post {
+                        if answered { self?.diskSignature = sig }
+                        self?.saving = false
+                    }
+                }
                 self.say("Saved", problem: false)
                 done(true)
             }
         }
+    }
+
+    // MARK: Changes on disk
+
+    /// About once a second, from the window's timer: the signature on disk, and what it means. On this PC whether it's
+    /// showing or not; over ssh only while it's showing (it catches up on coming back to it).
+    func syncTick(showing: Bool) {
+        if !isLocal, showing, let heard = lastHeard, Date().timeIntervalSince(heard) > 5, watchLive != false {
+            watchLive = false
+            invalidate()
+        }
+        guard content != .loading, !syncing, !saving, !reading, isLocal || showing, Date().timeIntervalSince(lastSync) >= 1 else { return }
+        lastSync = Date()
+        syncing = true
+        signature { [weak self] answered, sig in
+            self?.post {
+                guard let self else { return }
+                self.syncing = false
+                if !self.isLocal, answered {
+                    self.lastHeard = Date()
+                    if self.watchLive != true { self.watchLive = true; self.invalidate() }
+                }
+                if answered { self.signatureNow(sig) }
+            }
+        }
+    }
+
+    /// If it changed from what was read or saved, the text catches up quietly, keeping the caret and scroll. With
+    /// unsaved edits it only says so: they stay, and saving asks first.
+    private func signatureNow(_ sig: String?) {
+        guard !reading, !saving else { return }
+        switch FileSync.action(known: diskSignature, now: sig, hasUnsavedEdits: hasUnsavedChanges) {
+        case .nothing:
+            if deletedOnDisk { deletedOnDisk = false; invalidate() }
+        case .reload:
+            reload()
+        case .changedUnderEdits:
+            if !changedOnDisk { changedOnDisk = true; invalidate() }
+        case .deleted:
+            if !deletedOnDisk { deletedOnDisk = true; invalidate() }
+        }
+    }
+
+    func toggleTail() {
+        tailing.toggle()
+        if tailing { scrollToEnd(); lastSync = .distantPast }
+        invalidate()
+    }
+
+    private func scrollToEnd() {
+        guard case .text = content else { return }
+        rebuildRows()
+        // Only the view moves, as the Mac's scrollToEndOfDocument does: the caret stays where it is.
+        scrollRow = max(rowCount - visibleRows, 0)
+    }
+
+    /// Saving over a file changed on disk: a bar over the file asks what to do.
+    private func showConflict(then done: @escaping (Bool) -> Void) {
+        conflict = done
+        changedOnDisk = true
+        invalidate()
+    }
+
+    private static let barTitles = ["Compare", "Overwrite", "Revert", "Cancel"]
+
+    private func pressBar(_ i: Int) {
+        switch i {
+        case 0: toggleCompare()
+        case 1:
+            let done = conflict
+            endConflict()
+            save(force: true, done ?? { _ in })
+        case 2:
+            // Drop the edits and show what's on disk.
+            let done = conflict
+            endConflict()
+            savedVersion = version
+            changedOnDisk = false
+            content = .loading
+            original = Data()
+            reload()
+            done?(true)
+        default:
+            let done = conflict
+            endConflict()
+            done?(false)
+        }
+        invalidate()
+    }
+
+    /// What's on disk on the left, the unsaved text on the right; again to go back to editing.
+    private func toggleCompare() {
+        if compareRows != nil {
+            compareRows = nil
+            return invalidate()
+        }
+        let mine = lines
+        read(Self.textLimit) { [weak self] data, _ in
+            self?.post {
+                guard let self, self.conflict != nil else { return }
+                let disk = String(decoding: data ?? Data(), as: UTF8.self)
+                    .split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" }).map(String.init)
+                self.compareRows = TextDiff.rows(old: disk, new: mine)
+                self.compareScroll = 0
+                self.invalidate()
+            }
+        }
+    }
+
+    private func endConflict() {
+        conflict = nil
+        compareRows = nil
+        hoveredBarButton = nil
     }
 
     private func say(_ text: String, problem: Bool) {
@@ -259,16 +473,8 @@ final class FileEditorPanel: ColumnPanel {
         invalidate()
     }
 
-    func toggleLive() {
-        live.toggle()
-        if live { reload() }
-        invalidate()
-    }
-
-    func tick() {
-        guard live, !reading, Date().timeIntervalSince(lastLiveRead) >= 5 else { return }
-        reload()
-    }
+    /// While it's showing (the window's timer); `syncTick` does the work.
+    func tick() { syncTick(showing: true) }
 
     // MARK: Lines and positions
 
@@ -536,12 +742,10 @@ final class FileEditorPanel: ColumnPanel {
         var out: [Button] = []
         if case .text = content {
             if isMarkdown { out.append(.preview) }
-            out.append(.live)
+            out.append(.tail)
             out.append(.wrap)
             if language != nil { out.append(.beautify) }
             out.append(.save)
-        } else if case .image = content {
-            out.append(.live)
         }
         out.append(.close)
         return out
@@ -561,7 +765,7 @@ final class FileEditorPanel: ColumnPanel {
     private func glyph(_ b: Button) -> UInt16 {
         switch b {
         case .preview: return 0xE8A1  // a page with a preview
-        case .live: return 0xE890     // an eye
+        case .tail: return 0xE70D     // a chevron down, drawn twice (see drawHeader)
         case .wrap: return 0xE751     // a line that wraps round
         case .beautify: return 0xE8FD // indented lines
         case .save: return 0xE74E
@@ -572,7 +776,7 @@ final class FileEditorPanel: ColumnPanel {
     private func tip(_ b: Button) -> String {
         switch b {
         case .preview: return "Open Preview"
-        case .live: return live ? "Stop Following Changes" : "Follow Changes (reads it every 5 seconds)"
+        case .tail: return tailing ? "Stop Tailing" : "Tail File (keep the end in view as it grows)"
         case .wrap: return wraps ? "Don't Wrap Lines   Alt+Z" : "Wrap Lines   Alt+Z"
         case .beautify: return "Beautify / Format Document   Shift+Alt+F"
         case .save: return "Save   Ctrl+S"
@@ -637,9 +841,13 @@ final class FileEditorPanel: ColumnPanel {
 
     // MARK: Drawing
 
+    /// The canvas last drawn on, for measuring the conflict bar's buttons when a click comes.
+    private weak var barCanvas: Canvas?
+
     func draw(on canvas: Canvas, in a: UIRect, scale s: Float) {
         lastArea = a
         lastScale = s
+        barCanvas = canvas
         let p = PanelPaint(canvas: canvas, scale: s), fg = p.fg
         p.backdrop(a, TerminalPalette.background)
         sol_canvas_push_clip(canvas.raw, a.x, a.y, a.width, a.height)
@@ -651,9 +859,81 @@ final class FileEditorPanel: ColumnPanel {
         case .binary(let size):
             p.label("A binary file (\(Self.size(size))): there's no text to show.", UIRect(x: b.x + 16 * s, y: b.y + 12 * s, width: b.width - 32 * s, height: 22 * s), alpha: 0.55)
         case .image(let data): drawImage(data, on: canvas, in: b, p, s)
-        case .text: drawText(on: canvas, in: a, p, s)
+        case .text:
+            if let rows = compareRows { drawCompare(rows, on: canvas, in: a, p, s) } else { drawText(on: canvas, in: a, p, s) }
         }
+        drawConflictBar(a, p, s)
         drawHeader(a, p, s, fg)
+    }
+
+    // MARK: The conflict bar and Compare
+
+    /// The bar's place, its title's width, and its buttons (Compare, Overwrite, Revert, Cancel), at the page's bottom right
+    /// as the Mac puts it.
+    private func conflictBarLayout(_ a: UIRect, _ p: PanelPaint, _ s: Float) -> (box: UIRect, title: String, buttons: [(String, UIRect)])? {
+        guard conflict != nil else { return nil }
+        let title = "\u{201C}\(name)\u{201D} changed on disk"
+        let titles = [compareRows == nil ? "Compare" : "Back to Editing"] + Self.barTitles.dropFirst()
+        let widths = titles.map { p.width($0, pixels: 12.5, semibold: true) + 12 * s }
+        let titleW = min(p.width(title, pixels: 12, semibold: true), 360 * s)
+        let w = min(32 * s + titleW + 12 * s + widths.reduce(0, +) + 4 * s * Float(widths.count) + 8 * s, a.width - 16 * s), h = 32 * s
+        let box = UIRect(x: max(a.x + 8 * s, a.maxX - w - 12 * s), y: a.maxY - h - 10 * s, width: w, height: h)
+        var x = box.maxX - 8 * s
+        var buttons: [(String, UIRect)] = []
+        for (t, bw) in zip(titles, widths).reversed() {
+            x -= bw
+            buttons.insert((t, UIRect(x: x, y: box.y + 5 * s, width: bw, height: h - 10 * s)), at: 0)
+            x -= 4 * s
+        }
+        return (box, title, buttons)
+    }
+
+    private func drawConflictBar(_ a: UIRect, _ p: PanelPaint, _ s: Float) {
+        guard let l = conflictBarLayout(a, p, s) else { return }
+        let b = l.box, fg = p.fg
+        p.fill(UIRect(x: b.x, y: b.y + 2 * s, width: b.width, height: b.height), 0x000000, 0.25, radius: 8)
+        p.fill(b, TerminalPalette.surface, 1, radius: 8)
+        sol_canvas_stroke_rounded(p.canvas.raw, b.x + 0.5, b.y + 0.5, b.width - 1, b.height - 1, 8 * s, fg, TerminalPalette.isDark ? 0.10 : 0.14, 1)
+        p.icon(0xE7BA, UIRect(x: b.x + 8 * s, y: b.y, width: 20 * s, height: b.height), pixels: 12, color: TerminalPalette.ansi[3], alpha: 1)
+        let titleRight = (l.buttons.first?.1.x ?? b.maxX) - 8 * s
+        p.label(l.title, UIRect(x: b.x + 32 * s, y: b.y, width: max(titleRight - b.x - 32 * s, 0), height: b.height), pixels: 12, semibold: true)
+        for (i, (title, r)) in l.buttons.enumerated() {
+            if hoveredBarButton == i { p.fill(r, fg, 0.08, radius: 5) }
+            p.label(title, UIRect(x: r.x + 6 * s, y: r.y, width: r.width - 8 * s, height: r.height), pixels: 12.5, semibold: true, color: TerminalPalette.accent)
+        }
+    }
+
+    /// What's on disk (left) beside the unsaved edits (right), line against line: removed lines in red, added in green.
+    private func drawCompare(_ rows: [TextDiff.Row], on canvas: Canvas, in a: UIRect, _ p: PanelPaint, _ s: Float) {
+        let b = body(a, s), lh = cellSize.height, half = (b.width / 2).rounded()
+        let titleH = 24 * s
+        visibleRows = max(Int((b.height - titleH - 6 * s) / lh), 1)
+        compareScroll = min(compareScroll, max(rows.count - visibleRows, 0))
+        let digits = max(String(rows.count).count, 3), gutter = Float(digits) * cellSize.width + 18 * s
+        let red = TerminalPalette.ansi[1], green = TerminalPalette.ansi[2]
+        for (side, x0) in [(0, b.x), (1, b.x + half)] {
+            p.fill(UIRect(x: x0, y: b.y, width: half, height: titleH), TerminalPalette.chrome, 0.5)
+            p.label(side == 0 ? "On Disk" : "Your Edits", UIRect(x: x0 + 12 * s, y: b.y, width: half - 24 * s, height: titleH), pixels: 11.5, semibold: true, alpha: 0.7)
+        }
+        p.fill(UIRect(x: b.x + half, y: b.y, width: 1, height: b.height), p.fg, 0.12)
+        let top = b.y + titleH + 4 * s
+        let cellsPerSide = max(Int((half - gutter - 12 * s) / max(cellSize.width, 1)), 4)
+        sol_canvas_push_clip(canvas.raw, b.x, top, b.width, b.maxY - top)
+        for k in 0..<min(visibleRows + 1, rows.count - compareScroll) {
+            let row = rows[compareScroll + k], y = top + Float(k) * lh
+            for (side, x0) in [(0, b.x), (1, b.x + half)] {
+                let cell = side == 0 ? row.left : row.right
+                let tint: UInt32? = row.kind == .same ? nil : (side == 0 ? (cell == nil ? nil : red) : (cell == nil ? nil : green))
+                if let tint { p.fill(UIRect(x: x0, y: y, width: half, height: lh), tint, 0.16) }
+                else if row.kind != .same { p.fill(UIRect(x: x0, y: y, width: half, height: lh), p.fg, 0.03) }
+                guard let cell else { continue }
+                let number = String(cell.number), w = Float(number.count) * cellSize.width
+                p.mono(number, x: x0 + gutter - 10 * s - w, y: y, maxCells: number.count, color: TerminalPalette.mix(p.fg, TerminalPalette.background, 0.4))
+                let text = cell.text.replacingOccurrences(of: "\t", with: "    ")
+                p.mono(text, x: x0 + gutter, y: y, maxCells: cellsPerSide, color: p.fg)
+            }
+        }
+        sol_canvas_pop_clip(canvas.raw)
     }
 
     private func drawHeader(_ a: UIRect, _ p: PanelPaint, _ s: Float, _ fg: UInt32) {
@@ -670,7 +950,25 @@ final class FileEditorPanel: ColumnPanel {
             sol_canvas_fill_ellipse(p.canvas.raw, x + 3 * s, h.midY, 3.5 * s, 3.5 * s, fg, 0.75)
             x += 14 * s
         }
-        if let note, Date().timeIntervalSince(note.at) < 2.5 {
+        let showingNote = note.map { Date().timeIntervalSince($0.at) < 2.5 } ?? false
+        // Gone, changed under unsaved edits, or (over ssh) whether the host is answering: in its color, as on the Mac.
+        if !showingNote {
+            func tag(_ text: String, _ color: UInt32, dot: Bool) {
+                let w = p.width(text, pixels: 11, semibold: true)
+                guard right - x > w + (dot ? 44 : 30) * s else { return }
+                var tx = x
+                if dot {
+                    sol_canvas_fill_ellipse(p.canvas.raw, x + 3 * s, h.midY, 3 * s, 3 * s, color, 1)
+                    tx += 10 * s
+                }
+                p.label(text, UIRect(x: tx, y: h.y, width: w + 2, height: h.height), pixels: 11, semibold: true, color: color)
+                x = tx + w + 8 * s
+            }
+            if deletedOnDisk { tag(readOnly ? "Deleted" : "Deleted \u{00B7} Ctrl+S saves it again", TerminalPalette.ansi[1], dot: false) }
+            else if changedOnDisk { tag("Changed on Disk", TerminalPalette.ansi[3], dot: false) }
+            else if let live = watchLive { tag(live ? "Live" : "Not Updating", live ? TerminalPalette.ansi[2] : TerminalPalette.ansi[3], dot: true) }
+        }
+        if let note, showingNote {
             p.label(note.text, UIRect(x: x, y: h.y, width: max(right - x, 0), height: h.height), pixels: 11.5, color: note.problem ? 0xE06B6B : TerminalPalette.accent)
         } else {
             var detail = folder
@@ -678,10 +976,17 @@ final class FileEditorPanel: ColumnPanel {
             if right - x > 40 * s { p.label(detail, UIRect(x: x, y: h.y, width: right - x, height: h.height), pixels: 11.5, alpha: 0.45) }
         }
         for (button, r) in buttons {
-            let on = (button == .live && live) || (button == .wrap && wraps)
-            let enabled = button != .save || (hasUnsavedChanges && !readOnly)
+            let on = (button == .tail && tailing) || (button == .wrap && wraps)
+            let enabled = button != .save || ((hasUnsavedChanges || deletedOnDisk) && !readOnly)
             if hovered == button && enabled || on { p.fill(r, on ? TerminalPalette.accent : fg, on ? 0.22 : 0.10, radius: 5) }
-            p.icon(glyph(button), r, pixels: button == .close ? 10 : 12, color: on ? TerminalPalette.accent : nil, alpha: enabled ? (hovered == button || on ? 0.95 : 0.7) : 0.25)
+            let color: UInt32? = on ? TerminalPalette.accent : nil, alpha: Float = enabled ? (hovered == button || on ? 0.95 : 0.7) : 0.25
+            if button == .tail {
+                // Two chevrons, one over the other, as the Mac's chevron.down.2.
+                p.icon(glyph(button), UIRect(x: r.x, y: r.y - 3 * s, width: r.width, height: r.height), pixels: 10, color: color, alpha: alpha)
+                p.icon(glyph(button), UIRect(x: r.x, y: r.y + 3 * s, width: r.width, height: r.height), pixels: 10, color: color, alpha: alpha)
+            } else {
+                p.icon(glyph(button), r, pixels: button == .close ? 10 : 12, color: color, alpha: alpha)
+            }
         }
         // The hovered button's name below it, as the Mac's tooltips show.
         if let hovered, let r = buttons.first(where: { $0.0 == hovered })?.1 {
@@ -803,6 +1108,15 @@ final class FileEditorPanel: ColumnPanel {
     }
 
     func mouse(_ message: UINT, x: Float, y: Float, in a: UIRect, scale s: Float) -> Bool {
+        if let canvas = barCanvas, let l = conflictBarLayout(a, PanelPaint(canvas: canvas, scale: s), s) {
+            let i = l.buttons.firstIndex { $0.1.contains(x, y) }
+            if i != hoveredBarButton { hoveredBarButton = i; invalidate() }
+            if l.box.contains(x, y) {
+                if message == Win.WM_LBUTTONUP, let i { pressBar(i) }
+                return true
+            }
+            if compareRows != nil { return true }
+        }
         let before = hovered
         let onButton = buttonRects(a, s).first { $0.1.contains(x, y) }?.0
         hovered = onButton
@@ -845,7 +1159,7 @@ final class FileEditorPanel: ColumnPanel {
     private func press(_ b: Button) {
         switch b {
         case .preview: openPreview()
-        case .live: toggleLive()
+        case .tail: toggleTail()
         case .wrap: toggleWrap()
         case .beautify: beautify()
         case .save: save()
@@ -860,6 +1174,10 @@ final class FileEditorPanel: ColumnPanel {
     }
 
     func scroll(lines: Int, x: Float, y: Float, in a: UIRect, scale s: Float) {
+        if compareRows != nil {
+            compareScroll = max(compareScroll - lines, 0)
+            return invalidate()
+        }
         rebuildRows()
         // Shift turns the wheel sideways, as in most editors.
         if GetKeyState(Win.VK_SHIFT) < 0 && !wraps { scrollColumn = max(scrollColumn - lines * 2, 0) }
@@ -903,7 +1221,8 @@ final class FileEditorPanel: ColumnPanel {
         case Win.VK_TAB:
             if shift || (selection.map { $0.0.line != $0.1.line } ?? false) { indent(shift) } else { insert(indentUnit, kind: .other) }
         case Win.VK_ESCAPE:
-            if anchor != nil || markedLine != nil { anchor = nil; markedLine = nil; invalidate() }
+            if compareRows != nil { compareRows = nil; invalidate() }
+            else if anchor != nil || markedLine != nil { anchor = nil; markedLine = nil; invalidate() }
         case 0x41 where ctrl:
             anchor = Pos(line: 0, col: 0)
             caret = Pos(line: lines.count - 1, col: lines[lines.count - 1].count)
@@ -943,4 +1262,13 @@ final class FileEditorPanel: ColumnPanel {
     }
     var imageSize: (Int, Int)? { images.values.first.map { (Int($0.width), Int($0.height)) } }
     func press(button: Button) { press(button) }
+    var hasConflict: Bool { conflict != nil }
+    /// A look at the disk now, without waiting the second between looks.
+    func syncNowForTesting() {
+        lastSync = .distantPast
+        syncTick(showing: true)
+    }
+    func pressConflict(_ title: String) { if let i = Self.barTitles.firstIndex(of: title) { pressBar(i) } }
+    /// Types at the caret, as the keyboard would.
+    func typeForTesting(_ text: String) { insert(text) }
 }

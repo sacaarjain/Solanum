@@ -49,6 +49,82 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-image-chips"), Comman
     exit(canvas.savePNG(to: args[flag + 1]) ? 0 : 1)
 }
 
+// Corner cards over a window's top right, as each kind shows: --draw-notices <png>
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-notices"), CommandLine.arguments.indices.contains(flag + 1) {
+    guard let canvas = Canvas(width: 760, height: 560, fontPixels: 13), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    sol_canvas_fill_rect(canvas.raw, 0, 0, 760, 38, TerminalPalette.chrome, 1)
+    let stack = CornerNoticeStack()
+    let lost = CornerNotice(NoticeRules.lostConnection(host: "pi@raspberrypi", place: "Servers \u{203A} pi", folder: "/home/pi/projects/weather-station"),
+                            button: ("Reconnect", {}), keepsOpen: true, lifetime: 600)
+    stack.show(CornerNotice(NoticeRules.commandFinished(command: "cargo build --release --target x86_64-pc-windows-msvc", duration: 312, exitCode: 0,
+                                                        threshold: 10, place: "api")!))
+    stack.show(CornerNotice(NoticeRules.commandFinished(command: "npm test", duration: 48.2, exitCode: 1, threshold: 10, place: "Web \u{203A} frontend")!))
+    stack.show(CornerNotice(NoticeRules.agentStopped(agent: "Claude", waiting: false, worked: 734, prompt: "make the sidebar remember its width", place: "Solanum")))
+    stack.show(CornerNotice(NoticeRules.agentStopped(agent: "Codex", waiting: true, worked: 95, prompt: "migrate the tests", place: "api")))
+    stack.show(lost)
+    lost.hideButton()
+    lost.setTitle("Log in to pi@raspberrypi")
+    lost.askSecret("pi@raspberrypi's password:") { _ in }
+    _ = stack.tick()
+    stack.draw(on: canvas, windowWidth: 760, top: 38, scale: 1)
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
+}
+
+// A file changed on disk under unsaved edits, saved: its header, the conflict bar, and Compare when asked:
+// --draw-file-conflict <png> [compare]
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-file-conflict"), CommandLine.arguments.indices.contains(flag + 1) {
+    var disk = Data("{\n  \"name\": \"solanum\",\n  \"version\": \"1.4.0\",\n  \"private\": true\n}\n".utf8), stamp = 1
+    let panel = FileEditorPanel(path: "C:\\work\\package.json", name: "package.json", folder: "C:\\work", isLocal: true, read: { _, done in done(disk, false) },
+                                write: { data, done in disk = data; stamp += 1; done(nil) }, signature: { done in done(true, "\(stamp)") })
+    panel.reload()
+    panel.typeForTesting("// mine\n")
+    disk = Data("{\n  \"name\": \"solanum\",\n  \"version\": \"1.5.0\",\n  \"private\": true,\n  \"type\": \"module\"\n}\n".utf8); stamp += 1
+    panel.syncNowForTesting()
+    panel.save()
+    if CommandLine.arguments.indices.contains(flag + 2) { panel.pressConflict("Compare") }
+    panel.press(button: .tail)
+    guard let canvas = Canvas(width: 900, height: 420, fontPixels: 14), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    panel.cellSize = (canvas.metrics.cellWidth, canvas.metrics.cellHeight)
+    panel.draw(on: canvas, in: UIRect(x: 0, y: 0, width: 900, height: 420), scale: 1)
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
+}
+
+// Claude's reply with a code block, a table and a quote, boxed with their Copy buttons: --draw-code-boxes <png>
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-code-boxes"), CommandLine.arguments.indices.contains(flag + 1) {
+    guard let canvas = Canvas(width: 900, height: 470, fontPixels: 15) else { exit(1) }
+    canvas.terminalArea = UIRect(x: 0, y: 0, width: 900, height: 470)
+    canvas.padding = 10
+    let m = canvas.metrics
+    let terminal = Terminal(cols: Int((900 - 20) / m.cellWidth), rows: Int((470 - 20) / m.cellHeight), scrollbackLimit: 100)
+    let h = "\u{2500}"
+    let screen = "\u{23FA} Here's how to see every branch at once:\r\n\r\n"
+        + "  \u{1b}[36mgit\u{1b}[0m log --oneline --graph --decorate --all --simplify-by-decoration\r\n"
+        + "    --date=relative\r\n\r\n"
+        + "  The flags, briefly:\r\n\r\n"
+        + "  \u{250C}" + String(repeating: h, count: 22) + "\u{252C}" + String(repeating: h, count: 34) + "\u{2510}\r\n"
+        + "  \u{2502} Flag                 \u{2502} What it does                     \u{2502}\r\n"
+        + "  \u{251C}" + String(repeating: h, count: 22) + "\u{253C}" + String(repeating: h, count: 34) + "\u{2524}\r\n"
+        + "  \u{2502} --graph              \u{2502} Draws the branches beside commits \u{2502}\r\n"
+        + "  \u{2502} --decorate           \u{2502} Names branches and tags          \u{2502}\r\n"
+        + "  \u{2514}" + String(repeating: h, count: 22) + "\u{2534}" + String(repeating: h, count: 34) + "\u{2518}\r\n\r\n"
+        + "  \u{1b}[2m\u{258E}\u{1b}[0m \u{1b}[3mTip: alias it, so it's one word away next time.\u{1b}[0m\r\n"
+        + "  \u{1b}[2m\u{258E}\u{1b}[0m \u{1b}[3mgit config --global alias.tree '...'\u{1b}[0m\r\n"
+    Array(screen.utf8).withUnsafeBufferPointer { terminal.feed($0) }
+    let boxes = terminal.snapshot().findBoxes(code: ["git log --oneline --graph --decorate --all --simplify-by-decoration --date=relative"])
+    print("boxes: \(boxes.map { "\($0.kind)" })")
+    guard sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    let view = CodeBoxView(canvas: canvas, terminal: terminal, boxes: boxes, top: terminal.screenTopAbs, scale: 1)
+    view.drawPanels()
+    var renderer = TerminalRenderer(canvas: canvas, terminal: terminal)
+    renderer.cursorShown = false
+    renderer.drawContents()
+    view.drawButtons(hover: 0, copied: 2)
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
+}
+
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-agent-marks"), CommandLine.arguments.indices.contains(flag + 1) {
     let kinds: [AgentKind] = [.claude, .codex, .antigravity, .other("aider")]
     let statuses: [AgentStatus] = [.working, .waiting, .done, .failed]

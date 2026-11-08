@@ -1,11 +1,7 @@
 import AppKit
 import UserNotifications
 
-struct GridPos: Comparable, Hashable {
-    var line: Int
-    var col: Int
-    static func < (a: GridPos, b: GridPos) -> Bool { a.line != b.line ? a.line < b.line : a.col < b.col }
-}
+// GridPos is in Core/CodeBoxFinder.swift, shared with Windows.
 
 struct Selection {
     enum Mode { case char, word, line }

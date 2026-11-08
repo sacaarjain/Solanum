@@ -12,6 +12,36 @@ final class TerminalWindow {
     private static weak var lastFocused: TerminalWindow?
 
     /// A file in a tab of its own in the Solanum window used last, brought to the front: a theme's file, from Settings.
+    /// A card about `pane`, as on the Mac: in the window in front (else the pane's own), going to the pane's tab when
+    /// clicked; the taskbar button flashes when Solanum isn't in front.
+    @discardableResult
+    static func postNotice(_ card: NoticeRules.Card, about pane: TerminalPane, button: (title: String, action: () -> Void)? = nil,
+                           keepsOpen: Bool = false, lifetime: TimeInterval = 30) -> CornerNotice? {
+        guard let own = pane.host else { return nil }
+        let foreground = windows.values.first { $0.hwnd == GetForegroundWindow() }
+        let shown = foreground ?? own
+        let notice = CornerNotice(card, button: button, keepsOpen: keepsOpen, lifetime: lifetime)
+        notice.onClick = { [weak pane] in pane?.host?.goTo(pane) }
+        shown.notices.show(notice)
+        shown.invalidate()
+        if foreground == nil { FlashWindow(own.hwnd, true) }
+        return notice
+    }
+
+    /// The pane is on screen in front of the user: this window in front, its tab showing.
+    func isWatching(_ pane: TerminalPane) -> Bool {
+        hwnd == GetForegroundWindow() && visiblePanes.contains { $0 === pane }
+    }
+
+    /// Brings a pane's tab to the front, and its window.
+    func goTo(_ pane: TerminalPane?) {
+        guard let pane, let i = panes.firstIndex(where: { $0 === pane }) else { return }
+        selectTab(i)
+        if IsIconic(hwnd) { ShowWindow(hwnd, 9) }
+        SetForegroundWindow(hwnd)
+        invalidate()
+    }
+
     static func openFileTabInFront(_ path: String) {
         guard let w = lastFocused ?? windows.values.first, !w.panes.isEmpty else { return }
         w.openFileTab(path, column: w.activePane.column)
@@ -21,6 +51,8 @@ final class TerminalWindow {
 
     private(set) var hwnd: HWND!
     private(set) var canvas: Canvas!
+    /// Cards in the top-right corner: long commands finishing, agents stopping, ssh dropping (see CornerNotices).
+    let notices = CornerNoticeStack()
     private(set) var panes: [TerminalPane] = []
     private(set) var activeIndex = 0
     private(set) var isFocused = false
@@ -786,6 +818,7 @@ final class TerminalWindow {
         drawDivider(on: canvas)
         drawSplitDrop(on: canvas)
         drawSidebars(on: canvas, layout: layout)
+        notices.draw(on: canvas, windowWidth: Float(clientWidth), top: layout.tabBarHeight, scale: scale)
         drawPalette(on: canvas)
         drawReading(on: canvas)
         drawDragGhost(on: canvas)
@@ -950,7 +983,16 @@ final class TerminalWindow {
             } else {
                 // An agent starting, stopping or changing what it's doing shows on its tab.
                 if panes.map({ $0.tick() }).contains(true) { invalidate() }
+                if notices.tick() { invalidate() }
                 for pane in visiblePanes { pane.panel?.tick() }
+                // Files open in tabs or sub-tabs not showing keep up with the disk too (on this PC; ssh ones catch up when shown).
+                for pane in panes {
+                    for (i, item) in pane.editors.enumerated() {
+                        guard let file = item.panel as? FileEditorPanel else { continue }
+                        let showing = visiblePanes.contains { $0 === pane } && i == pane.activeEditor
+                        if !showing { file.syncTick(showing: false) }
+                    }
+                }
                 lookForChanges()
                 updateBlink()
                 onTick?()
@@ -959,6 +1001,8 @@ final class TerminalWindow {
         case Win.WM_CHAR:
             if menu != nil || dialog != nil {
                 // A menu or a question takes no text.
+            } else if notices.hasFocusedField {
+                if notices.typed(UInt16(truncatingIfNeeded: wParam)) { invalidate() }
             } else if !panes.isEmpty, activePane.hasQuestion {
                 activePane.questionTyped(UInt16(truncatingIfNeeded: wParam))
             } else if let sidebar = editingSidebar {
@@ -1107,6 +1151,11 @@ final class TerminalWindow {
             return 1
         }
         let px = Float(point.x), py = Float(point.y)
+        if menu == nil, palette == nil, !notices.isEmpty,
+           let hand = notices.wantsHand(atX: px, y: py, canvas: canvas, windowWidth: Float(clientWidth), top: layout.tabBarHeight, scale: scale) {
+            SetCursor(LoadCursorW(nil, hand ? Win.handCursor : Win.arrowCursor))
+            return 1
+        }
         // What's on top decides, not what's under it: a menu shows the arrow; the palette, the I-beam over the field it's
         // typed in and the arrow over the rest; the Quantum Moon's reading, the arrow.
         if let menu, menu.frame.contains(px, py) {
@@ -1131,7 +1180,8 @@ final class TerminalWindow {
             return 1
         }
         // A pointing hand over a pasted image's thumbnail, or its larger look, as on the Mac.
-        let onImage = palette == nil && menu == nil && part == .terminal && !panes.isEmpty && pane(atX: px).imageChips.isOver(x: px, y: py)
+        let onImage = palette == nil && menu == nil && part == .terminal && !panes.isEmpty
+            && (pane(atX: px).imageChips.isOver(x: px, y: py) || pane(atX: px).isOverCopyButton(x: px, y: py))
         let onTerminal = palette == nil && part == .terminal && !onLink && !onImage && (panes.isEmpty || area(for: pane(atX: px)).contains(px, py)
             && (editorSplit(for: pane(atX: px)).showsTerminal || pane(atX: px).editors.isEmpty))
         // A pointing hand over the flower, which opens Settings, as on the Mac.
@@ -1406,6 +1456,12 @@ final class TerminalWindow {
             dialogMouse(message, x: x, y: y)
             return
         }
+        if menu == nil, palette == nil, !notices.isEmpty,
+           notices.mouse(message, x: x, y: y, canvas: canvas, windowWidth: Float(clientWidth), top: layout.tabBarHeight, scale: scale) {
+            invalidate()
+            return
+        }
+        if CornerNoticeStack.changed { invalidate() }
         if menu != nil {
             menuMouse(message, x: x, y: y)
             return
@@ -1713,7 +1769,9 @@ final class TerminalWindow {
             if let remote { Self.readRemote(path, remote, limit: min(limit, 4 * 1024 * 1024), done) } else { Self.readLocal(path, limit: limit, done) }
         }, write: { data, done in
             if let remote { Self.writeRemote(path, remote, data, done) } else { Self.writeLocal(path, data, done) }
-        })
+        }, signature: { done in
+            if let remote { Self.remoteSignature(path, remote, done) } else { Self.localSignature(path, done) }
+        }, readFrom: remote != nil ? nil : { offset, done in Self.readLocal(path, from: offset, done) })
         panel.invalidate = { [weak self] in self?.invalidate() }
         panel.post = { [weak self] work in self?.runOnWindowThread(work) }
         panel.close = { [weak self, weak panel] in if let self, let panel, let pane = self.owner(of: panel) { self.closeEditor(panel, in: pane) } }
@@ -1732,6 +1790,40 @@ final class TerminalWindow {
             defer { try? handle.close() }
             guard let data = try? handle.read(upToCount: limit + 1) else { return done(Data(), false) }
             done(data.prefix(limit), data.count > limit)
+        }
+    }
+
+    /// A file on this PC as Core's FileSync knows it: its modified time and size, off the window's thread (a network drive
+    /// can be slow to answer). Nil when it isn't there.
+    private static func localSignature(_ path: String, _ done: @escaping (Bool, String?) -> Void) {
+        Thread.detachNewThread {
+            var data = WIN32_FILE_ATTRIBUTE_DATA()
+            let found = wide(path).withUnsafeBufferPointer { GetFileAttributesExW($0.baseAddress, GetFileExInfoStandard, &data) }
+            guard found, data.dwFileAttributes & DWORD(FILE_ATTRIBUTE_DIRECTORY) == 0 else { return done(true, nil) }
+            let written = UInt64(data.ftLastWriteTime.dwHighDateTime) << 32 | UInt64(data.ftLastWriteTime.dwLowDateTime)
+            let size = UInt64(data.nFileSizeHigh) << 32 | UInt64(data.nFileSizeLow)
+            done(true, "\(written) \(size)")
+        }
+    }
+
+    /// A file on an ssh host: one look over the sidebar's connection (see FileSync.statScript). Not answered when the
+    /// connection can't say.
+    private static func remoteSignature(_ path: String, _ remote: RemoteConnection, _ done: @escaping (Bool, String?) -> Void) {
+        guard remote.state == .ready else { return done(false, nil) }
+        remote.run(FileSync.statScript([path]), timeout: 8) { text, code in
+            guard let text, code == 0, let found = FileSync.parseStats(text, paths: [path])[path] else { return done(false, nil) }
+            done(true, found)
+        }
+    }
+
+    /// The bytes of a file on this PC from `offset` to its end, and its size: for following one that grows.
+    private static func readLocal(_ path: String, from offset: Int, _ done: @escaping (Data?, Int) -> Void) {
+        Thread.detachNewThread {
+            guard let handle = FileHandle(forReadingAtPath: path) else { return done(nil, 0) }
+            defer { try? handle.close() }
+            guard let size = try? handle.seekToEnd(), Int(size) >= offset, (try? handle.seek(toOffset: UInt64(offset))) != nil,
+                  let data = try? handle.readToEnd() else { return done(nil, 0) }
+            done(data, Int(size))
         }
     }
 
@@ -1947,6 +2039,10 @@ final class TerminalWindow {
         switch button {
         case .pin: togglePin(sidebar)
         case .parent: goToParent(sidebar)
+        case .newFile, .newFolder:
+            // In the folder picked (or the picked file's), else the one the sidebar shows, as on the Mac.
+            let picked = sidebar.tree.selection.flatMap { path in sidebar.tree.rows.first { $0.entry.path == path }?.entry }
+            if let folder = targetFolder(picked, in: sidebar) { beginNew(folder: button == .newFolder, in: folder, sidebar) }
         case .refresh: sidebar.tree.refresh()
         case .more:
             let anchor = sidebarLayout(sidebar).button(SidebarButton.more.rawValue)
@@ -4874,6 +4970,11 @@ final class TerminalWindow {
     func keyDown(_ key: Int32, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
         if dialog != nil { return dialogKey(key) }
         if menu != nil { return menuKey(key) }
+        if notices.hasFocusedField {
+            let used = notices.key(key, ctrl: ctrl)
+            invalidate()
+            if used { return true }
+        }
         if !panes.isEmpty, activePane.hasQuestion { return activePane.questionKey(key, ctrl: ctrl) }
         if naming != nil { return namingKey(key, ctrl: ctrl) }
         if editingSidebar != nil { return sidebarEditKey(key, ctrl: ctrl) }

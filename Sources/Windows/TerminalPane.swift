@@ -396,8 +396,15 @@ final class TerminalPane: TerminalDelegate, Groupable {
             if lost != nil { invalidate() }
             return
         }
-        lost = (sshHost ?? "the ssh host", "ssh " + target.map(Self.powerShellWord).joined(separator: " "), terminal.currentBlock)
+        let name = sshHost ?? "the ssh host"
+        lost = (name, "ssh " + target.map(Self.powerShellWord).joined(separator: " "), terminal.currentBlock)
         if let password = rememberedPassword { reconnectPassword = password }
+        // A card, as on the Mac, with Reconnect, up for ten minutes unless it's dealt with.
+        lostNotice?.dismiss()
+        noticeReconnect = nil
+        lostNotice = TerminalWindow.postNotice(NoticeRules.lostConnection(host: name, place: noticePlace, folder: terminal.remoteCwd), about: self,
+                                               button: ("Reconnect", { [weak self] in self?.reconnectFromNotice(host: name) }),
+                                               keepsOpen: true, lifetime: 600)
         if !(host?.isFocused ?? false) { FlashWindow(hwnd, true) }
         invalidate()
     }
@@ -405,11 +412,20 @@ final class TerminalPane: TerminalDelegate, Groupable {
     func terminalBlockFinished(_ t: Terminal, block: Block) {
         // A commit, a checkout, an edit: git's state may have changed.
         host?.paneCommandFinished(self)
+        // A long command in a tab you're not watching: a card when it's done.
+        if !isWatched, let card = NoticeRules.commandFinished(command: block.command, duration: block.duration, exitCode: block.exitCode,
+                                                              threshold: AppSettings.shared.notifyAfterSeconds, place: noticePlace) {
+            TerminalWindow.postNotice(card, about: self)
+        }
         // Something else run here since: the bar's question has gone away.
         if let lost, block !== lost.block, terminal.sshControlPath == nil, !reconnecting, !block.command.isEmpty { clearLost() }
     }
 
     private func clearLost() {
+        // Back in (or moved on): the card's question has gone away.
+        lostNotice?.dismiss()
+        lostNotice = nil
+        noticeReconnect = nil
         guard lost != nil || reconnectPassword != nil else { return }
         lost = nil
         reconnecting = false
@@ -491,6 +507,158 @@ final class TerminalPane: TerminalDelegate, Groupable {
     private(set) var agent: AgentInfo?
     /// Images pasted into Claude Code, drawn where it lists them (see ImageChips).
     let imageChips = ImageChips()
+
+    // MARK: Claude's code boxes (see Core's CodeBoxFinder)
+
+    /// Code blocks, tables and quotes in Claude's replies on screen, each with a Copy button, as on the Mac.
+    private(set) var codeBoxes: [CodeBox] = []
+    /// What the last scan looked at (the transcripts and the screen), so an unchanged one isn't done again.
+    private var boxScanKey: String?
+    private var boxScanning = false
+    /// The Copy buttons drawn this frame, by index into `codeBoxes`; the one hovered; the one saying "Copied".
+    private var copyButtons: [(rect: UIRect, box: Int)] = []
+    private var hoverCopyButton: Int?
+    private var copiedBox: (box: Int, until: Date)?
+
+    /// Re-finds Claude's code blocks, tables and quotes whenever its transcript or the screen has moved on. Skipped while
+    /// it's working (the screen churns, and the reply isn't in the transcript yet). Code blocks come from Claude's
+    /// transcript, which is only here for Claude on this PC; tables and quotes are found from the screen alone, so over
+    /// ssh they still get theirs.
+    private func refreshCodeBoxes() {
+        let before = codeBoxes.count
+        codeBoxes.removeAll { !terminal.stillShows($0) }
+        if codeBoxes.count != before { invalidate() }
+        guard let agent, agent.kind == .claude, agent.status != .working, !boxScanning, let host else { return }
+        boxScanning = true
+        let cwd = sshArguments == nil ? terminal.cwd : nil
+        let home = ProcessInfo.processInfo.environment["USERPROFILE"] ?? ""
+        DispatchQueue.global(qos: .utility).async { [weak self, weak host] in
+            let found: (blocks: [String], signature: String) = cwd.map { ClaudeTranscript.codeBlocks(cwd: $0, home: home) } ?? ([], "screen")
+            host?.runOnWindowThreadPublic {
+                guard let self else { return }
+                let t = self.terminal
+                let key = "\(found.signature)|\(t.firstAbs)|\(t.lastAbs)|\(t.cols)|\(t.cursorAbs)"
+                guard key != self.boxScanKey else { self.boxScanning = false; return }
+                self.boxScanKey = key
+                // The scan reads the whole scrollback, so it runs on a copy, off the window's thread.
+                let lines = t.snapshot()
+                LineSnapshot.scanQueue.async { [weak self, weak host] in
+                    let boxes = lines.findBoxes(code: found.blocks)
+                    host?.runOnWindowThreadPublic {
+                        guard let self else { return }
+                        self.boxScanning = false
+                        self.codeBoxes = boxes.filter { self.terminal.stillShows($0) }
+                        self.copiedBox = nil
+                        self.invalidate()
+                    }
+                }
+            }
+        }
+    }
+
+    /// A selection's text: inside a code block or quote, that stretch of the original (no indentation, no line breaks
+    /// where the screen wrapped a long line); anywhere else, what's on screen.
+    private func selectedText(_ s: TerminalSelection) -> String {
+        let o = s.ordered
+        if let box = codeBoxes.first(where: { $0.kind != .table && $0.contains(line: o.start.line) && $0.contains(line: o.end.line) }),
+           let text = box.sourceText(from: GridPos(line: o.start.line, col: o.start.col), to: GridPos(line: o.end.line, col: o.end.col), columns: terminal.cols) {
+            return text
+        }
+        return s.text(in: terminal)
+    }
+
+    /// Copy on a box: the original code, the quote's text, or the table as markdown (and as HTML, so Word, Excel, Teams
+    /// and the like paste a real table). "Copied" shows on its button for a moment.
+    private func copyBox(_ i: Int) {
+        guard codeBoxes.indices.contains(i) else { return }
+        let box = codeBoxes[i]
+        setClipboard(box.copyText, html: box.html)
+        copiedBox = (i, Date().addingTimeInterval(1.5))
+        invalidate()
+    }
+
+    private var dpiScale: Float { Float(GetDpiForWindow(hwnd)) / 96 }
+
+    private func drawCodeBoxes(top: Int) {
+        CodeBoxView(canvas: canvas, terminal: terminal, boxes: codeBoxes, top: top, scale: dpiScale).drawPanels()
+    }
+
+    private func drawCopyButtons(top: Int) {
+        if let copied = copiedBox, Date() >= copied.until { copiedBox = nil }
+        copyButtons = CodeBoxView(canvas: canvas, terminal: terminal, boxes: codeBoxes, top: top, scale: dpiScale)
+            .drawButtons(hover: hoverCopyButton, copied: copiedBox?.box)
+    }
+
+    /// Whether a point is on a Copy button: the pointer becomes a hand there.
+    func isOverCopyButton(x: Float, y: Float) -> Bool { copyButtons.contains { $0.rect.contains(x, y) } }
+
+    // MARK: Corner cards (see CornerNotices and Core's NoticeRules)
+
+    /// The agent working and stopping, for a card once it's stopped a while.
+    private var agentWatch = AgentStopWatch()
+    /// The lost-connection card, while it's up.
+    private weak var lostNotice: CornerNotice?
+    /// Reconnect pressed on that card: when, and whether a password has gone from it since.
+    private var noticeReconnect: (host: String, at: Date, sent: Bool)?
+
+    /// "Group › Tab", for a card's first line.
+    private var noticePlace: String { NoticeRules.place(tab: tabTitle, group: group?.name) }
+
+    private var isWatched: Bool { host?.isWatching(self) ?? false }
+
+    /// An agent that worked at least "Notify after" seconds and then stopped (done, or waiting on you) in a tab you're
+    /// not watching gets a card, as a long command does.
+    private func checkAgentStopped() {
+        let stopped = agent?.status == .done || agent?.status == .waiting
+        guard let worked = agentWatch.settled(stillStopped: stopped), let a = agent else { return }
+        let threshold = AppSettings.shared.notifyAfterSeconds
+        guard threshold > 0, worked >= threshold, !isWatched else { return }
+        let prompt = terminal.currentBlock.flatMap { terminal.agentTurns(in: $0).last }.map { terminal.agentPromptText($0) }
+        TerminalWindow.postNotice(NoticeRules.agentStopped(agent: a.kind.name, waiting: a.status == .waiting, worked: worked,
+                                                           prompt: prompt, place: noticePlace), about: self)
+    }
+
+    /// Reconnect on the lost-connection card: logs back in here without leaving the tab you're in; if the host asks
+    /// for a password, the card asks for it.
+    private func reconnectFromNotice(host name: String) {
+        reconnect()
+        guard reconnecting || pendingCommand != nil, let notice = lostNotice else { return }
+        notice.hideButton()
+        notice.setTitle("Reconnecting to \(name)\u{2026}")
+        noticeReconnect = (name, Date(), false)
+    }
+
+    /// For five minutes after Reconnect on the card, or until logged in (the card goes then): ssh's password question
+    /// is asked in the card too; a wrong password's "try again" asks again.
+    private func watchNoticeSecret() {
+        guard let watch = noticeReconnect else { return }
+        guard let notice = lostNotice, !notice.isGone, Date().timeIntervalSince(watch.at) < 300 else {
+            noticeReconnect = nil
+            lostNotice?.endSecret()
+            return
+        }
+        if let q = question, q.secret {
+            guard !notice.hasSecret else { return }
+            notice.setTitle(watch.sent ? "Try again: \(watch.host)" : "Log in to \(watch.host)")
+            notice.askSecret(q.prompt) { [weak self] secret in self?.answerFromNotice(secret) }
+        } else if notice.hasSecret {
+            // Answered in the tab instead, or ssh stopped asking.
+            notice.endSecret()
+        }
+    }
+
+    /// Only into the question the card asked: if that's gone, the password isn't sent anywhere.
+    private func answerFromNotice(_ secret: String) {
+        guard let watch = noticeReconnect, let notice = lostNotice else { return }
+        notice.endSecret()
+        guard let q = question, q.secret else {
+            notice.setTitle("\(watch.host) stopped asking; open the tab to log in")
+            return
+        }
+        answer(secret)
+        noticeReconnect?.sent = true
+        notice.setTitle("Logging in to \(watch.host)\u{2026}")
+    }
     /// The agent last seen running, and one that exited with an error (shown as failed until another command runs).
     private var runningAgent: AgentKind?
     private var failedAgent: AgentKind?
@@ -500,6 +668,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
     private func updateAgent() -> Bool {
         guard Date().timeIntervalSince(agentCheckedAt) >= 1 else { return false }
         agentCheckedAt = Date()
+        defer { refreshCodeBoxes() }
         // Something's running (or, without shell integration to say, may be).
         let busy = terminal.currentBlock.map { $0.state == .running } ?? true
         var kind: AgentKind?
@@ -528,6 +697,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
             if let f = failedAgent { next = AgentInfo(kind: f, status: .failed) }
         }
         guard next != agent else { return false }
+        agentWatch.update(working: next?.status == .working)
         agent = next
         return true
     }
@@ -537,8 +707,12 @@ final class TerminalPane: TerminalDelegate, Groupable {
     func tick() -> Bool {
         let agentChanged = updateAgent()
         tickWork()
+        checkAgentStopped()
+        watchNoticeSecret()
         // An image Claude Code hasn't finished writing yet: look again.
-        return agentChanged || imageChips.wantsRetry
+        // "Copied" on a code box's button has had its moment.
+        let copiedDone = copiedBox.map { Date() >= $0.until } ?? false
+        return agentChanged || imageChips.wantsRetry || copiedDone
     }
 
     private func tickWork() {
@@ -566,7 +740,10 @@ final class TerminalPane: TerminalDelegate, Groupable {
         } else {
             imageChips.clear()
         }
+        let screenTop = terminal.screenTopAbs - scrollOffset
+        drawCodeBoxes(top: screenTop)
         renderer.drawContents()
+        drawCopyButtons(top: screenTop)
         imageChips.draw(on: canvas, scale: dpiScale)
         // The link under the pointer, while Ctrl's held.
         if let h = hoveredLink {
@@ -710,7 +887,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
                 return true
             case 0x58:
                 if let chosen = selection, !chosen.isEmpty, replaceSelectedInput(with: []) {
-                    setClipboard(chosen.text(in: terminal))
+                    setClipboard(selectedText(chosen))
                     return true
                 }
             default: break
@@ -891,6 +1068,10 @@ final class TerminalPane: TerminalDelegate, Groupable {
     func mouse(_ message: UINT, _ wParam: WPARAM, _ lParam: LPARAM) {
         // Pasted images' thumbnails: hover rings one, a click shows it larger, a click on that opens it.
         let px = Float(Int16(truncatingIfNeeded: lParam & 0xFFFF)), py = Float(Int16(truncatingIfNeeded: (lParam >> 16) & 0xFFFF))
+        // Claude's code boxes: a Copy button copies its box.
+        let onCopy = copyButtons.first { $0.rect.contains(px, py) }?.box
+        if message == Win.WM_MOUSEMOVE, !selecting, onCopy != hoverCopyButton { hoverCopyButton = onCopy; invalidate() }
+        if message == Win.WM_LBUTTONDOWN, let onCopy { copyBox(onCopy); return }
         if message == Win.WM_MOUSEMOVE, !selecting, imageChips.hovered(atX: px, y: py) { invalidate() }
         if message == Win.WM_LBUTTONDOWN {
             let result = imageChips.click(atX: px, y: py)
@@ -931,7 +1112,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
             guard selecting else { return }
             selecting = false
             ReleaseCapture()
-            if let chosen = selection, !chosen.isEmpty, AppSettings.shared.copyOnSelect { setClipboard(chosen.text(in: terminal)) }
+            if let chosen = selection, !chosen.isEmpty, AppSettings.shared.copyOnSelect { setClipboard(selectedText(chosen)) }
             if selection?.isEmpty == true {
                 selection = nil
                 whenCursorSettled { [weak self] in self?.clicked(line: abs, col: col) }
@@ -1504,7 +1685,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
     private func copySelection() {
         guard let selection, !selection.isEmpty else { return }
         // It stays selected, as in a text box: what's typed or pasted next can replace it.
-        setClipboard(selection.text(in: terminal))
+        setClipboard(selectedText(selection))
     }
 
     private func cutSelection() {
@@ -1527,7 +1708,10 @@ final class TerminalPane: TerminalDelegate, Groupable {
         return false
     }
 
-    func setClipboard(_ text: String) {
+    func setClipboard(_ text: String) { setClipboard(text, html: nil) }
+
+    /// Text, and with `html` that too, in Windows' "HTML Format" (what Word, Excel, Outlook and Teams paste from).
+    func setClipboard(_ text: String, html: String?) {
         let units = wide(text)
         let bytes = units.count * MemoryLayout<UInt16>.size
         guard openClipboard() else { return }
@@ -1537,6 +1721,25 @@ final class TerminalPane: TerminalDelegate, Groupable {
         units.withUnsafeBytes { pointer.copyMemory(from: $0.baseAddress!, byteCount: bytes) }
         GlobalUnlock(memory)
         SetClipboardData(Win.CF_UNICODETEXT, memory)
+        guard let html else { return }
+        let payload = Array(Self.clipboardHTML(html).utf8) + [0]
+        let format = wide("HTML Format").withUnsafeBufferPointer { RegisterClipboardFormatW($0.baseAddress) }
+        guard format != 0, let block = GlobalAlloc(Win.GMEM_MOVEABLE, SIZE_T(payload.count)), let p = GlobalLock(block) else { return }
+        payload.withUnsafeBytes { p.copyMemory(from: $0.baseAddress!, byteCount: payload.count) }
+        GlobalUnlock(block)
+        SetClipboardData(format, block)
+    }
+
+    /// HTML wrapped as Windows' clipboard wants it: a header giving where the document and the fragment start and end,
+    /// in bytes of UTF-8.
+    static func clipboardHTML(_ fragment: String) -> String {
+        let before = "<html><body><!--StartFragment-->", after = "<!--EndFragment--></body></html>"
+        let header = "Version:0.9\r\nStartHTML:0000000000\r\nEndHTML:0000000000\r\nStartFragment:0000000000\r\nEndFragment:0000000000\r\n"
+        let startHTML = header.utf8.count, startFragment = startHTML + before.utf8.count
+        let endFragment = startFragment + fragment.utf8.count, endHTML = endFragment + after.utf8.count
+        func n(_ v: Int) -> String { String(format: "%010d", v) }
+        return "Version:0.9\r\nStartHTML:\(n(startHTML))\r\nEndHTML:\(n(endHTML))\r\nStartFragment:\(n(startFragment))\r\nEndFragment:\(n(endFragment))\r\n"
+            + before + fragment + after
     }
 
     func clipboardText() -> String? {

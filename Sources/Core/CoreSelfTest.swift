@@ -110,6 +110,60 @@ enum CoreSelfTest {
             check("click: not into the gutter", a.agentCursorArrows(toCol: 0) == -11)
             check("selection: offsets in Claude Code's input", rows.map { a.agentInputOffset($0, line: $0.lowerBound, col: 8) } == 6)
 
+            // Corner cards: when they're due and what they say.
+            check("notices: durations as the Mac writes them", NoticeRules.formatDuration(0.85) == "850ms" && NoticeRules.formatDuration(12.44) == "12.4s"
+                  && NoticeRules.formatDuration(185) == "3m 5s" && NoticeRules.formatDuration(4320) == "1h 12m")
+            check("notices: a quick command gets none", NoticeRules.commandFinished(command: "ls", duration: 2, exitCode: 0, threshold: 10, place: "t") == nil
+                  && NoticeRules.commandFinished(command: "make", duration: 60, exitCode: 0, threshold: 0, place: "t") == nil)
+            let failed = NoticeRules.commandFinished(command: "make", duration: 75, exitCode: 2, threshold: 10, place: "Build \u{203A} api")
+            check("notices: a long failed command", failed == NoticeRules.Card(title: "Command failed", mark: .failed,
+                                                                               lines: ["Build \u{203A} api", "make", "Took 1m 15s \u{00B7} exit 2"]), "\(String(describing: failed))")
+            let waiting = NoticeRules.agentStopped(agent: "Claude", waiting: true, worked: 42, prompt: "fix the\ntests", place: "api")
+            check("notices: an agent waiting", waiting.title == "Claude needs your input" && waiting.lines == ["api", "\u{276F} fix the tests", "Worked 42.0s"])
+            var watch = AgentStopWatch()
+            let t0 = Date()
+            watch.update(working: true, now: t0)
+            watch.update(working: false, now: t0.addingTimeInterval(30))
+            let early = watch.settled(now: t0.addingTimeInterval(31), stillStopped: true)
+            watch.update(working: true, now: t0.addingTimeInterval(31.5))
+            watch.update(working: false, now: t0.addingTimeInterval(50))
+            let worked = watch.settled(now: t0.addingTimeInterval(53), stillStopped: true)
+            check("notices: an agent's pause isn't a stop; a stop counts from when it began working", early == nil && worked == 50, "\(String(describing: worked))")
+
+            // Open files keeping up with the disk.
+            check("file sync: what a signature on disk means", FileSync.action(known: "1 5", now: "1 5", hasUnsavedEdits: false) == .nothing
+                  && FileSync.action(known: "1 5", now: "2 9", hasUnsavedEdits: false) == .reload
+                  && FileSync.action(known: "1 5", now: "2 9", hasUnsavedEdits: true) == .changedUnderEdits
+                  && FileSync.action(known: "1 5", now: nil, hasUnsavedEdits: true) == .deleted)
+            let stats = FileSync.parseStats("1\t2026-11-07 10:00:00.1 120 77\n2\t-\nnoise\n", paths: ["/a b", "/c"])
+            check("file sync: a host's stats, gone files included", stats["/a b"] == .some("2026-11-07 10:00:00.1 120 77") && stats["/c"] == .some(nil) && stats.count == 2)
+            check("file sync: the stat script quotes paths", FileSync.statScript(["/it's"]).contains(#"'/it'\''s'"#))
+            let diff = TextDiff.rows(old: ["a", "b", "c", "d"], new: ["a", "B", "c", "d", "e"])
+            check("compare: the same lines line up, a change pairs off, an addition stands alone",
+                  diff.map(\.kind) == [.same, .changed, .same, .same, .added] && diff[1].left?.text == "b" && diff[1].right?.text == "B"
+                  && diff[4].left == nil && diff[4].right?.number == 5, "\(diff.map(\.kind))")
+
+            // Claude's code boxes: code matched from its transcript, tables and quotes from the screen.
+            let (cb, _) = make(48, 20)
+            feed(cb, "\u{23FA} Run this:\r\n\r\n  git log --oneline --graph --decorate\r\n    --all\r\n\r\n"
+                 + "  \u{250C}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{252C}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2510}\r\n"
+                 + "  \u{2502} Key \u{2502} Use \u{2502}\r\n"
+                 + "  \u{251C}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{253C}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2524}\r\n"
+                 + "  \u{2502} J   \u{2502} jump\u{2502}\r\n"
+                 + "  \u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2534}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2518}\r\n\r\n"
+                 + "  \u{258E} One more from the same\r\n  \u{258E} incident.\r\n\r\nDone.\r\n")
+            let found = cb.snapshot().findBoxes(code: ["git log --oneline --graph --decorate --all"])
+            let code = found.first { $0.kind == .code }, table = found.first { $0.kind == .table }, quote = found.first { $0.kind == .quote }
+            check("code boxes: a code block, a table and a quote", found.count == 3, found.map { "\($0.kind) \($0.first)-\($0.last)" }.description)
+            check("code boxes: code copies as the original, unwrapped", code?.copyText == "git log --oneline --graph --decorate --all" && code?.first == 2 && code?.last == 3)
+            check("code boxes: part of the code selected copies as the original",
+                  code?.sourceText(from: GridPos(line: 2, col: 10), to: GridPos(line: 3, col: 8), columns: 48) == "--oneline --graph --decorate --all",
+                  code?.sourceText(from: GridPos(line: 2, col: 10), to: GridPos(line: 3, col: 8), columns: 48) ?? "-")
+            check("code boxes: a table copies as markdown, and HTML", table?.copyText == "| Key | Use |\n|---|---|\n| J | jump |"
+                  && table?.html?.contains("<th style") == true, table?.copyText ?? "-")
+            check("code boxes: a quote copies without its bar", quote?.copyText == "One more from the same incident.")
+            check("code boxes: Claude's folder for a Windows path", ClaudeTranscript.projectFolder(cwd: "C:\\nowhere at all", home: "C:\\nope") == nil)
+
             // Pasted images, as Claude Code shows them.
             let (im, _) = make(40, 6)
             feed(im, "\u{276F} look at [Image #3] please\r\n  \u{23BF}  [Image #3] [Image #12]\r\n  \u{23BF}  see [Image #4]\r\n")

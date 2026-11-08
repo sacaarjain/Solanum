@@ -42,6 +42,8 @@ final class AppSettings {
     var shell: String { file["shell"] ?? "" }
     var shellIntegration: Bool { file.bool("shell-integration", true) }
     var themeIcon: Bool { file.bool("theme-icon", true) }
+    /// A command or an agent that runs at least this long in a tab you're not watching gets a card when it stops; 0 is off.
+    var notifyAfterSeconds: Double { file.number("notify-after-seconds", 10, in: 0...86_400) }
     /// How solid the window's background is, as on the Mac: below 1 the desktop shows through, blurred if `blur`.
     var opacity: Double { file.number("background-opacity", 0.95, in: 0.3...1) }
     var blur: Bool { file.bool("background-blur", true) }
