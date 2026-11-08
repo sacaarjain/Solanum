@@ -91,7 +91,7 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-git-bar"), CommandLin
 // Ctrl+F's two bars at 200%, for comparing with the Mac's by eye: a file's (Replace showing) above the terminal's.
 // --draw-find <png>
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-find"), CommandLine.arguments.indices.contains(flag + 1) {
-    let width: Float = 1400, height: Float = 900, s: Float = 2
+    let width: Float = 1400, height: Float = 1300, s: Float = 2
     guard let canvas = Canvas(width: Int(width), height: Int(height), fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
     let text = "{\n  \"name\": \"solanum\",\n  \"cat\": \"Cat cat concat\",\n  \"more\": [\"cat\", \"dog\"]\n}\n"
     let file = FileEditorPanel(path: "C:\\demo.json", name: "demo.json", folder: "C:\\", isLocal: true, read: { _, done in done(Data(text.utf8), false) },
@@ -106,13 +106,25 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-find"), CommandLine.a
     let grid = TerminalRenderer.grid(width: Int(width), height: 460, canvas: canvas)
     let terminal = Terminal(cols: grid.cols, rows: grid.rows, scrollbackLimit: 100)
     Array("PS C:\\demo> cat notes.txt\r\nthe cat sat\r\nconcatenate\r\nPS C:\\demo> ".utf8).withUnsafeBufferPointer { terminal.feed($0) }
-    let bar = TerminalFindBar()
-    bar.type("cat")
-    bar.search(terminal, bottomLine: terminal.lastAbs)
+    let find = TerminalFindBar()
+    find.bar.type("cat")
+    FindBar.options = EditorFindOptions(wholeWord: true)
+    find.search(terminal, bottomLine: terminal.lastAbs)
     var renderer = TerminalRenderer(canvas: canvas, terminal: terminal)
-    renderer.findMatches = bar.cells
+    renderer.findMatches = find.cells
     renderer.drawContents()
-    bar.draw(on: canvas, in: canvas.terminalArea!, scale: s)
+    find.bar.draw(on: canvas, in: canvas.terminalArea!, scale: s)
+    FindBar.options = EditorFindOptions()
+    // A README's preview, its bar open.
+    let readme = "# Solanum\n\nA terminal for **agents**: find in the terminal, in files and in previews.\n\n- terminal tabs\n- a sidebar\n"
+    let preview = MarkdownPreviewPanel(path: "C:\\README.md", name: "README.md") { _, done in done(Data(readme.utf8), false) }
+    preview.cellSize = (canvas.metrics.cellWidth, canvas.metrics.cellHeight)
+    preview.reload()
+    let pageArea = UIRect(x: 0, y: 910, width: width, height: 390)
+    preview.draw(on: canvas, in: pageArea, scale: s)
+    _ = preview.key(0x46, shift: false, ctrl: true)
+    "terminal".forEach { preview.typed(String($0)) }
+    preview.draw(on: canvas, in: pageArea, scale: s)
     guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }

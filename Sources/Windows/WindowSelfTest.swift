@@ -1207,7 +1207,7 @@ enum WindowSelfTest {
             window.typeIntoWindow("example.com")
         }, done: {
             guard let bar = pane.findBar else { return false }
-            return pane.findFocused && bar.matches.count >= 1 && bar.count?.text == "\(bar.matches.count)/\(bar.matches.count)"
+            return pane.findFocused && bar.matches.count >= 1 && bar.bar.count?.text == "\(bar.matches.count)/\(bar.matches.count)"
                 && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\terminal-find.png") } ?? true)
         }))
         steps.append(Step(name: "terminal find: typing doesn't reach the shell, and Esc closes it", action: {

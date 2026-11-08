@@ -28,6 +28,12 @@ final class MarkdownPreviewPanel: ColumnPanel {
     private var pressedAt: (x: Float, y: Float)?
     private weak var lastCanvas: Canvas?
     var copy: (String) -> Void = { _ in }
+    var paste: () -> String? = { nil }
+    /// Ctrl+F's bar, and what it found: each match from where it starts to where it ends.
+    var finder: FindBar?
+    var findMatches: [(from: TextSpot, to: TextSpot)] = []
+    /// The text was laid out anew since the last search.
+    private var findStale = false
     private var lastArea = UIRect(x: 0, y: 0, width: 0, height: 0)
     var invalidate: () -> Void = {}
     var close: () -> Void = {}
@@ -54,6 +60,7 @@ final class MarkdownPreviewPanel: ColumnPanel {
                 self.source = data
                 self.blocks = MarkdownDoc.parse(String(decoding: data, as: UTF8.self))
                 self.laidOut = nil
+                self.findStale = true
                 self.invalidate()
             }
         }
@@ -87,7 +94,7 @@ final class MarkdownPreviewPanel: ColumnPanel {
     }
 
     /// A place in the text: a run, and how many characters into it.
-    private struct TextSpot: Comparable {
+    struct TextSpot: Comparable {
         let run: Int
         let offset: Int
         static func < (a: TextSpot, b: TextSpot) -> Bool { a.run != b.run ? a.run < b.run : a.offset < b.offset }
@@ -263,15 +270,21 @@ final class MarkdownPreviewPanel: ColumnPanel {
                 let l = layout(width: a.width, canvas: canvas, s: s)
                 // A new width puts the runs somewhere else: a selection from the old one goes. (A link hovered lays it out
                 // again just the same, and keeps it.)
-                if layoutSize.map({ $0.width != a.width || $0.scale != s }) ?? false { selection = nil }
+                if layoutSize.map({ $0.width != a.width || $0.scale != s }) ?? false { selection = nil; findStale = true }
                 layoutSize = (a.width, s)
                 laidOut = (a.width, s, l.items, l.height, l.links, l.runs)
+                if findStale {
+                    findStale = false
+                    runFind(keepPlace: true)
+                }
             }
             let content = laidOut!
             scrollY = min(max(scrollY, 0), max(content.height - body.height, 0))
             sol_canvas_push_clip(canvas.raw, body.x, body.y, body.width, body.height)
             let dx = body.x, dy = body.y - scrollY
             lastCanvas = canvas
+            // Find's matches, then what's selected, under the text.
+            drawFindMatches(p, canvas: canvas, dx: dx, dy: dy, body: body)
             // What's selected, under the text.
             if let (from, to) = selectedRange, from < to {
                 for i in from.run...min(to.run, content.runs.count - 1) {
@@ -306,6 +319,7 @@ final class MarkdownPreviewPanel: ColumnPanel {
                 }
             }
             sol_canvas_pop_clip(canvas.raw)
+            finder?.draw(on: canvas, in: body, scale: s)
         }
         // The header: what this is, and close.
         p.backdrop(h, TerminalPalette.chrome)
@@ -383,6 +397,7 @@ final class MarkdownPreviewPanel: ColumnPanel {
     }
 
     func mouse(_ message: UINT, x: Float, y: Float, in a: UIRect, scale s: Float) -> Bool {
+        if findMouse(message, x: x, y: y) { return true }
         let before = (hoveredClose, hoveredLink)
         hoveredClose = closeButton(a, s).contains(x, y)
         let inBody = y > header(a, s).maxY
@@ -440,6 +455,11 @@ final class MarkdownPreviewPanel: ColumnPanel {
 
     func key(_ key: Int32, shift: Bool, ctrl: Bool) -> Bool {
         let page = max(lastArea.height - 80, 40)
+        // Ctrl+F finds on the page, as in a browser and the Mac's.
+        if ctrl && !shift && key == 0x46 { showFind(); return true }
+        if finder?.focused == true, let used = findKey(key, shift: shift, ctrl: ctrl) { return used }
+        if key == 0x72, finder != nil { stepFind(shift ? -1 : 1); return true }
+        if key == Win.VK_ESCAPE, finder != nil { closeFind(); return true }
         if ctrl && key == 0x43 {
             // Ctrl+C: what's selected.
             let text = selectedText
@@ -468,7 +488,152 @@ final class MarkdownPreviewPanel: ColumnPanel {
         return true
     }
 
-    func typed(_ text: String) {}
+    func typed(_ text: String) {
+        guard let finder, finder.focused else { return }
+        finder.type(text)
+        runFind()
+    }
 
     var hoveredLinkTarget: String? { hoveredLink }
+}
+
+// MARK: - Find (Ctrl+F)
+
+extension MarkdownPreviewPanel {
+    /// Ctrl+F: the bar over the page, as the terminal's (without its scope), with the selection to search for.
+    func showFind() {
+        if finder == nil {
+            finder = FindBar(showsScope: false)
+            let picked = selectedText
+            if !picked.isEmpty, !picked.contains("\n"), picked.count < 200 { finder?.field = TextFieldState(picked) }
+            runFind(fromTop: true)
+        }
+        finder?.focused = true
+        finder?.fieldSelected = true
+        invalidate()
+    }
+
+    func closeFind() {
+        finder = nil
+        findMatches = []
+        invalidate()
+    }
+
+    /// The page's text, as drawn, searched block by block (a paragraph, a heading, a code line), so a match can run
+    /// across words but not from one block into the next.
+    /// `keepPlace`: the text was laid out again (a new width, the file changed): the same match stays current, and the
+    /// page stays where it is.
+    func runFind(fromTop: Bool = false, keepPlace: Bool = false) {
+        guard let finder else { return }
+        let was = finder.current
+        FindBar.lastQuery = finder.field.text
+        findMatches = []
+        finder.badRegex = false
+        defer {
+            finder.total = findMatches.count
+            invalidate()
+        }
+        guard !finder.field.text.isEmpty, let runs = laidOut?.runs else { finder.current = -1; return }
+        let e: NSRegularExpression
+        do { e = try EditorFind.expression(finder.field.text, FindBar.options) } catch { finder.badRegex = true; finder.current = -1; return }
+        var i = 0
+        while i < runs.count {
+            // One block's runs, and for each UTF-16 unit of their text, where it is.
+            var text = "", places: [TextSpot] = []
+            let block = runs[i].block
+            while i < runs.count, runs[i].block == block {
+                for (k, ch) in runs[i].text.enumerated() {
+                    for _ in ch.utf16 { places.append(TextSpot(run: i, offset: k)) }
+                    text.append(ch)
+                }
+                i += 1
+            }
+            for r in EditorFind.matches(of: e, in: text).ranges {
+                let last = places[r.location + r.length - 1]
+                findMatches.append((places[r.location], TextSpot(run: last.run, offset: last.offset + 1)))
+            }
+        }
+        // From the first match on screen (or the top), and in view.
+        if keepPlace { finder.current = findMatches.isEmpty ? -1 : min(max(was, 0), findMatches.count - 1); return }
+        let top = fromTop ? 0 : scrollY
+        finder.current = findMatches.isEmpty ? -1 : (findMatches.firstIndex { runs[$0.from.run].rect.y >= top } ?? 0)
+        revealFindMatch()
+    }
+
+    func stepFind(_ d: Int) {
+        guard let finder else { return }
+        finder.step(d)
+        revealFindMatch()
+        invalidate()
+    }
+
+    private func revealFindMatch() {
+        guard let finder, findMatches.indices.contains(finder.current), let runs = laidOut?.runs else { return }
+        let r = runs[findMatches[finder.current].from.run].rect
+        let s = laidOut?.scale ?? 1, visible = lastArea.height - header(lastArea, s).height
+        if r.y < scrollY || r.maxY > scrollY + visible { scrollY = max(r.y - visible / 3, 0) }
+    }
+
+    /// Alt+C, W or R with the bar open: a toggle flipped, and the search again.
+    func findAltKey(_ key: Int32) -> Bool {
+        guard finder != nil, FindBar.flip(key) else { return false }
+        runFind()
+        return true
+    }
+
+    /// Every match on screen shaded in the accent, the current one stronger, under the text.
+    func drawFindMatches(_ p: PanelPaint, canvas: Canvas, dx: Float, dy: Float, body: UIRect) {
+        guard let finder, let runs = laidOut?.runs else { return }
+        let s = p.scale
+        for (n, m) in findMatches.enumerated() {
+            for i in m.from.run...min(m.to.run, runs.count - 1) {
+                let run = runs[i], r = run.rect
+                guard r.y + dy < body.maxY, r.maxY + dy > body.y else { continue }
+                let a = i == m.from.run ? m.from.offset : 0, b = i == m.to.run ? m.to.offset : run.text.count
+                let x1 = r.x + width(of: run, upTo: a, canvas), x2 = r.x + width(of: run, upTo: b, canvas)
+                p.fill(UIRect(x: x1 + dx, y: r.y + dy, width: max(x2 - x1, 2 * s), height: r.height), TerminalPalette.accent,
+                       n == finder.current ? 0.62 : (TerminalPalette.isDark ? 0.26 : 0.22))
+            }
+        }
+    }
+
+    /// A key while the bar has the keyboard; nil for those that go on as usual.
+    func findKey(_ key: Int32, shift: Bool, ctrl: Bool) -> Bool? {
+        guard let finder else { return nil }
+        switch finder.key(key, shift: shift, ctrl: ctrl, paste: paste, copy: copy) {
+        case .handled: invalidate()
+        case .changed: runFind()
+        case .step(let d): stepFind(d)
+        case .close: closeFind()
+        case .pass: return ctrl ? nil : false
+        }
+        return true
+    }
+
+    /// The pointer over the bar: true when it's taken. A press elsewhere on the page gives the page the keyboard.
+    func findMouse(_ message: UINT, x: Float, y: Float) -> Bool {
+        guard let finder else { return false }
+        let part = finder.part(atX: x, y: y)
+        if part != finder.hovered { finder.hovered = part; invalidate() }
+        guard let part else {
+            if message == Win.WM_LBUTTONDOWN && finder.focused { finder.focused = false; invalidate() }
+            return false
+        }
+        if message == Win.WM_LBUTTONDOWN || message == Win.WM_LBUTTONDBLCLK {
+            finder.press(part, double: message == Win.WM_LBUTTONDBLCLK)
+            invalidate()
+        }
+        if message == Win.WM_LBUTTONUP {
+            switch finder.release(part) {
+            case .changed: runFind()
+            case .step(let d): stepFind(d)
+            case .close: closeFind()
+            case .scope, .none: break
+            }
+        }
+        return true
+    }
+
+    /// "3/12", for tests.
+    var findCountForTesting: String? { finder?.count?.text }
 }

@@ -1981,6 +1981,7 @@ final class TerminalWindow {
         panel.close = { [weak self, weak panel] in if let self, let panel, let pane = self.owner(of: panel) { self.closeEditor(panel, in: pane) } }
         panel.cellSize = (canvas.metrics.cellWidth, canvas.metrics.cellHeight)
         panel.copy = { [weak self] text in self?.activePane.setClipboard(text) }
+        panel.paste = { [weak self] in self?.activePane.clipboardText() }
         panel.openLink = { [weak self, weak panel] target in
             guard let self else { return }
             let pane = panel.flatMap { self.owner(of: $0) }
@@ -5169,6 +5170,12 @@ final class TerminalWindow {
         }
         if !panes.isEmpty, activePane.hasQuestion { return activePane.questionKey(key, ctrl: ctrl) }
         if naming != nil { return namingKey(key, ctrl: ctrl) }
+        // Find's toggles, as VS Code's (Alt+C case, Alt+W whole words, Alt+R regular expressions), in whichever bar is open
+        // where the keyboard is: the terminal's, or the Markdown preview's (the file editor's is below).
+        if alt && !ctrl && !shift && palette == nil && !panes.isEmpty && editingSidebar == nil {
+            if let preview = activePane.focusedPanel as? MarkdownPreviewPanel, preview.findAltKey(key) { return true }
+            if !activePane.editorFocused, activePane.findAltKey(key) { return true }
+        }
         // The terminal's find bar, while it has the keyboard; the app's own Ctrl keys still work.
         if palette == nil, editingSidebar == nil, !panes.isEmpty, activePane.findFocused, !activePane.editorFocused,
            let used = activePane.findKey(key, shift: shift, ctrl: ctrl) { return used }
@@ -5177,11 +5184,14 @@ final class TerminalWindow {
         if ctrl && !alt && !shift && key == 0x46 && palette == nil && !panes.isEmpty && editingSidebar == nil {
             if let file = activePane.focusedPanel as? FileEditorPanel {
                 file.showFind(replace: false)
-            } else if focusedSidebar != nil, let file = activePane.panel as? FileEditorPanel {
+            } else if let preview = activePane.focusedPanel as? MarkdownPreviewPanel {
+                preview.showFind()
+            } else if focusedSidebar != nil, activePane.panel is FileEditorPanel || activePane.panel is MarkdownPreviewPanel {
                 left.isFocused = false
                 right.isFocused = false
                 setEditorFocus(true, in: activePane)
-                file.showFind(replace: false)
+                if let file = activePane.panel as? FileEditorPanel { file.showFind(replace: false) }
+                if let preview = activePane.panel as? MarkdownPreviewPanel { preview.showFind() }
             } else if activePane.focusedPanel == nil {
                 focusTerminal()
                 activePane.showFind()

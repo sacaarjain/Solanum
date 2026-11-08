@@ -68,6 +68,46 @@ enum TerminalSearch {
         return out
     }
 
+    /// As `matches(_:in:scope:)`, with VS Code's toggles (Windows' bar has them): case as asked rather than by the
+    /// query's capitals, whole words, or a regular expression, through the file editor's EditorFind. Throws for a
+    /// regular expression that doesn't parse.
+    static func matches(_ query: String, in terminal: Terminal, scope: SearchScope, options: EditorFindOptions) throws -> [SearchMatch] {
+        guard !query.isEmpty else { return [] }
+        let e = try EditorFind.expression(query, options)
+        let (commandCols, promptLines) = scope == .all ? ([:], []) : commandAndPromptLines(terminal)
+        var out: [SearchMatch] = []
+        var a = terminal.firstAbs
+        while a <= terminal.lastAbs, out.count < EditorFind.cap {
+            defer { a += 1 }
+            var minCol = 0
+            switch scope {
+            case .all: break
+            case .commands:
+                guard let c = commandCols[a] else { continue }
+                minCol = c
+            case .output:
+                guard commandCols[a] == nil, !promptLines.contains(a) else { continue }
+            }
+            guard let l = terminal.line(abs: a) else { continue }
+            var s = ""
+            var map: [Int] = []
+            for x in 0..<l.cells.count {
+                let c = l.cells[x]
+                if c.width == 0 { continue }
+                let str = c.ch == 0 ? " " : String(Character(Unicode.Scalar(c.ch) ?? " "))
+                for _ in str.utf16 { map.append(x) }
+                s += str
+            }
+            // Trailing blanks aren't text, but `$` should find the end of what's there.
+            while s.hasSuffix(" ") { s.removeLast(); map.removeLast() }
+            for r in EditorFind.matches(of: e, in: s).ranges {
+                let m = SearchMatch(line: a, start: map[r.location], end: map[r.location + r.length - 1])
+                if m.start >= minCol { out.append(m) }
+            }
+        }
+        return out
+    }
+
     /// Lines holding typed commands (shell commands and agent prompts) mapped to the column the text starts at,
     /// plus shell-prompt (PS1) lines, which count as neither commands nor output.
     static func commandAndPromptLines(_ terminal: Terminal) -> ([Int: Int], Set<Int>) {

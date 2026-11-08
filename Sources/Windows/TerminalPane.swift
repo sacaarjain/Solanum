@@ -759,14 +759,14 @@ final class TerminalPane: TerminalDelegate, Groupable {
         drawSelectedStop()
         drawLostBar()
         drawQuestion()
-        if let findBar, let area = canvas.terminalArea { findBar.draw(on: canvas, in: area, scale: Float(GetDpiForWindow(hwnd)) / 96) }
+        if let findBar, let area = canvas.terminalArea { findBar.bar.draw(on: canvas, in: area, scale: Float(GetDpiForWindow(hwnd)) / 96) }
     }
 
-    // MARK: - Find (Ctrl+F), as the Mac's ⌘F
+    // MARK: - Find (Ctrl+F), as the Mac's ⌘F, with VS Code's toggles
 
     private(set) var findBar: TerminalFindBar?
     /// The find bar has the keyboard.
-    var findFocused: Bool { findBar?.focused == true }
+    var findFocused: Bool { findBar?.bar.focused == true }
     /// Opens the scope's menu under a rectangle (the window's menus).
     var showFindScopeMenu: (_ items: [MenuItem], _ under: UIRect) -> Void = { _, _ in }
 
@@ -776,8 +776,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
             findBar = TerminalFindBar()
             runFind()
         }
-        findBar?.focused = true
-        findBar?.fieldSelected = true
+        findBar?.bar.focused = true
+        findBar?.bar.fieldSelected = true
         invalidate()
     }
 
@@ -787,17 +787,20 @@ final class TerminalPane: TerminalDelegate, Groupable {
     }
 
     /// Searches again, from the last match at or above the bottom of what's showing, and shows it.
-    private func runFind() {
-        guard let bar = findBar else { return }
-        bar.search(terminal, bottomLine: terminal.screenTopAbs - scrollOffset + terminal.rows - 1)
+    func runFind() {
+        guard let findBar else { return }
+        findBar.search(terminal, bottomLine: terminal.screenTopAbs - scrollOffset + terminal.rows - 1)
         revealFindMatch()
         invalidate()
     }
 
     func stepFind(_ d: Int) {
-        guard let bar = findBar else { return }
-        if bar.matches.isEmpty && !bar.field.text.isEmpty { bar.search(terminal, bottomLine: terminal.screenTopAbs - scrollOffset + terminal.rows - 1) }
-        else { bar.step(d) }
+        guard let findBar else { return }
+        if findBar.matches.isEmpty && !findBar.bar.field.text.isEmpty {
+            findBar.search(terminal, bottomLine: terminal.screenTopAbs - scrollOffset + terminal.rows - 1)
+        } else {
+            findBar.step(d)
+        }
         revealFindMatch()
         invalidate()
     }
@@ -812,55 +815,48 @@ final class TerminalPane: TerminalDelegate, Groupable {
 
     /// A key while the bar has the keyboard; nil for those that go on as usual (the app's Ctrl keys).
     func findKey(_ key: Int32, shift: Bool, ctrl: Bool) -> Bool? {
-        guard let bar = findBar else { return nil }
-        switch key {
-        case Win.VK_ESCAPE: closeFind()
-        case Win.VK_RETURN, 0x72: stepFind(shift ? -1 : 1)
-        case Win.VK_UP, Win.VK_DOWN, Win.VK_PRIOR, Win.VK_NEXT, Win.VK_TAB: break
-        case 0x41 where ctrl: bar.fieldSelected = true
-        case 0x43 where ctrl: setClipboard(bar.field.text)
-        case 0x56 where ctrl:
-            if let text = clipboardText()?.split(whereSeparator: \.isNewline).first.map(String.init) {
-                bar.type(text)
-                runFind()
-            }
-        case 0x46 where ctrl: bar.fieldSelected = true
-        default:
-            if ctrl { return nil }
-            if bar.edit(key, ctrl: ctrl) { runFind() }
-            invalidate()
-            // Characters come as WM_CHAR.
-            return [Win.VK_BACK, Win.VK_DELETE, Win.VK_LEFT, Win.VK_RIGHT, Win.VK_HOME, Win.VK_END].contains(key)
+        guard let findBar else { return nil }
+        switch findBar.bar.key(key, shift: shift, ctrl: ctrl, paste: { clipboardText() }, copy: { setClipboard($0) }) {
+        case .handled: invalidate()
+        case .changed: runFind()
+        case .step(let d): stepFind(d)
+        case .close: closeFind()
+        case .pass: return ctrl ? nil : false
         }
-        invalidate()
         return true
     }
 
     func findTyped(_ unit: UInt16) {
-        guard let bar = findBar, unit >= 0x20, unit != 0x7F, let scalar = Unicode.Scalar(unit) else { return }
-        bar.type(String(Character(scalar)))
+        guard let findBar, unit >= 0x20, unit != 0x7F, let scalar = Unicode.Scalar(unit) else { return }
+        findBar.bar.type(String(Character(scalar)))
         runFind()
+    }
+
+    /// Alt+C, W or R with the bar open: a toggle flipped, and the search again.
+    func findAltKey(_ key: Int32) -> Bool {
+        guard findBar != nil, FindBar.flip(key) else { return false }
+        runFind()
+        return true
     }
 
     /// The pointer over the bar: true when it's taken. A press elsewhere in the terminal gives it the keyboard back.
     func findMouse(_ message: UINT, x: Float, y: Float) -> Bool {
-        guard let bar = findBar else { return false }
+        guard let findBar else { return false }
+        let bar = findBar.bar
         let part = bar.part(atX: x, y: y)
         if part != bar.hovered { bar.hovered = part; invalidate() }
         guard let part else {
             if message == Win.WM_LBUTTONDOWN && bar.focused { bar.focused = false; invalidate() }
             return false
         }
-        if message == Win.WM_LBUTTONDOWN {
-            bar.focused = true
-            if part == .field { bar.fieldSelected = false; bar.field.move(to: bar.field.text.count) }
+        if message == Win.WM_LBUTTONDOWN || message == Win.WM_LBUTTONDBLCLK {
+            bar.press(part, double: message == Win.WM_LBUTTONDBLCLK)
             invalidate()
         }
-        if message == Win.WM_LBUTTONDBLCLK && part == .field { bar.fieldSelected = true; invalidate() }
         if message == Win.WM_LBUTTONUP {
-            switch part {
-            case .previous: stepFind(-1)
-            case .next: stepFind(1)
+            switch bar.release(part) {
+            case .changed: runFind()
+            case .step(let d): stepFind(d)
             case .close: closeFind()
             case .scope:
                 if let r = bar.rect(.scope) {
@@ -873,7 +869,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
                     }
                     showFindScopeMenu(items, r)
                 }
-            default: break
+            case .none: break
             }
         }
         return true

@@ -99,6 +99,20 @@ enum CoreSelfTest {
                   && m.map { EditorFind.replacement("$2", for: $0, in: mail, e!, regex: false) } == "$2")
         }
         do {
+            // Find in the terminal with VS Code's toggles (Windows' bar), through the file editor's matching.
+            let (t, _) = make(40, 5)
+            feed(t, "Cat cat concat\r\ncat.dog (cat)\r\n")
+            func count(_ q: String, _ o: EditorFindOptions) -> Int? { (try? TerminalSearch.matches(q, in: t, scope: .all, options: o))?.count }
+            check("terminal find: ignores case, as the toggle's off", count("cat", EditorFindOptions()) == 5)
+            check("terminal find: match case", count("Cat", EditorFindOptions(matchCase: true)) == 1)
+            check("terminal find: whole word", count("cat", EditorFindOptions(wholeWord: true)) == 4)
+            check("terminal find: a regular expression, and its columns", count("c.t$", EditorFindOptions(regex: true)) == 1
+                  && (try? TerminalSearch.matches("^cat", in: t, scope: .all, options: EditorFindOptions(regex: true)))?.contains(SearchMatch(line: t.firstAbs + 1, start: 0, end: 2)) == true)
+            check("terminal find: a regular expression that doesn't parse throws", count("(", EditorFindOptions(regex: true)) == nil)
+            check("terminal find: the Mac's way, case only with a capital", TerminalSearch.matches("cat", in: t, scope: .all).count == 5
+                  && TerminalSearch.matches("Cat", in: t, scope: .all).count == 1)
+        }
+        do {
             // Logs, line by line as an editor draws them (Windows): a stack trace takes its exception's level, from wherever
             // the drawing starts.
             let log = ["2026-11-08 10:00:00 INFO  app.Main - started",
