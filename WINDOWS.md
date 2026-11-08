@@ -49,13 +49,33 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
   - Ctrl+B and Ctrl+Alt+B show the left and right sidebars, and Ctrl+Shift+B pins the left one to its folder.
   - Splits: Ctrl+Alt+D splits right, Ctrl+Shift+D moves a tab to the other column, Ctrl+Alt+W closes the split. Ctrl+D
     stays the shell's (end of input), unlike the Mac's ⌘D.
-  - Ctrl+Shift+O is Go to Folder, Ctrl+Shift+F Search in Project Folder, Ctrl+Shift+G Git Changes, and Ctrl+click opens
+  - Ctrl+Shift+O is Go to Folder, Ctrl+Shift+F Search in Project Folder, Ctrl+Shift+G Git Graph and Ctrl+Shift+S Git Changes (the Mac's
+    ⌃⌘G and ⌃⌘S), Ctrl+Shift+R restarts, and Ctrl+click opens
     a link.
-  - In a sidebar, Explorer's keys: F2 renames, Delete sends to the Recycle Bin, Ctrl+C, X and V copy, cut and paste
-    (with Explorer too), Ctrl+Shift+C copies the path and Ctrl+Shift+N makes a folder.
+  - In a sidebar, the Mac's and Explorer's keys: Enter or F2 renames, Space or Ctrl+Down shows the file, Delete sends to
+    the Recycle Bin, Ctrl+C, X and V copy, cut and paste (with Explorer too), Ctrl+Shift+C copies the path and
+    Ctrl+Shift+N makes a folder. A click shows a file above the terminal; a double click opens it in its app.
+  - Commands, as the Mac's ⌘↑ ⌘↓ ⌘J ⇧⌘C ⌥⌘C ⌥⌘R: Ctrl+Up and Down step through finished commands (and each prompt of a
+    Claude Code session), Ctrl+J searches the prompts sent and commands run, Ctrl+Shift+C copies the command (a
+    selection, when there is one), Ctrl+Alt+C copies it with its output, and Ctrl+Alt+R runs it again. Shift+Enter makes
+    a new line in Claude Code and at a shell's prompt, sending the line feed Ctrl+J used to.
+- **Pages above the terminal:** as on the Mac, Git Graph, Git Changes, a commit's changes and files open in sub-tabs above
+  the tab's terminal, which stays below (the line between drags, and the strip's terminal button hides it). Clicking
+  them gives them the keyboard and clicking the terminal takes it back; Ctrl+W closes the page that has it. In Git
+  Graph, resting on a commit shows its card and clicking it opens its changes. Files are previews for now (text and
+  images); editing comes with milestone 7.
+- **Shared with the Mac, in `Sources/Core`:** syntax for JSON, YAML and XML (`Syntax.swift`: the Mac colors it in
+  AppKit, Windows draws it), Beautify (`Prettifier.swift`: XML through Foundation's XMLDocument on the Mac, re-indented
+  elsewhere), the kinds of file for icons (`FileKind.swift`), VS Code's languages by file name (`VSCodeLanguages.swift`),
+  git's models, Markdown parsing, and the emulator. The Mac's own files keep only what draws.
 - **Art:** `Tools/MakeWindowsArt.swift` renders the Mac's flower, tab prompt and app icon into `Sources/Windows/ArtData.swift`
   and `Support/Windows/Solanum.ico`, until the drawing itself is shared.
-- **Closing the last window:** it saves the session and exits, and the next launch restores it.
+- **Closing the last window:** it saves the session (`%APPDATA%\Solanum\session.json`: tabs, their folders, names, groups
+  and recent output, the split and the window's frame) and exits, and the next launch restores it. Closing the tabs one
+  by one starts over. ssh tabs come back on this PC, with what they showed.
+- **Restarting:** Ctrl+Shift+R restarts into the newest build with everything back (Ctrl+Alt+Shift+R starts fresh), as the
+  Mac's ⇧⌘R and ⌥⇧⌘R. `build.ps1` builds while Solanum runs, moving the running `Solanum.exe` aside, and
+  `.\build.ps1 -Restart` restarts it into the new build when done.
 - **Shells:** Solanum finds PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and each WSL distribution, and
   also takes a custom command. New Tab opens the default shell, a menu beside it opens any other, and Settings picks the
   default. A restored tab comes back in the shell it was using. Blocks and folder tracking use each shell's own hook:

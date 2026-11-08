@@ -46,6 +46,8 @@ final class PaletteModel {
     private(set) var query = ""
     /// In characters.
     private(set) var caret = 0
+    /// Where a selection in the field started; the caret is its other end. Nil when nothing's selected.
+    private(set) var anchor: Int?
     private(set) var rows: [PaletteItem] = []
     private(set) var selected = 0
     private(set) var scrollTop = 0
@@ -80,7 +82,68 @@ final class PaletteModel {
     func setQuery(_ text: String) {
         query = text.filter { !$0.isNewline }
         caret = query.count
+        anchor = nil
         refilter()
+    }
+
+    // MARK: Selecting
+
+    /// The characters selected in the field, if any.
+    var selection: Range<Int>? {
+        guard let anchor, anchor != caret else { return nil }
+        return min(anchor, caret)..<max(anchor, caret)
+    }
+
+    var selectedText: String? {
+        guard let r = selection else { return nil }
+        return String(Array(query)[r])
+    }
+
+    func selectAll() {
+        anchor = 0
+        caret = query.count
+        if selection == nil { anchor = nil }
+    }
+
+    /// The word around a character (a double-click), or the run of spaces there.
+    func selectWord(at index: Int) {
+        let chars = Array(query)
+        guard !chars.isEmpty else { return }
+        let i = min(max(index, 0), chars.count - 1)
+        let isWord: (Character) -> Bool = { $0.isLetter || $0.isNumber || $0 == "_" }
+        let kind = isWord(chars[i])
+        var start = i, end = i + 1
+        while start > 0, isWord(chars[start - 1]) == kind, chars[start - 1] != " " || !kind { start -= 1 }
+        while end < chars.count, isWord(chars[end]) == kind, chars[end] != " " || !kind { end += 1 }
+        anchor = start
+        caret = end
+    }
+
+    /// Takes out what's selected. False if nothing was.
+    @discardableResult
+    func deleteSelection() -> Bool {
+        guard let r = selection else { anchor = nil; return false }
+        var chars = Array(query)
+        chars.removeSubrange(r)
+        query = String(chars)
+        caret = r.lowerBound
+        anchor = nil
+        refilter()
+        return true
+    }
+
+    /// The start of the word before the caret, or the end of the one after it (Ctrl+Left and Ctrl+Right).
+    func wordBoundary(from position: Int, forward: Bool) -> Int {
+        let chars = Array(query)
+        var i = position
+        if forward {
+            while i < chars.count, chars[i] == " " { i += 1 }
+            while i < chars.count, chars[i] != " " { i += 1 }
+        } else {
+            while i > 0, chars[i - 1] == " " { i -= 1 }
+            while i > 0, chars[i - 1] != " " { i -= 1 }
+        }
+        return i
     }
 
     /// Works the rows out again for the same query (a folder's listing has come), keeping the selection where it can.
@@ -96,6 +159,8 @@ final class PaletteModel {
     // MARK: Typing
 
     func insert(_ text: String) {
+        // Typing over a selection replaces it.
+        deleteSelection()
         let clean = text.filter { !$0.isNewline }
         var chars = Array(query)
         chars.insert(contentsOf: clean, at: caret)
@@ -105,6 +170,7 @@ final class PaletteModel {
     }
 
     func deleteBackward(word: Bool = false) {
+        if deleteSelection() { return }
         guard caret > 0 else { return }
         var chars = Array(query)
         var start = caret - 1
@@ -120,6 +186,7 @@ final class PaletteModel {
 
     /// Everything before the caret, as ⌘⌫ does on the Mac.
     func deleteToStart() {
+        if deleteSelection() { return }
         guard caret > 0 else { return }
         query = String(query.dropFirst(caret))
         caret = 0
@@ -127,6 +194,7 @@ final class PaletteModel {
     }
 
     func deleteForward() {
+        if deleteSelection() { return }
         guard caret < query.count else { return }
         var chars = Array(query)
         chars.remove(at: caret)
@@ -134,8 +202,21 @@ final class PaletteModel {
         refilter()
     }
 
-    func moveCaret(by delta: Int) { caret = min(max(caret + delta, 0), query.count) }
-    func moveCaret(to position: Int) { caret = min(max(position, 0), query.count) }
+    /// With `extend` (Shift held), the selection grows or shrinks from where it started; without, a selection collapses
+    /// to its start or end, as text fields do, and the caret moves from there.
+    func moveCaret(by delta: Int, extend: Bool = false) {
+        if !extend, let r = selection {
+            caret = delta < 0 ? r.lowerBound : r.upperBound
+            anchor = nil
+            return
+        }
+        moveCaret(to: caret + delta, extend: extend)
+    }
+
+    func moveCaret(to position: Int, extend: Bool = false) {
+        if extend { if anchor == nil { anchor = caret } } else { anchor = nil }
+        caret = min(max(position, 0), query.count)
+    }
     var textBeforeCaret: String { String(query.prefix(caret)) }
 
     // MARK: Moving through the list
@@ -146,8 +227,9 @@ final class PaletteModel {
         let step = delta < 0 ? -1 : 1
         while rows.indices.contains(next), rows[next].isHeader { next += step }
         guard rows.indices.contains(next) else {
-            // A page past the end lands on the last or first row there is, rather than nowhere.
-            if abs(delta) > 1 { select(delta < 0 ? firstSelectable : lastSelectable) }
+            // A page past the end lands on the last or first row there is, rather than nowhere; one step past either end
+            // goes round to the other.
+            if abs(delta) > 1 { select(delta < 0 ? firstSelectable : lastSelectable) } else { select(delta < 0 ? lastSelectable : firstSelectable) }
             return
         }
         select(next)

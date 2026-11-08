@@ -1,2 +1,9 @@
 // The app's icon, made by Tools/MakeWindowsArt.swift from the Mac's icon.
 1 ICON "Solanum.ico"
+
+// The Quantum Moon's reading (see QuantumMoon.swift), from the Mac's resources: the Nomai script read, the quantum
+// symbol above it, and the font its words are typed in.
+BELLS_SVG RCDATA "..\Bells.svg"
+SOLANUM_SVG RCDATA "..\Solanum.svg"
+QUANTUM_MOON_PNG RCDATA "..\QuantumMoon.png"
+SPACE_MONO_TTF RCDATA "..\Fonts\SpaceMono-Regular.ttf"

@@ -72,7 +72,12 @@ final class MenuModel {
     func moveHighlight(by delta: Int) {
         var next = highlighted.map { $0 + delta } ?? (delta > 0 ? 0 : items.count - 1)
         while items.indices.contains(next), !items[next].isEnabled { next += delta }
-        guard items.indices.contains(next) else { return }
+        // Past either end, round to the other's first item that can be picked.
+        if !items.indices.contains(next) {
+            let order = delta > 0 ? Array(items.indices) : Array(items.indices.reversed())
+            guard let wrapped = order.first(where: { items[$0].isEnabled }) else { return }
+            next = wrapped
+        }
         highlighted = next
         let r = rect(next)
         if r.y < frame.y { scrollBy(r.y - frame.y - padding) }

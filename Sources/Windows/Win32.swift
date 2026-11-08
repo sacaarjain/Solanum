@@ -7,6 +7,8 @@ enum Win {
     static let WM_KEYDOWN: UINT = 0x0100, WM_CHAR: UINT = 0x0102, WM_SYSKEYDOWN: UINT = 0x0104, WM_SYSCHAR: UINT = 0x0106
     static let WM_KEYUP: UINT = 0x0101, WM_SYSKEYUP: UINT = 0x0105
     static let WM_TIMER: UINT = 0x0113
+    static let WM_ACTIVATEAPP: UINT = 0x001C
+    static let WM_MOVE: UINT = 0x0003, WM_SETTINGCHANGE: UINT = 0x001A, WM_DISPLAYCHANGE: UINT = 0x007E
     static let WM_SETCURSOR: UINT = 0x0020, WM_NCCALCSIZE: UINT = 0x0083, WM_NCHITTEST: UINT = 0x0084
     static let WM_NCMOUSEMOVE: UINT = 0x00A0, WM_NCLBUTTONDOWN: UINT = 0x00A1, WM_NCLBUTTONUP: UINT = 0x00A2
     static let WM_MOUSELEAVE: UINT = 0x02A3, WM_NCMOUSELEAVE: UINT = 0x02A2
@@ -20,6 +22,8 @@ enum Win {
     static let WM_EXITED: UINT = 0x8002
     /// Work handed over from another thread.
     static let WM_RUN: UINT = 0x8003
+    /// From `Solanum.exe --restart-running`: restart into the new build.
+    static let WM_RESTART: UINT = 0x8004
 
     static let VK_BACK: Int32 = 0x08, VK_TAB: Int32 = 0x09, VK_RETURN: Int32 = 0x0D, VK_SHIFT: Int32 = 0x10
     static let VK_CONTROL: Int32 = 0x11, VK_MENU: Int32 = 0x12, VK_ESCAPE: Int32 = 0x1B, VK_SPACE: Int32 = 0x20
@@ -49,6 +53,7 @@ enum Win {
     static let TME_LEAVE: DWORD = 0x02, TME_NONCLIENT: DWORD = 0x10
     static let arrowCursor = UnsafePointer<WCHAR>(bitPattern: 32512)
     static let resizeCursor = UnsafePointer<WCHAR>(bitPattern: 32644)
+    static let resizeUpDownCursor = UnsafePointer<WCHAR>(bitPattern: 32645)
     static let handCursor = UnsafePointer<WCHAR>(bitPattern: 32649)
     /// Resource 1 in Support/Windows/Solanum.rc.
     static let appIcon = UnsafePointer<WCHAR>(bitPattern: 1)

@@ -8,6 +8,16 @@ import WinSDK
 final class TerminalWindow {
     private static let className = wide("SolanumTerminalWindow")
     private static var windows: [HWND: TerminalWindow] = [:]
+    /// The window that last had the keyboard, for what's opened from elsewhere (Settings).
+    private static weak var lastFocused: TerminalWindow?
+
+    /// A file in a tab of its own in the Solanum window used last, brought to the front: a theme's file, from Settings.
+    static func openFileTabInFront(_ path: String) {
+        guard let w = lastFocused ?? windows.values.first, !w.panes.isEmpty else { return }
+        w.openFileTab(path, column: w.activePane.column)
+        if IsIconic(w.hwnd) { ShowWindow(w.hwnd, 9) }
+        SetForegroundWindow(w.hwnd)
+    }
 
     private(set) var hwnd: HWND!
     private(set) var canvas: Canvas!
@@ -51,6 +61,8 @@ final class TerminalWindow {
     private var otherActiveID: UInt?
     /// How far the right column's tabs are scrolled.
     private var rightTabScroll: Float = 0
+    /// The left column's share of the room while split, set by dragging the band between the columns.
+    private var splitFraction: Float = 0.5
     /// A press on a tab, which may turn into dragging it.
     private var tabPress: (index: Int, grab: Float, startX: Float, dragging: Bool)?
     private var draggedX: Float = 0
@@ -88,7 +100,7 @@ final class TerminalWindow {
     }
 
     /// Shows the window with a shell in it. Nil, with `failure` set, if it can't.
-    init?(commandLine: String, cols: Int = 110, rows: Int = 32, activate: Bool = true, failure: inout String) {
+    init?(commandLine: String, cols: Int = 110, rows: Int = 32, activate: Bool = true, session: SavedSession? = nil, failure: inout String) {
         self.commandLine = commandLine
         let saved = Self.loadSidebarSettings()
         left = FileSidebar(visible: saved.leftVisible, width: saved.leftWidth)
@@ -119,6 +131,7 @@ final class TerminalWindow {
         TerminalPalette.boldIsBright = AppSettings.shared.boldIsBright
         applyFont(to: canvas)
         canvas.padding = scaledPadding()
+        applyBackdrop()
         AppSettings.shared.onChange.append { [weak self] in self?.settingsChanged() }
         Self.windows[created] = self
         askpass = Askpass.Server(post: { [weak self] work in self?.runOnWindowThread(work) })
@@ -132,13 +145,14 @@ final class TerminalWindow {
         sizeWindow(toCols: cols, rows: rows)
         // Takes the title bar's place out of the frame, now that it's listening.
         SetWindowPos(created, nil, 0, 0, 0, 0, Win.SWP_NOMOVE | Win.SWP_NOSIZE | Win.SWP_NOZORDER | Win.SWP_NOACTIVATE | Win.SWP_FRAMECHANGED)
-        guard addPane() else {
+        if let session { restore(session) }
+        guard !panes.isEmpty || addPane() else {
             failure = "Couldn't start the shell: \(commandLine.prefix(60))"
             Self.windows[created] = nil
             DestroyWindow(created)
             return nil
         }
-        ShowWindow(created, activate ? Win.SW_SHOW : Win.SW_SHOWNOACTIVATE)
+        ShowWindow(created, session?.maximized == true ? Win.SW_MAXIMIZE : activate ? Win.SW_SHOW : Win.SW_SHOWNOACTIVATE)
         _ = SetTimer(created, 1, 100, nil)
     }
 
@@ -179,8 +193,8 @@ final class TerminalWindow {
         }
     }
 
-    /// Where a tab's terminal is drawn.
-    func area(for pane: TerminalPane) -> UIRect { isSplit && pane.column == 1 ? rightTerminalArea : terminalArea }
+    /// Where a tab's terminal is drawn: its column, under any pages open above it.
+    func area(for pane: TerminalPane) -> UIRect { editorSplit(for: pane).terminal }
 
     private func grid(for area: UIRect) -> (cols: Int, rows: Int) {
         let m = canvas.metrics
@@ -203,6 +217,21 @@ final class TerminalWindow {
     }
 
     /// Moves a tab to the other column, splitting the window if it isn't; it can't be the only tab.
+    /// Splits the window with `pane` alone on the left and every other tab on the right: a tab dragged onto the left
+    /// half of the terminals.
+    func splitToLeft(_ pane: TerminalPane) {
+        guard !isSplit, panes.count > 1 else { return }
+        let previous = activePane
+        panes.forEach { $0.column = 1 }
+        pane.column = 0
+        pane.group = nil
+        // The right column shows the tab that was showing (or, if that's the one moving, the one beside it).
+        otherActiveID = previous !== pane ? previous.id : panes.first { $0 !== pane }?.id
+        normalizeColumns()
+        layoutChanged()
+        if let i = panes.firstIndex(where: { $0 === pane }) { activate(i) }
+    }
+
     func moveToOtherColumn(_ pane: TerminalPane, at index: Int? = nil) {
         guard isSplit || panes.count > 1 else { return }
         let from = pane.column
@@ -256,9 +285,126 @@ final class TerminalWindow {
         TerminalPalette.boldIsBright = settings.boldIsBright
         applyFont(to: canvas)
         canvas.padding = scaledPadding()
+        applyBackdrop()
         panes.forEach { $0.terminal.setScrollbackLimit(settings.scrollback) }
         layoutChanged()
         detailsChanged()
+    }
+
+    /// What the window was last told about showing the desktop through it.
+    private var appliedBackdrop: (transparent: Bool, blur: Bool)?
+
+    /// The background as solid as asked, as on the Mac: below 1 the desktop shows through, blurred by Windows 11's
+    /// acrylic if blur is on. Text and everything drawn on the background stay solid.
+    private func applyBackdrop() {
+        let settings = AppSettings.shared, opacity = Float(settings.opacity)
+        // A theme's own picture comes first: the window shows it rather than the desktop.
+        if let image = settings.theme.image, let url = ThemeFiles.imageURL(image), FileManager.default.fileExists(atPath: url.path) {
+            sol_canvas_set_opacity(canvas.raw, Float(image.tint))
+            showThemeImage(url, image)
+            if appliedBackdrop.map({ $0 != (false, false) }) ?? true {
+                appliedBackdrop = (false, false)
+                sol_window_set_backdrop(UnsafeMutableRawPointer(hwnd), 0, 0)
+            }
+            return
+        }
+        if themeImageSize != nil {
+            themeImageSize = nil
+            wallpaperKey = nil
+            sol_canvas_set_wallpaper_zoom(canvas.raw, 1)
+            sol_canvas_set_wallpaper(canvas.raw, nil, 0, 0, 0, 0xFFFFFFFF, 0)
+        }
+        let wallpaper = opacity < 1 && settings.showsWallpaper
+        sol_canvas_set_opacity(canvas.raw, opacity)
+        if wallpaper {
+            followWallpaper(recheck: true)
+        } else if wallpaperKey != nil {
+            wallpaperKey = nil
+            wallpaperMonitor = nil
+            sol_canvas_set_wallpaper(canvas.raw, nil, 0, 0, 0, 0xFFFFFFFF, 0)
+        }
+        // With the wallpaper drawn in, the window itself is solid: the system has nothing to do.
+        let wanted = (transparent: opacity < 1 && !wallpaper, blur: settings.blur)
+        guard appliedBackdrop.map({ $0 != wanted }) ?? true else { return }
+        appliedBackdrop = wanted
+        sol_window_set_backdrop(UnsafeMutableRawPointer(hwnd), wanted.transparent ? 1 : 0, wanted.blur ? 1 : 0)
+    }
+
+    /// The theme's picture's size as it was made, while one is showing (see `showThemeImage`).
+    private var themeImageSize: (width: Int32, height: Int32)?
+
+    /// A theme's picture behind the window, blurred as the theme has it, made again only when it's changed.
+    private func showThemeImage(_ url: URL, _ image: ThemeImage) {
+        let modified = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let blur = Float(image.blur) * scale
+        let color = HexColor(AppSettings.shared.theme.background)?.rgb ?? 0
+        let key = "image|\(url.path)|\(modified)|\(blur)|\(color)"
+        if key != wallpaperKey {
+            wallpaperKey = key
+            wallpaperMonitor = nil
+            let made = wide(url.path).withUnsafeBufferPointer { path -> (Int32, Int32) in
+                var w: Int32 = 0, h: Int32 = 0
+                guard sol_image_file_size(canvas.raw, path.baseAddress, &w, &h) >= 0, w > 0, h > 0 else { return (0, 0) }
+                // Big pictures are made no bigger than a large screen: more wouldn't show.
+                let shrink = min(1, 2560 / Float(max(w, h)))
+                let size = (Int32(Float(w) * shrink), Int32(Float(h) * shrink))
+                sol_canvas_set_wallpaper(canvas.raw, path.baseAddress, size.0, size.1, 2, color, blur)
+                return size
+            }
+            themeImageSize = made.0 > 0 ? (made.0, made.1) : nil
+        }
+        fitThemeImage()
+    }
+
+    /// The theme's picture filling the window, cropped to it, centered.
+    private func fitThemeImage() {
+        guard let size = themeImageSize else { return }
+        let w = Float(clientWidth), h = Float(clientHeight)
+        let zoom = max(w / Float(size.width), h / Float(size.height))
+        sol_canvas_set_wallpaper_zoom(canvas.raw, zoom)
+        sol_canvas_set_wallpaper_origin(canvas.raw, ((w - Float(size.width) * zoom) / 2).rounded(), ((h - Float(size.height) * zoom) / 2).rounded())
+        invalidate()
+    }
+
+    /// The wallpaper drawn in (see `followWallpaper`): what it was made from, and where its monitor is on the screen.
+    private var wallpaperKey: String?
+    private var wallpaperArea: (x: Int32, y: Int32) = (0, 0)
+    private var wallpaperMonitor: HMONITOR?
+
+    /// Keeps the wallpaper behind the window lined up with the screen, so the window seems to show the desktop: read
+    /// again when asked (`recheck`) or the window's moved to another monitor, and made again only if it's changed.
+    private func followWallpaper(recheck: Bool = false) {
+        let settings = AppSettings.shared
+        guard themeImageSize == nil, settings.opacity < 1, settings.showsWallpaper, recheck || wallpaperKey != nil else { return }
+        let monitor = MonitorFromWindow(hwnd, DWORD(2))
+        if recheck || monitor != wallpaperMonitor {
+            var info = MONITORINFO()
+            info.cbSize = DWORD(MemoryLayout<MONITORINFO>.size)
+            guard let monitor, GetMonitorInfoW(monitor, &info) else { return }
+            let center = ((info.rcMonitor.left + info.rcMonitor.right) / 2, (info.rcMonitor.top + info.rcMonitor.bottom) / 2)
+            var path = [UInt16](repeating: 0, count: 2048), area = [Int32](repeating: 0, count: 4)
+            var position: Int32 = 4, color: UInt32 = 0
+            guard sol_wallpaper_at(center.0, center.1, &path, Int32(path.count), &area, &position, &color) >= 0 else { return }
+            let file = String(decoding: path.prefix { $0 != 0 }, as: UTF16.self)
+            // A slideshow changes the picture in the same file.
+            let modified = ((try? FileManager.default.attributesOfItem(atPath: file))?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            let blur = settings.blur ? (48 * scale).rounded() : 0
+            let key = "\(file)|\(modified)|\(area)|\(position)|\(color)|\(blur)"
+            if key != wallpaperKey {
+                wallpaperKey = key
+                if file.isEmpty {
+                    sol_canvas_set_wallpaper(canvas.raw, nil, area[2], area[3], position, color, blur)
+                } else {
+                    _ = wide(file).withUnsafeBufferPointer { sol_canvas_set_wallpaper(canvas.raw, $0.baseAddress, area[2], area[3], position, color, blur) }
+                }
+            }
+            wallpaperArea = (area[0], area[1])
+            wallpaperMonitor = monitor
+        }
+        var origin = POINT()
+        ClientToScreen(hwnd, &origin)
+        sol_canvas_set_wallpaper_origin(canvas.raw, Float(wallpaperArea.x - origin.x), Float(wallpaperArea.y - origin.y))
+        invalidate()
     }
 
     private var layout: WindowLayout { layout(leftWidth: (sidebarWidth(left) * left.shown).rounded()) }
@@ -266,7 +412,7 @@ final class TerminalWindow {
     private func layout(leftWidth: Float) -> WindowLayout {
         WindowLayout(width: Float(clientWidth), height: Float(clientHeight), scale: scale, tabCount: panes.count, tabScroll: tabScroll,
                      chips: chipWidths(), hiddenTabs: hiddenTabs, leftWidth: leftWidth, rightWidth: rightIsShowing ? sidebarWidth(right) : 0,
-                     showsRightToggle: isSplit, splitCount: splitCount, rightTabScroll: rightTabScroll)
+                     showsRightToggle: isSplit, splitCount: splitCount, rightTabScroll: rightTabScroll, splitFraction: splitFraction)
     }
 
     /// The layout once the left sidebar has finished sliding.
@@ -298,6 +444,8 @@ final class TerminalWindow {
     private var slideStart = Date.distantPast
     private var slideFrom: Float = 0
     private static let slideTimer: UINT_PTR = 5
+    /// While the Quantum Moon's reading animates.
+    private static let readingTimer: UINT_PTR = 6
 
     /// Windows' own "Animation effects" setting, which turns off motion like this.
     var animatesSidebars: Bool {
@@ -416,7 +564,14 @@ final class TerminalWindow {
         }
         activeIndex = i
         syncLeftSidebar()
-        panes[i].setFocused(isFocused && !sidebarHasFocus)
+        panes[i].setFocused(isFocused && !sidebarHasFocus && !panes[i].editorFocused)
+        // A restored tab's agent or ssh session carries on once it's shown (the other column's too, while split).
+        for pane in visiblePanes {
+            if let command = pane.resumeOnShow {
+                pane.resumeOnShow = nil
+                pane.pendingCommand = command
+            }
+        }
         settleTabScroll()
         detailsChanged()
     }
@@ -521,6 +676,11 @@ final class TerminalWindow {
 
     private func chrome(on target: Canvas, layout: WindowLayout) -> WindowChrome {
         var chrome = WindowChrome(canvas: target, layout: layout, tabs: panes.map(\.tabTitle), activeTab: activeIndex)
+        chrome.tabIcons = panes.map { p -> TabIcon in
+            if let agent = p.agent { return .agent(agent) }
+            if !p.showsTerminal, p.editors.indices.contains(p.activeEditor) { return .file(p.editors[p.activeEditor].glyph) }
+            return .prompt
+        }
         chrome.hovered = hovered
         chrome.pressed = pressed
         chrome.maximized = IsZoomed(hwnd)
@@ -557,11 +717,35 @@ final class TerminalWindow {
             }
         }
         chrome.themeName = AppSettings.shared.themeName.uppercased()
-        chrome.showsThemeIcon = AppSettings.shared.themeIcon
+        // As on the Mac: a planet theme's planet, Solanum Default's flower, and nothing for the rest. The Quantum Moon
+        // may have wandered off (see QuantumMoon), leaving its name.
+        let theme = AppSettings.shared.themeName, custom = AppSettings.shared.customThemes.contains { $0.name == theme }
+        chrome.themePlanet = AppSettings.shared.themePlanet
+        if QuantumMoon.active && !QuantumMoon.at(.home) { chrome.themePlanet = nil }
+        chrome.showsThemeIcon = AppSettings.shared.themeIcon && (chrome.themePlanet != nil || (!custom && theme == ThemeSpecs.defaultName))
+        chrome.moonInCorner = QuantumMoon.at(.flower)
+        chrome.moonByFolders = QuantumMoon.at(.folders)
+        chrome.moonHovered = moonHovered
         chrome.themeHovered = themeHovered
         if let press = tabPress, press.dragging {
             chrome.draggedTab = press.index
             chrome.draggedX = draggedX
+        }
+        chrome.dropMarker = tabDropMarker
+        if let p = fileDragPoint, let spot = tabBarSpot(atX: p.x, y: p.y) {
+            chrome.dropMarker = tabBarMarker(spot)
+            chrome.dropMarkerColumn = spot.column
+        }
+        if let spot = tabStripTarget {
+            chrome.dropMarker = tabBarMarker(spot)
+            chrome.dropMarkerColumn = spot.column
+        }
+        // A tab lifted out of its strip, following the pointer, leaves its place empty.
+        chrome.draggedTabLifted = tabPress?.dragging == true && dragGhost != nil
+        if let g = tabDropChip { chrome.dropChip = panes.firstIndex { $0.group === g } }
+        if let shape = chipDragShape {
+            chrome.liftedGroup = shape.lifted
+            chrome.dropMarker = shape.marker
         }
         return chrome
     }
@@ -598,23 +782,43 @@ final class TerminalWindow {
         defer { EndPaint(hwnd, &ps) }
         guard !panes.isEmpty, sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
         chrome(on: canvas, layout: layout).draw()
-        for pane in visiblePanes {
-            if let panel = pane.panel { panel.draw(on: canvas, in: area(for: pane), scale: scale) } else { pane.draw(cursorShown: pane === activePane ? cursorShown : true, style: cursorStyleCode) }
-        }
+        for pane in visiblePanes { drawColumn(pane, on: canvas, snapshot: false) }
         drawDivider(on: canvas)
+        drawSplitDrop(on: canvas)
         drawSidebars(on: canvas, layout: layout)
         drawPalette(on: canvas)
+        drawReading(on: canvas)
+        drawDragGhost(on: canvas)
         if let menu { MenuView(canvas: canvas, menu: menu).draw() }
+        if let dialog { DialogView(canvas: canvas, dialog: dialog, width: Float(clientWidth), height: Float(clientHeight), scale: scale).draw() }
         _ = sol_canvas_end(canvas.raw)
         paints += 1
         lastDrawn = Date()
     }
 
-    /// The line between the columns, while split.
+    /// The band between the columns, while split, with its grip.
     private func drawDivider(on target: Canvas) {
-        guard isSplit else { return }
-        let l = layout
-        sol_canvas_fill_rect(target.raw, l.divider, l.tabBarHeight, 1, l.terminal.height, TerminalPalette.foreground, 0.12)
+        guard let band = layout.columnBand else { return }
+        Self.drawBand(band, vertical: true, on: target, scale: scale, active: draggingEdge == .columnDivider)
+    }
+
+    /// A band (not a hairline) between the columns, or between a tab's pages and its terminal, with a grip to show it
+    /// can be dragged, as on the Mac.
+    static func drawBand(_ r: UIRect, vertical: Bool, on target: Canvas, scale: Float, active: Bool = false) {
+        let c = target.raw, fg = TerminalPalette.foreground
+        sol_canvas_backdrop_rect(c, r.x, r.y, r.width, r.height, TerminalPalette.chrome)
+        if vertical {
+            sol_canvas_fill_rect(c, r.x, r.y, 1, r.height, fg, 0.10)
+            sol_canvas_fill_rect(c, r.maxX - 1, r.y, 1, r.height, fg, 0.10)
+        } else {
+            sol_canvas_fill_rect(c, r.x, r.y, r.width, 1, fg, 0.10)
+            sol_canvas_fill_rect(c, r.x, r.maxY - 1, r.width, 1, fg, 0.10)
+        }
+        let midX = r.x + r.width / 2, midY = r.y + r.height / 2
+        for i in -1...1 {
+            let d = Float(i) * 7 * scale
+            sol_canvas_fill_ellipse(c, vertical ? midX : midX + d, vertical ? midY + d : midY, 1.5 * scale, 1.5 * scale, fg, active ? 0.6 : 0.35)
+        }
     }
 
     /// What the window shows, to a PNG. For tests.
@@ -625,22 +829,15 @@ final class TerminalWindow {
         bitmap.terminalArea = canvas.terminalArea
         guard sol_canvas_begin(bitmap.raw, TerminalPalette.background) >= 0 else { return false }
         chrome(on: bitmap, layout: layout).draw()
-        for pane in visiblePanes {
-            bitmap.terminalArea = area(for: pane)
-            if let panel = pane.panel {
-                panel.draw(on: bitmap, in: area(for: pane), scale: scale)
-                continue
-            }
-            var renderer = TerminalRenderer(canvas: bitmap, terminal: pane.terminal)
-            renderer.scrollOffset = pane.scrollOffset
-            renderer.focused = pane === activePane
-            renderer.drawContents()
-            pane.drawOverlays(on: bitmap)
-        }
+        for pane in visiblePanes { drawColumn(pane, on: bitmap, snapshot: true) }
         drawDivider(on: bitmap)
+        drawSplitDrop(on: bitmap)
         drawSidebars(on: bitmap, layout: layout)
         drawPalette(on: bitmap)
+        drawReading(on: bitmap)
+        drawDragGhost(on: bitmap)
         if let menu { MenuView(canvas: bitmap, menu: menu).draw() }
+        if let dialog { DialogView(canvas: bitmap, dialog: dialog, width: Float(clientWidth), height: Float(clientHeight), scale: scale).draw() }
         guard sol_canvas_end(bitmap.raw) >= 0 else { return false }
         return bitmap.savePNG(to: path)
     }
@@ -675,6 +872,7 @@ final class TerminalWindow {
         case Win.WM_NCMOUSELEAVE, Win.WM_MOUSELEAVE:
             tracking = false
             setHovered(nil, nonClient: false)
+            if !panes.isEmpty { leaveEditors() }
             return 0
         case Win.WM_NCLBUTTONDOWN:
             if naming != nil { finishNaming(commit: true) }
@@ -697,7 +895,17 @@ final class TerminalWindow {
             return setCursor(wParam, lParam)
         case Win.WM_SIZE:
             resized(width: Int(lParam & 0xFFFF), height: Int((lParam >> 16) & 0xFFFF))
+            followWallpaper()
+            fitThemeImage()
             return 0
+        case Win.WM_MOVE:
+            // The wallpaper stays put on the screen as the window moves over it.
+            followWallpaper()
+            return 0
+        case Win.WM_SETTINGCHANGE, Win.WM_DISPLAYCHANGE:
+            // A new wallpaper, or monitors added, moved or resized.
+            followWallpaper(recheck: true)
+            return DefWindowProcW(hwnd, message, wParam, lParam)
         case Win.WM_DPICHANGED:
             applyFont(to: canvas)
             canvas.padding = scaledPadding()
@@ -707,9 +915,10 @@ final class TerminalWindow {
             return 0
         case Win.WM_SETFOCUS, Win.WM_KILLFOCUS:
             isFocused = message == Win.WM_SETFOCUS
+            if isFocused { Self.lastFocused = self }
             // Going to another window keeps the name typed so far, as clicking elsewhere does.
             if !isFocused && naming != nil { finishNaming(commit: true) }
-            if !panes.isEmpty { activePane.setFocused(isFocused) }
+            if !panes.isEmpty { activePane.setFocused(isFocused && !activePane.editorFocused) }
             invalidate()
             return 0
         case Win.WM_OUTPUT:
@@ -736,16 +945,20 @@ final class TerminalWindow {
                 activePane.runQuietWork()
             } else if wParam == WPARAM(Self.slideTimer) {
                 slideStep()
+            } else if wParam == WPARAM(Self.readingTimer) {
+                readingTick()
             } else {
-                panes.forEach { $0.tick() }
+                // An agent starting, stopping or changing what it's doing shows on its tab.
+                if panes.map({ $0.tick() }).contains(true) { invalidate() }
+                for pane in visiblePanes { pane.panel?.tick() }
                 lookForChanges()
                 updateBlink()
                 onTick?()
             }
             return 0
         case Win.WM_CHAR:
-            if menu != nil {
-                // A menu takes no text.
+            if menu != nil || dialog != nil {
+                // A menu or a question takes no text.
             } else if !panes.isEmpty, activePane.hasQuestion {
                 activePane.questionTyped(UInt16(truncatingIfNeeded: wParam))
             } else if let sidebar = editingSidebar {
@@ -763,7 +976,7 @@ final class TerminalWindow {
                 }
             } else if palette != nil {
                 paletteTyped(UInt16(truncatingIfNeeded: wParam))
-            } else if !panes.isEmpty, let panel = activePane.panel {
+            } else if !panes.isEmpty, let panel = activePane.focusedPanel {
                 let unit = UInt16(truncatingIfNeeded: wParam)
                 if unit >= 0x20, unit != 0x7F, let scalar = Unicode.Scalar(unit) { panel.typed(String(Character(scalar))) }
             } else if !panes.isEmpty {
@@ -775,8 +988,15 @@ final class TerminalWindow {
         case Win.WM_SYSCHAR:
             if palette == nil && !panes.isEmpty { activePane.typed(UInt16(truncatingIfNeeded: wParam), meta: true) }
             return 0
+        case Win.WM_ACTIVATEAPP:
+            // Solanum came back to the front: the Quantum Moon may have moved while nobody was looking.
+            if wParam != 0, QuantumMoon.cameToFront() { Self.windows.values.forEach { $0.invalidate() } }
+            // A slideshow may have moved on while Solanum was in the background.
+            if wParam != 0 { followWallpaper(recheck: true) }
+            return 0
         case Win.WM_LBUTTONDOWN, Win.WM_LBUTTONUP, Win.WM_LBUTTONDBLCLK, Win.WM_MOUSEMOVE,
              Win.WM_RBUTTONDOWN, Win.WM_RBUTTONUP, Win.WM_MBUTTONDOWN, Win.WM_MBUTTONUP:
+            if touchMouse(message, lParam) { return 0 }
             clientMouse(message, wParam, lParam)
             return 0
         case Win.WM_MOUSEHWHEEL:
@@ -810,15 +1030,33 @@ final class TerminalWindow {
             } else {
                 // The column under the pointer scrolls, whichever has the keyboard.
                 let under = pane(atX: x)
-                if let panel = under.panel {
-                    let notches = Int(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Int(Win.WHEEL_DELTA)
-                    panel.wheel(notches: notches == 0 ? (Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF) > 0 ? 1 : -1) : notches, x: x, y: y, in: area(for: under), scale: scale)
+                let split = editorSplit(for: under)
+                if let editor = split.editor, editor.contains(x, y) || !split.showsTerminal {
+                    let delta = Double(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF))
+                    if let panel = under.panel, let page = split.page, page.contains(x, y) {
+                        // At the scroll speed Settings has, as the terminal: lines a notch, a touchpad's small steps adding up.
+                        if pageWheelRemainder != 0 && (pageWheelRemainder > 0) != (delta > 0) { pageWheelRemainder = 0 }
+                        pageWheelRemainder += delta / Double(Win.WHEEL_DELTA) * AppSettings.shared.scrollSpeed
+                        let lines = Int(pageWheelRemainder)
+                        if lines != 0 {
+                            pageWheelRemainder -= Double(lines)
+                            panel.scroll(lines: lines, x: x, y: y, in: page, scale: scale)
+                        }
+                    } else if let strip = editorStrip(for: under), strip.strip.contains(x, y) {
+                        // Over the sub-tabs, the wheel takes them along, when they don't all fit.
+                        scrollStrip(under, by: -Float(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Float(Win.WHEEL_DELTA) * 80 * scale)
+                    }
                 } else {
                     under.wheel(wParam, lParam)
                 }
             }
             return 0
+        case Win.WM_RESTART:
+            restart(fresh: false)
+            return 0
         case Win.WM_DESTROY:
+            // Closing the last window keeps what it had for next time; with no tabs left (closed one by one), it starts over.
+            if !sessionHandled { saveSession() }
             panes.forEach { $0.terminate() }
             Self.windows[hwnd] = nil
             if Self.windows.isEmpty { PostQuitMessage(0) }
@@ -864,12 +1102,41 @@ final class TerminalWindow {
         GetCursorPos(&point)
         ScreenToClient(hwnd, &point)
         let part = layout.part(atX: Float(point.x), y: Float(point.y))
-        let onEdge = palette == nil && (part == .leftEdge || part == .rightEdge) || draggingEdge != nil
+        if dialog != nil {
+            SetCursor(LoadCursorW(nil, Win.arrowCursor))
+            return 1
+        }
+        let px = Float(point.x), py = Float(point.y)
+        // What's on top decides, not what's under it: a menu shows the arrow; the palette, the I-beam over the field it's
+        // typed in and the arrow over the rest; the Quantum Moon's reading, the arrow.
+        if let menu, menu.frame.contains(px, py) {
+            SetCursor(LoadCursorW(nil, Win.arrowCursor))
+            return 1
+        }
+        if palette != nil {
+            let l = paletteLayout
+            SetCursor(LoadCursorW(nil, l.field.contains(px, py) ? Win.ibeamCursor : Win.arrowCursor))
+            return 1
+        }
+        if reading?.contains(px, py) == true || (QuantumMoon.at(.folders) && moonRect?.contains(px, py) == true) {
+            SetCursor(LoadCursorW(nil, reading?.contains(px, py) == true ? Win.arrowCursor : Win.handCursor))
+            return 1
+        }
+        let onEdge = palette == nil && (part == .leftEdge || part == .rightEdge || part == .columnDivider) || draggingEdge != nil
         let onLink = palette == nil && part == .terminal && !panes.isEmpty && activePane.hoveredLink != nil
-        let onTerminal = palette == nil && part == .terminal && !onLink && (panes.isEmpty || pane(atX: Float(point.x)).panel == nil)
+        let onEditorLine = palette == nil && menu == nil && part == .terminal && !panes.isEmpty
+            && (draggingEditorLine != nil || editorSplit(for: pane(atX: px)).divider?.contains(px, py) == true)
+        if onEditorLine {
+            SetCursor(LoadCursorW(nil, Win.resizeUpDownCursor))
+            return 1
+        }
+        // A pointing hand over a pasted image's thumbnail, or its larger look, as on the Mac.
+        let onImage = palette == nil && menu == nil && part == .terminal && !panes.isEmpty && pane(atX: px).imageChips.isOver(x: px, y: py)
+        let onTerminal = palette == nil && part == .terminal && !onLink && !onImage && (panes.isEmpty || area(for: pane(atX: px)).contains(px, py)
+            && (editorSplit(for: pane(atX: px)).showsTerminal || pane(atX: px).editors.isEmpty))
         // A pointing hand over the flower, which opens Settings, as on the Mac.
         let onFlower = palette == nil && menu == nil && part == .flower
-        SetCursor(LoadCursorW(nil, onEdge ? Win.resizeCursor : onTerminal ? Win.ibeamCursor : onFlower || onLink ? Win.handCursor : Win.arrowCursor))
+        SetCursor(LoadCursorW(nil, onEdge ? Win.resizeCursor : onTerminal ? Win.ibeamCursor : onFlower || onLink || onImage ? Win.handCursor : Win.arrowCursor))
         return 1
     }
 
@@ -905,9 +1172,240 @@ final class TerminalWindow {
     }
 
     /// The mouse over the client area: the bars take what's on them, and the terminal the rest.
+    // MARK: - The Quantum Moon
+
+    /// The moon's reading, while it's showing (see QuantumMoon), and where the moon was when it was last drawn.
+    private var reading: NomaiReading?
+    private var readingAnchor: UIRect?
+    private var moonHovered = false
+
+    /// Where the moon is by the folders, when it is.
+    private var moonRect: UIRect? { QuantumMoon.at(.folders) ? chrome(on: canvas, layout: layout).moonRect() : nil }
+
+    /// The pointer over the moon, a click on it (which shows its reading or puts it away), or a click while the reading
+    /// shows, which puts it away: one on the wall or the box goes no further, one elsewhere still lands. True when it's
+    /// taken the message.
+    private func moonMouse(_ message: UINT, x: Float, y: Float) -> Bool {
+        guard QuantumMoon.at(.folders) || reading != nil || moonHovered else { return false }
+        let onMoon = moonRect?.contains(x, y) ?? false
+        if message == Win.WM_MOUSEMOVE {
+            if onMoon != moonHovered {
+                moonHovered = onMoon
+                invalidate()
+            }
+            // Over the moon, it's the only thing lit: the folder path beside it doesn't hear of the pointer.
+            if onMoon && hoveredCrumb != nil {
+                hoveredCrumb = nil
+                invalidate()
+            }
+            return onMoon || (reading?.contains(x, y) ?? false)
+        }
+        let presses = [Win.WM_LBUTTONDOWN, Win.WM_RBUTTONDOWN, Win.WM_MBUTTONDOWN, Win.WM_LBUTTONDBLCLK]
+        if let r = reading, r.dismissedAt == nil, presses.contains(message), !onMoon {
+            r.dismiss()
+            runReading()
+            return r.contains(x, y)
+        }
+        guard onMoon, dialog == nil, menu == nil, palette == nil else { return false }
+        if message == Win.WM_LBUTTONUP {
+            if let r = reading, r.dismissedAt == nil { r.dismiss() } else { reading = QuantumMoon.nextReading() }
+            runReading()
+        }
+        return message == Win.WM_LBUTTONDOWN || message == Win.WM_LBUTTONUP || message == Win.WM_LBUTTONDBLCLK
+    }
+
+    /// Draws the reading about sixty times a second while it moves.
+    private func runReading() {
+        _ = SetTimer(hwnd, Self.readingTimer, 16, nil)
+        invalidate()
+    }
+
+    private func readingTick() {
+        guard let r = reading else { _ = KillTimer(hwnd, Self.readingTimer); return }
+        // The moon moved on, or the theme changed: the script goes with it.
+        if !QuantumMoon.at(.folders) { r.dismiss() }
+        if r.finished {
+            reading = nil
+            _ = KillTimer(hwnd, Self.readingTimer)
+        } else if !r.animating {
+            // All typed out: nothing moves until it's put away.
+            _ = KillTimer(hwnd, Self.readingTimer)
+        }
+        invalidate()
+    }
+
+    private func drawReading(on target: Canvas) {
+        guard let r = reading else { return }
+        if let moon = QuantumMoon.at(.folders) ? chrome(on: target, layout: layout).moonRect() : nil { readingAnchor = moon }
+        guard let anchor = readingAnchor else { return }
+        r.place(moon: anchor, width: Float(clientWidth), scale: scale, canvas: target)
+        r.draw(on: target)
+    }
+
+    // MARK: - Touch
+
+    /// Wheel movement over a tab's pages not yet a whole line.
+    private var pageWheelRemainder: Double = 0
+
+    /// A finger on the screen, held back from being a press until it's known to be a tap rather than a drag.
+    private var touch: TouchScroll?
+
+    /// A finger dragged scrolls what's under it (see `TouchScroll`), and a tap clicks. True when it's taken the message.
+    private func touchMouse(_ message: UINT, _ lParam: LPARAM) -> Bool {
+        switch message {
+        case Win.WM_LBUTTONDOWN where TouchScroll.fromTouch:
+            let (x, y) = clientPoint(lParam)
+            if let t = stripTouchStart(x: x, y: y, lParam: lParam) {
+                stripTouch = t
+                SetCapture(hwnd)
+                return true
+            }
+            guard let (stepPixels, apply) = touchTarget(x: x, y: y, lParam: lParam) else { return false }
+            touch = TouchScroll(at: lParam, stepPixels: stepPixels, apply: apply)
+            SetCapture(hwnd)
+            return true
+        case Win.WM_MOUSEMOVE:
+            if stripTouch != nil {
+                stripTouchMoved(lParam)
+                return true
+            }
+            guard touch != nil else { return false }
+            touch!.moved(to: lParam, slop: 8 * scale)
+            invalidate()
+            return true
+        case Win.WM_LBUTTONUP:
+            if let t = stripTouch {
+                stripTouch = nil
+                stripTouchEnded(t, lParam)
+                return true
+            }
+            guard let t = touch else { return false }
+            touch = nil
+            ReleaseCapture()
+            if !t.dragging {
+                clientMouse(Win.WM_LBUTTONDOWN, Win.MK_LBUTTON, t.start)
+                clientMouse(Win.WM_LBUTTONUP, 0, t.start)
+            }
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// A finger on a strip of sub-tabs, which is told apart by which way it goes first. Up or down from a sub-tab picks it
+    /// up, to drag to the tab bar or the other column. Sideways on the active sub-tab (or on any, when they all fit, as
+    /// there's nothing to scroll) picks it up to put it somewhere else along the strip. Sideways anywhere else scrolls the
+    /// strip, when its sub-tabs don't all fit. Not moving, it's a tap.
+    private enum StripGesture { case undecided, drag, scroll, none }
+    private struct StripTouch {
+        let pane: TerminalPane
+        let index: Int?
+        let start: LPARAM
+        let x: Float, y: Float
+        var lastX: Float
+        var gesture = StripGesture.undecided
+    }
+    private var stripTouch: StripTouch?
+
+    /// A finger going down on a sub-tab, or between them; not on a close button, an arrow or the terminal button, which a
+    /// finger taps as a mouse clicks.
+    private func stripTouchStart(x: Float, y: Float, lParam: LPARAM) -> StripTouch? {
+        guard !panes.isEmpty, dialog == nil, menu == nil, palette == nil, layout.part(atX: x, y: y) == .terminal else { return nil }
+        let under = pane(atX: x)
+        guard let strip = editorStrip(for: under), strip.strip.contains(x, y) else { return nil }
+        switch strip.part(atX: x, y: y) {
+        case .tab(let i)?: return StripTouch(pane: under, index: i, start: lParam, x: x, y: y, lastX: x)
+        case nil: return StripTouch(pane: under, index: nil, start: lParam, x: x, y: y, lastX: x)
+        default: return nil
+        }
+    }
+
+    private func stripTouchMoved(_ lParam: LPARAM) {
+        guard var t = stripTouch else { return }
+        let (x, y) = clientPoint(lParam)
+        if t.gesture == .undecided {
+            let dx = x - t.x, dy = y - t.y
+            guard max(abs(dx), abs(dy)) >= 8 * scale else { return }
+            let overflows = editorStrip(for: t.pane)?.overflows ?? false
+            if let i = t.index, abs(dy) > abs(dx) || i == t.pane.activeEditor || !overflows {
+                t.gesture = .drag
+                if t.pane !== activePane, let k = panes.firstIndex(where: { $0 === t.pane }) { activate(k) }
+                var press = (pane: t.pane, index: i, x: t.x, y: t.y, dragging: false)
+                beginStripDrag(&press)
+            } else {
+                t.gesture = overflows ? .scroll : .none
+            }
+            t.lastX = x
+        }
+        switch t.gesture {
+        case .drag: _ = stripDragMouse(Win.WM_MOUSEMOVE, x: x, y: y)
+        case .scroll:
+            // The sub-tabs follow the finger.
+            scrollStrip(t.pane, by: t.lastX - x)
+            t.lastX = x
+        default: break
+        }
+        stripTouch = t
+    }
+
+    private func stripTouchEnded(_ t: StripTouch, _ lParam: LPARAM) {
+        let (x, y) = clientPoint(lParam)
+        switch t.gesture {
+        case .undecided:
+            ReleaseCapture()
+            clientMouse(Win.WM_LBUTTONDOWN, Win.MK_LBUTTON, t.start)
+            clientMouse(Win.WM_LBUTTONUP, 0, t.start)
+        case .drag:
+            _ = stripDragMouse(Win.WM_LBUTTONUP, x: x, y: y)
+        default:
+            ReleaseCapture()
+        }
+        invalidate()
+    }
+
+    /// What a finger at a point would scroll: how far it moves per step, and the step. Nil where nothing scrolls (the tab
+    /// bar, the status bar, a question, a strip of sub-tabs), so a finger there presses and drags as a mouse would.
+    private func touchTarget(x: Float, y: Float, lParam: LPARAM) -> (Float, (Int) -> Void)? {
+        guard !panes.isEmpty, dialog == nil else { return nil }
+        if let menu {
+            guard menu.frame.contains(x, y) else { return nil }
+            return (1, { [weak self] in self?.menu?.scrollBy(-Float($0)) })
+        }
+        if palette != nil { return ((34 * scale).rounded(), { [weak self] in self?.palette?.scroll(by: -$0) }) }
+        let part = layout.part(atX: x, y: y)
+        if part == .leftSidebar || part == .rightSidebar {
+            let isLeft = part == .leftSidebar
+            // On the row that's selected already, a finger picks it up to drag, as a mouse would: tap a file, then drag
+            // it. Anywhere else, the list scrolls.
+            let sidebar = isLeft ? left : right, l = sidebarLayout(sidebar)
+            if let i = l.visibleRow(atY: y).map({ $0 + sidebar.tree.scrollTop }), sidebar.tree.rows.indices.contains(i),
+               sidebar.tree.rows[i].entry.path == sidebar.tree.selection { return nil }
+            return ((22 * scale).rounded(), { [weak self] steps in
+                guard let self else { return }
+                let sidebar = isLeft ? self.left : self.right
+                sidebar.tree.scroll(by: -steps, rowsShowing: self.sidebarLayout(sidebar).rowsShowing)
+            })
+        }
+        guard part == .terminal else { return nil }
+        let under = pane(atX: x), split = editorSplit(for: under)
+        if let editor = split.editor, editor.contains(x, y) || !split.showsTerminal {
+            guard let page = split.page, page.contains(x, y), under.panel != nil else { return nil }
+            return (under.lineHeight, { [weak self, weak under] lines in
+                guard let self, let under, let panel = under.panel, let page = self.editorSplit(for: under).page else { return }
+                panel.scroll(lines: lines, x: x, y: y, in: page, scale: self.scale)
+            })
+        }
+        return (under.lineHeight, { [weak under] in under?.touchScroll(lines: $0, at: lParam) })
+    }
+
     private func clientMouse(_ message: UINT, _ wParam: WPARAM, _ lParam: LPARAM) {
         guard !panes.isEmpty else { return }
         let (x, y) = clientPoint(lParam)
+        if moonMouse(message, x: x, y: y) { return }
+        if dialog != nil {
+            dialogMouse(message, x: x, y: y)
+            return
+        }
         if menu != nil {
             menuMouse(message, x: x, y: y)
             return
@@ -917,6 +1415,11 @@ final class TerminalWindow {
             return
         }
         let part = layout.part(atX: x, y: y)
+        // The line between a tab's pages and its terminal, while it's dragged, wherever the pointer goes.
+        if draggingEditorLine != nil {
+            _ = editorMouse(message, part: part, x: x, y: y)
+            return
+        }
         // A click anywhere but the name being typed keeps it and ends the typing, as on the Mac.
         let presses = [Win.WM_LBUTTONDOWN, Win.WM_RBUTTONDOWN, Win.WM_MBUTTONDOWN, Win.WM_LBUTTONDBLCLK]
         if naming != nil, presses.contains(message), !isOnNameField(part) {
@@ -928,7 +1431,9 @@ final class TerminalWindow {
             let onField = sidebar.tree.editingRow.map { l.row($0 - sidebar.tree.scrollTop).contains(x, y) } ?? false
             if !onField { finishSidebarEdit(commit: true) }
         }
-        if tabDragMouse(message, x: x) { return }
+        if tabDragMouse(message, x: x, y: y) { return }
+        if stripDragMouse(message, x: x, y: y) { return }
+        if chipDragMouse(message, x: x, y: y) { return }
         if part == .statusBar && !terminalHasMouse && statusBarMouse(message, x: x, y: y) { return }
         if part != .statusBar && hoveredCrumb != nil {
             hoveredCrumb = nil
@@ -937,21 +1442,14 @@ final class TerminalWindow {
         if sidebarMouse(message, part: part, x: x, y: y) { return }
         if part == .terminal && !terminalHasMouse && lostBarMouse(message, x: x, y: y) { return }
         let under = pane(atX: x)
-        // Git Changes or Git Graph has the column's area.
-        if part == .terminal, !terminalHasMouse, let panel = under.panel {
-            if message == Win.WM_LBUTTONDOWN || message == Win.WM_RBUTTONDOWN, under !== activePane, let i = panes.firstIndex(where: { $0 === under }) {
-                activate(i)
-                focusTerminal()
-            }
-            if message == Win.WM_MOUSEMOVE { setHovered(.terminal, nonClient: false) }
-            _ = panel.mouse(message, x: x, y: y, in: area(for: under), scale: scale)
-            return
-        }
+        // The pages above a tab's terminal, their strip, and the line between.
+        if editorMouse(message, part: part, x: x, y: y) { return }
         if message == Win.WM_LBUTTONDOWN || message == Win.WM_RBUTTONDOWN || message == Win.WM_MBUTTONDOWN || message == Win.WM_LBUTTONDBLCLK {
             terminalHasMouse = part == .terminal
             if part == .terminal {
                 // A press in the other column gives it the keyboard.
                 if under !== activePane, let i = panes.firstIndex(where: { $0 === under }) { activate(i) }
+                setEditorFocus(false, in: under)
                 focusTerminal()
             }
         }
@@ -980,6 +1478,9 @@ final class TerminalWindow {
                     selectTab(i)
                     tabPress = (i, x - layout.tab(i).x, x, false)
                 }
+            }
+            if case .chip(let first) = part, let g = panes[first].group, let chip = layout.chip(first) {
+                chipPress = (g, x - chip.x, x, false)
             }
             if part == .scrollLeft { scrollTabs(by: -layout.tabViewport.width * 0.75) }
             if part == .scrollRight { scrollTabs(by: layout.tabViewport.width * 0.75) }
@@ -1171,7 +1672,10 @@ final class TerminalWindow {
     private func focus(_ sidebar: FileSidebar) {
         left.isFocused = sidebar === left
         right.isFocused = sidebar === right
-        if !panes.isEmpty { activePane.setFocused(false) }
+        if !panes.isEmpty {
+            setEditorFocus(false, in: activePane)
+            activePane.setFocused(false)
+        }
         invalidate()
     }
 
@@ -1179,19 +1683,127 @@ final class TerminalWindow {
         guard sidebarHasFocus else { return }
         left.isFocused = false
         right.isFocused = false
+        if !panes.isEmpty { setEditorFocus(false, in: activePane) }
         if !panes.isEmpty { activePane.setFocused(isFocused) }
         invalidate()
     }
 
-    /// A folder opens or closes, and a file goes to its app on a double click or Enter.
+    /// A folder opens or closes, and a file shows above the terminal with the keyboard (Space, or Ctrl+Down).
     private func activate(_ entry: FileEntry, in sidebar: FileSidebar) {
-        if entry.isDirectory { sidebar.tree.toggle(entry.path) } else if !AnyPath.isUnix(entry.path) { onOpenFile(entry.path) }
+        if entry.isDirectory { sidebar.tree.toggle(entry.path) } else { showFile(entry.path, in: pane(for: sidebar), remote: remoteIfUnix(entry.path, sidebar), focus: true) }
+    }
+
+    private func remoteIfUnix(_ path: String, _ sidebar: FileSidebar) -> RemoteConnection? { AnyPath.isUnix(path) ? remote(for: sidebar) : nil }
+
+    /// A file shown above a tab's terminal, as on the Mac: a sub-tab of its own, or the one it has already. From this PC,
+    /// or from the ssh host a sidebar shows.
+    func showFile(_ path: String, in pane: TerminalPane, remote: RemoteConnection? = nil, line: Int? = nil, focus: Bool = true) {
+        if AnyPath.isUnix(path) && remote == nil { return fileProblem() }
+        let key = "file\n" + (remote.map { "\(ObjectIdentifier($0).hashValue)" } ?? "local") + "\n" + path
+        if let i = pane.editors.firstIndex(where: { $0.key == key }) {
+            pane.activeEditor = i
+            revealActiveSubTab(pane)
+            if let line, let panel = pane.editors[i].panel as? FileEditorPanel { panel.reveal(line: line) }
+            if focus { setEditorFocus(true, in: pane) }
+            invalidate()
+            return
+        }
+        let name = AnyPath.name(path), folder = AnyPath.parent(path) ?? ""
+        let panel = FileEditorPanel(path: path, name: name, folder: folder, isLocal: remote == nil, read: { limit, done in
+            if let remote { Self.readRemote(path, remote, limit: min(limit, 4 * 1024 * 1024), done) } else { Self.readLocal(path, limit: limit, done) }
+        }, write: { data, done in
+            if let remote { Self.writeRemote(path, remote, data, done) } else { Self.writeLocal(path, data, done) }
+        })
+        panel.invalidate = { [weak self] in self?.invalidate() }
+        panel.post = { [weak self] work in self?.runOnWindowThread(work) }
+        panel.close = { [weak self, weak panel] in if let self, let panel, let pane = self.owner(of: panel) { self.closeEditor(panel, in: pane) } }
+        panel.copy = { [weak pane] text in pane?.setClipboard(text) }
+        panel.paste = { [weak pane] in pane?.clipboardText() }
+        panel.openPreview = { [weak self, weak panel] in if let self, let panel, let pane = self.owner(of: panel) { self.showPreview(path, in: pane, remote: remote) } }
+        panel.cellSize = (canvas.metrics.cellWidth, canvas.metrics.cellHeight)
+        if let line { panel.reveal(line: line) }
+        openEditor(EditorItem(key: key, title: name, glyph: FileKind(name: name).glyph, panel: panel), in: pane, focus: focus)
+    }
+
+    /// Up to `limit` bytes of a file on this PC, off the window's thread; and whether there was more.
+    private static func readLocal(_ path: String, limit: Int, _ done: @escaping (Data?, Bool) -> Void) {
+        Thread.detachNewThread {
+            guard let handle = FileHandle(forReadingAtPath: path) else { return done(nil, false) }
+            defer { try? handle.close() }
+            guard let data = try? handle.read(upToCount: limit + 1) else { return done(Data(), false) }
+            done(data.prefix(limit), data.count > limit)
+        }
+    }
+
+    /// Writes a file on this PC, in place (so it keeps its permissions and links), off the window's thread.
+    private static func writeLocal(_ path: String, _ data: Data, _ done: @escaping (String?) -> Void) {
+        Thread.detachNewThread {
+            do {
+                try data.write(to: URL(fileURLWithPath: path))
+                done(nil)
+            } catch {
+                done(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Writes a file on an ssh host over the sidebar's connection, as base64 that the host decodes into a file beside it,
+    /// then moves into place, so a dropped connection never leaves it half written.
+    private static func writeRemote(_ path: String, _ remote: RemoteConnection, _ data: Data, _ done: @escaping (String?) -> Void) {
+        guard data.count <= 4 * 1024 * 1024 else { return done("files over 4 MB can't be saved on an ssh host yet") }
+        let q = RemoteConnection.quote(path), temp = RemoteConnection.quote(path + ".solanum-saving")
+        let script = "base64 -d > \(temp) <<'SOLANUM_EOF'\n\(data.base64EncodedString(options: .lineLength76Characters))\nSOLANUM_EOF\n"
+            + "cat \(temp) > \(q) && rm -f \(temp)"
+        remote.run(script, timeout: 60) { _, code in done(code == 0 ? nil : "the host said no (exit \(code))") }
+    }
+
+    /// A Markdown file rendered, in a sub-tab of its own beside its editor, as on the Mac.
+    func showPreview(_ path: String, in pane: TerminalPane, remote: RemoteConnection? = nil) {
+        if AnyPath.isUnix(path) && remote == nil { return fileProblem() }
+        let key = "preview\n" + (remote.map { "\(ObjectIdentifier($0).hashValue)" } ?? "local") + "\n" + path
+        if focusEditor(key, in: pane) { return }
+        let name = AnyPath.name(path)
+        let panel = MarkdownPreviewPanel(path: path, name: name) { limit, done in
+            if let remote { Self.readRemote(path, remote, limit: limit, done) } else { Self.readLocal(path, limit: limit, done) }
+        }
+        panel.invalidate = { [weak self] in self?.invalidate() }
+        panel.post = { [weak self] work in self?.runOnWindowThread(work) }
+        panel.close = { [weak self, weak panel] in if let self, let panel, let pane = self.owner(of: panel) { self.closeEditor(panel, in: pane) } }
+        panel.cellSize = (canvas.metrics.cellWidth, canvas.metrics.cellHeight)
+        panel.copy = { [weak self] text in self?.activePane.setClipboard(text) }
+        panel.openLink = { [weak self, weak panel] target in
+            guard let self else { return }
+            let pane = panel.flatMap { self.owner(of: $0) }
+            if target.contains("://") || target.hasPrefix("mailto:") { return self.onOpenURL(target) }
+            // A file beside it: in the editor (or its preview, for Markdown).
+            let file = String(target.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
+            guard !file.isEmpty, let pane else { return }
+            let full = AnyPath.isUnix(path) ? AnyPath.join(AnyPath.parent(path) ?? "", file)
+                : WindowsPath.join(AnyPath.parent(path) ?? "", file.replacingOccurrences(of: "/", with: "\\"))
+            if MarkdownDoc.isMarkdown(path: full) { self.showPreview(full, in: pane, remote: remote) } else { self.showFile(full, in: pane, remote: remote) }
+        }
+        openEditor(EditorItem(key: key, title: "Preview " + name, glyph: 0xE8A1, panel: panel), in: pane)
+    }
+
+    /// The same from an ssh host, over the sidebar's connection: its size, then its bytes in base64.
+    private static func readRemote(_ path: String, _ remote: RemoteConnection, limit: Int, _ done: @escaping (Data?, Bool) -> Void) {
+        let q = RemoteConnection.quote(path)
+        remote.run("wc -c < \(q) && head -c \(limit) -- \(q) | base64", timeout: 60) { text, code in
+            guard let text, code == 0 else { return done(nil, false) }
+            let parts = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            let total = Int(parts.first?.trimmingCharacters(in: .whitespaces) ?? "") ?? 0
+            let data = parts.count > 1 ? Data(base64Encoded: String(parts[1]), options: .ignoreUnknownCharacters) : Data()
+            done(data, total > limit)
+        }
     }
 
     /// Takes the mouse when it's on a sidebar or its edge. Otherwise false, and it's someone else's.
     private func sidebarMouse(_ message: UINT, part: WindowPart, x: Float, y: Float) -> Bool {
         if let edge = draggingEdge {
             switch message {
+            case Win.WM_MOUSEMOVE where edge == .columnDivider:
+                splitFraction = layout.splitFraction(atX: x)
+                layoutChanged()
             case Win.WM_MOUSEMOVE:
                 let sidebar = edge == .leftEdge ? left : right
                 let wanted = edge == .leftEdge ? x : Float(clientWidth) - x
@@ -1205,7 +1817,13 @@ final class TerminalWindow {
             }
             return true
         }
-        if message == Win.WM_LBUTTONDOWN && (part == .leftEdge || part == .rightEdge) {
+        if message == Win.WM_LBUTTONDBLCLK && part == .columnDivider {
+            // A double click puts the columns back to halves.
+            splitFraction = 0.5
+            layoutChanged()
+            return true
+        }
+        if message == Win.WM_LBUTTONDOWN && (part == .leftEdge || part == .rightEdge || part == .columnDivider) {
             draggingEdge = part
             SetCapture(hwnd)
             return true
@@ -1219,13 +1837,21 @@ final class TerminalWindow {
                     press.dragging = true
                     rowPress = press
                     SetCapture(hwnd)
+                    let name = AnyPath.name(press.entry.path)
+                    dragGhost = DragGhost(title: name, glyph: press.entry.isDirectory ? 0xE8B7 : FileKind(name: name).glyph, x: x, y: y,
+                                          grabX: 16 * scale, grabY: 14 * scale)
                 }
+                dragGhost?.x = x
+                dragGhost?.y = y
                 [left, right].forEach { $0.dropFolder = nil }
                 if case .folder(let over, let folder)? = dropSpot(atX: x, y: y) { over.dropFolder = folder }
+                fileDragPoint = (x, y)
                 invalidate()
                 return true
             case Win.WM_LBUTTONUP:
                 rowPress = nil
+                fileDragPoint = nil
+                dragGhost = nil
                 [left, right].forEach { $0.dropFolder = nil }
                 if press.dragging {
                     ReleaseCapture()
@@ -1239,6 +1865,12 @@ final class TerminalWindow {
                 } else if press.entry.isDirectory {
                     // A click on a folder opens or closes it.
                     press.sidebar.tree.toggle(press.entry.path)
+                } else if press.entry.path != FileTree.newItemPath {
+                    // A click on a file shows it above the terminal, as on the Mac. The keyboard stays here.
+                    let target = pane(for: press.sidebar), before = target.editors.count
+                    showFile(press.entry.path, in: target, remote: remoteIfUnix(press.entry.path, press.sidebar), focus: false)
+                    clickOpened = target.editors.count > before
+                        ? (target.id, ObjectIdentifier(target.editors[target.editors.count - 1].panel), press.entry.path, Date()) : nil
                 }
                 invalidate()
                 return true
@@ -1294,8 +1926,16 @@ final class TerminalWindow {
                 sidebar.tree.toggle(row.entry.path)
                 pane(for: sidebar).changeDirectory(to: row.entry.path)
                 focusTerminal()
-            } else if !AnyPath.isUnix(row.entry.path) {
-                onOpenFile(row.entry.path)
+            } else {
+                // A double click gives the file a tab of its own, as on the Mac. Its first click showed it above this tab's
+                // terminal: that's undone, so it isn't in both places.
+                if let opened = clickOpened, opened.path == row.entry.path, Date().timeIntervalSince(opened.at) < 1.5,
+                   let source = panes.first(where: { $0.id == opened.pane }),
+                   let i = source.editors.firstIndex(where: { ObjectIdentifier($0.panel) == opened.panel }), !source.editors[i].panel.hasUnsavedChanges {
+                    _ = detachEditor(at: i, from: source)
+                }
+                clickOpened = nil
+                openFileTab(row.entry.path, remote: remoteIfUnix(row.entry.path, sidebar), column: pane(for: sidebar).column)
             }
             invalidate()
         default: break
@@ -1442,13 +2082,13 @@ final class TerminalWindow {
                 let full = place.map { p in p.onHost ? AnyPath.join(info.root, c.path) : WindowsPath.join(p.localPath(info.root), c.path.replacingOccurrences(of: "/", with: "\\")) }
                 // A host's files and deleted ones have nothing here to open.
                 items.append(MenuItem(title: "\(letter)   \(c.path)", isEnabled: c.code != "D" && place?.onHost == false) { [weak self] in
-                    if let full { self?.onOpenFile(full) }
+                    if let full, let self { self.showFile(full, in: self.activePane) }
                 })
             }
             if info.changes.count > 40 { items.append(MenuItem(title: "…and \(info.changes.count - 40) more", isEnabled: false)) }
             items.append(.separator)
             var show = MenuItem(title: "Show Git Changes") { [weak self] in self?.showGitChanges() }
-            show.shortcut = "Ctrl+Shift+G"
+            show.shortcut = "Ctrl+Shift+S"
             items.append(show)
             openMenu(items, x: spot.x, y: spot.y - 2 * scale, above: true)
         }
@@ -1462,8 +2102,8 @@ final class TerminalWindow {
             self?.runOnWindowThread {
                 guard let self, let pane else { return }
                 var items = [
-                    PaletteItem(title: "Show Git Graph", category: "every branch's history") { [weak self] in self?.showGitGraph() },
-                    PaletteItem(title: "Show Git Changes", category: "what's changed", shortcut: "Ctrl+Shift+G") { [weak self] in self?.showGitChanges() },
+                    PaletteItem(title: "Show Git Graph", category: "every branch's history", shortcut: "Ctrl+Shift+G") { [weak self] in self?.showGitGraph() },
+                    PaletteItem(title: "Show Git Changes", category: "what's changed", shortcut: "Ctrl+Shift+S") { [weak self] in self?.showGitChanges() },
                     PaletteItem(title: "Create New Branch…", category: "from \(info.branch)") { [weak self, weak pane] in pane.map { self?.askForBranchName(for: $0) } },
                     PaletteItem(title: "Fetch", category: "update remote branches") { [weak self, weak pane] in
                         pane.map { self?.performGit("Fetching…", "git fetch --all --prune", typed: "git fetch --all --prune", for: $0) }
@@ -1525,50 +2165,667 @@ final class TerminalWindow {
         invalidate()
     }
 
-    /// Git Changes or Git Graph over the active tab's terminal, at its repository's top folder.
-    private func showPanel(_ make: (GitPlace) -> ColumnPanel) {
+    /// Git Changes or Git Graph above the active tab's terminal, at its repository's top folder.
+    func showGitChanges() {
         let pane = activePane
         guard let place = gitPlace(for: pane, top: true) else { return fileProblem() }
-        let panel = make(place)
-        pane.panel = panel
-        panel.reload()
-        invalidate()
-    }
-
-    func showGitChanges() {
-        if activePane.panel is GitChangesPanel { return }
-        showPanel { place in
-            let panel = GitChangesPanel(place: place)
-            wire(panel)
-            return panel
-        }
+        let key = "changes\n" + place.key
+        if focusEditor(key, in: pane) { return }
+        let panel = GitChangesPanel(place: place)
+        wire(panel, in: pane)
+        openEditor(EditorItem(key: key, title: "Git Changes", glyph: EditorItem.Glyph.changes, panel: panel), in: pane)
     }
 
     func showGitGraph() {
-        if activePane.panel is GitGraphPanel { return }
-        showPanel { place in
-            let panel = GitGraphPanel(place: place)
-            panel.invalidate = { [weak self] in self?.invalidate() }
-            panel.post = { [weak self] work in self?.runOnWindowThread(work) }
-            panel.copy = { [weak self] text in self?.activePane.setClipboard(text) }
-            let pane = activePane
-            panel.close = { [weak self, weak pane] in pane?.panel = nil; self?.invalidate() }
-            return panel
-        }
+        let pane = activePane
+        guard let place = gitPlace(for: pane, top: true) else { return fileProblem() }
+        let key = "graph\n" + place.key
+        if focusEditor(key, in: pane) { return }
+        let panel = GitGraphPanel(place: place)
+        panel.invalidate = { [weak self] in self?.invalidate() }
+        panel.post = { [weak self] work in self?.runOnWindowThread(work) }
+        panel.copy = { [weak pane] text in pane?.setClipboard(text) }
+        panel.close = { [weak self, weak panel] in if let self, let panel, let pane = self.owner(of: panel) { self.closeEditor(panel, in: pane) } }
+        panel.openCommit = { [weak self, weak pane] hash, subject in pane.map { self?.showCommit(hash, subject: subject, place: place, in: $0) } }
+        openEditor(EditorItem(key: key, title: "Git Graph", glyph: EditorItem.Glyph.graph, panel: panel), in: pane)
     }
 
-    private func wire(_ panel: GitChangesPanel) {
-        let pane = activePane
+    /// One commit's files and changes, as the Mac's Git page shows them, in a sub-tab of its own.
+    func showCommit(_ hash: String, subject: String, place: GitPlace, in pane: TerminalPane) {
+        let key = "commit\n" + hash + "\n" + place.key
+        if focusEditor(key, in: pane) { return }
+        let panel = GitCommitPanel(place: place, hash: hash)
+        panel.invalidate = { [weak self] in self?.invalidate() }
+        panel.post = { [weak self] work in self?.runOnWindowThread(work) }
+        panel.copy = { [weak pane] text in pane?.setClipboard(text) }
+        panel.cellSize = (canvas.metrics.cellWidth, canvas.metrics.cellHeight)
+        panel.close = { [weak self, weak panel] in if let self, let panel, let pane = self.owner(of: panel) { self.closeEditor(panel, in: pane) } }
+        let title = String(hash.prefix(7)) + (subject.isEmpty ? "" : " " + subject)
+        openEditor(EditorItem(key: key, title: title, glyph: EditorItem.Glyph.commit, panel: panel), in: pane)
+    }
+
+    private func wire(_ panel: GitChangesPanel, in pane: TerminalPane) {
         panel.invalidate = { [weak self] in self?.invalidate() }
         panel.post = { [weak self] work in self?.runOnWindowThread(work) }
         panel.statusChanged = { [weak self, weak pane] in pane.map { self?.refreshGit($0, now: true) } }
-        panel.close = { [weak self, weak pane] in pane?.panel = nil; self?.invalidate() }
+        panel.close = { [weak self, weak panel] in if let self, let panel, let pane = self.owner(of: panel) { self.closeEditor(panel, in: pane) } }
         panel.cellSize = (canvas.metrics.cellWidth, canvas.metrics.cellHeight)
         panel.confirm = { [weak self] question, button, run in
-            guard let self else { return }
-            let a = self.area(for: pane)
-            self.openMenu([MenuItem(title: question, isEnabled: false), .separator, MenuItem(title: button, run: run), MenuItem(title: "Cancel") {}],
-                          x: a.x + a.width / 2 - 160 * self.scale, y: a.y + 80 * self.scale, above: false)
+            self?.ask(DialogModel(title: button + "?", message: question, primary: button, run: run))
+        }
+    }
+
+    // MARK: - Session and restart
+
+    /// Set once Restart has saved (or, starting fresh, cleared) the session, so closing doesn't write it again.
+    private var sessionHandled = false
+
+    private func currentSession() -> SavedSession {
+        var groups: [TabGroup] = []
+        let tabs = panes.map { pane -> SavedSession.Tab in
+            var group: Int?
+            if let g = pane.group {
+                if let i = groups.firstIndex(where: { $0 === g }) { group = i } else { groups.append(g); group = groups.count - 1 }
+            }
+            // A tab on an ssh host comes back on this PC, with what it showed.
+            var tab = SavedSession.Tab(folder: pane.sshArguments == nil ? pane.terminal.cwd : nil, title: pane.customTitle, column: pane.column,
+                                       group: group, text: pane.terminal.restorableText(maxLines: SavedSession.lines),
+                                       resume: pane.resumeCommand ?? pane.resumeOnShow)
+            // Its files on this PC, and their previews, as on the Mac (an ssh host's, and git's pages, aren't kept).
+            var pages: [SavedSession.Page] = [], active: Int?
+            for (i, item) in pane.editors.enumerated() {
+                let parts = item.key.split(separator: "\n", maxSplits: 2, omittingEmptySubsequences: false)
+                guard parts.count == 3, parts[1] == "local", parts[0] == "file" || parts[0] == "preview" else { continue }
+                if i == pane.activeEditor { active = pages.count }
+                pages.append(SavedSession.Page(path: String(parts[2]), preview: parts[0] == "preview" ? true : nil))
+            }
+            if !pages.isEmpty {
+                tab.pages = pages
+                tab.activePage = active
+                tab.terminalHidden = pane.showsTerminal ? nil : true
+                tab.editorFraction = pane.editorFraction
+            }
+            return tab
+        }
+        var session = SavedSession(tabs: tabs, groups: groups.map { .init(name: $0.name, color: $0.color.rawValue, collapsed: $0.collapsed) },
+                                   active: activeIndex, splitFraction: splitFraction)
+        session.maximized = IsZoomed(hwnd)
+        var placement = WINDOWPLACEMENT()
+        placement.length = UINT(MemoryLayout<WINDOWPLACEMENT>.size)
+        if GetWindowPlacement(hwnd, &placement) {
+            let r = placement.rcNormalPosition
+            session.frame = [r.left, r.top, r.right, r.bottom]
+        }
+        return session
+    }
+
+    func saveSession() {
+        if panes.isEmpty { SavedSession.clear() } else { currentSession().save() }
+    }
+
+    /// The tabs, groups, split and frame of a saved session.
+    private func restore(_ session: SavedSession) {
+        if let f = session.frame, f.count == 4, f[2] > f[0], f[3] > f[1] {
+            SetWindowPos(hwnd, nil, f[0], f[1], f[2] - f[0], f[3] - f[1], Win.SWP_NOZORDER | Win.SWP_NOACTIVATE)
+        }
+        splitFraction = session.splitFraction
+        let groups = session.groups.map { saved -> TabGroup in
+            let g = TabGroup(color: TabGroupColor(rawValue: saved.color) ?? .blue)
+            g.name = saved.name
+            g.collapsed = saved.collapsed
+            return g
+        }
+        for tab in session.tabs {
+            // A folder that's gone starts the shell where it would otherwise.
+            let folder = tab.folder.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
+            guard addPane(cwd: folder, restoring: tab.text, column: tab.column) else { continue }
+            panes.last?.customTitle = tab.title
+            panes.last?.resumeOnShow = tab.resume
+            panes.last?.group = tab.group.flatMap { groups.indices.contains($0) ? groups[$0] : nil }
+            // Its files come back above its terminal, those that are still there, the one that was showing showing; a
+            // file tab comes back as one.
+            let pane = activePane
+            let pages = tab.pages ?? tab.file.map { [SavedSession.Page(path: $0, preview: nil)] } ?? []
+            var shown: Int?
+            for (i, page) in pages.enumerated() where FileManager.default.fileExists(atPath: page.path) {
+                if page.preview == true { showPreview(page.path, in: pane) } else { showFile(page.path, in: pane, focus: false) }
+                if i == tab.activePage { shown = pane.editors.count - 1 }
+            }
+            if !pane.editors.isEmpty {
+                pane.activeEditor = shown ?? pane.editors.count - 1
+                if let fraction = tab.editorFraction { pane.editorFraction = fraction }
+                if tab.terminalHidden == true || (tab.pages == nil && tab.file != nil) {
+                    pane.showsTerminal = false
+                    setEditorFocus(true, in: pane)
+                } else {
+                    setEditorFocus(false, in: pane)
+                }
+            }
+        }
+        normalizeColumns()
+        if panes.indices.contains(session.active) { activate(session.active) }
+        layoutChanged()
+    }
+
+    /// Asks first, as restarting stops what's running in the tabs (agents and ssh sessions carry on in the new one).
+    func confirmRestart(fresh: Bool) {
+        ask(fresh ? DialogModel(title: "Restart Solanum fresh?", message: "Everything open now closes, and Solanum starts again with a single new tab.",
+                                primary: "Restart Fresh") { [weak self] in self?.restart(fresh: true) }
+                  : DialogModel(title: "Restart Solanum?", message: "Your tabs, groups and splits come back as they are, and Claude Code, other agents and ssh sessions carry on where they were.",
+                                primary: "Restart") { [weak self] in self?.restart(fresh: false) })
+    }
+
+    // MARK: - Questions
+
+    /// A question asked over the window, Windows 11's way (see DialogView).
+    private var dialog: DialogModel?
+
+    func ask(_ question: DialogModel) {
+        closeMenu()
+        if palette != nil { closePalette() }
+        dialog = question
+        invalidate()
+    }
+
+    /// The button picked: the main one, then (when there is one) the other, then Cancel.
+    private func answer(_ button: Int) {
+        guard let current = dialog else { return }
+        dialog = nil
+        invalidate()
+        if button == 0 { current.run() } else if button == 1, let other = current.other { other.run() }
+    }
+
+    private func dialogMouse(_ message: UINT, x: Float, y: Float) {
+        guard var current = dialog else { return }
+        let hit = DialogLayout(current, width: Float(clientWidth), height: Float(clientHeight), scale: scale, canvas: canvas).button(atX: x, y: y)
+        switch message {
+        case Win.WM_MOUSEMOVE: current.hovered = hit
+        case Win.WM_LBUTTONDOWN, Win.WM_LBUTTONDBLCLK: current.pressed = hit
+        case Win.WM_LBUTTONUP:
+            if let hit, hit == current.pressed { return answer(hit) }
+            current.pressed = nil
+        default: break
+        }
+        if current.hovered != dialog?.hovered || current.pressed != dialog?.pressed {
+            dialog = current
+            invalidate()
+        }
+    }
+
+    private func dialogKey(_ key: Int32) -> Bool {
+        switch key {
+        case Win.VK_RETURN, Win.VK_SPACE: answer(0)
+        case Win.VK_ESCAPE: answer(Int.max)
+        default: break
+        }
+        return true
+    }
+
+    /// For tests.
+    var dialogTitle: String? { dialog?.title }
+
+    /// Ctrl+Shift+R, as the Mac's Shift-Command-R: saves what's open, starts Solanum.exe (the newest build) and closes,
+    /// so everything comes back in it. Fresh (Ctrl+Alt+Shift+R) brings nothing back.
+    func restart(fresh: Bool) {
+        if fresh { SavedSession.clear() } else { saveSession() }
+        sessionHandled = true
+        guard AppRestart.launch() else {
+            sessionHandled = false
+            return fileProblem()
+        }
+        PostMessageW(hwnd, Win.WM_CLOSE, 0, 0)
+    }
+
+    // MARK: - Jump to Prompt
+
+    /// Ctrl+J, as the Mac's Command-J: the prompts sent to Claude Code in this tab, newest first, to search and jump
+    /// to; then the commands run there.
+    func showSentPrompts() {
+        let pane = activePane
+        let prompts = pane.sentPrompts(), commands = pane.finishedCommands()
+        guard !prompts.isEmpty || !commands.isEmpty else { return fileProblem() }
+        var items: [PaletteItem] = []
+        if !prompts.isEmpty { items.append(.header("Prompts")) }
+        for p in prompts.reversed() {
+            let first = p.text.split(whereSeparator: \.isNewline).first.map(String.init) ?? p.text
+            items.append(PaletteItem(title: first, category: p.detail) { [weak self, weak pane] in self?.jump(to: p.stop, in: pane) })
+        }
+        if !commands.isEmpty { items.append(.header("Commands")) }
+        for c in commands.reversed() {
+            items.append(PaletteItem(title: c.command, category: c.failed ? "failed" : "") { [weak self, weak pane] in self?.jump(to: c.stop, in: pane) })
+        }
+        palette = PaletteModel(items: items, placeholder: prompts.isEmpty ? "Jump to command…" : "Jump to prompt…", icon: 0xE721, emptyMessage: "Nothing sent matches")
+        hoveredPaletteRow = nil
+        pane.setFocused(false)
+        invalidate()
+    }
+
+    private func jump(to stop: TerminalPane.BlockStop, in pane: TerminalPane?) {
+        guard let pane else { return }
+        setEditorFocus(false, in: pane)
+        pane.select(stop)
+    }
+
+    // MARK: - Pages above the terminal
+
+    /// The column a tab is shown in, pages and terminal together.
+    private func columnArea(for pane: TerminalPane) -> UIRect { isSplit && pane.column == 1 ? rightTerminalArea : terminalArea }
+
+    func editorSplit(for pane: TerminalPane) -> EditorSplit {
+        EditorSplit(column: columnArea(for: pane), scale: scale, hasEditors: !pane.editors.isEmpty, showsTerminal: pane.showsTerminal,
+                    fraction: pane.editorFraction)
+    }
+
+    private func editorStrip(for pane: TerminalPane, on target: Canvas? = nil) -> EditorStrip? {
+        guard let strip = editorSplit(for: pane).strip else { return nil }
+        return EditorStrip(canvas: target ?? canvas, strip: strip, scale: scale, items: pane.editors, scroll: pane.stripScroll)
+    }
+
+    /// Scrolls a tab's sub-tabs along by `pixels` (positive goes further along), as far as there is.
+    private func scrollStrip(_ pane: TerminalPane, by pixels: Float) {
+        guard let strip = editorStrip(for: pane) else { return }
+        pane.stripScroll = min(max(min(pane.stripScroll, strip.maxScroll) + pixels, 0), strip.maxScroll)
+        invalidate()
+    }
+
+    /// Brings the active sub-tab into view, when they don't all fit.
+    private func revealActiveSubTab(_ pane: TerminalPane) {
+        guard let strip = editorStrip(for: pane) else { return }
+        pane.stripScroll = strip.revealing(pane.activeEditor)
+    }
+
+    /// Goes back to a page that's open already, with the keyboard. False if it isn't open.
+    private func focusEditor(_ key: String, in pane: TerminalPane) -> Bool {
+        guard let i = pane.editors.firstIndex(where: { $0.key == key }) else { return false }
+        pane.activeEditor = i
+        revealActiveSubTab(pane)
+        setEditorFocus(true, in: pane)
+        invalidate()
+        return true
+    }
+
+    /// Opens a page above the tab's terminal, after the others, and gives it the keyboard unless `focus` is false.
+    /// `reload` is false for a page moving from another tab, which keeps what it has (edits not yet saved among them).
+    private func openEditor(_ item: EditorItem, in pane: TerminalPane, focus: Bool = true, reload: Bool = true) {
+        let first = pane.editors.isEmpty
+        pane.editors.append(item)
+        pane.activeEditor = pane.editors.count - 1
+        if first { pane.showsTerminal = true }
+        revealActiveSubTab(pane)
+        if focus { setEditorFocus(true, in: pane) }
+        if reload { item.panel.reload() }
+        // The terminal gives up room to the pages the first time they come.
+        if first { layoutChanged() } else { invalidate() }
+    }
+
+    /// Closes a page; the one before it shows, or with none left the terminal has the column again.
+    func closeEditor(_ panel: ColumnPanel, in pane: TerminalPane) {
+        guard let i = pane.editors.firstIndex(where: { $0.panel === panel }) else { return }
+        closeEditor(at: i, in: pane)
+    }
+
+    private func closeEditor(at i: Int, in pane: TerminalPane, force: Bool = false) {
+        guard pane.editors.indices.contains(i) else { return }
+        let item = pane.editors[i]
+        if !force, item.panel.hasUnsavedChanges {
+            pane.activeEditor = i
+            let panel = item.panel
+            ask(DialogModel(title: "Save changes to \(item.title)?", message: "Your changes will be lost if you don't save them.", primary: "Save",
+                            other: ("Don't Save", { [weak self, weak pane, weak panel] in
+                                if let self, let pane, let panel, let k = pane.editors.firstIndex(where: { $0.panel === panel }) { self.closeEditor(at: k, in: pane, force: true) }
+                            })) { [weak self, weak pane, weak panel] in
+                panel?.save { saved in
+                    if saved, let self, let pane, let panel, let k = pane.editors.firstIndex(where: { $0.panel === panel }) { self.closeEditor(at: k, in: pane, force: true) }
+                }
+            })
+            return
+        }
+        pane.editors.remove(at: i)
+        if pane.editors.isEmpty {
+            pane.activeEditor = 0
+            // A file tab left with nothing closes, as on the Mac.
+            if !pane.showsTerminal, let k = panes.firstIndex(where: { $0 === pane }) { return closeTab(k) }
+            pane.showsTerminal = true
+            setEditorFocus(false, in: pane)
+            layoutChanged()
+            return
+        }
+        if i < pane.activeEditor || pane.activeEditor >= pane.editors.count { pane.activeEditor = max(pane.activeEditor - 1, 0) }
+        invalidate()
+    }
+
+    /// Hides or shows the terminal under the pages. With it hidden the keyboard stays with the pages.
+    private func toggleTerminal(in pane: TerminalPane) {
+        guard !pane.editors.isEmpty else { return }
+        pane.showsTerminal.toggle()
+        setEditorFocus(!pane.showsTerminal, in: pane)
+        layoutChanged()
+    }
+
+    // MARK: - File tabs
+
+    /// The tab a page is open in, wherever it's moved since it was opened.
+    func owner(of panel: ColumnPanel) -> TerminalPane? { panes.first { pane in pane.editors.contains { $0.panel === panel } } }
+
+    /// Where a new file tab goes in a column, unless it's said: just after the active tab when that's in the column, as
+    /// on the Mac; else at the column's end.
+    private func fileTabIndex(column: Int) -> Int? { activePane.column == column ? activeIndex + 1 : nil }
+
+    /// A tab of its own for a file, as on the Mac: just the file, its terminal hidden (the button at the right of its
+    /// strip shows it). The shell starts in the file's folder, on this PC.
+    func openFileTab(_ path: String, remote: RemoteConnection? = nil, column: Int, at index: Int? = nil) {
+        if AnyPath.isUnix(path) && remote == nil { return fileProblem() }
+        let folder = remote == nil ? AnyPath.parent(path) : nil
+        guard addPane(at: index ?? fileTabIndex(column: column), cwd: folder, column: column) else { return }
+        let pane = activePane
+        showFile(path, in: pane, remote: remote, focus: true)
+        becomeFileTab(pane)
+    }
+
+    /// Hides a tab's terminal under its pages, the keyboard with them.
+    private func becomeFileTab(_ pane: TerminalPane) {
+        pane.showsTerminal = false
+        setEditorFocus(true, in: pane)
+        layoutChanged()
+        detailsChanged()
+    }
+
+    /// Takes a page out of its tab, unsaved edits and all, to go somewhere else. A file tab left with nothing closes.
+    private func detachEditor(at i: Int, from pane: TerminalPane) -> EditorItem? {
+        guard pane.editors.indices.contains(i) else { return nil }
+        let item = pane.editors.remove(at: i)
+        if pane.editors.isEmpty {
+            pane.activeEditor = 0
+            if !pane.showsTerminal, let k = panes.firstIndex(where: { $0 === pane }) {
+                closeTab(k)
+            } else {
+                pane.showsTerminal = true
+                setEditorFocus(false, in: pane)
+            }
+        } else if i < pane.activeEditor || pane.activeEditor >= pane.editors.count {
+            pane.activeEditor = max(pane.activeEditor - 1, 0)
+        }
+        return item
+    }
+
+    /// A page's sub-tab dragged to a tab strip: a file tab of its own there.
+    private func moveEditorToOwnTab(at i: Int, from pane: TerminalPane, column: Int, at index: Int?) {
+        // A file tab's only page is in a tab of its own already.
+        if !pane.showsTerminal && pane.editors.count == 1 && pane.column == column { return }
+        guard let item = pane.editors.indices.contains(i) ? pane.editors[i] : nil else { return }
+        let folder = item.key.hasPrefix("file\nlocal\n") ? AnyPath.parent(String(item.key.dropFirst(11))) : pane.terminal.cwd
+        guard addPane(at: index ?? fileTabIndex(column: column), cwd: folder, column: column) else { return }
+        let tab = activePane
+        _ = detachEditor(at: i, from: pane)
+        openEditor(item, in: tab, focus: true, reload: false)
+        becomeFileTab(tab)
+    }
+
+    /// A page's sub-tab dragged onto the other column's terminal: it goes above that column's tab's terminal.
+    private func moveEditor(at i: Int, from pane: TerminalPane, into target: TerminalPane) {
+        guard target !== pane, let item = detachEditor(at: i, from: pane) else { return }
+        if let k = panes.firstIndex(where: { $0 === target }) { activate(k) }
+        openEditor(item, in: target, focus: true, reload: false)
+        layoutChanged()
+    }
+
+    /// A page's sub-tab held down, which may be dragged: along its strip, to put it somewhere else there; to a tab strip,
+    /// for a file tab of its own; or over the other column's terminal, to go above it there. Let go without moving, it's
+    /// a click, which the strip deals with.
+    private var stripPress: (pane: TerminalPane, index: Int, x: Float, y: Float, dragging: Bool)?
+    /// While one's dragged over the other column: that column, which lights up.
+    private var editorDropColumn: Int?
+    /// While one's dragged along its own strip: the sub-tab it would go in front of (the count, for the end).
+    private var stripInsert: Int?
+
+    /// Starts dragging the sub-tab held down: it lifts, and a copy of it follows the pointer from where it was grabbed.
+    private func beginStripDrag(_ press: inout (pane: TerminalPane, index: Int, x: Float, y: Float, dragging: Bool)) {
+        press.dragging = true
+        stripPress = press
+        SetCapture(hwnd)
+        guard press.pane.editors.indices.contains(press.index), let strip = editorStrip(for: press.pane) else { return }
+        let item = press.pane.editors[press.index], r = strip.tabs[press.index].rect
+        dragGhost = DragGhost(title: item.title, glyph: item.glyph, x: press.x, y: press.y, grabX: press.x - r.x, grabY: press.y - r.y)
+    }
+
+    private func stripDragMouse(_ message: UINT, x: Float, y: Float) -> Bool {
+        guard var press = stripPress else { return false }
+        switch message {
+        case Win.WM_MOUSEMOVE:
+            if !press.dragging {
+                guard abs(x - press.x) > 4 * scale || abs(y - press.y) > 4 * scale else { return false }
+                beginStripDrag(&press)
+            }
+            dragGhost?.x = x
+            dragGhost?.y = y
+            fileDragPoint = (x, y)
+            stripInsert = nil
+            editorDropColumn = nil
+            if let strip = editorStrip(for: press.pane), let along = stripAlong(strip, x: x, y: y) {
+                // Along its own strip: where it would go there. Near either end of sub-tabs that don't all fit, they
+                // scroll that way.
+                let v = strip.viewport, edge = 24 * scale
+                if strip.overflows && x < v.x + edge { scrollStrip(press.pane, by: -12 * scale) }
+                if strip.overflows && x > v.maxX - edge { scrollStrip(press.pane, by: 12 * scale) }
+                stripInsert = editorStrip(for: press.pane)?.insertion(atX: along) ?? strip.insertion(atX: along)
+            } else {
+                editorDropColumn = editorDropPane(atX: x, y: y, from: press.pane)?.column
+            }
+            invalidate()
+            return true
+        case Win.WM_LBUTTONUP:
+            stripPress = nil
+            guard press.dragging else { return false }
+            ReleaseCapture()
+            let insert = stripInsert
+            fileDragPoint = nil
+            editorDropColumn = nil
+            stripInsert = nil
+            dragGhost = nil
+            if let spot = tabBarSpot(atX: x, y: y) {
+                moveEditorToOwnTab(at: press.index, from: press.pane, column: spot.column, at: spot.at)
+            } else if let insert {
+                moveSubTab(in: press.pane, from: press.index, to: insert)
+            } else if let target = editorDropPane(atX: x, y: y, from: press.pane) {
+                moveEditor(at: press.index, from: press.pane, into: target)
+            }
+            invalidate()
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Whether a point is along a strip (a little above or below it counts), and where along its sub-tabs.
+    private func stripAlong(_ strip: EditorStrip, x: Float, y: Float) -> Float? {
+        let s = strip.strip, slack = 14 * scale
+        guard y >= s.y - slack, y <= s.maxY + slack, x >= s.x, x <= s.maxX else { return nil }
+        return min(max(x, strip.viewport.x), strip.viewport.maxX)
+    }
+
+    /// Puts a sub-tab in front of the one at `insert` (or at the end), keeping the same one active.
+    private func moveSubTab(in pane: TerminalPane, from i: Int, to insert: Int) {
+        guard pane.editors.indices.contains(i), insert != i, insert != i + 1 else { return }
+        let active = pane.editors.indices.contains(pane.activeEditor) ? pane.editors[pane.activeEditor] : nil
+        let item = pane.editors.remove(at: i)
+        pane.editors.insert(item, at: min(insert > i ? insert - 1 : insert, pane.editors.count))
+        pane.activeEditor = active.flatMap { a in pane.editors.firstIndex { $0 === a } } ?? 0
+        invalidate()
+    }
+
+    // MARK: - What's dragged, under the pointer
+
+    /// A copy of what's dragged (a tab, a group's chip, a sub-tab, a sidebar's file), drawn under the pointer wherever it
+    /// goes, held where it was grabbed, so it's plain what's being moved.
+    struct DragGhost {
+        var title: String
+        var glyph: UInt16?
+        var x: Float, y: Float
+        /// Where in it the pointer has it.
+        var grabX: Float, grabY: Float
+        var color: UInt32? = nil
+    }
+    private var dragGhost: DragGhost?
+
+    private func drawDragGhost(on target: Canvas) {
+        guard let g = dragGhost else { return }
+        let s = scale, c = target.raw, pixels = 11.5 * s, accent = g.color ?? TerminalPalette.accent
+        let units = Array(g.title.utf16)
+        let text = sol_canvas_measure_label(c, units, Int32(units.count), pixels, 0)
+        let iconWidth: Float = g.glyph != nil ? 22 * s : 0
+        let w = min(max(text + iconWidth + 28 * s, 90 * s), 280 * s).rounded(), h = (28 * s).rounded()
+        let x = (g.x - min(max(g.grabX, 10 * s), w - 10 * s)).rounded(), y = (g.y - min(max(g.grabY, 6 * s), h - 6 * s)).rounded()
+        // Lifted off the window: a shadow under it, and an accent edge.
+        sol_canvas_fill_rounded(c, x + 2 * s, y + 5 * s, w, h, 8 * s, 0x000000, 0.22)
+        sol_canvas_fill_rounded(c, x + 1 * s, y + 2 * s, w, h, 8 * s, 0x000000, 0.18)
+        sol_canvas_fill_rounded(c, x, y, w, h, 7 * s, TerminalPalette.surface, 1)
+        sol_canvas_fill_rounded(c, x, y, w, h, 7 * s, accent, 0.10)
+        sol_canvas_stroke_rounded(c, x + 0.75 * s, y + 0.75 * s, w - 1.5 * s, h - 1.5 * s, 7 * s, accent, 0.9, 1.5 * s)
+        var tx = x + 12 * s
+        if let glyph = g.glyph {
+            sol_canvas_draw_icon(c, tx - 2 * s, y, 18 * s, h, glyph, 10.5 * s, accent, 0.95)
+            tx += iconWidth
+        }
+        sol_canvas_draw_label(c, tx, y, x + w - 10 * s - tx, h, units, Int32(units.count), pixels, 0, TerminalPalette.foreground, 1)
+    }
+
+    /// While split, the other column's tab, when a sub-tab's dragged over its terminal.
+    private func editorDropPane(atX x: Float, y: Float, from pane: TerminalPane) -> TerminalPane? {
+        guard isSplit, layout.part(atX: x, y: y) == .terminal else { return nil }
+        let under = self.pane(atX: x)
+        return under.column != pane.column ? under : nil
+    }
+
+    /// The keyboard to the pages or to the terminal. The terminal's cursor shows hollow while the pages have it.
+    func setEditorFocus(_ on: Bool, in pane: TerminalPane) {
+        let wanted = !pane.editors.isEmpty && (on || !pane.showsTerminal)
+        if pane.editorFocused != wanted {
+            pane.editorFocused = wanted
+            invalidate()
+        }
+        // The page and a sidebar don't both have the keyboard.
+        if wanted && on && sidebarHasFocus {
+            left.isFocused = false
+            right.isFocused = false
+        }
+        if pane === activePane { pane.setFocused(isFocused && !wanted && !sidebarHasFocus) }
+    }
+
+    /// While the line between the pages and the terminal is dragged: the tab it belongs to.
+    private weak var draggingEditorLine: TerminalPane?
+    private var hoveredStrip: (pane: UInt, part: EditorStrip.Part)?
+
+    /// The pointer has left a tab's pages: nothing there stays hovered.
+    private func leaveEditors() {
+        for pane in visiblePanes { pane.panel?.mouseLeft() }
+        if hoveredStrip != nil {
+            hoveredStrip = nil
+            invalidate()
+        }
+    }
+
+    /// The mouse over a tab's pages, their strip or the line under them. True if it dealt with it.
+    private func editorMouse(_ message: UINT, part: WindowPart, x: Float, y: Float) -> Bool {
+        if let pane = draggingEditorLine {
+            if message == Win.WM_MOUSEMOVE {
+                pane.editorFraction = editorSplit(for: pane).fraction(atY: y)
+                invalidate()
+            } else if message == Win.WM_LBUTTONUP {
+                draggingEditorLine = nil
+                ReleaseCapture()
+                layoutChanged()
+            }
+            return true
+        }
+        guard !terminalHasMouse, part == .terminal else {
+            leaveEditors()
+            return false
+        }
+        let under = pane(atX: x), split = editorSplit(for: under)
+        guard let editor = split.editor else {
+            leaveEditors()
+            return false
+        }
+        if let line = split.divider, line.contains(x, y) {
+            leaveEditors()
+            if message == Win.WM_LBUTTONDOWN {
+                draggingEditorLine = under
+                SetCapture(hwnd)
+            }
+            return true
+        }
+        guard editor.contains(x, y) else {
+            leaveEditors()
+            return false
+        }
+        let presses = [Win.WM_LBUTTONDOWN, Win.WM_RBUTTONDOWN, Win.WM_MBUTTONDOWN, Win.WM_LBUTTONDBLCLK]
+        if presses.contains(message) {
+            // A press on a tab's pages gives them the keyboard (and its column, while split).
+            if under !== activePane, let i = panes.firstIndex(where: { $0 === under }) { activate(i) }
+            setEditorFocus(true, in: under)
+        }
+        if message == Win.WM_MOUSEMOVE { setHovered(.terminal, nonClient: false) }
+        if let strip = editorStrip(for: under), strip.strip.contains(x, y) {
+            under.panel?.mouseLeft()
+            let stripPart = strip.part(atX: x, y: y)
+            let before = hoveredStrip
+            hoveredStrip = stripPart.map { (under.id, $0) }
+            if before?.pane != hoveredStrip?.pane || before?.part != hoveredStrip?.part { invalidate() }
+            switch (message, stripPart) {
+            case (Win.WM_LBUTTONDOWN, .tab(let i)?):
+                // Held, it may be dragged off the strip (see `stripDragMouse`).
+                stripPress = (under, i, x, y, false)
+            case (Win.WM_LBUTTONUP, .tab(let i)?):
+                under.activeEditor = i
+                revealActiveSubTab(under)
+                invalidate()
+            case (Win.WM_LBUTTONUP, .scrollLeft?), (Win.WM_LBUTTONUP, .scrollRight?):
+                // A sub-tab's width or so at a time, as the tab bar's arrows go.
+                scrollStrip(under, by: (stripPart == .scrollLeft ? -1 : 1) * 160 * scale)
+            case (Win.WM_LBUTTONUP, .close(let i)?), (Win.WM_MBUTTONUP, .tab(let i)?), (Win.WM_MBUTTONUP, .close(let i)?):
+                closeEditor(at: i, in: under)
+            case (Win.WM_LBUTTONUP, .terminal?):
+                toggleTerminal(in: under)
+            default: break
+            }
+            return true
+        }
+        if hoveredStrip != nil {
+            hoveredStrip = nil
+            invalidate()
+        }
+        if let panel = under.panel, let page = split.page {
+            _ = panel.mouse(message, x: x, y: y, in: page, scale: scale)
+        }
+        return true
+    }
+
+    /// Draws a tab's pages (strip and active page), its terminal, and the line between.
+    private func drawColumn(_ pane: TerminalPane, on target: Canvas, snapshot: Bool) {
+        let split = editorSplit(for: pane)
+        if split.showsTerminal || pane.editors.isEmpty {
+            if snapshot {
+                target.terminalArea = area(for: pane)
+                var renderer = TerminalRenderer(canvas: target, terminal: pane.terminal)
+                renderer.scrollOffset = pane.scrollOffset
+                renderer.focused = pane === activePane && !pane.editorFocused
+                renderer.drawContents()
+                pane.drawOverlays(on: target)
+            } else {
+                pane.draw(cursorShown: pane === activePane ? cursorShown : true, style: cursorStyleCode)
+            }
+        }
+        guard let editor = split.editor, let strip = editorStrip(for: pane, on: target) else { return }
+        sol_canvas_backdrop_rect(target.raw, editor.x, editor.y, editor.width, editor.height, TerminalPalette.background)
+        if let page = split.page, let panel = pane.panel {
+            panel.draw(on: target, in: page, scale: scale)
+        }
+        let held = stripPress.flatMap { $0.dragging && $0.pane === pane ? $0 : nil }
+        strip.draw(active: pane.activeEditor, hovered: hoveredStrip?.pane == pane.id ? hoveredStrip?.part : nil, showsTerminal: pane.showsTerminal,
+                   focused: pane.editorFocused && pane === activePane, dragged: held?.index, marker: held == nil ? nil : stripInsert)
+        if split.showsTerminal {
+            Self.drawBand(UIRect(x: editor.x, y: editor.maxY, width: editor.width, height: split.bandHeight), vertical: false, on: target, scale: scale,
+                          active: draggingEditorLine === pane)
         }
     }
 
@@ -1620,7 +2877,7 @@ final class TerminalWindow {
                 if onHost {
                     self.activePane.setClipboard(AnyPath.join(folder, m.path) + ":\(m.line)")
                 } else {
-                    self.onOpenFile(WindowsPath.join(folder, m.path.replacingOccurrences(of: "/", with: "\\")))
+                    self.showFile(WindowsPath.join(folder, m.path.replacingOccurrences(of: "/", with: "\\")), in: self.activePane, line: m.line)
                 }
             }
         }
@@ -1672,6 +2929,9 @@ final class TerminalWindow {
     private var hostClipboard: (paths: [String], cut: Bool, remote: RemoteConnection, sequence: DWORD)?
     /// A press on a sidebar's row, which may turn into dragging it.
     private var rowPress: (sidebar: FileSidebar, entry: FileEntry, x: Float, y: Float, dragging: Bool)?
+    /// The page a click on a sidebar's file last opened (its tab and the page), and when: a double click right after moves
+    /// the file to a tab of its own instead.
+    private var clickOpened: (pane: UInt, panel: ObjectIdentifier, path: String, at: Date)?
 
     private var editingSidebar: FileSidebar? { left.tree.editing != nil ? left : right.tree.editing != nil ? right : nil }
 
@@ -1716,8 +2976,15 @@ final class TerminalWindow {
                 item("Open in Solanum") { [weak self] in self?.openInTerminal(entry.path, sidebar) }
                 if !onHost { item("Open in New Tab") { [weak self] in self?.openInNewTab(entry.path, sidebar) } }
                 item("Pin as Sidebar Root") { [weak self] in self?.pin(sidebar, to: entry.path) }
-            } else if !onHost {
-                item("Open", "Enter") { [weak self] in self?.onOpenFile(entry.path) }
+            } else {
+                item("Open", "Space") { [weak self] in self?.showFile(entry.path, in: self!.pane(for: sidebar), remote: self?.remoteIfUnix(entry.path, sidebar)) }
+                if MarkdownDoc.isMarkdown(path: entry.path) {
+                    item("Open Preview") { [weak self] in
+                        guard let self else { return }
+                        self.showPreview(entry.path, in: self.pane(for: sidebar), remote: self.remoteIfUnix(entry.path, sidebar))
+                    }
+                }
+                if !onHost { item("Open in Default App") { [weak self] in self?.onOpenFile(entry.path) } }
             }
             items.append(.separator)
         }
@@ -2062,9 +3329,30 @@ final class TerminalWindow {
     // Dragging and dropping
 
     /// Where a drag over a point would drop: a sidebar and its folder there, or a terminal.
-    private enum DropSpot { case folder(FileSidebar, String), terminal(TerminalPane) }
+    private enum DropSpot { case folder(FileSidebar, String), terminal(TerminalPane), tabBar(column: Int, at: Int) }
+
+    /// Over a column's tab strip: the column, and the tab a drop would go in front of (the column's end, past the last).
+    private func tabBarSpot(atX x: Float, y: Float) -> (column: Int, at: Int)? {
+        let l = layout
+        guard !panes.isEmpty, y < l.tabBarHeight else { return nil }
+        let column = l.isSplit && x >= l.divider ? 1 : 0, v = l.tabViewport(column: column)
+        guard x >= v.x && x <= v.maxX else { return nil }
+        let range = l.tabRange(column: column)
+        return (column, range.first { l.tab($0).x + l.tab($0).width / 2 > x } ?? range.upperBound)
+    }
+
+    /// Where a file dragged over the tab strip would get its tab: a bar there, as for a tab dragged.
+    private func tabBarMarker(_ spot: (column: Int, at: Int)) -> (x: Float, color: UInt32) {
+        let l = layout, range = l.tabRange(column: spot.column), gap = 3 * scale
+        let x = spot.at < range.upperBound ? l.tab(spot.at).x - gap / 2 : (range.isEmpty ? l.tabViewport(column: spot.column).x : l.tab(range.upperBound - 1).maxX + gap / 2)
+        return (x, TerminalPalette.accent)
+    }
+
+    /// While a sidebar's file or a page's sub-tab is dragged: where the pointer is, for the marker on the tab strip.
+    private var fileDragPoint: (x: Float, y: Float)?
 
     private func dropSpot(atX x: Float, y: Float) -> DropSpot? {
+        if let spot = tabBarSpot(atX: x, y: y) { return .tabBar(column: spot.column, at: spot.at) }
         switch layout.part(atX: x, y: y) {
         case .leftSidebar, .rightSidebar:
             let sidebar = layout.part(atX: x, y: y) == .leftSidebar ? left : right
@@ -2087,6 +3375,24 @@ final class TerminalWindow {
     /// Files dropped somewhere: into a folder (copied or moved, uploaded or downloaded) or into a terminal, as their paths.
     private func drop(_ paths: [String], at spot: DropSpot, from source: FileSidebar?, copy: Bool) {
         switch spot {
+        case .tabBar(let column, let at):
+            // Each file in a file tab of its own, in order from where it was let go; a folder on this PC in a terminal tab
+            // there, as on the Mac.
+            var at = at
+            for path in paths {
+                let isUnix = AnyPath.isUnix(path)
+                var isFolder: ObjCBool = false
+                let folder = isUnix ? source?.tree.rows.first(where: { $0.entry.path == path })?.entry.isDirectory ?? false
+                    : FileManager.default.fileExists(atPath: path, isDirectory: &isFolder) && isFolder.boolValue
+                if folder {
+                    guard !isUnix, addPane(at: at, cwd: path, column: column) else { continue }
+                } else {
+                    let before = panes.count
+                    openFileTab(path, remote: isUnix ? source.flatMap { remote(for: $0) } : nil, column: column, at: at)
+                    guard panes.count > before else { continue }
+                }
+                at += 1
+            }
         case .terminal(let pane):
             if pane !== activePane, let i = panes.firstIndex(where: { $0 === pane }) { activate(i) }
             focusTerminal()
@@ -2450,6 +3756,8 @@ final class TerminalWindow {
         var all = items([ThemeSpecs.solanumDefault] + ThemeSpecs.outerWilds)
         if !settings.customThemes.isEmpty { all += [.separator] + items(settings.customThemes) }
         all += [.separator] + items(ThemeSpecs.vsCode)
+        // As on the Mac: Settings' Appearance page, for your own themes and the rest.
+        all += [.separator, MenuItem(title: "Open Theme Settings") { SettingsWindow.shared.show(.appearance) }]
         let width = MenuView.width(for: all, canvas: canvas, scale: scale)
         openMenu(all, x: spot.maxX - width, y: spot.y - 2 * scale, above: true)
     }
@@ -2458,8 +3766,27 @@ final class TerminalWindow {
 
     // MARK: - Dragging tabs
 
+    /// While a tab is dragged: a group's chip it's over (it would join that group), the column it would move to when it's
+    /// over the terminals (shown with an overlay, as on the Mac), and whether it's past its group's end (it would leave).
+    private var tabDropChip: TabGroup?
+    private var tabSplitTarget: Int?
+    /// While split, the other column's strip a dragged tab is over: that column, and the tab it would go in front of.
+    private var tabStripTarget: (column: Int, at: Int)?
+    private var tabLeavesGroup = false
+    /// The group a dragged tab started in: it leaves it as soon as it's away from that group's tabs, and is back in it
+    /// when it returns among them, so it never shows as a group of its own.
+    private var tabHomeGroup: TabGroup?
+
+    /// After a dragged tab has moved: in its group while it's beside one of the group's tabs, otherwise in none.
+    private func regroupDragged(_ i: Int) {
+        guard let home = tabHomeGroup, panes.indices.contains(i) else { return }
+        let column = panes[i].column
+        func member(_ k: Int) -> Bool { panes.indices.contains(k) && k != i && panes[k].group === home && panes[k].column == column }
+        panes[i].group = member(i - 1) || member(i + 1) ? home : nil
+    }
+
     /// A press, move or release while a tab is held. True if it dealt with the mouse.
-    private func tabDragMouse(_ message: UINT, x: Float) -> Bool {
+    private func tabDragMouse(_ message: UINT, x: Float, y: Float) -> Bool {
         guard var press = tabPress else { return false }
         switch message {
         case Win.WM_MOUSEMOVE:
@@ -2468,49 +3795,289 @@ final class TerminalWindow {
                 press.dragging = true
                 SetCapture(hwnd)
             }
-            // Within its own column's strip; let go over the other column's, it moves there.
-            let l = layout, column = l.column(ofTab: press.index), v = l.tabViewport(column: column), w = l.tabWidth(column: column)
+            let l = layout, pane = panes[press.index], column = l.column(ofTab: press.index), v = l.tabViewport(column: column), w = l.tabWidth(column: column)
             let range = l.tabRange(column: column)
             draggedX = min(max(x - press.grab, v.x), max(v.maxX - w, v.x))
-            // It trades places with a neighbor as it passes halfway over it, as on the Mac.
-            var moved = true
-            while moved {
-                moved = false
-                let floating = UIRect(x: draggedX, y: 0, width: w, height: 1)
-                if press.index + 1 < range.upperBound, floating.maxX > l.tab(press.index + 1).x + w / 2 {
-                    moveTab(from: press.index, to: press.index + 1)
-                    press.index += 1
-                    moved = true
-                } else if press.index > range.lowerBound, floating.x < l.tab(press.index - 1).x + w / 2 {
-                    moveTab(from: press.index, to: press.index - 1)
-                    press.index -= 1
-                    moved = true
+            tabDropChip = nil
+            tabSplitTarget = nil
+            tabStripTarget = nil
+            tabLeavesGroup = false
+            let overColumn = l.isSplit && x >= l.divider ? 1 : 0
+            if y > l.tabBarHeight + 6 * scale && y < l.statusBar.y {
+                // Down over the terminals. Split, the other column's (or, its last tab leaving, the whole window, one
+                // column again); not split yet, the half it's over, which it would take, left or right.
+                if l.isSplit {
+                    if overColumn != pane.column { tabSplitTarget = overColumn }
+                } else if panes.count > 1 {
+                    tabSplitTarget = x < terminalArea.x + terminalArea.width / 2 ? 0 : 1
+                }
+            } else if l.isSplit && y <= l.tabBarHeight && overColumn != pane.column {
+                // Over the other column's strip: it would go in there, where the bar shows.
+                let target = l.tabRange(column: overColumn)
+                tabStripTarget = (overColumn, target.first { l.tab($0).x + l.tab($0).width / 2 > x } ?? target.upperBound)
+            } else if case .chip(let first) = l.part(atX: x, y: min(y, l.tabBarHeight - 2)), let g = panes[first].group, g !== pane.group,
+                      l.column(ofTab: first) == column {
+                // Over another group's chip: it would join that group.
+                tabDropChip = g
+            } else {
+                // It trades places with a neighbor as it passes halfway over it, as on the Mac: a tab of its own group (or
+                // one with none) by itself, another group as a whole, so it never lands inside one.
+                if tabHomeGroup == nil { tabHomeGroup = pane.group }
+                var moved = true, guardCount = 0
+                while moved && guardCount < 64 {
+                    moved = false
+                    guardCount += 1
+                    let floating = UIRect(x: draggedX, y: 0, width: w, height: 1), l = layout
+                    func span(_ i: Int) -> ClosedRange<Int> {
+                        panes[i].group == nil || panes[i].group === tabHomeGroup ? i...i : unitSpan(at: i)
+                    }
+                    if press.index + 1 < range.upperBound {
+                        let next = span(press.index + 1), e = stripExtent(next, l)
+                        if floating.maxX > (e.x + e.maxX) / 2 {
+                            reorder { tabs in tabs.insert(tabs.remove(at: press.index), at: next.upperBound) }
+                            press.index = next.upperBound
+                            moved = true
+                            regroupDragged(press.index)
+                            continue
+                        }
+                    }
+                    if press.index > range.lowerBound {
+                        let before = span(press.index - 1), e = stripExtent(before, l)
+                        if floating.x < (e.x + e.maxX) / 2 {
+                            reorder { tabs in tabs.insert(tabs.remove(at: press.index), at: before.lowerBound) }
+                            press.index = before.lowerBound
+                            moved = true
+                            regroupDragged(press.index)
+                        }
+                    }
+                }
+                // Past the end of its group (with nothing there to trade with): it would leave the group.
+                if let g = pane.group, panes.filter({ $0.group === g }).count > 1 {
+                    let slot = layout.tab(press.index), center = x - press.grab + w / 2
+                    let isLast = press.index + 1 >= range.upperBound || panes[press.index + 1].group !== g
+                    let isFirst = press.index == range.lowerBound || panes[press.index - 1].group !== g
+                    if isLast && center > slot.maxX + w * 0.25 { tabLeavesGroup = true }
+                    if isFirst && center < (layout.chip(press.index)?.x ?? slot.x) - w * 0.25 { tabLeavesGroup = true }
                 }
             }
+            // Away from its own strip, the tab lifts out of it and comes with the pointer, so it's plain what's held.
+            dragGhost = ghostOffBar(y) || tabStripTarget != nil
+                ? DragGhost(title: pane.tabTitle, glyph: nil, x: x, y: y, grabX: press.grab, grabY: 14 * scale, color: pane.group?.color.rgb) : nil
             tabPress = press
             invalidate()
             return true
         case Win.WM_LBUTTONUP:
+            dragGhost = nil
+            tabStripTarget = nil
             if press.dragging {
                 ReleaseCapture()
                 let pane = panes[press.index], l = layout
-                let over = l.isSplit ? (x >= l.divider ? 1 : 0) : pane.column
+                let over = l.isSplit && y <= l.tabBarHeight ? (x >= l.divider ? 1 : 0) : pane.column
+                let (chip, split, leaves) = (tabDropChip, tabSplitTarget, tabLeavesGroup)
+                tabHomeGroup = nil
                 tabPress = nil
-                if over != pane.column {
+                tabDropChip = nil
+                tabSplitTarget = nil
+                tabLeavesGroup = false
+                if let split {
+                    // Dropped on the terminals: into the other column; or, splitting the window, the half it was let go over.
+                    if !isSplit && split == 0 { splitToLeft(pane) } else { moveToOtherColumn(pane) }
+                } else if let chip {
+                    add([pane], to: chip)
+                } else if over != pane.column {
                     // Dropped on the other column's strip: into it, where it was let go.
                     let target = l.tabRange(column: over)
                     let at = target.first { l.tab($0).x + l.tab($0).width / 2 > x } ?? target.upperBound
                     moveToOtherColumn(pane, at: at > press.index ? at - 1 : at)
+                } else if leaves {
+                    pane.group = nil
                 } else {
                     TabGroupOps.settle(pane, in: panes)
                 }
             }
             tabPress = nil
+            tabHomeGroup = nil
             invalidate()
             return press.dragging
         default:
             return false
         }
+    }
+
+    /// Where a dragged tab would land: a bar at its place (in its group's color while it's in one), past its group's end
+    /// when it would leave it. None while it's over a chip or the terminals, which show it their own way.
+    private var tabDropMarker: (x: Float, color: UInt32)? {
+        guard let press = tabPress, press.dragging, tabDropChip == nil, tabSplitTarget == nil, panes.indices.contains(press.index) else { return nil }
+        let l = layout, slot = l.tab(press.index), pane = panes[press.index], gap = 3 * scale
+        guard tabLeavesGroup, let g = pane.group else {
+            return (slot.x - gap / 2, pane.group?.color.rgb ?? TerminalPalette.accent)
+        }
+        let isFirst = press.index == 0 || panes[press.index - 1].group !== g || panes[press.index - 1].column != pane.column
+        let first = panes.firstIndex { $0.group === g } ?? press.index
+        return (isFirst && (l.chip(first).map { draggedX < $0.x } ?? false) ? (l.chip(press.index)?.x ?? slot.x) - gap * 2 : slot.maxX + gap * 2, TerminalPalette.accent)
+    }
+
+    /// Over the terminals while a tab is dragged (or a page's sub-tab, over the other column): where it would go, as on
+    /// the Mac. The other column; the whole window, when the tab is the last in its column and the split would close;
+    /// or, not split yet, the half it would take.
+    private func drawSplitDrop(on target: Canvas) {
+        guard let column = tabSplitTarget ?? editorDropColumn else { return }
+        let l = layout
+        var r = isSplit ? (column == 1 ? rightTerminalArea : terminalArea) : terminalArea
+        let closesSplit = tabSplitTarget != nil && isSplit && tabPress.map { p in panes.indices.contains(p.index) && panes.filter { $0.column == panes[p.index].column }.count == 1 } == true
+        if closesSplit {
+            r = UIRect(x: terminalArea.x, y: terminalArea.y, width: rightTerminalArea.maxX - terminalArea.x, height: terminalArea.height)
+        } else if !isSplit {
+            let half = (r.width / 2).rounded()
+            r = UIRect(x: column == 1 ? r.x + half : r.x, y: r.y, width: column == 1 ? r.width - half : half, height: r.height)
+        }
+        let inset = 8 * scale
+        r = UIRect(x: r.x + inset, y: r.y + inset, width: max(r.width - inset * 2, 0), height: max(min(r.height, l.statusBar.y - r.y) - inset * 2, 0))
+        sol_canvas_fill_rounded(target.raw, r.x, r.y, r.width, r.height, 10 * scale, TerminalPalette.accent, 0.16)
+        sol_canvas_stroke_rounded(target.raw, r.x + 1, r.y + 1, r.width - 2, r.height - 2, 10 * scale, TerminalPalette.accent, 0.85, 2 * scale)
+    }
+
+    // MARK: - Dragging group chips
+
+    /// A press on a group's chip, which may turn into dragging the group (chip and tabs) along the strip: it follows the
+    /// pointer, a bar shows where it would land, and it moves there when let go, as on the Mac.
+    private var chipPress: (group: TabGroup, grab: Float, startX: Float, dragging: Bool)?
+    private var chipDragX: Float = 0
+    /// The tab the dragged group would land in front of (the column's end index for the end).
+    private var chipInsertBefore: Int?
+
+    /// A press, move or release while a chip is held. True if it dealt with the mouse; a press let go without moving is
+    /// still a click, which collapses or expands the group.
+    private func chipDragMouse(_ message: UINT, x: Float, y: Float) -> Bool {
+        guard var press = chipPress else { return false }
+        switch message {
+        case Win.WM_MOUSEMOVE:
+            if !press.dragging {
+                guard abs(x - press.startX) > 4 * scale else { return true }
+                press.dragging = true
+                chipPress = press
+                SetCapture(hwnd)
+            }
+            chipDragX = x
+            chipInsertBefore = groupInsertion(press.group, blockX: x - press.grab)
+            dragGhost = ghostOffBar(y) ? DragGhost(title: groupGhostTitle(press.group), glyph: nil, x: x, y: y, grabX: press.grab, grabY: 14 * scale,
+                                                   color: press.group.color.rgb) : nil
+            invalidate()
+            return true
+        case Win.WM_LBUTTONUP:
+            chipPress = nil
+            guard press.dragging else { return false }
+            ReleaseCapture()
+            pressed = nil
+            dragGhost = nil
+            if let at = chipInsertBefore { moveGroup(press.group, before: at) }
+            chipInsertBefore = nil
+            invalidate()
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Whether the pointer's gone far enough above or below the tab bar that what's dragged along it should follow it there.
+    private func ghostOffBar(_ y: Float) -> Bool { y > layout.tabBarHeight + 4 * scale || y < 0 }
+
+    private func groupGhostTitle(_ g: TabGroup) -> String {
+        let n = panes.filter { $0.group === g }.count
+        let tabs = n == 1 ? "1 tab" : "\(n) tabs"
+        return g.name.isEmpty ? tabs : g.name + "  ·  " + tabs
+    }
+
+    /// The tabs a tab moves with: its group's, or just itself.
+    private func unitSpan(at i: Int) -> ClosedRange<Int> {
+        guard let g = panes[i].group else { return i...i }
+        let column = panes[i].column
+        var a = i, b = i
+        while a > 0, panes[a - 1].group === g, panes[a - 1].column == column { a -= 1 }
+        while b + 1 < panes.count, panes[b + 1].group === g, panes[b + 1].column == column { b += 1 }
+        return a...b
+    }
+
+    /// Where a run of tabs is in the strip, chip and all.
+    private func stripExtent(_ r: ClosedRange<Int>, _ l: WindowLayout) -> (x: Float, maxX: Float) {
+        let last = l.tab(r.upperBound)
+        return (l.chip(r.lowerBound)?.x ?? l.tab(r.lowerBound).x, last.x + last.width)
+    }
+
+    /// The group's tabs, and the other runs (a tab, or a whole group) in its column, in order.
+    private func columnUnits(of g: TabGroup) -> (me: ClosedRange<Int>, others: [ClosedRange<Int>], end: Int)? {
+        guard let f = panes.firstIndex(where: { $0.group === g }) else { return nil }
+        let me = unitSpan(at: f), range = layout.tabRange(column: panes[f].column)
+        var others: [ClosedRange<Int>] = []
+        var i = range.lowerBound
+        while i < range.upperBound {
+            let u = unitSpan(at: i)
+            if u != me { others.append(u) }
+            i = u.upperBound + 1
+        }
+        return (me, others, range.upperBound)
+    }
+
+    /// The tab the group, its left edge dragged to `blockX`, would land in front of: the first run whose middle is past it.
+    private func groupInsertion(_ g: TabGroup, blockX: Float) -> Int? {
+        guard let units = columnUnits(of: g) else { return nil }
+        let l = layout
+        for u in units.others {
+            let e = stripExtent(u, l)
+            if blockX < (e.x + e.maxX) / 2 { return u.lowerBound }
+        }
+        return units.end
+    }
+
+    /// Moves a group's tabs in front of tab `at` (or to the end of their column).
+    private func moveGroup(_ g: TabGroup, before at: Int) {
+        guard let units = columnUnits(of: g) else { return }
+        let me = units.me
+        guard at != me.lowerBound, at != me.upperBound + 1 else { return }
+        reorder { tabs in
+            let block = Array(tabs[me])
+            tabs.removeSubrange(me)
+            tabs.insert(contentsOf: block, at: at > me.upperBound ? at - me.count : at)
+        }
+    }
+
+    /// The dragged group as drawn, and the bar where it would land.
+    private var chipDragShape: (lifted: (first: Int, last: Int, dx: Float), marker: (x: Float, color: UInt32)?)? {
+        guard let press = chipPress, press.dragging, let units = columnUnits(of: press.group) else { return nil }
+        let l = layout, dx = chipDragX - press.startX, gap = 3 * scale
+        var marker: (x: Float, color: UInt32)?
+        if let at = chipInsertBefore, at != units.me.lowerBound, at != units.me.upperBound + 1 {
+            let x = at < units.end ? stripExtent(unitSpan(at: at), l).x - gap : (units.others.last.map { stripExtent($0, l).maxX } ?? 0) + gap
+            marker = (x, press.group.color.rgb)
+        }
+        return ((units.me.lowerBound, units.me.upperBound, dx), marker)
+    }
+
+    /// Presses a tab and drags it to a point anywhere in the window (onto a chip, or down over the terminals), as the mouse
+    /// would. `check` runs while it's held there, before it's let go.
+    func dragTab(_ i: Int, toX x: Float, y: Float, check: (() -> Void)? = nil) {
+        let r = layout.tab(i)
+        func at(_ px: Float, _ py: Float) -> LPARAM { LPARAM(Int(px) & 0xFFFF) | (LPARAM(Int(py) & 0xFFFF) << 16) }
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, at(r.x + 20, r.midY))
+        _ = SendMessageW(hwnd, Win.WM_MOUSEMOVE, 1, at(x, r.midY))
+        _ = SendMessageW(hwnd, Win.WM_MOUSEMOVE, 1, at(x, y))
+        check?()
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, at(x, y))
+    }
+
+    /// What a drag shows while it's held: the overlay's column, a chip lit up, and the landing bar. For tests.
+    var dragShows: (split: Int?, chip: Bool, marker: Bool) {
+        (tabSplitTarget, tabDropChip != nil, tabDropMarker != nil || chipDragShape?.marker != nil)
+    }
+
+    /// Presses a group's chip and drags it to a position, as the mouse would.
+    func dragChip(_ first: Int, toX x: Float) {
+        guard let r = layout.chip(first) else { return }
+        let y = Int(r.midY)
+        func at(_ px: Int) -> LPARAM { LPARAM(px & 0xFFFF) | (LPARAM(y & 0xFFFF) << 16) }
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, at(Int(r.x + 5)))
+        _ = SendMessageW(hwnd, Win.WM_MOUSEMOVE, 1, at(Int(x)))
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, at(Int(x)))
     }
 
     private func moveTab(from: Int, to: Int) {
@@ -2533,10 +4100,15 @@ final class TerminalWindow {
     private func sidebarKey(_ key: Int32, _ sidebar: FileSidebar, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
         let tree = sidebar.tree
         let selected = tree.selectedIndex.map { tree.rows[$0].entry }
-        // Explorer's keys for files.
+        // Explorer's keys for files, and the Mac's: Enter renames as Return does there (F2 too), Ctrl+Down opens as
+        // Command-Down does, and Space opens.
         switch key {
-        case Win.VK_F2 where !ctrl && !alt:
+        case Win.VK_F2 where !ctrl && !alt, Win.VK_RETURN where !ctrl && !alt && !shift:
             if let selected { beginRename(selected, sidebar) }
+            return true
+        case Win.VK_DOWN where ctrl && !alt:
+            if let i = tree.selectedIndex { activate(tree.rows[i].entry, in: sidebar) }
+            invalidate()
             return true
         case Win.VK_DELETE where !ctrl && !alt:
             if let selected, let i = tree.selectedIndex {
@@ -2566,6 +4138,7 @@ final class TerminalWindow {
         case Win.VK_RIGHT: tree.stepIn()
         case Win.VK_LEFT: tree.stepOut()
         case Win.VK_RETURN, Win.VK_SPACE:
+            // Space, or Enter with Ctrl or Shift.
             if let i = tree.selectedIndex { activate(tree.rows[i].entry, in: sidebar) }
         case Win.VK_ESCAPE:
             focusTerminal()
@@ -2986,14 +4559,21 @@ final class TerminalWindow {
 
     /// Every shortcut, as Settings › Shortcuts lists them. Ctrl stands in for the Mac's Command.
     static let shortcutGroups: [(title: String, items: [(title: String, keys: String)])] = [
-        ("Solanum", [("Settings…", "Ctrl+,"), ("Command Palette…", "Ctrl+Shift+P")]),
+        ("Solanum", [("Settings…", "Ctrl+,"), ("Command Palette…", "Ctrl+Shift+P"), ("Restart, bringing everything back", "Ctrl+Shift+R"),
+                     ("Restart Fresh", "Ctrl+Alt+Shift+R")]),
         ("Shell", [("New Tab", "Ctrl+T"), ("New Tab in Group", "Ctrl+Alt+T"), ("Reopen Closed Tab", "Ctrl+Shift+T"), ("Go to Folder…", "Ctrl+Shift+O"),
                    ("Split Right", "Ctrl+Alt+D"), ("Move Tab to Other Split", "Ctrl+Shift+D"), ("Close Split", "Ctrl+Alt+W"), ("Close Tab", "Ctrl+W"),
                    ("Close Tab (also)", "Ctrl+Shift+W"), ("Rename Tab…", "Ctrl+Shift+I"), ("Add Tab to New Group", "Ctrl+Alt+G")]),
-        ("Tabs", [("Pick another tab", "Ctrl+Click"), ("Pick the tabs between", "Shift+Click"), ("Collapse or expand a group", "Click its chip")]),
+        ("Tabs", [("Pick another tab", "Ctrl+Click"), ("Pick the tabs between", "Shift+Click"), ("Collapse or expand a group", "Click its chip"),
+                  ("Move a group", "Drag its chip")]),
+        ("Commands", [("Previous Command or Prompt", "Ctrl+Up"), ("Next Command or Prompt", "Ctrl+Down"), ("Jump to Prompt…", "Ctrl+J"),
+                      ("Copy Command (nothing selected)", "Ctrl+Shift+C"), ("Copy Command and Output", "Ctrl+Alt+C"), ("Run Command Again", "Ctrl+Alt+R")]),
         ("Edit", [("Copy (with something selected)", "Ctrl+C"), ("Stop the program (with nothing selected)", "Ctrl+C"), ("Cut (in the line being typed)", "Ctrl+X"),
                   ("Paste", "Ctrl+V"), ("Paste (also)", "Shift+Insert"), ("Undo (PowerShell and Claude Code)", "Ctrl+Z")]),
-        ("Find and Git", [("Search in Project Folder…", "Ctrl+Shift+F"), ("Show Git Changes", "Ctrl+Shift+G"), ("Open a Link", "Ctrl+Click")]),
+        ("Prompts", [("New Line (shells and Claude Code)", "Shift+Enter"), ("Paste an Image (Claude Code)", "Ctrl+V"), ("Jump to Prompt…", "Ctrl+J")]),
+        ("Find and Git", [("Search in Project Folder…", "Ctrl+Shift+F"), ("Show Git Graph", "Ctrl+Shift+G"), ("Show Git Changes", "Ctrl+Shift+S"),
+                          ("Open a Link", "Ctrl+Click")]),
+        ("Pages", [("Close the page with the keyboard", "Ctrl+W"), ("Back to the terminal", "Click it")]),
         ("View", [("Toggle File Sidebar", "Ctrl+B"), ("Toggle Right Sidebar (split)", "Ctrl+Alt+B"), ("Pin Sidebar Folder", "Ctrl+Shift+B"), ("Scroll Back a Page", "Shift+PageUp"), ("Scroll Forward a Page", "Shift+PageDown")]),
         ("Window", [("Next Tab", "Ctrl+Tab"), ("Previous Tab", "Ctrl+Shift+Tab"), ("Go to Tab 1 to 9", "Ctrl+1"), ("Close Window", "Alt+F4")]),
     ]
@@ -3022,8 +4602,8 @@ final class TerminalWindow {
             PaletteItem(title: "Go to Folder…", category: "Shell", shortcut: "Ctrl+Shift+O") { [weak self] in self?.showGoToFolder() },
             PaletteItem(title: "Split Right", category: "Shell", shortcut: "Ctrl+Alt+D") { [weak self] in self?.splitRight() },
             PaletteItem(title: "Search in Project Folder…", category: "Find", shortcut: "Ctrl+Shift+F") { [weak self] in self?.showSearch() },
-            PaletteItem(title: "Show Git Changes", category: "Git", shortcut: "Ctrl+Shift+G") { [weak self] in self?.showGitChanges() },
-            PaletteItem(title: "Show Git Graph", category: "Git") { [weak self] in self?.showGitGraph() },
+            PaletteItem(title: "Show Git Changes", category: "Git", shortcut: "Ctrl+Shift+S") { [weak self] in self?.showGitChanges() },
+            PaletteItem(title: "Show Git Graph", category: "Git", shortcut: "Ctrl+Shift+G") { [weak self] in self?.showGitGraph() },
             PaletteItem(title: "Switch Branch…", category: "Git") { [weak self] in self.map { $0.showBranches(for: $0.activePane) } },
             PaletteItem(title: isSplit ? "Move Tab to Other Split" : "Move Tab to New Split", category: "Shell", shortcut: "Ctrl+Shift+D") { [weak self] in
                 self.map { $0.moveToOtherColumn($0.activePane) }
@@ -3046,6 +4626,12 @@ final class TerminalWindow {
                 self?.right.tree.collapseAll()
                 self?.invalidate()
             },
+            PaletteItem(title: "Jump to Prompt…", category: "Commands", shortcut: "Ctrl+J") { [weak self] in self?.showSentPrompts() },
+            PaletteItem(title: "Previous Command or Prompt", category: "Commands", shortcut: "Ctrl+Up") { [weak self] in self?.activePane.selectPreviousStop() },
+            PaletteItem(title: "Next Command or Prompt", category: "Commands", shortcut: "Ctrl+Down") { [weak self] in self?.activePane.selectNextStop() },
+            PaletteItem(title: "Copy Command", category: "Commands", shortcut: "Ctrl+Shift+C") { [weak self] in self?.activePane.copyStopCommand() },
+            PaletteItem(title: "Copy Command and Output", category: "Commands", shortcut: "Ctrl+Alt+C") { [weak self] in self?.activePane.copyStopWithOutput() },
+            PaletteItem(title: "Run Command Again", category: "Commands", shortcut: "Ctrl+Alt+R") { [weak self] in self?.activePane.rerunStop() },
             PaletteItem(title: "Scroll to Top", category: "View") { [weak self] in self?.activePane.scrollToTop() },
             PaletteItem(title: "Scroll to Bottom", category: "View") { [weak self] in self?.activePane.scrollToBottom() },
             PaletteItem(title: "Settings…", category: "Solanum", shortcut: "Ctrl+,") { SettingsWindow.shared.show() },
@@ -3054,6 +4640,8 @@ final class TerminalWindow {
                 _ = wide(url.path).withUnsafeBufferPointer { ShellExecuteW(nil, nil, $0.baseAddress, nil, nil, 1) }
             },
             PaletteItem(title: "Reload Config", category: "Solanum") { AppSettings.shared.reloadIfChanged() },
+            PaletteItem(title: "Restart Solanum", category: "Solanum", shortcut: "Ctrl+Shift+R") { [weak self] in self?.confirmRestart(fresh: false) },
+            PaletteItem(title: "Restart Fresh", category: "Solanum", shortcut: "Ctrl+Alt+Shift+R") { [weak self] in self?.confirmRestart(fresh: true) },
                         PaletteItem(title: "Minimize", category: "Window") { [weak self] in self?.pressCaptionButton(.minimize) },
             PaletteItem(title: IsZoomed(hwnd) ? "Restore" : "Maximize", category: "Window") { [weak self] in self?.pressCaptionButton(.maximize) },
             PaletteItem(title: "Close Window", category: "Window", shortcut: "Alt+F4") { [weak self] in self?.pressCaptionButton(.close) },
@@ -3115,7 +4703,7 @@ final class TerminalWindow {
     }
 
     /// A key while the palette is open. Everything stays with it, so nothing typed lands in the shell behind.
-    private func paletteKey(_ key: Int32, ctrl: Bool) -> Bool {
+    private func paletteKey(_ key: Int32, ctrl: Bool, shift: Bool = false) -> Bool {
         guard let palette else { return false }
         switch key {
         case Win.VK_ESCAPE: closePalette()
@@ -3133,10 +4721,16 @@ final class TerminalWindow {
         case Win.VK_DOWN: palette.moveSelection(by: 1)
         case Win.VK_PRIOR: palette.moveSelection(by: -PaletteModel.maxRows)
         case Win.VK_NEXT: palette.moveSelection(by: PaletteModel.maxRows)
-        case Win.VK_LEFT: palette.moveCaret(by: -1)
-        case Win.VK_RIGHT: palette.moveCaret(by: 1)
-        case Win.VK_HOME: palette.moveCaret(to: 0)
-        case Win.VK_END: palette.moveCaret(to: palette.query.count)
+        // Shift selects as the caret goes; Ctrl goes a word at a time.
+        case Win.VK_LEFT where ctrl: palette.moveCaret(to: palette.wordBoundary(from: palette.caret, forward: false), extend: shift)
+        case Win.VK_RIGHT where ctrl: palette.moveCaret(to: palette.wordBoundary(from: palette.caret, forward: true), extend: shift)
+        case Win.VK_LEFT: palette.moveCaret(by: -1, extend: shift)
+        case Win.VK_RIGHT: palette.moveCaret(by: 1, extend: shift)
+        case Win.VK_HOME: palette.moveCaret(to: 0, extend: shift)
+        case Win.VK_END: palette.moveCaret(to: palette.query.count, extend: shift)
+        case 0x41 where ctrl: palette.selectAll()
+        case 0x43 where ctrl: paletteCopy(cut: false)
+        case 0x58 where ctrl: paletteCopy(cut: true)
         // In a path, Ctrl+Backspace clears the field for typing one afresh, as ⌘⌫ does on the Mac.
         case Win.VK_BACK where ctrl && palette.isLive: palette.deleteToStart()
         case Win.VK_BACK: palette.deleteBackward(word: ctrl)
@@ -3153,10 +4747,88 @@ final class TerminalWindow {
         return true
     }
 
+    /// Copies what's selected in the palette's field; `cut` takes it out too.
+    private func paletteCopy(cut: Bool) {
+        guard let palette, let text = palette.selectedText else { return }
+        activePane.setClipboard(text)
+        if cut { palette.deleteSelection() }
+        invalidate()
+    }
+
+    /// Whether a drag in the palette's field is selecting text.
+    private var paletteSelecting = false
+
+    /// The character in the palette's field nearest a point: where a click puts the caret.
+    private func paletteIndex(atX x: Float) -> Int {
+        guard let palette else { return 0 }
+        let f = paletteLayout.field, pixels = 15 * scale, chars = Array(palette.query)
+        func width(_ n: Int) -> Float {
+            let units = Array(String(chars[..<n]).utf16)
+            return sol_canvas_measure_label(canvas.raw, units, Int32(units.count), pixels, 0)
+        }
+        // The text slides left with a long query, as PaletteView draws it.
+        let shift = max(width(palette.caret) - f.width + 4 * scale, 0).rounded()
+        let target = x - f.x + shift
+        var best = 0, bestDistance = Float.greatestFiniteMagnitude
+        for n in 0...chars.count {
+            let d = abs(width(n) - target)
+            if d < bestDistance { best = n; bestDistance = d }
+        }
+        return best
+    }
+
+    /// Right-click in the field: Cut, Copy, Paste, Delete and Select All, as Windows' fields have.
+    private func paletteFieldMenu(x: Float, y: Float) {
+        guard let palette else { return }
+        let has = palette.selection != nil
+        openMenu([
+            MenuItem(title: "Cut", isEnabled: has, shortcut: "Ctrl+X") { [weak self] in self?.paletteCopy(cut: true) },
+            MenuItem(title: "Copy", isEnabled: has, shortcut: "Ctrl+C") { [weak self] in self?.paletteCopy(cut: false) },
+            MenuItem(title: "Paste", isEnabled: activePane.clipboardText() != nil, shortcut: "Ctrl+V") { [weak self] in
+                guard let self, let text = self.activePane.clipboardText() else { return }
+                self.palette?.insert(text)
+                self.invalidate()
+            },
+            MenuItem(title: "Delete", isEnabled: has, shortcut: "Del") { [weak self] in self?.palette?.deleteSelection(); self?.invalidate() },
+            .separator,
+            MenuItem(title: "Select All", isEnabled: !palette.query.isEmpty, shortcut: "Ctrl+A") { [weak self] in self?.palette?.selectAll(); self?.invalidate() },
+        ], x: x, y: y, above: false)
+    }
+
     private func paletteMouse(_ message: UINT, x: Float, y: Float) {
         guard let palette else { return }
         let l = paletteLayout
         let row = l.visibleRow(atX: x, y: y).map { $0 + palette.scrollTop }
+        // In the field: click to place the caret, drag or Shift+click to select, double-click for a word.
+        let inField = UIRect(x: l.field.x - 4 * scale, y: l.field.y, width: l.field.width + 8 * scale, height: l.field.height).contains(x, y)
+        switch message {
+        case Win.WM_LBUTTONDOWN where inField:
+            palette.moveCaret(to: paletteIndex(atX: x), extend: isDown(Win.VK_SHIFT))
+            paletteSelecting = true
+            SetCapture(hwnd)
+            invalidate()
+            return
+        case Win.WM_LBUTTONDBLCLK where inField:
+            palette.selectWord(at: max(paletteIndex(atX: x) - (paletteIndex(atX: x) == palette.query.count ? 1 : 0), 0))
+            paletteSelecting = false
+            invalidate()
+            return
+        case Win.WM_MOUSEMOVE where paletteSelecting:
+            palette.moveCaret(to: paletteIndex(atX: x), extend: true)
+            invalidate()
+            return
+        case Win.WM_LBUTTONUP where paletteSelecting:
+            paletteSelecting = false
+            ReleaseCapture()
+            return
+        case Win.WM_RBUTTONDOWN where inField:
+            return
+        case Win.WM_RBUTTONUP where inField:
+            paletteFieldMenu(x: x, y: y)
+            return
+        default:
+            break
+        }
         switch message {
         case Win.WM_MOUSEMOVE:
             let visible = l.visibleRow(atX: x, y: y)
@@ -3200,6 +4872,7 @@ final class TerminalWindow {
     }
 
     func keyDown(_ key: Int32, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
+        if dialog != nil { return dialogKey(key) }
         if menu != nil { return menuKey(key) }
         if !panes.isEmpty, activePane.hasQuestion { return activePane.questionKey(key, ctrl: ctrl) }
         if naming != nil { return namingKey(key, ctrl: ctrl) }
@@ -3220,16 +4893,36 @@ final class TerminalWindow {
             if palette?.isLive == true { closePalette() } else { showGoToFolder() }
             return true
         }
-        // Search in Project Folder and Git Changes, as the Mac's ⇧⌘F, and VS Code's Ctrl+Shift+G.
+        // Search in Project Folder, as the Mac's Shift-Command-F.
         if ctrl && shift && !alt && key == 0x46 {
             if palette?.isLive == true { closePalette() } else { showSearch() }
             return true
         }
-        if ctrl && shift && !alt && key == 0x47 {
-            if activePane.panel is GitChangesPanel { activePane.panel = nil; invalidate() } else { showGitChanges() }
+        // Restart, and Restart Fresh, as the Mac's Shift-Command-R and Option-Shift-Command-R.
+        if ctrl && shift && key == 0x52 {
+            confirmRestart(fresh: alt)
             return true
         }
-        if palette != nil { return paletteKey(key, ctrl: ctrl) }
+        // Jump to Prompt: Ctrl+J, as the Mac's Command-J (Shift+Enter makes the new line Ctrl+J used to), and Ctrl+Shift+J
+        // as before.
+        if ctrl && !alt && key == 0x4A {
+            if palette?.isLive == true { closePalette() } else { showSentPrompts() }
+            return true
+        }
+        // Git Graph and Git Changes, as the Mac's Control-Command-G and S; again with the page in front closes it.
+        // Programs keep Ctrl+G and Ctrl+S: a terminal sends Ctrl+Shift+S as Ctrl+S, which only the app can tell apart.
+        if ctrl && shift && !alt && (key == 0x47 || key == 0x53) {
+            let graph = key == 0x47
+            if activePane.editorFocused, let panel = activePane.panel, graph ? panel is GitGraphPanel : panel is GitChangesPanel {
+                closeEditor(panel, in: activePane)
+            } else if graph {
+                showGitGraph()
+            } else {
+                showGitChanges()
+            }
+            return true
+        }
+        if palette != nil { return paletteKey(key, ctrl: ctrl, shift: shift) }
         // Ctrl+B and Ctrl+Alt+B show and hide the sidebars, and Ctrl+Shift+B pins the left one to its folder.
         if ctrl && key == 0x42 {
             if alt {
@@ -3254,7 +4947,8 @@ final class TerminalWindow {
                 if shift { reopenClosedTab() } else { newTab() }
                 return true
             case 0x57:
-                closeTab(activeIndex)
+                // As the Mac's Command-W: the page with the keyboard, or else the tab.
+                if activePane.editorFocused, let panel = activePane.panel { closeEditor(panel, in: activePane) } else { closeTab(activeIndex) }
                 return true
             default: break
             }
@@ -3270,8 +4964,12 @@ final class TerminalWindow {
             selectTab(column[(at + (shift ? column.count - 1 : 1)) % column.count])
             return true
         }
-        if let panel = activePane.panel {
-            // Keys the app doesn't claim are the panel's, which takes the terminal's place.
+        if let editor = activePane.focusedPanel as? FileEditorPanel, alt && !ctrl {
+            if key == 0x5A && !shift { editor.toggleWrap(); return true }
+            if key == 0x46 && shift { editor.beautify(); return true }
+        }
+        if let panel = activePane.focusedPanel {
+            // Keys the app doesn't claim are the page's, while it has the keyboard.
             if !alt && panel.key(key, shift: shift, ctrl: ctrl) { return true }
             return ctrl || alt
         }
@@ -3392,6 +5090,16 @@ final class TerminalWindow {
         _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, at(Int(x)))
     }
 
+    /// Drags the band between the columns so its middle is at `x`.
+    func dragColumnBand(to x: Float) {
+        guard let band = layout.columnBand else { return }
+        let y = Int(band.midY)
+        func at(_ px: Int) -> LPARAM { LPARAM(px & 0xFFFF) | (LPARAM(y & 0xFFFF) << 16) }
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, at(Int(band.x + band.width / 2)))
+        _ = SendMessageW(hwnd, Win.WM_MOUSEMOVE, 1, at(Int(x)))
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, at(Int(x)))
+    }
+
     /// A sideways swipe over the tab bar, as a touchpad sends it.
     func swipeTabs(delta: Int) {
         var point = POINT(x: LONG(clientWidth / 2), y: LONG(layout.tabBarHeight / 2))
@@ -3422,7 +5130,8 @@ final class TerminalWindow {
         var window: TerminalWindow?
         let settings = AppSettings.shared
         if prepare() {
-            window = TerminalWindow(commandLine: settings.shellCommandLine, cols: settings.windowColumns, rows: settings.windowRows, failure: &failure)
+            window = TerminalWindow(commandLine: settings.shellCommandLine, cols: settings.windowColumns, rows: settings.windowRows,
+                                    session: SavedSession.load(), failure: &failure)
         }
         guard window != nil else {
             _ = wide(failure).withUnsafeBufferPointer { text in

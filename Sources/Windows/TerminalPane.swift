@@ -62,6 +62,19 @@ final class TerminalPane: TerminalDelegate, Groupable {
 
     /// A command to run once the shell first reaches its prompt.
     var pendingCommand: String?
+    /// A restored tab's agent or ssh session, carried on when the tab is first shown (see SavedSession).
+    var resumeOnShow: String?
+
+    /// What would carry this tab on after a restart: ssh back to its host, or the agent running here continued.
+    var resumeCommand: String? {
+        if let args = sshArguments, let target = RemoteConnection.connectionArguments(args), !target.isEmpty {
+            return "ssh " + target.map(Self.powerShellWord).joined(separator: " ")
+        }
+        guard let b = terminal.currentBlock, b.state == .running else { return nil }
+        // What was typed (claude, npx codex, …), or else the agent's program running under the shell (an alias for it).
+        if let command = AgentResume.command(continuing: b.command) { return command }
+        return ProcessTree.descendantNames(of: shellProcessID).lazy.compactMap { AgentResume.commands[$0] }.first
+    }
 
     var group: TabGroup?
     /// A name given to the tab, in place of the one it would have.
@@ -71,14 +84,32 @@ final class TerminalPane: TerminalDelegate, Groupable {
     var gitBusy: String?
     var gitKey: String?
     var gitCheckedAt = Date.distantPast
-    /// Git Changes or Git Graph, over the terminal while it's open.
-    var panel: ColumnPanel?
+    /// Pages open above the terminal (Git Graph, Git Changes, a commit, a file), as on the Mac; see EditorArea.swift.
+    var editors: [EditorItem] = []
+    var activeEditor = 0
+    /// How much of the column the pages take.
+    var editorFraction: Float = 0.55
+    /// Whether the terminal shows below the pages (the strip's terminal button).
+    var showsTerminal = true
+    /// How far its strip of sub-tabs is scrolled along, when they don't all fit.
+    var stripScroll: Float = 0
+    /// Whether the keyboard is with the pages rather than the terminal.
+    var editorFocused = false
+    /// The page showing above the terminal.
+    var panel: ColumnPanel? { editors.indices.contains(activeEditor) ? editors[activeEditor].panel : nil }
+    /// Where keys and typing go: the page, while it has the keyboard.
+    var focusedPanel: ColumnPanel? { editorFocused ? panel : nil }
     /// Where a link under the pointer is, while Ctrl's held over it: drawn underlined.
     var hoveredLink: (line: Int, start: Int, end: Int)?
     /// Where the sidebar was while this tab was showing. Nil until it has been.
     var sidebarPlace: SidebarPlace?
     private var pendingSurrogate: UInt16?
     private var lastMouseCell: (Int, Int)?
+    /// Wheel movement not yet a whole line (or, for a program reading the mouse, a whole notch), so a touchpad's small
+    /// steps add up instead of each moving a full notch.
+    private var wheelRemainder: Double = 0
+    /// Lines a finger has scrolled not yet a wheel notch, for a program reading the mouse.
+    private var touchLines = 0
     private var lastResize: Date?
     private var pendingClick: (() -> Void)?
     private var pendingClickDeadline = Date.distantPast
@@ -157,9 +188,12 @@ final class TerminalPane: TerminalDelegate, Groupable {
 
     var tabTitle: String {
         if let customTitle, !customTitle.isEmpty { return customTitle }
+        // A file tab, with its terminal hidden: the file showing, as on the Mac.
+        if !showsTerminal, editors.indices.contains(activeEditor) { return editors[activeEditor].title }
         // In an ssh session, the server it's connected to.
         if let sshHost { return sshHost }
-        return WindowText.tabTitle(title: terminal.title, folder: terminal.cwd, home: ProcessInfo.processInfo.environment["USERPROFILE"])
+        // Without the status glyph an agent puts first (Claude Code's ✳ or spinner): the tab shows its mark and status itself.
+        return WindowText.tabTitle(title: terminal.title.map(AgentKind.withoutStatusGlyph), folder: terminal.cwd, home: ProcessInfo.processInfo.environment["USERPROFILE"])
     }
 
     /// Whether the shell is waiting at its prompt, with no program running that might want a key.
@@ -451,7 +485,63 @@ final class TerminalPane: TerminalDelegate, Groupable {
     var hoveredLostButton: LostBarButton?
 
     /// Timed work that doesn't depend on being the pane on screen.
-    func tick() {
+    // MARK: - Coding agents
+
+    /// The coding agent running here and what it's doing (see Core/AgentState.swift), as on the Mac; nil when none.
+    private(set) var agent: AgentInfo?
+    /// Images pasted into Claude Code, drawn where it lists them (see ImageChips).
+    let imageChips = ImageChips()
+    /// The agent last seen running, and one that exited with an error (shown as failed until another command runs).
+    private var runningAgent: AgentKind?
+    private var failedAgent: AgentKind?
+    private var agentCheckedAt = Date.distantPast
+
+    /// Looks again, at most once a second, at which agent is running and its state. True if what's shown changed.
+    private func updateAgent() -> Bool {
+        guard Date().timeIntervalSince(agentCheckedAt) >= 1 else { return false }
+        agentCheckedAt = Date()
+        // Something's running (or, without shell integration to say, may be).
+        let busy = terminal.currentBlock.map { $0.state == .running } ?? true
+        var kind: AgentKind?
+        if busy {
+            // Claude Code's title (also over ssh), else what was typed (an agent's command, or through npx and the like),
+            // else the agent's program running under the shell (an alias for it, a script).
+            kind = AgentKind.fromTitle(terminal.title)
+            if kind == nil, let b = terminal.currentBlock, let continuing = AgentResume.command(continuing: b.command) {
+                kind = continuing.split(separator: " ").first.flatMap { AgentKind.named(String($0)) }
+            }
+            if kind == nil {
+                kind = ProcessTree.descendantNames(of: shellProcessID).lazy.compactMap { AgentKind.detect(name: $0, path: "", args: []) }.first
+            }
+        }
+        var next: AgentInfo?
+        if let kind {
+            runningAgent = kind
+            failedAgent = nil
+            next = AgentInfo(kind: kind, status: terminal.agentScreenStatus())
+        } else {
+            if let r = runningAgent {
+                runningAgent = nil
+                if terminal.blocks.last(where: { $0.state == .finished })?.failed == true { failedAgent = r }
+            }
+            if busy && terminal.currentBlock != nil { failedAgent = nil }
+            if let f = failedAgent { next = AgentInfo(kind: f, status: .failed) }
+        }
+        guard next != agent else { return false }
+        agent = next
+        return true
+    }
+
+    /// Ten times a second or so, from the window's timer. True when something the tab shows has changed.
+    @discardableResult
+    func tick() -> Bool {
+        let agentChanged = updateAgent()
+        tickWork()
+        // An image Claude Code hasn't finished writing yet: look again.
+        return agentChanged || imageChips.wantsRetry
+    }
+
+    private func tickWork() {
         manageRemote()
         if let command = pendingCommand, atPrompt {
             pendingCommand = nil
@@ -469,7 +559,15 @@ final class TerminalPane: TerminalDelegate, Groupable {
         renderer.focused = focused
         renderer.cursorShown = cursorShown
         renderer.cursorStyle = style
+        let dpiScale = Float(GetDpiForWindow(hwnd)) / 96
+        if agent != nil && !terminal.usingAlt {
+            imageChips.layout(terminal: terminal, top: terminal.screenTopAbs - scrollOffset, canvas: canvas, shell: shellProcessID, scale: dpiScale)
+            renderer.hiddenText = imageChips.hidden
+        } else {
+            imageChips.clear()
+        }
         renderer.drawContents()
+        imageChips.draw(on: canvas, scale: dpiScale)
         // The link under the pointer, while Ctrl's held.
         if let h = hoveredLink {
             let row = h.line - (terminal.screenTopAbs - scrollOffset), m = canvas.metrics
@@ -478,6 +576,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
                                      Float(h.end - h.start + 1) * m.cellWidth, max(m.lineThickness, 1), TerminalPalette.accent, 1)
             }
         }
+        drawSelectedStop()
         drawLostBar()
         drawQuestion()
     }
@@ -486,6 +585,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
     func drawOverlays(on target: Canvas) {
         drawTarget = target
         defer { drawTarget = nil }
+        drawSelectedStop()
         drawLostBar()
         drawQuestion()
     }
@@ -564,12 +664,30 @@ final class TerminalPane: TerminalDelegate, Groupable {
         keyDown(key, shift: isDown(Win.VK_SHIFT), ctrl: isDown(Win.VK_CONTROL), alt: isDown(Win.VK_MENU))
     }
 
+    /// A picture on the clipboard (a screenshot, an image copied from a page) and no text with it.
+    private static var clipboardHasOnlyImage: Bool {
+        let image = IsClipboardFormatAvailable(Win.CF_DIB) || IsClipboardFormatAvailable(2) || IsClipboardFormatAvailable(17)
+            || IsClipboardFormatAvailable(RegisterClipboardFormatW(wide("PNG")))
+        return image && !IsClipboardFormatAvailable(13)
+    }
+
     func keyDown(_ key: Int32, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
         if key == Win.VK_F4 && alt { return false }
 
         // Plain Ctrl+C, V and X act on the clipboard where that can't take anything from the program.
         if ctrl && !shift && !alt {
             switch key {
+            case 0x41:
+                // Ctrl+A in Claude Code's prompt box: all that's typed there, which typing or Backspace then replaces.
+                // Elsewhere it's the program's (PowerShell selects its line itself).
+                guard let block = terminal.currentBlock, block.state == .running, let rows = terminal.agentInputRows(block),
+                      rows.contains(terminal.cursorAbs) else { break }
+                let end = terminal.agentTextEnd(rows.upperBound)
+                guard rows.lowerBound < rows.upperBound || end > 2 else { break }
+                selection = TerminalSelection(anchor: (rows.lowerBound, 2), head: (rows.upperBound, end))
+                selecting = false
+                invalidate()
+                return true
             case 0x43:
                 // With nothing selected it's the program's interrupt. Copying clears the selection, so a second one is too.
                 guard let chosen = selection, !chosen.isEmpty else { break }
@@ -578,9 +696,16 @@ final class TerminalPane: TerminalDelegate, Groupable {
                 invalidate()
                 return true
             case 0x56:
-                // Full-screen programs have their own use for it (vim's block selection, nano's page down), and Claude
-                // Code reads an image off the clipboard itself. Ctrl+Shift+V still pastes in both.
-                if terminal.usingAlt || (agentInputActive && IsClipboardFormatAvailable(Win.CF_DIB)) { break }
+                // An image on the clipboard goes to a coding agent the way it takes one: on Windows Claude Code reads it
+                // off the clipboard on Alt+V (Ctrl+V only ever brings it text), so that's what it's sent, as on the Mac
+                // where Ctrl+V does it.
+                if (agent != nil || agentInputActive) && Self.clipboardHasOnlyImage {
+                    typed(0x76, meta: true)
+                    return true
+                }
+                // Full-screen programs have their own use for it (vim's block selection, nano's page down). Ctrl+Shift+V
+                // still pastes there.
+                if terminal.usingAlt { break }
                 paste()
                 return true
             case 0x58:
@@ -596,7 +721,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
         if ctrl && shift && !alt {
             switch key {
             case 0x43:
-                copySelection()
+                // A selection, or with none the picked (or last) command or prompt, as the Mac's Shift-Command-C.
+                if let chosen = selection, !chosen.isEmpty { copySelection() } else { copyStopCommand() }
                 return true
             case 0x56:
                 paste()
@@ -618,6 +744,21 @@ final class TerminalPane: TerminalDelegate, Groupable {
                 return true
             default: break
             }
+        }
+
+        // Ctrl+Up and Down step through commands and prompts, Ctrl+Alt+C copies one with its output and Ctrl+Alt+R runs it
+        // again, as the Mac's Command-Up and Down, Option-Command-C and R. Full-screen programs keep them.
+        if ctrl && !shift && !alt && (key == Win.VK_UP || key == Win.VK_DOWN) && !terminal.usingAlt {
+            if key == Win.VK_UP { selectPreviousStop() } else { selectNextStop() }
+            return true
+        }
+        if ctrl && alt && !shift && key == 0x43 { copyStopWithOutput(); return true }
+        if ctrl && alt && !shift && key == 0x52 { rerunStop(); return true }
+        // Esc puts away a picked command first.
+        if key == Win.VK_ESCAPE && !ctrl && !alt && selectedStop != nil {
+            selectedStop = nil
+            invalidate()
+            return true
         }
 
         // Backspace or Delete takes out text selected in the line being typed, whatever else is held.
@@ -650,7 +791,14 @@ final class TerminalPane: TerminalDelegate, Groupable {
         case Win.VK_PRIOR: out = tilde(5)
         case Win.VK_NEXT: out = tilde(6)
         case Win.VK_BACK: out = alt ? "\u{1b}\u{7f}" : (ctrl ? "\u{08}" : "\u{7f}")
-        case Win.VK_RETURN: out = alt ? "\u{1b}\r" : "\r"
+        case Win.VK_RETURN:
+            // Shift+Enter: a new line instead of sending, in Claude Code (as on the Mac) and at a shell's prompt alike. Both
+            // take a line feed (Ctrl+J) for it; a plain Enter sends. Full-screen programs get Enter as ever.
+            if shift && !alt && !ctrl && !terminal.usingAlt {
+                out = "\n"
+            } else {
+                out = alt ? "\u{1b}\r" : "\r"
+            }
         case Win.VK_ESCAPE: out = "\u{1b}"
         case Win.VK_TAB:
             if ctrl { return false }
@@ -685,6 +833,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// Input from the person: shows the live screen again, as typing does in any terminal.
     private func input(_ bytes: [UInt8], replacesSelection: Bool = false) {
         scrollOffset = 0
+        selectedStop = nil
         host?.restartBlink()
         invalidate()
         if afterSelectionDeleted != nil {
@@ -725,7 +874,29 @@ final class TerminalPane: TerminalDelegate, Groupable {
         }
     }
 
+    /// A text line's height, which a finger moves the terminal by.
+    var lineHeight: Float { canvas.metrics.cellHeight }
+
+    /// A finger dragged on the terminal (see `TouchScroll`): up for positive, by lines, or for a program reading the
+    /// mouse, a wheel notch per 3 lines. `position` is in the window's client coordinates.
+    func touchScroll(lines: Int, at position: LPARAM) {
+        guard terminal.mouseMode != .none else { return scrollLines(lines, at: position) }
+        if touchLines != 0 && (touchLines > 0) != (lines > 0) { touchLines = 0 }
+        touchLines += lines
+        let notches = touchLines / 3
+        touchLines -= notches * 3
+        if notches != 0 { scrollLines(notches, at: position) }
+    }
+
     func mouse(_ message: UINT, _ wParam: WPARAM, _ lParam: LPARAM) {
+        // Pasted images' thumbnails: hover rings one, a click shows it larger, a click on that opens it.
+        let px = Float(Int16(truncatingIfNeeded: lParam & 0xFFFF)), py = Float(Int16(truncatingIfNeeded: (lParam >> 16) & 0xFFFF))
+        if message == Win.WM_MOUSEMOVE, !selecting, imageChips.hovered(atX: px, y: py) { invalidate() }
+        if message == Win.WM_LBUTTONDOWN {
+            let result = imageChips.click(atX: px, y: py)
+            if result.changed { invalidate() }
+            if result.used { return }
+        }
         let (col, row) = cell(at: lParam)
         if terminal.mouseMode != .none && !isDown(Win.VK_SHIFT) {
             reportMouse(message, wParam, col: col, row: row)
@@ -763,7 +934,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
             if let chosen = selection, !chosen.isEmpty, AppSettings.shared.copyOnSelect { setClipboard(chosen.text(in: terminal)) }
             if selection?.isEmpty == true {
                 selection = nil
-                whenCursorSettled { [weak self] in self?.placeCursor(line: abs, col: col) }
+                whenCursorSettled { [weak self] in self?.clicked(line: abs, col: col) }
             }
         case Win.WM_RBUTTONUP:
             // As in Windows consoles: right-click copies a selection, and pastes when there isn't one.
@@ -804,21 +975,35 @@ final class TerminalPane: TerminalDelegate, Groupable {
     func wheel(_ wParam: WPARAM, _ lParam: LPARAM) {
         let delta = Int(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF))
         guard delta != 0 else { return }
-        let up = delta > 0
-        let notches = max(abs(delta) / Win.WHEEL_DELTA, 1)
+        // Turning back starts afresh, so a little left over one way doesn't swallow the first step the other.
+        if wheelRemainder != 0 && (wheelRemainder > 0) != (delta > 0) { wheelRemainder = 0 }
+        // In lines, at the speed set (3 a notch unless it's changed); a touchpad's small steps add up.
+        wheelRemainder += Double(delta) / Double(Win.WHEEL_DELTA) * AppSettings.shared.scrollSpeed
+        // A program reading the mouse gets wheel notches instead, one per 3 lines' worth.
+        let unit: Double = terminal.mouseMode != .none ? 3 : 1
+        let steps = Int(wheelRemainder / unit)
+        guard steps != 0 else { return }
+        wheelRemainder -= Double(steps) * unit
+        // The wheel's position is in screen coordinates.
+        var point = POINT(x: LONG(Int16(truncatingIfNeeded: lParam & 0xFFFF)), y: LONG(Int16(truncatingIfNeeded: (lParam >> 16) & 0xFFFF)))
+        ScreenToClient(hwnd, &point)
+        scrollLines(steps, at: LPARAM(point.x & 0xFFFF) | (LPARAM(point.y & 0xFFFF) << 16))
+    }
+
+    /// Scrolls up (positive) or down, from the wheel or a finger: the scrollback by lines; a program on the other screen
+    /// by as many arrow keys; or, for a program reading the mouse, by as many wheel notches.
+    private func scrollLines(_ amount: Int, at position: LPARAM) {
+        let up = amount > 0
         if terminal.mouseMode != .none {
-            // The wheel's position is in screen coordinates.
-            var point = POINT(x: LONG(Int16(truncatingIfNeeded: lParam & 0xFFFF)), y: LONG(Int16(truncatingIfNeeded: (lParam >> 16) & 0xFFFF)))
-            ScreenToClient(hwnd, &point)
-            let (col, row) = cell(at: LPARAM(point.x & 0xFFFF) | (LPARAM(point.y & 0xFFFF) << 16))
-            for _ in 0..<notches { report(button: up ? 64 : 65, col: col, row: row, press: true) }
+            let (col, row) = cell(at: position)
+            for _ in 0..<abs(amount) { report(button: up ? 64 : 65, col: col, row: row, press: true) }
         } else if terminal.usingAlt {
             if terminal.altScroll {
                 let key = terminal.appCursorKeys ? (up ? "\u{1b}OA" : "\u{1b}OB") : (up ? "\u{1b}[A" : "\u{1b}[B")
-                send(String(repeating: key, count: notches * 3))
+                send(String(repeating: key, count: abs(amount)))
             }
         } else {
-            scroll(by: (up ? 1 : -1) * notches * 3)
+            scroll(by: amount)
         }
     }
 
@@ -923,6 +1108,189 @@ final class TerminalPane: TerminalDelegate, Groupable {
         invalidate()
     }
 
+    // MARK: - Command blocks
+
+    /// Where Ctrl+Up and Ctrl+Down stop, as the Mac's Command-Up and Down do: finished commands, and each prompt of an agent
+    /// session (Claude Code) in place of its whole block. A block is known by its id, as its lines move when the screen
+    /// reflows; a prompt by its line.
+    enum BlockStop: Equatable {
+        case block(id: Int, line: Int)
+        case turn(line: Int)
+        var line: Int {
+            switch self {
+            case .block(_, let line), .turn(let line): return line
+            }
+        }
+    }
+
+    /// The command or prompt picked with Ctrl+Up and Down, drawn outlined.
+    private(set) var selectedStop: BlockStop?
+
+    func blockStops() -> [BlockStop] {
+        guard !terminal.usingAlt else { return [] }
+        var out: [BlockStop] = []
+        for b in terminal.blocks where b.state != .prompt {
+            let turns = terminal.agentTurns(in: b)
+            if !turns.isEmpty {
+                out += turns.map { .turn(line: $0.promptLine) }
+            } else if b.state == .finished {
+                out.append(.block(id: b.id, line: b.promptLine))
+            }
+        }
+        return out
+    }
+
+    private var selectedBlock: Block? {
+        guard case .block(let id, _)? = selectedStop else { return nil }
+        return terminal.blocks.first { $0.id == id }
+    }
+
+    private var selectedTurn: AgentTurn? {
+        guard case .turn(let line)? = selectedStop else { return nil }
+        return terminal.agentTurn(at: line)
+    }
+
+    private func currentStopIndex(_ list: [BlockStop]) -> Int? {
+        switch selectedStop {
+        case .block(let id, _)?: return list.firstIndex { if case .block(let other, _) = $0 { return other == id }; return false }
+        case .turn(let line)?: return list.firstIndex { $0 == .turn(line: line) }
+        case nil: return nil
+        }
+    }
+
+    /// Ctrl+Up: the command or prompt before the one picked, or the last one.
+    func selectPreviousStop() {
+        let list = blockStops()
+        guard !list.isEmpty else { return }
+        select(list[currentStopIndex(list).map { max($0 - 1, 0) } ?? list.count - 1])
+    }
+
+    /// Ctrl+Down: the one after, or past the last, nothing picked and the live screen.
+    func selectNextStop() {
+        let list = blockStops()
+        if let i = currentStopIndex(list), i + 1 < list.count {
+            select(list[i + 1])
+        } else {
+            selectedStop = nil
+            scrollOffset = 0
+            invalidate()
+        }
+    }
+
+    func select(_ stop: BlockStop) {
+        selectedStop = stop
+        selection = nil
+        reveal(line: stop.line)
+        invalidate()
+    }
+
+    /// Scrolls so a line shows, a row below the top, unless it's on screen already.
+    private func reveal(line a: Int) {
+        let top = terminal.screenTopAbs - scrollOffset
+        guard a < top || a >= top + terminal.rows else { return }
+        scrollOffset = min(max(terminal.screenTopAbs - a + 1, 0), terminal.scrollback.count)
+    }
+
+    /// The picked command or prompt, or else the last command that finished.
+    private var targetBlock: Block? { selectedBlock ?? terminal.blocks.last { $0.state == .finished } }
+
+    private func text(lines from: Int, _ to: Int) -> String {
+        guard to >= from else { return "" }
+        let chosen = TerminalSelection(anchor: (from, 0), head: (to, terminal.cols))
+        return chosen.text(in: terminal).replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+    }
+
+    /// What a command printed, or what Claude said to a prompt.
+    private func outputText(_ b: Block) -> String {
+        guard let o = b.outputLine, let e = b.endLine, e >= o else { return "" }
+        return text(lines: o, e)
+    }
+
+    private func responseText(_ t: AgentTurn) -> String { t.hasResponse ? text(lines: t.promptEnd + 1, t.end) : "" }
+
+    /// Ctrl+Shift+C with nothing selected, as the Mac's Shift-Command-C: the command, or the prompt. False if there's none.
+    @discardableResult
+    func copyStopCommand() -> Bool {
+        if let t = selectedTurn {
+            setClipboard(terminal.agentPromptText(t))
+            return true
+        }
+        guard let b = targetBlock, !b.command.isEmpty else { return false }
+        setClipboard(b.command)
+        return true
+    }
+
+    /// Ctrl+Alt+C, as the Mac's Option-Command-C: the command and what it printed, or the prompt and Claude's reply.
+    @discardableResult
+    func copyStopWithOutput() -> Bool {
+        if let t = selectedTurn {
+            let reply = responseText(t)
+            setClipboard(terminal.agentPromptText(t) + (reply.isEmpty ? "" : "\n\n" + reply))
+            return true
+        }
+        guard let b = targetBlock else { return false }
+        let out = outputText(b)
+        setClipboard("$ \(b.command)" + (out.isEmpty ? "" : "\n" + out))
+        return true
+    }
+
+    /// Ctrl+Alt+R, as the Mac's Option-Command-R: runs the picked (or last) command again, at a prompt.
+    func rerunStop() {
+        guard atPrompt, let b = targetBlock, !b.command.isEmpty else { return }
+        selectedStop = nil
+        input(Array((b.command.replacingOccurrences(of: "\n", with: "\r") + "\r").utf8))
+    }
+
+    /// The picked block or prompt, outlined in the accent color over its lines, as on the Mac.
+    private func drawSelectedStop() {
+        guard let stop = selectedStop, !terminal.usingAlt else { return }
+        let first: Int, last: Int
+        switch stop {
+        case .block:
+            guard let b = selectedBlock else { return }
+            (first, last) = (b.promptLine, b.lastLine(cursorAbs: terminal.cursorAbs))
+        case .turn:
+            guard let t = selectedTurn else { return }
+            (first, last) = (t.promptLine, t.end)
+        }
+        let top = terminal.screenTopAbs - scrollOffset
+        let a = max(first - top, 0), z = min(last - top, terminal.rows - 1)
+        guard a <= z else { return }
+        let m = canvas.metrics, s = Float(GetDpiForWindow(hwnd)) / 96
+        let x = canvas.contentX - 4 * s, y = canvas.contentY + Float(a) * m.cellHeight - 2 * s
+        let w = Float(terminal.cols) * m.cellWidth + 8 * s, h = Float(z - a + 1) * m.cellHeight + 4 * s
+        sol_canvas_fill_rounded(canvas.raw, x, y, w, h, 6 * s, TerminalPalette.accent, 0.09)
+        sol_canvas_stroke_rounded(canvas.raw, x + 0.5, y + 0.5, w - 1, h - 1, 6 * s, TerminalPalette.accent, 0.85, max(1, s.rounded()))
+        // A prompt's place among its session's, "Prompt 3 of 7", at the right of its first line, as on the Mac.
+        if case .turn = stop, let t = selectedTurn, first - top == a, let b = terminal.blockContaining(t.promptLine) {
+            let text = "Prompt \(t.index) of \(terminal.agentTurns(in: b).count)", units = Array(text.utf16)
+            let pixels = max(10 * s, m.cellHeight * 0.62)
+            let tw = sol_canvas_measure_label(canvas.raw, units, Int32(units.count), pixels, 1)
+            let ph = (pixels * 1.45).rounded(), pw = (tw + 14 * s).rounded()
+            let px = (x + w - 6 * s - pw).rounded(), py = (canvas.contentY + Float(a) * m.cellHeight + (m.cellHeight - ph) / 2).rounded()
+            sol_canvas_fill_rounded(canvas.raw, px, py, pw, ph, ph / 2, TerminalPalette.background, 0.85)
+            sol_canvas_fill_rounded(canvas.raw, px, py, pw, ph, ph / 2, TerminalPalette.accent, 0.14)
+            sol_canvas_draw_label(canvas.raw, px + 7 * s, py, tw + 2, ph, units, Int32(units.count), pixels, 1, TerminalPalette.accent, 1)
+        }
+    }
+
+    /// The prompts sent to agents in this tab, oldest first: each one's text, its number and how long the reply is.
+    func sentPrompts() -> [(stop: BlockStop, text: String, detail: String)] {
+        var out: [(BlockStop, String, String)] = []
+        for b in terminal.blocks {
+            for t in terminal.agentTurns(in: b) {
+                let text = terminal.agentPromptText(t)
+                out.append((.turn(line: t.promptLine), text, "Prompt \(t.index) · " + (t.hasResponse ? "\(t.responseLineCount) lines" : "no response yet")))
+            }
+        }
+        return out
+    }
+
+    /// The commands run in this tab that have finished, oldest first.
+    func finishedCommands() -> [(stop: BlockStop, command: String, failed: Bool)] {
+        terminal.blocks.filter { $0.state == .finished && !$0.command.isEmpty }.map { (.block(id: $0.id, line: $0.promptLine), $0.command, $0.failed) }
+    }
+
     // MARK: - Click to place the cursor
 
     /// Runs `work` once the screen has settled: the program has finished redrawing (Claude Code hides the cursor and
@@ -952,15 +1320,40 @@ final class TerminalPane: TerminalDelegate, Groupable {
         awaitingCursorEcho = true
     }
 
-    private func placeCursor(line: Int, col: Int) {
-        guard !terminal.usingAlt, terminal.mouseMode == .none, let block = terminal.currentBlock else { return }
+    /// A plain click, as on the Mac: in the line being typed it moves the cursor there; otherwise it picks the prompt or
+    /// finished command under it (outlined, as Ctrl+Up and Down pick them), or puts that one down again if it's picked
+    /// already; anywhere else, nothing stays picked.
+    private func clicked(line: Int, col: Int) {
+        if placeCursor(line: line, col: col) {
+            if selectedStop != nil { selectedStop = nil; invalidate() }
+            return
+        }
+        guard !terminal.usingAlt else { return }
+        if let t = terminal.agentTurn(containing: line) {
+            let stop = BlockStop.turn(line: t.promptLine)
+            selectedStop = selectedStop == stop ? nil : stop
+        } else if let b = terminal.blockContaining(line), b.state == .finished {
+            if case .block(let id, _)? = selectedStop, id == b.id { selectedStop = nil } else { selectedStop = .block(id: b.id, line: b.promptLine) }
+        } else {
+            selectedStop = nil
+        }
+        invalidate()
+    }
+
+    /// Moves the cursor to a click in the line being typed. False if the click wasn't there.
+    @discardableResult
+    private func placeCursor(line: Int, col: Int) -> Bool {
+        guard !terminal.usingAlt, terminal.mouseMode == .none, let block = terminal.currentBlock else { return false }
         let col = min(col, terminal.cols - 1)
         if block.state == .running {
-            guard let rows = terminal.agentInputRows(block), rows.contains(line), rows.contains(terminal.cursorAbs) else { return }
+            guard let rows = terminal.agentInputRows(block), rows.contains(line), rows.contains(terminal.cursorAbs) else { return false }
             placeAgentCursor(row: line - rows.lowerBound, col: col, sentVertical: false)
+            return true
         } else if let arrows = terminal.shellCursorArrows(block, line: line, col: col) {
             sendArrows(arrows, back: "D", forward: "C")
+            return true
         }
+        return false
     }
 
     /// Claude Code word-wraps its input box itself, so cells don't map linearly to text. Up or down to the row first

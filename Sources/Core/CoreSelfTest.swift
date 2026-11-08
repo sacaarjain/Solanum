@@ -109,6 +109,19 @@ enum CoreSelfTest {
             check("click: not past its text", a.agentCursorArrows(toCol: 25) == 0)
             check("click: not into the gutter", a.agentCursorArrows(toCol: 0) == -11)
             check("selection: offsets in Claude Code's input", rows.map { a.agentInputOffset($0, line: $0.lowerBound, col: 8) } == 6)
+
+            // Pasted images, as Claude Code shows them.
+            let (im, _) = make(40, 6)
+            feed(im, "\u{276F} look at [Image #3] please\r\n  \u{23BF}  [Image #3] [Image #12]\r\n  \u{23BF}  see [Image #4]\r\n")
+            let first = im.line(abs: im.screenTopAbs).map(ImageTokens.tokens) ?? []
+            check("images: \"[Image #N]\" in a prompt", first == [ImageTokens.Token(start: 10, length: 10, number: 3)], "\(first)")
+            let listed = im.line(abs: im.screenTopAbs + 1).flatMap(ImageTokens.attachments)
+            check("images: a sent prompt's attachments", listed?.map(\.number) == [3, 12], "\(String(describing: listed))")
+            check("images: an image mentioned in a line isn't an attachment", im.line(abs: im.screenTopAbs).flatMap(ImageTokens.attachments) == nil
+                  && im.line(abs: im.screenTopAbs + 2).flatMap(ImageTokens.attachments) == nil)
+            let laid = ImageTokens.wrap([(1600, 900), (400, 400)], in: ImageTokens.Rect(x: 10, y: 0, width: 300, height: 40), bottom: false, minHeight: 12)
+            check("images: thumbnails share a row, one height, in order", laid.count == 2 && laid[0].height == laid[1].height
+                  && laid[0].x == 10 && laid[1].x > laid[0].maxX && laid[1].maxX <= 310, "\(laid)")
         }
         do {
             check("agent session: by name, also a path or an .exe", Block.namesAgentSession("claude --resume")
@@ -261,6 +274,43 @@ enum CoreSelfTest {
             check("search: matches from grep and git grep", found == [WorkspaceMatch(path: "src/a.swift", line: 12, text: "let x = 1"), WorkspaceMatch(path: "README.md", line: 3, text: "see x")])
             let urls = TextLinks.urls(in: "see https://example.com/a?b=1, or localhost:3000.")
             check("links: web addresses, punctuation left off", urls.map(\.url.absoluteString) == ["https://example.com/a?b=1", "http://localhost:3000"])
+            check("agents: what continues them after a restart",
+                  AgentResume.command(continuing: "claude") == "claude -c" && AgentResume.command(continuing: "npx codex --model x") == "codex resume --last"
+                  && AgentResume.command(continuing: #"C:\Users\me\.local\bin\claude.exe --verbose"#) == "claude -c"
+                  && AgentResume.command(continuing: "git commit -m claude") == nil && AgentResume.command(continuing: "npm test") == nil)
+            check("beautify: JSON", (try? Prettifier.format(#"{"a":1,"b":[1,2],"c":{}}"#, as: .json)) == "{\n  \"a\": 1,\n  \"b\": [\n    1,\n    2\n  ],\n  \"c\": {}\n}\n")
+            check("beautify: YAML", Prettifier.yaml("a:    1\nb:\n    c:  2\n\n\n\nd: 3  \n") == "a: 1\nb:\n  c: 2\n\nd: 3\n")
+            let xml = try? Prettifier.indentXML("<?xml version=\"1.0\"?><root><a x=\"1\">hi</a><b><c/></b><!-- note --></root>")
+            check("beautify: XML", xml == "<?xml version=\"1.0\"?>\n<root>\n  <a x=\"1\">hi</a>\n  <b>\n    <c/>\n  </b>\n  <!-- note -->\n</root>\n", xml ?? "failed")
+            check("beautify: XML left open is reported", (try? Prettifier.indentXML("<a><b></a>")) == nil)
+            check("beautify: which files", SyntaxLanguage(path: #"C:\x\app.config"#) == .xml && SyntaxLanguage(path: "/a/b.yml") == .yaml
+                  && SyntaxLanguage(path: "notes.txt") == nil)
+            let md = MarkdownDoc.parse("# Title\n\nSome **bold** and *it*, `code` and [a link](https://x.y).\n\n- one\n  more\n- [x] done\n\n```swift\nlet a = 1\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n---\n> quoted\n")
+            check("markdown: blocks", md.count == 8, String(describing: md))
+            if md.count == 8, case .paragraph(let spans) = md[1], case .listItem(_, _, let checked, _) = md[3] {
+                check("markdown: inline styles", spans.map(\.style) == [.plain, .bold, .plain, .italic, .plain, .code, .plain, .link("https://x.y"), .plain] && checked == true,
+                      String(describing: spans))
+            }
+            let jsonTokens = SyntaxScanner.tokens(in: #"{"a": 1, "b": true} // note"#, as: .json).map(\.token)
+            check("syntax: JSON keys, numbers, literals, comments", jsonTokens == [.key, .number, .key, .literal, .comment], String(describing: jsonTokens))
+            let yamlTokens = SyntaxScanner.tokens(in: "name: \"x\" # c\nlist:\n  - true\n", as: .yaml).map(\.token)
+            check("syntax: YAML", yamlTokens == [.key, .string, .comment, .key, .literal], String(describing: yamlTokens))
+            let xmlTokens = SyntaxScanner.tokens(in: #"<a x="1">&amp;</a>"#, as: .xml).map(\.token)
+            check("syntax: XML", xmlTokens == [.punctuation, .tag, .punctuation, .attribute, .punctuation, .string, .entity, .punctuation, .tag, .punctuation],
+                  String(describing: xmlTokens))
+            check("file kinds", FileKind(name: "a.PNG") == .image && FileKind(name: #"C:\x\run.ps1"#) == .code && FileKind(name: ".bashrc") == .other
+                  && VSCodeLanguages.id(forFileName: "Dockerfile") == "dockerfile" && VSCodeLanguages.id(forFileName: "x.d.ts") == "typescript")
+            check("markdown: snake_case isn't italic", MarkdownDoc.inline("a snake_case_name").count == 1)
+            // A commit's page: its files (one renamed) with their line counts, from a Windows repository's top folder.
+            let commitOut = "C:/Users/me/repo\nabc123\u{1f}abc1\u{1f}Ann\u{1f}2 days ago\u{1f}Fix it\nparent1\u{1e}"
+                + "M\0src/a.swift\0R100\0old.txt\0new.txt\0\u{1e}" + "3\t1\tsrc/a.swift\0" + "0\t0\t\0old.txt\0new.txt\0"
+            let commit = GitCommitReport(output: Data(commitOut.utf8))
+            check("commit: its files and line counts", commit?.root == "C:/Users/me/repo" && commit?.subject == "Fix it" && commit?.base == "parent1"
+                  && commit?.files.map(\.path) == ["src/a.swift", "new.txt"] && commit?.files[1].oldPath == "old.txt" && commit?.added == 3 && commit?.removed == 1,
+                  String(describing: commit?.files))
+            let diff = GitPageLine.parse(Data("diff --git a/x b/x\n@@ -4,2 +4,3 @@ func\r\n same\n-gone\n+new\n+more\n\\ No newline at end of file\n".utf8))
+            check("commit: a file's lines, numbered", diff.map(\.kind) == [.hunk, .context, .removed, .added, .added] && diff[1].old == 4 && diff[1].new == 4
+                  && diff[2].old == 5 && diff[3].new == 5 && diff[4].new == 6 && diff[0].text == "@@ -4,2 +4,3 @@ func", diff.description)
         }
     }
 }

@@ -37,6 +37,8 @@ struct WindowChrome {
     let canvas: Canvas
     let layout: WindowLayout
     var tabs: [String]
+    /// What each tab shows before its title, as on the Mac: an agent's mark and status, a file tab's icon, else the prompt.
+    var tabIcons: [TabIcon] = []
     var activeTab: Int
     /// While split, the other column's active tab, which shows as active in its own strip.
     var otherActiveTab: Int?
@@ -48,6 +50,13 @@ struct WindowChrome {
     var home: String?
     var themeName = ThemeSpecs.defaultName.uppercased()
     var showsThemeIcon = true
+    /// The theme's planet beside its name, as on the Mac; nil shows Solanum's flower (for Solanum Default).
+    var themePlanet: PlanetArt.Planet?
+    /// The Quantum Moon, wandered off from beside the theme name (see QuantumMoon): into the flower's corner, or by the
+    /// folder path, where it can be clicked.
+    var moonInCorner = false
+    var moonByFolders = false
+    var moonHovered = false
     var themeHovered = false
     /// A tab being dragged, and where its left edge is.
     /// Each group's chip, by its first tab, and the run of tabs it spans.
@@ -59,6 +68,17 @@ struct WindowChrome {
     var editingChip: (index: Int, field: TextFieldState, placeholder: String)?
     var draggedTab: Int?
     var draggedX: Float = 0
+    /// While a tab or group is dragged: where it would land, as a bar in that color.
+    var dropMarker: (x: Float, color: UInt32)?
+    /// The column the marker is in, when it isn't where something in the bar is being dragged (a file, or a tab over the
+    /// other column's strip).
+    var dropMarkerColumn: Int?
+    /// The dragged tab has left its strip, following the pointer: its place shows empty.
+    var draggedTabLifted = false
+    /// A group's chip a dragged tab is over, which it would join (by the chip's first tab).
+    var dropChip: Int?
+    /// A group dragged by its chip: its tabs, and how far it's been moved.
+    var liftedGroup: (first: Int, last: Int, dx: Float)?
     var hoveredCrumb: Int?
     /// The host the active tab is connected to over ssh.
     var sshHost: String?
@@ -97,15 +117,32 @@ struct WindowChrome {
 
     private func drawTabBar() {
         let bar = UIRect(x: 0, y: 0, width: layout.width, height: layout.tabBarHeight)
-        sol_canvas_fill_rect(canvas.raw, bar.x, bar.y, bar.width, bar.height, TerminalPalette.chrome, 1)
+        sol_canvas_backdrop_rect(canvas.raw, bar.x, bar.y, bar.width, bar.height, TerminalPalette.chrome)
         sol_canvas_fill_rect(canvas.raw, 0, bar.maxY - 1, bar.width, 1, fg, 0.10)
         for column in layout.isSplit ? [0, 1] : [0] {
             let v = layout.tabViewport(column: column), range = layout.tabRange(column: column)
             sol_canvas_push_clip(canvas.raw, v.x, v.y, v.width, v.height)
-            for i in range where i != draggedTab && layout.tab(i).width > 0 && layout.tab(i).maxX > v.x && layout.tab(i).x < v.maxX { drawTab(i) }
+            for i in range where i != draggedTab && !isLifted(i) && layout.tab(i).width > 0 && layout.tab(i).maxX > v.x && layout.tab(i).x < v.maxX { drawTab(i) }
             drawSeparators(range)
-            drawGroups(range)
-            if let draggedTab, range.contains(draggedTab) { drawTab(draggedTab) }
+            drawGroups(range, lifted: false)
+            // What's being dragged is a little see-through, as on the Mac, so what's behind it shows.
+            if let draggedTab, range.contains(draggedTab), !draggedTabLifted {
+                sol_canvas_push_opacity(canvas.raw, 0.8)
+                drawTab(draggedTab)
+                sol_canvas_pop_opacity(canvas.raw)
+            }
+            if let g = liftedGroup, range.contains(g.first) {
+                // The group being moved, chip and tabs, over the rest.
+                sol_canvas_push_opacity(canvas.raw, 0.8)
+                drawGroups(range, lifted: true)
+                for i in g.first...g.last where layout.tab(i).width > 0 { drawTab(i) }
+                sol_canvas_pop_opacity(canvas.raw)
+            }
+            let markerHere = dropMarkerColumn.map { $0 == column } ?? range.contains(draggedTab ?? liftedGroup?.first ?? -1)
+            if let marker = dropMarker, v.x - 4 * scale <= marker.x, marker.x <= v.maxX + 4 * scale, markerHere {
+                let w = (3 * scale).rounded(), top = (7 * scale).rounded()
+                sol_canvas_fill_rounded(canvas.raw, (marker.x - w / 2).rounded(), top, w, layout.tabBarHeight - top - (4 * scale).rounded(), w / 2, marker.color, 1)
+            }
             sol_canvas_pop_clip(canvas.raw)
             drawScrollArrows(column)
             drawNewTabButton(column)
@@ -122,16 +159,25 @@ struct WindowChrome {
             sol_canvas_fill_rounded(canvas.raw, f.x + ((f.width - side) / 2).rounded(), ((layout.tabBarHeight - side) / 2).rounded(), side, side, 6 * scale, TerminalPalette.surface, 0.7)
         }
         let flower = (22 * scale).rounded()
-        canvas.drawArt("flower", UIRect(x: layout.flower.x + ((layout.flower.width - flower) / 2).rounded(),
-                                        y: ((layout.tabBarHeight - flower) / 2).rounded(), width: flower, height: flower), scale: scale)
+        let corner = UIRect(x: layout.flower.x + ((layout.flower.width - flower) / 2).rounded(), y: ((layout.tabBarHeight - flower) / 2).rounded(),
+                            width: flower, height: flower)
+        if moonInCorner {
+            canvas.drawPlanet(.quantumMoon, UIRect(x: corner.x + 2 * scale, y: corner.y + 2 * scale, width: corner.width - 4 * scale, height: corner.height - 4 * scale))
+        } else {
+            canvas.drawArt("flower", corner, scale: scale)
+        }
         drawCaptionButtons()
     }
 
-    /// Each group's chip, and a line in its color over its tabs.
-    private func drawGroups(_ range: Range<Int>) {
-        for (first, group) in chips where range.contains(first) {
-            guard let r = layout.chip(first) else { continue }
-            let end = group.collapsed ? r.maxX : layout.tab(group.last).maxX
+    private func isLifted(_ i: Int) -> Bool { liftedGroup.map { $0.first <= i && i <= $0.last } ?? false }
+    private func liftOffset(_ i: Int) -> Float { isLifted(i) ? liftedGroup!.dx : 0 }
+
+    /// Each group's chip, and a line in its color over its tabs: those at rest, or the one being dragged.
+    private func drawGroups(_ range: Range<Int>, lifted: Bool) {
+        for (first, group) in chips where range.contains(first) && isLifted(first) == lifted {
+            guard var r = layout.chip(first) else { continue }
+            r.x += liftOffset(first)
+            let end = group.collapsed ? r.maxX : layout.tab(group.last).maxX + liftOffset(first)
             sol_canvas_fill_rounded(canvas.raw, r.x, (2 * scale).rounded(), max(end - r.x, r.width), 2 * scale, scale, group.color, 0.85)
             let hover = hovered == .chip(first)
             if let editing = editingChip, editing.index == first {
@@ -145,10 +191,17 @@ struct WindowChrome {
             }
             if group.label.isEmpty {
                 sol_canvas_fill_ellipse(canvas.raw, r.x + r.width / 2, r.midY, 6 * scale, 6 * scale, group.color, 1)
+                if dropChip == first {
+                    sol_canvas_stroke_rounded(canvas.raw, r.x, r.y, r.width, r.height, 6 * scale, fg, 0.9, 1.5 * scale)
+                }
                 if hover { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 6 * scale, fg, 0.12) }
                 continue
             }
-            sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 6 * scale, group.color, hover ? 1 : 0.88)
+            sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 6 * scale, group.color, hover || dropChip == first ? 1 : 0.88)
+            if dropChip == first {
+                // A dragged tab over it would join it.
+                sol_canvas_stroke_rounded(canvas.raw, r.x - 1.5 * scale, r.y - 1.5 * scale, r.width + 3 * scale, r.height + 3 * scale, 7 * scale, fg, 0.9, 1.5 * scale)
+            }
             let ink: UInt32 = HexColor(rgb: group.color).luminance > 0.6 ? 0x1A1A1A : 0xFFFFFF
             let pixels = 11.5 * scale, textWidth = min(width(of: group.label, pixels: pixels, semibold: true), r.width - 12 * scale)
             label(group.label, UIRect(x: r.x + (r.width - textWidth) / 2, y: r.y, width: textWidth + 1, height: r.height), pixels: pixels, semibold: true, color: ink)
@@ -182,12 +235,14 @@ struct WindowChrome {
     private func tabRect(_ i: Int) -> UIRect {
         var r = layout.tab(i)
         if i == draggedTab { r.x = draggedX }
+        r.x += liftOffset(i)
         return r
     }
 
     private func closeRect(_ i: Int) -> UIRect {
         var c = layout.tabClose(i)
         if i == draggedTab { c.x += draggedX - layout.tab(i).x }
+        c.x += liftOffset(i)
         return c
     }
 
@@ -199,9 +254,13 @@ struct WindowChrome {
             // Runs down past the tab bar and into the terminal below it, which has the same color: the tab and its
             // contents read as one piece. The clip keeps the extra height out of the terminal.
             sol_canvas_push_clip(canvas.raw, r.x, r.y, r.width, r.height)
-            sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height + radius * 2, radius, TerminalPalette.background, 1)
+            sol_canvas_backdrop_rounded(canvas.raw, r.x, r.y, r.width, r.height + radius * 2, radius, TerminalPalette.background)
             sol_canvas_stroke_rounded(canvas.raw, r.x + 0.5, r.y + 0.5, r.width - 1, r.height + radius * 2, radius, fg, 0.10, 1)
             sol_canvas_pop_clip(canvas.raw)
+        } else if isLifted(i) || i == draggedTab {
+            // Carried along with its group: raised, as a dragged tab is.
+            let inset = 2 * scale
+            sol_canvas_fill_rounded(canvas.raw, r.x + inset, r.y + inset, r.width - inset * 2, r.height - inset * 3, radius - 2, TerminalPalette.surface, 0.9)
         } else if hover || picked.contains(i) {
             let inset = 2 * scale
             sol_canvas_fill_rounded(canvas.raw, r.x + inset, r.y + inset, r.width - inset * 2, r.height - inset * 3, radius - 2,
@@ -210,9 +269,19 @@ struct WindowChrome {
 
         let textAlpha: Float = active ? 1 : 0.55
         let promptX = r.x + 12 * scale
-        drawPrompt(atX: promptX, midY: r.midY, active: active)
-        let titleX = promptX + 22 * scale
-        let closes = (active || hover) && r.width >= 60 * scale && draggedTab == nil
+        var titleX = promptX + 22 * scale
+        switch tabIcons.indices.contains(i) ? tabIcons[i] : .prompt {
+        case .agent(let agent):
+            // The agent's mark, then its status's dot; the title after both, as on the Mac.
+            Self.drawAgent(agent, on: canvas, atX: promptX, midY: r.midY, scale: scale)
+            titleX = promptX + (AgentMarks.side + 3 + 6 + 7) * scale
+        case .file(let glyph):
+            // In the prompt's place, so the title starts where a terminal tab's does.
+            sol_canvas_draw_icon(canvas.raw, promptX, r.y, (15 * scale).rounded(), r.height, glyph, 11 * scale, fg, active ? 1 : 0.65)
+        case .prompt:
+            drawPrompt(atX: promptX, midY: r.midY, active: active)
+        }
+        let closes = (active || hover) && r.width >= 60 * scale && draggedTab == nil && liftedGroup == nil
         let room = closeRect(i).x - titleX - 4 * scale
         if let editing = editingTab, editing.index == i {
             let box = UIRect(x: titleX - 4 * scale, y: r.y + 6 * scale, width: max(room + 4 * scale, 60 * scale), height: r.height - 12 * scale)
@@ -233,6 +302,14 @@ struct WindowChrome {
             sol_canvas_line(canvas.raw, c.x + inset, c.y + inset, c.maxX - inset, c.maxY - inset, fg, 0.6, thick)
             sol_canvas_line(canvas.raw, c.maxX - inset, c.y + inset, c.x + inset, c.maxY - inset, fg, 0.6, thick)
         }
+    }
+
+    /// An agent's mark and its status's dot from `x`, as the Mac's tabs show them (AgentInfo.draw there).
+    static func drawAgent(_ agent: AgentInfo, on canvas: Canvas, atX x: Float, midY: Float, scale: Float) {
+        let side = (AgentMarks.side * scale).rounded()
+        AgentMarks.draw(agent.kind, on: canvas, in: UIRect(x: x, y: (midY - side / 2).rounded(), width: side, height: side), scale: scale)
+        let d = 6 * scale
+        sol_canvas_fill_ellipse(canvas.raw, x + side + 3 * scale + d / 2, midY, d / 2, d / 2, agent.status.rgb, 1)
     }
 
     /// The prompt a terminal's tab shows: Solanum's two slim petals and an underscore.
@@ -331,7 +408,7 @@ struct WindowChrome {
         }
         let infoW = hostW + parts.reduce(0) { $0 + $1.1 + 2 * scale } + (g != nil ? 9 * scale : 0)
         var x = layout.toggleRight.x - 8 * scale - infoW
-        var h = Half(folderX: layout.divider + 4 * scale, limit: x - 8 * scale, mirrored: true)
+        var h = Half(folderX: layout.rightColumnX + 4 * scale, limit: x - 8 * scale, mirrored: true)
         if g != nil { h.dividerX = x + 3 * scale; x += 9 * scale }
         for (part, w) in parts { h.git.append((part, spot(x, w))); x += w + 2 * scale }
         if host != nil { h.hostX = x + 4 * scale }
@@ -404,8 +481,19 @@ struct WindowChrome {
         let iconX = h.folderX
         var x = h.folderX + (sshHost == nil ? 23 : 4) * scale
         var out: [(label: String, path: String, rect: UIRect, hit: UIRect)] = []
-        // The whole path, never shortened to ~, so that every folder above is a click away.
-        for (i, crumb) in WindowText.crumbPaths(folder, home: nil).enumerated() {
+        // The whole path, never shortened to ~, so that every folder above is a click away. When it doesn't fit, folders
+        // drop off the front one at a time, ".." standing for them (it opens the nearest of them), down to ".. › Folder".
+        let all = WindowText.crumbPaths(folder, home: nil), gap = 13 * scale
+        let widths = all.map { width(of: $0.label, pixels: pixels) }
+        let dotsWidth = width(of: "..", pixels: pixels)
+        func total(from first: Int) -> Float {
+            widths[first...].reduce(0, +) + gap * Float(all.count - first - 1) + (first > 0 ? dotsWidth + gap : 0)
+        }
+        var first = 0
+        while first < all.count - 1 && total(from: first) > limit - x { first += 1 }
+        var shown = Array(all[first...])
+        if first > 0 { shown.insert(("..", all[first - 1].path), at: 0) }
+        for (i, crumb) in shown.enumerated() {
             let w = min(width(of: crumb.label, pixels: pixels), max(limit - x, 0))
             // The first takes in the folder icon, and each a little either side, so that a short one like ~ is easy to hit.
             let start = i == 0 && sshHost == nil ? iconX : x - 4 * scale
@@ -422,6 +510,13 @@ struct WindowChrome {
         return out
     }
 
+    /// The Quantum Moon by the folder path, where it's clicked: in the left half's folder icon's place.
+    func moonRect() -> UIRect? {
+        guard moonByFolders else { return nil }
+        let bar = layout.statusBar, x = folderIconX(0) ?? half(0).folderX + 2 * scale
+        return UIRect(x: x - 3 * scale, y: bar.y + 2 * scale, width: 22 * scale, height: bar.height - 4 * scale)
+    }
+
     /// Where the folder icon goes: before the first part.
     private func folderIconX(_ column: Int) -> Float? {
         guard (column == 0 ? sshHost : rightSSHHost) == nil else { return nil }
@@ -431,7 +526,7 @@ struct WindowChrome {
 
     private func drawStatusBar() {
         let bar = layout.statusBar
-        sol_canvas_fill_rect(canvas.raw, bar.x, bar.y, bar.width, bar.height, TerminalPalette.chrome, 1)
+        sol_canvas_backdrop_rect(canvas.raw, bar.x, bar.y, bar.width, bar.height, TerminalPalette.chrome)
         sol_canvas_fill_rect(canvas.raw, bar.x, bar.y, bar.width, 1, fg, 0.10)
         let pixels = 12 * scale
 
@@ -445,7 +540,10 @@ struct WindowChrome {
             let spot = themeSpot()
             if themeHovered { sol_canvas_fill_rounded(canvas.raw, spot.x, spot.y + 3 * scale, spot.width, spot.height - 6 * scale, 4 * scale, fg, 0.10) }
             label(themeName, UIRect(x: themeX, y: bar.y, width: themeWidth + 2, height: bar.height), pixels: themePixels, semibold: true, alpha: themeHovered ? 0.9 : 0.55)
-            if showsThemeIcon {
+            if showsThemeIcon, let planet = themePlanet {
+                let side = (18 * scale).rounded()
+                canvas.drawPlanet(planet, UIRect(x: themeX - side - 4 * scale, y: (bar.midY - side / 2).rounded(), width: side, height: side))
+            } else if showsThemeIcon {
                 let side = (16 * scale).rounded()
                 canvas.drawArt("flowerOutline", UIRect(x: themeX - side - 5 * scale, y: (bar.midY - side / 2).rounded(), width: side, height: side), scale: scale)
             }
@@ -481,7 +579,12 @@ struct WindowChrome {
                 label(spot.label, UIRect(x: spot.rect.x, y: bar.y, width: spot.rect.width + 1, height: bar.height), pixels: pixels, alpha: last || hover ? 0.85 : 0.55)
                 if !last { label("›", UIRect(x: spot.rect.maxX + 3 * scale, y: bar.y, width: 8 * scale, height: bar.height), pixels: pixels, alpha: 0.4) }
             }
-            if let x = folderIconX(column) {
+            if column == 0, let moon = moonRect() {
+                // The moon, in the folder's place.
+                if moonHovered { sol_canvas_fill_rounded(canvas.raw, moon.x, moon.y, moon.width, moon.height, 4 * scale, fg, 0.10) }
+                let side = (18 * scale).rounded()
+                canvas.drawPlanet(.quantumMoon, UIRect(x: (moon.x + (moon.width - side) / 2).rounded(), y: (moon.y + (moon.height - side) / 2).rounded(), width: side, height: side))
+            } else if let x = folderIconX(column) {
                 icon(Icon.folder, UIRect(x: x, y: bar.y, width: 16 * scale, height: bar.height), pixels: 12 * scale, alpha: 0.75)
             }
             offset += spots.count

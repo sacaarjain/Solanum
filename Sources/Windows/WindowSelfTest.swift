@@ -69,6 +69,46 @@ enum WindowSelfTest {
     }
 
     static func runChrome(_ results: CoreSelfTest.Results) {
+        print("Custom themes")
+        let mac = ThemeFiles.parse(Data(##"{"background":"#101010","foreground":"#EEEEEE","ansi":["#000000","#FF0000","#00FF00","#FFFF00","#0000FF","#FF00FF","#00FFFF","#FFFFFF"]}"##.utf8),
+                                   fallbackName: "my-theme")
+        results.check("themes: a Mac file without a name takes its file's", mac?.name == "my-theme")
+        results.check("themes: and blue for an accent, as the Mac does", mac?.accent == "#0000FF")
+        let windowsTerminal = ThemeFiles.parse(Data(##"{"name":"Campbell","background":"#0C0C0C","foreground":"#CCCCCC","black":"#0C0C0C","red":"#C50F1F","green":"#13A10E","yellow":"#C19C00","blue":"#0037DA","purple":"#881798","cyan":"#3A96DD","white":"#CCCCCC","brightBlack":"#767676","brightRed":"#E74856","brightGreen":"#16C60C","brightYellow":"#F9F1A5","brightBlue":"#3B78FF","brightPurple":"#B4009E","brightCyan":"#61D6D6","brightWhite":"#F2F2F2","cursorColor":"#FFFFFF","selectionBackground":"#FFFFFF"}"##.utf8),
+                                        fallbackName: "x")
+        results.check("themes: a Windows Terminal scheme reads", windowsTerminal?.name == "Campbell" && windowsTerminal?.ansi.count == 16 && windowsTerminal?.ansi[9] == "#E74856")
+        let vsCode = ThemeFiles.parse(Data("""
+            {
+              // VS Code allows comments
+              "name": "Night Owl",
+              "colors": {
+                "editor.background": "#011627",
+                "editor.foreground": "#d6deebff", /* and these */
+                "terminal.ansiRed": "#EF5350",
+              },
+            }
+            """.utf8), fallbackName: "x")
+        results.check("themes: a VS Code theme reads, comments, trailing commas and all", vsCode?.name == "Night Owl" && vsCode?.background == "#011627"
+                      && vsCode?.foreground == "#d6deeb")
+        results.check("themes: a file that isn't a theme is left out", ThemeFiles.parse(Data(##"{"hello":"there"}"##.utf8), fallbackName: "x") == nil)
+        if let mac, let back = ThemeFiles.parse(ThemeFiles.json(mac), fallbackName: "y") {
+            results.check("themes: what Solanum writes reads back the same", back.name == mac.name && back.background == mac.background && back.ansi.count == 16)
+        } else {
+            results.check("themes: what Solanum writes reads back the same", false)
+        }
+        let roundTrip = ["#A584E8", "#111312", "#FFFFFF", "#000000", "#E3573F", "#56F0B4"].allSatisfy { HSVColor(HexColor($0)!).hex == $0 }
+        results.check("theme editor: a color through hue, saturation and brightness comes back the same", roundTrip)
+        results.check("theme editor: hex typed in reads as Solanum writes it", ColorPicker.parse("a5e", allowsAlpha: false) == "#AA55EE"
+                      && ColorPicker.parse("#A584E84D", allowsAlpha: true) == "#A584E84D" && ColorPicker.parse("#A584E84D", allowsAlpha: false) == "#A584E8"
+                      && ColorPicker.parse("nope", allowsAlpha: false) == nil)
+        let picker = ColorPicker(id: "t", hex: "#FF0000", allowsAlpha: true, suggestions: [0x00FF00], onChange: { _ in })
+        picker.place(under: UIRect(x: 300, y: 100, width: 46, height: 26), in: UIRect(x: 0, y: 0, width: 800, height: 600), scale: 1)
+        picker.drag(.square, toX: picker.square.x, y: picker.square.y)
+        let white = picker.color.hex
+        picker.drag(.alpha, toX: picker.alphaBar!.x + picker.alphaBar!.width / 2, y: picker.alphaBar!.midY)
+        picker.drag(.swatch(0), toX: 0, y: 0)
+        results.check("theme editor: the picker's square, opacity and the theme's colors set the color", white == "#FFFFFF" && picker.color.hex == "#00FF0080")
+
         print("Window layout")
         results.check("app: has its icon", LoadIconW(GetModuleHandleW(nil), Win.appIcon) != nil)
         let layout = WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 3)
@@ -157,8 +197,11 @@ enum WindowSelfTest {
         results.check("split: each column has its tabs", split.column(ofTab: 1) == 0 && split.column(ofTab: 2) == 1
                       && split.tab(1).maxX <= split.newTab(column: 0).x && split.newTab(column: 0).maxX <= split.divider
                       && split.tab(2).x >= split.divider && split.newTab(column: 1).maxX <= split.closeSplit.x && split.closeSplit.maxX <= split.minimize.x)
-        results.check("split: and its terminal", split.terminal.x == 0 && split.terminal.maxX == split.divider && split.rightTerminal.x == split.divider
-                      && split.rightTerminal.maxX == 1200 && split.divider == 600)
+        results.check("split: and its terminal", split.terminal.x == 0 && split.terminal.maxX == split.divider && split.rightTerminal.x == split.divider + split.bandWidth
+                      && split.rightTerminal.maxX == 1200 && split.divider == 597 && split.part(atX: 600, y: 300) == .columnDivider)
+        var dragged = split
+        dragged.splitFraction = dragged.splitFraction(atX: 800)
+        results.check("split: the band drags", abs(dragged.divider + 3 - 800) <= 1 && dragged.rightTerminal.x == dragged.divider + 6, "\(dragged.divider)")
         results.check("split: its parts are found", split.part(atX: split.tab(3).x + 20, y: 20) == .tab(3) && split.part(atX: split.tab(0).x + 20, y: 20) == .tab(0)
                       && split.part(atX: split.newTab(column: 1).x + 4, y: split.newTab(column: 1).midY) == .newTabRight
                       && split.part(atX: split.closeSplit.x + 4, y: split.closeSplit.midY) == .closeSplit
@@ -356,6 +399,25 @@ enum WindowSelfTest {
         palette.moveCaret(to: 0)
         palette.deleteForward()
         results.check("palette: Delete", palette.query == "Xb")
+        palette.setQuery("open the file")
+        palette.selectWord(at: 6)
+        results.check("palette: a double-click selects the word", palette.selectedText == "the")
+        palette.insert("a")
+        results.check("palette: typing replaces the selection", palette.query == "open a file" && palette.selection == nil)
+        palette.moveCaret(to: 0)
+        palette.moveCaret(by: 4, extend: true)
+        results.check("palette: Shift+arrows select", palette.selectedText == "open")
+        palette.deleteBackward()
+        results.check("palette: Backspace deletes the selection", palette.query == " a file")
+        palette.selectAll()
+        palette.deleteForward()
+        results.check("palette: Select All, then Delete, empties it", palette.query.isEmpty)
+        palette.setQuery("one two")
+        palette.moveCaret(to: 1)
+        palette.moveCaret(to: 5, extend: true)
+        palette.moveCaret(by: 1)
+        results.check("palette: an arrow collapses the selection to its end", palette.selection == nil && palette.caret == 5)
+        palette.setQuery("")
         palette.noteRun(commands[3])
         palette.noteRun(commands[1])
         palette.noteRun(commands[3])
@@ -661,6 +723,10 @@ enum WindowSelfTest {
         steps.append(Step(name: "palette: lists the tabs", action: { press(0x50, shift: true) },
                           done: { window.paletteRows.contains { $0.title.hasPrefix("Go to Tab:") } }))
         steps.append(Step(name: "palette: Esc closes it", action: { pane.pressEscape() }, done: { !window.isPaletteOpen }))
+        steps.append(Step(name: "restart: Ctrl+Shift+R asks first, Windows' way", action: { _ = window.keyDown(0x52, shift: true, ctrl: true, alt: false) }, done: {
+            window.dialogTitle == "Restart Solanum?" && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\restart.png") } ?? true)
+        }))
+        steps.append(Step(name: "restart: Esc says no", action: { pane.pressEscape() }, done: { window.dialogTitle == nil && window.panes.count >= 1 }))
         steps.append(Step(name: "palette: and Close Tab works from it", action: {
             press(0x50, shift: true)
             pane.type("close tab")
@@ -702,11 +768,67 @@ enum WindowSelfTest {
                           done: { window.leftRow(named: "inner.txt") != nil && window.leftHasFocus }))
         steps.append(Step(name: "sidebar: arrow keys move through it", action: { _ = window.keyDown(Int32(0x28), shift: false, ctrl: false, alt: false) },
                           done: { window.leftTree.selection?.hasSuffix("inner.txt") == true }))
-        steps.append(Step(name: "sidebar: Enter opens a file", action: { _ = window.keyDown(Int32(0x0D), shift: false, ctrl: false, alt: false) },
-                          done: { openedFile?.hasSuffix("inner.txt") == true }))
+        steps.append(Step(name: "sidebar: Space shows a file above the terminal, with the keyboard", action: {
+            _ = window.keyDown(Win.VK_SPACE, shift: false, ctrl: false, alt: false)
+        }, done: {
+            guard let preview = window.activePanel as? FileEditorPanel else { return false }
+            return preview.path.hasSuffix("inner.txt") && preview.textLines != nil && pane.editorFocused && !window.leftHasFocus
+        }))
         steps.append(Step(name: "sidebar: a new file shows by itself", action: {
-            _ = FileManager.default.createFile(atPath: windowsFolder + "\\late.txt", contents: Data())
+            _ = FileManager.default.createFile(atPath: windowsFolder + "\\late.txt", contents: Data("first line\nsecond line\n".utf8))
         }, done: { window.leftRow(named: "late.txt") != nil }))
+        steps.append(Step(name: "sidebar: clicking a file shows it, the keyboard staying in the sidebar", action: {
+            window.click(window.leftRow(named: "late.txt")!)
+        }, done: {
+            guard let preview = window.activePanel as? FileEditorPanel else { return false }
+            return preview.textLines == ["first line", "second line", ""] && pane.editors.count == 2 && window.leftHasFocus && !pane.editorFocused
+                && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\file-preview.png") } ?? true)
+        }))
+        // The editor, as on the Mac.
+        let late = windowsFolder + "\\late.txt"
+        func editor() -> FileEditorPanel? { window.activePanel as? FileEditorPanel }
+        func onDisk(_ path: String) -> String { (try? String(contentsOfFile: path, encoding: .utf8)) ?? "" }
+        func key(_ k: Int32, ctrl: Bool = false, shift: Bool = false, alt: Bool = false) { _ = window.keyDown(k, shift: shift, ctrl: ctrl, alt: alt) }
+        steps.append(Step(name: "editor: double-clicking a file opens it, with the keyboard", action: { window.doubleClick(window.leftRow(named: "late.txt")!) },
+                          done: { editor()?.path.hasSuffix("late.txt") == true && pane.editorFocused && !window.leftHasFocus && openedFile == nil }))
+        steps.append(Step(name: "editor: typing edits it", action: {
+            key(Win.VK_HOME, ctrl: true)
+            window.typeIntoWindow("hi ")
+        }, done: { editor()?.textLines?.first == "hi first line" && editor()?.hasUnsavedChanges == true }))
+        steps.append(Step(name: "editor: Ctrl+S saves it", action: { key(0x53, ctrl: true) },
+                          done: { onDisk(late) == "hi first line\nsecond line\n" && editor()?.hasUnsavedChanges == false }))
+        steps.append(Step(name: "editor: an edit not saved asks before closing, Windows' way", action: {
+            window.typeIntoWindow("x")
+            key(0x57, ctrl: true)
+        }, done: { window.dialogTitle == "Save changes to late.txt?" && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\save-changes.png") } ?? true) }))
+        steps.append(Step(name: "editor: Cancel keeps it open", action: { pane.pressEscape() },
+                          done: { window.dialogTitle == nil && editor()?.path.hasSuffix("late.txt") == true }))
+        steps.append(Step(name: "editor: Save saves, then closes", action: {
+            key(0x57, ctrl: true)
+            pane.pressEnter()
+        }, done: { onDisk(late).hasPrefix("hi x") && !pane.editors.contains { ($0.panel as? FileEditorPanel)?.path.hasSuffix("late.txt") == true } }))
+        let json = windowsFolder + "\\data.json"
+        _ = FileManager.default.createFile(atPath: json, contents: Data(##"{"a":1,"b":[1,2]}"##.utf8))
+        steps.append(Step(name: "editor: Beautify re-indents JSON", action: {
+            window.showFile(json, in: pane)
+        }, done: {
+            guard let e = editor(), e.textLines != nil else { return false }
+            e.press(button: .beautify)
+            // Colored as on the Mac: the key in the theme's blue, the number in its magenta.
+            return e.textLines == ["{", #"  "a": 1,"#, #"  "b": ["#, "    1,", "    2", "  ]", "}"]
+                && e.colorAt(line: 1, cell: 2) == TerminalPalette.ansi[4] && e.colorAt(line: 1, cell: 7) == TerminalPalette.ansi[5]
+                && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\editor.png") } ?? true)
+        }))
+        steps.append(Step(name: "editor: and saves", action: { key(0x53, ctrl: true) }, done: { onDisk(json).hasPrefix("{\n  \"a\": 1,") }))
+        let readme = windowsFolder + "\\readme.md"
+        _ = FileManager.default.createFile(atPath: readme, contents: Data("# Title\n\nSome **bold** and *italic* text, `code`, a [link](https://example.com).\n\n- one\n- [x] done\n".utf8))
+        steps.append(Step(name: "preview: a Markdown file renders", action: { window.showPreview(readme, in: pane) }, done: {
+            guard let preview = window.activePanel as? MarkdownPreviewPanel, let blocks = preview.blocks else { return false }
+            return blocks.count == 4 && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\markdown.png") } ?? true)
+        }))
+        steps.append(Step(name: "sidebar: the files close", action: {
+            while let panel = pane.panel { window.closeEditor(panel, in: pane) }
+        }, done: { pane.editors.isEmpty && window.paneArea(pane) == window.editorSplit(for: pane).column }))
         steps.append(Step(name: "sidebar: Esc goes back to the terminal", action: { _ = window.keyDown(Int32(0x1B), shift: false, ctrl: false, alt: false) },
                           done: { !window.leftHasFocus }))
         var sidebarWidthBefore: Float = 0
@@ -841,6 +963,12 @@ enum WindowSelfTest {
         }, done: { window.leftEditingText == "inner.txt" && exists("renamed.txt") }))
         steps.append(Step(name: "files: Esc leaves it as it was", action: { pane.pressEscape() },
                           done: { window.leftEditingText == nil && exists("renamed.txt") }))
+        steps.append(Step(name: "files: Enter renames, as Return does on the Mac", action: {
+            window.click(window.leftRow(named: "renamed.txt")!)
+            _ = window.keyDown(Win.VK_RETURN, shift: false, ctrl: false, alt: false)
+        }, done: { window.leftEditingText == "renamed.txt" }))
+        steps.append(Step(name: "files: and Esc again leaves it", action: { pane.pressEscape() },
+                          done: { window.leftEditingText == nil && exists("renamed.txt") }))
         steps.append(Step(name: "files: Duplicate copies beside it", action: {
             window.rightClick(window.leftRow(named: "renamed.txt")!)
             window.click(window.menuRow("Duplicate")!)
@@ -869,7 +997,7 @@ enum WindowSelfTest {
         }, done: { exists("box\\renamed (2).txt") && !exists("renamed.txt") }))
         let outside = WindowsPath.join(windowsFolder, "outside file.txt")
         steps.append(Step(name: "files: dropped from Explorer onto a folder, copied in", action: {
-            FileManager.default.createFile(atPath: outside, contents: Data("hi".utf8))
+            _ = FileManager.default.createFile(atPath: outside, contents: Data("hi".utf8))
             let r = window.leftRow(named: "box")!
             window.dropFilesForTest([outside], atX: r.x + 40, y: r.midY)
         }, done: { exists("box\\outside file.txt") && FileManager.default.fileExists(atPath: outside) }))
@@ -887,6 +1015,9 @@ enum WindowSelfTest {
         }))
         steps.append(Step(name: "files: closes", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
         // Git, in a repository of its own.
+        steps.append(Step(name: "pages: the files clicked in the sidebar showed above the terminal, and close", action: {
+            while let panel = pane.panel { window.closeEditor(panel, in: pane) }
+        }, done: { pane.editors.isEmpty && !pane.editorFocused }))
         steps.append(Step(name: "git: a repository shows its branch and changes", action: {
             pane.type("New-Item -ItemType Directory repo | Out-Null; cd repo; git init -q -b main; git config user.email t@example.com; git config user.name T; "
                       + "'hello solanum' | Out-File -Encoding ascii tracked.txt; git add .; git commit -qm one; 'more' | Out-File -Encoding ascii new.txt")
@@ -904,8 +1035,14 @@ enum WindowSelfTest {
         steps.append(Step(name: "git: the changes list them", action: { window.click(window.gitSpot(.changes)!) },
                           done: { window.menuTitles.contains("U   new.txt") && window.menuTitles.contains("Show Git Changes") }))
         steps.append(Step(name: "git: and close", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
-        steps.append(Step(name: "git: Ctrl+Shift+G shows Git Changes", action: { _ = window.keyDown(0x47, shift: true, ctrl: true, alt: false) }, done: {
+        steps.append(Step(name: "git: Ctrl+Shift+S shows Git Changes", action: { _ = window.keyDown(0x53, shift: true, ctrl: true, alt: false) }, done: {
             (window.activePanel as? GitChangesPanel)?.fileRows.map(\.path) == ["new.txt"]
+        }))
+        steps.append(Step(name: "pages: open above the terminal, which stays below", action: {}, done: {
+            let split = window.editorSplit(for: pane)
+            guard let editor = split.editor else { return false }
+            let terminal = window.paneArea(pane)
+            return pane.editorFocused && terminal.height > 0 && terminal.y >= editor.maxY && editor.y == split.column.y
         }))
         steps.append(Step(name: "git: staging there", action: { (window.activePanel as? GitChangesPanel)?.act(.stageAll, on: nil) }, done: {
             guard let rows = (window.activePanel as? GitChangesPanel)?.fileRows else { return false }
@@ -923,14 +1060,21 @@ enum WindowSelfTest {
             (window.activePanel as? GitChangesPanel)?.fileRows.isEmpty == true && window.activeGit?.changes.isEmpty == true
         }))
         steps.append(Step(name: "git: Esc closes it", action: { pane.pressEscape() }, done: { window.activePanel == nil }))
-        steps.append(Step(name: "git: Git Graph shows the history", action: { window.showGitGraph() },
+        steps.append(Step(name: "git: Ctrl+Shift+G shows Git Graph", action: { _ = window.keyDown(0x47, shift: true, ctrl: true, alt: false) },
                           done: { (window.activePanel as? GitGraphPanel)?.rows.count == 2 }))
-        if let dir = snapshotDirectory {
-            steps.append(Step(name: "git: snapshot of Git Graph", action: { (window.activePanel as? GitGraphPanel)?.selectRow(0) }, done: {
-                ((window.activePanel as? GitGraphPanel)?.details.count ?? 0) > 3 && window.saveSnapshot(to: dir + "\\git-graph.png")
-            }))
-        }
-        steps.append(Step(name: "git: and closes", action: { pane.pressEscape(); pane.pressEscape() }, done: { window.activePanel == nil }))
+        steps.append(Step(name: "git: a commit's card", action: { (window.activePanel as? GitGraphPanel)?.selectRow(0) }, done: {
+            (window.activePanel as? GitGraphPanel)?.cardLoaded == true && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\git-graph.png") } ?? true)
+        }))
+        steps.append(Step(name: "git: Enter opens the commit's changes", action: { pane.pressEnter() }, done: {
+            (window.activePanel as? GitCommitPanel)?.filePaths == ["new.txt"] && pane.editors.count == 2
+        }))
+        steps.append(Step(name: "git: a file there unfolds", action: { (window.activePanel as? GitCommitPanel)?.unfold("new.txt") }, done: {
+            (window.activePanel as? GitCommitPanel)?.diffLines("new.txt")?.contains { $0.kind == .added && $0.text.hasPrefix("more") } == true
+                && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\git-commit.png") } ?? true)
+        }))
+        steps.append(Step(name: "git: Esc closes the commit, then the graph", action: { pane.pressEscape(); pane.pressEscape() }, done: {
+            window.activePanel == nil && pane.editors.isEmpty && !pane.editorFocused && window.paneArea(pane) == window.editorSplit(for: pane).column
+        }))
         // Search in Project Folder.
         steps.append(Step(name: "search: Ctrl+Shift+F finds text in the folder", action: {
             _ = window.keyDown(0x46, shift: true, ctrl: true, alt: false)
@@ -1033,6 +1177,37 @@ enum WindowSelfTest {
         steps.append(Step(name: "themes: back to the default", action: { pane.pressEnter() },
                           done: { TerminalPalette.background == 0x111312 && !window.isPaletteOpen }))
 
+        // Command blocks, as on the Mac: Ctrl+Up and Down step through them, and they copy with their output.
+        steps.append(Step(name: "blocks: a command to step back to", action: {
+            pane.type("Write-Output 'block-out'")
+            pane.pressEnter()
+        }, done: { pane.atPrompt && pane.finishedCommands().contains { $0.command == "Write-Output 'block-out'" } }))
+        steps.append(Step(name: "blocks: Ctrl+Up picks it", action: { _ = window.keyDown(Win.VK_UP, shift: false, ctrl: true, alt: false) }, done: {
+            guard case .block? = pane.selectedStop else { return false }
+            return snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\blocks.png") } ?? true
+        }))
+        steps.append(Step(name: "blocks: Ctrl+Alt+C copies it with its output", action: { _ = window.keyDown(0x43, shift: false, ctrl: true, alt: true) }, done: {
+            let text = pane.clipboardText() ?? ""
+            return text.hasPrefix("$ Write-Output 'block-out'") && text.contains("\nblock-out")
+        }))
+        steps.append(Step(name: "blocks: Esc puts it away", action: { pane.pressEscape() }, done: { pane.selectedStop == nil }))
+        steps.append(Step(name: "blocks: Ctrl+J lists what was run", action: { _ = window.keyDown(0x4A, shift: false, ctrl: true, alt: false) },
+                          done: { window.isPaletteOpen && window.paletteRows.contains { $0.title == "Write-Output 'block-out'" } }))
+        steps.append(Step(name: "blocks: picking one goes to it", action: { pane.pressEnter() }, done: { !window.isPaletteOpen && pane.selectedStop != nil }))
+        steps.append(Step(name: "blocks: and Esc puts it away again", action: { pane.pressEscape() }, done: { pane.selectedStop == nil }))
+
+        // A running agent is known, so a restart continues it (as `claude -c`), as on the Mac. A stand-in named claude.
+        steps.append(Step(name: "resume: a stand-in for Claude Code", action: {
+            pane.type("function claude { Start-Sleep -Seconds 60 }")
+            pane.pressEnter()
+        }, done: { pane.atPrompt }))
+        steps.append(Step(name: "resume: running, it would continue after a restart", action: {
+            pane.type("claude")
+            pane.pressEnter()
+        }, done: { pane.resumeCommand == "claude -c" }))
+        steps.append(Step(name: "resume: and stopped, nothing would", action: { pane.type("\u{03}") },
+                          done: { pane.atPrompt && pane.resumeCommand == nil }))
+
         // Tab groups.
         steps.append(Step(name: "groups: tabs to group", action: { window.newTab(); window.newTab() },
                           done: { window.panes.count == 4 && pane.atPrompt }))
@@ -1085,6 +1260,31 @@ enum WindowSelfTest {
             steps.append(Step(name: "groups: collapsed snapshot", action: {}, done: { window.saveSnapshot(to: dir + "\\groups-collapsed.png") }))
         }
         steps.append(Step(name: "groups: and expands it", action: { window.click(window.chipRect(1)!) }, done: { window.currentLayout.tab(2).width > 0 }))
+        steps.append(Step(name: "groups: dragging the chip moves the group", action: {
+            window.dragChip(1, toX: window.currentLayout.tab(0).x - 10)
+        }, done: { window.chipRect(0) != nil && window.panes[3].group == nil && window.groupNames == ["web"] && window.currentLayout.tab(2).width > 0 }))
+        steps.append(Step(name: "groups: and back past the tab", action: {
+            let l = window.currentLayout
+            window.dragChip(0, toX: l.tab(3).x + l.tab(3).width + 40)
+        }, done: { window.chipRect(1) != nil && window.panes[0].group == nil }))
+        var shown: (split: Int?, chip: Bool, marker: Bool) = (nil, false, false)
+        steps.append(Step(name: "groups: a tab dragged past its group's end leaves it, a bar showing where", action: {
+            let l = window.currentLayout, r = l.tab(3)
+            window.dragTab(3, toX: r.x + r.width + r.width * 0.6, y: r.midY) { shown = window.dragShows }
+        }, done: { shown.marker && window.panes[3].group == nil && window.chipRect(1) != nil }))
+        steps.append(Step(name: "groups: dropped on a group's chip, it joins", action: {
+            let chip = window.chipRect(1)!
+            window.dragTab(3, toX: chip.x + chip.width / 2, y: chip.midY) { shown = window.dragShows }
+        }, done: { shown.chip && window.panes[3].group != nil && window.groupNames == ["web"] }))
+        steps.append(Step(name: "groups: dragged down over the terminal, it goes into split view", action: {
+            let l = window.currentLayout
+            window.dragTab(3, toX: l.width * 0.75, y: l.height / 2) { shown = window.dragShows }
+        }, done: {
+            shown.split == 1 && window.isSplit && window.panes.last?.column == 1 && window.panes.last?.group == nil
+                && (snapshotDirectory.map { _ in true } ?? true)
+        }))
+        steps.append(Step(name: "groups: and the split closes again", action: { window.closeSplit() },
+                          done: { !window.isSplit && window.chipRect(1) != nil }))
         steps.append(Step(name: "groups: the chip's menu", action: { window.rightClick(window.chipRect(1)!) },
                           done: { window.menuTitles.contains("Ungroup") && window.menuTitles.contains("Purple") }))
         steps.append(Step(name: "groups: ungroups", action: { window.click(window.menuRow("Ungroup")!) },
@@ -1100,8 +1300,20 @@ enum WindowSelfTest {
                           done: { window.isSplit && window.splitColumnCounts == [2, 1] && window.focusedColumn == 1 && pane.atPrompt }))
         steps.append(Step(name: "split: each column is half the width", action: {}, done: {
             let l = window.currentLayout, left = window.panes[0]
-            return window.paneArea(pane).x == l.divider && window.paneArea(left).maxX == l.divider && pane.terminal.cols * 2 <= left.terminal.cols + pane.terminal.cols + 2
+            return window.paneArea(pane).x == l.rightColumnX && window.paneArea(left).maxX == l.divider && pane.terminal.cols * 2 <= left.terminal.cols + pane.terminal.cols + 2
         }))
+        var colsBefore = 0
+        steps.append(Step(name: "split: dragging the band between them resizes both", action: {
+            colsBefore = pane.terminal.cols
+            let l = window.currentLayout
+            window.dragColumnBand(to: l.divider + (l.width - l.divider) / 2)
+        }, done: {
+            let l = window.currentLayout
+            return pane.terminal.cols < colsBefore && window.paneArea(pane).x == l.rightColumnX
+                && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\split-band.png") } ?? true)
+        }))
+        steps.append(Step(name: "split: and back to halves", action: { window.dragColumnBand(to: window.currentLayout.width / 2) },
+                          done: { pane.terminal.cols >= colsBefore - 1 }))
         steps.append(Step(name: "split: typing goes to the column with the keyboard", action: {
             pane.type("echo right-column")
             pane.pressEnter()
@@ -1229,7 +1441,7 @@ enum WindowSelfTest {
                 hostTyped("renamed-on-host")
             }, done: { window.leftRow(named: "renamed-on-host") != nil && window.leftRow(named: "made-on-host") == nil }))
             steps.append(Step(name: "ssh files: uploads a file", action: {
-                FileManager.default.createFile(atPath: toUpload, contents: Data("from windows".utf8))
+                _ = FileManager.default.createFile(atPath: toUpload, contents: Data("from windows".utf8))
                 window.uploadForTest([toUpload], into: window.leftTree.root!)
             }, done: { window.leftRow(named: uploadName) != nil }))
             steps.append(Step(name: "ssh files: and downloads it back", action: {

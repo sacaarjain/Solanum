@@ -51,10 +51,18 @@ struct PaletteView {
             label(model.placeholder, f, pixels: pixels, alpha: 0.45)
         } else {
             sol_canvas_push_clip(canvas.raw, f.x, f.y, f.width, f.height)
+            if let r = model.selection {
+                let chars = Array(model.query)
+                let from = width(of: String(chars[..<r.lowerBound]), pixels: pixels), to = width(of: String(chars[..<r.upperBound]), pixels: pixels)
+                let h = 22 * scale
+                sol_canvas_fill_rounded(canvas.raw, f.x + from - shift, (f.midY - h / 2).rounded(), to - from, h, 3 * scale, TerminalPalette.accent, 0.35)
+            }
             let full = width(of: model.query, pixels: pixels).rounded(.up) + 8 * scale
             label(model.query, UIRect(x: f.x - shift, y: f.y, width: max(full, f.width + shift), height: f.height), pixels: pixels)
             sol_canvas_pop_clip(canvas.raw)
         }
+        // No caret while there's a selection, as in Windows' own fields.
+        guard model.selection == nil else { return }
         let caretX = f.x + beforeCaret - shift
         let height = 20 * scale
         sol_canvas_fill_rect(canvas.raw, caretX.rounded(), (f.midY - height / 2).rounded(), max(scale.rounded(), 1), height, TerminalPalette.accent, 1)

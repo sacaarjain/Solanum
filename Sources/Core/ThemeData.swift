@@ -14,6 +14,8 @@ struct ThemeSpec {
     /// The hue washed over the tab bar, status bar and sidebars. Solanum purple when nil.
     let chrome: String?
     let ansi: [String]
+    /// A picture behind the terminal, under the background color (Windows, for now).
+    var image: ThemeImage?
 
     init(name: String, bg: String, bg2: String? = nil, fg: String, cursor: String? = nil, selection: String? = nil,
          accent: String, chrome: String? = nil, ansi: [String]) {
@@ -27,6 +29,16 @@ struct ThemeSpec {
         self.chrome = chrome
         self.ansi = ansi
     }
+}
+
+/// A theme's background picture: its file (in the themes folder, by name, or a full path), how blurred it is, and how
+/// much of the theme's background color lies over it.
+struct ThemeImage: Equatable {
+    var file: String
+    /// In pixels at the picture's size on screen; 0 is sharp.
+    var blur: Double = 24
+    /// 0 shows the picture as it is; 1 would hide it under the background color.
+    var tint: Double = 0.7
 }
 
 /// Solanum's built-in themes.

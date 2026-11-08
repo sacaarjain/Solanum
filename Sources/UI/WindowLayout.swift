@@ -20,6 +20,8 @@ enum WindowPart: Equatable {
     case titleBar
     case statusBar, terminal
     case leftSidebar, rightSidebar, leftEdge, rightEdge, toggleLeft, toggleRight, hosts
+    /// The band between the two columns, which drags to resize them.
+    case columnDivider
     /// While split: the right column's new tab button and scroll arrows, and the button that closes the split.
     case newTabRight, rightScrollLeft, rightScrollRight, closeSplit
 }
@@ -44,6 +46,8 @@ struct WindowLayout {
     var splitCount: Int?
     /// How far the right column's tabs are scrolled.
     var rightTabScroll: Float = 0
+    /// The left column's share of the room, while split; dragging the band between them changes it, as on the Mac.
+    var splitFraction: Float = 0.5
 
     var isSplit: Bool { splitCount != nil }
     var tabBarHeight: Float { (38 * scale).rounded() }
@@ -58,8 +62,21 @@ struct WindowLayout {
         let side = (36 * scale).rounded()
         return UIRect(x: (4 * scale).rounded(), y: 0, width: side, height: tabBarHeight)
     }
-    /// Where the two columns meet: halfway across the room the sidebars leave.
-    var divider: Float { leftWidth + ((width - leftWidth - rightWidth) / 2).rounded() }
+    /// The band between the columns (and between a tab's pages and its terminal), with a grip, as on the Mac.
+    var bandWidth: Float { (6 * scale).rounded() }
+    /// Where the left column ends and the band between the columns starts: halfway across the room the sidebars leave,
+    /// unless the band has been dragged.
+    var divider: Float {
+        let room = width - leftWidth - rightWidth - (isSplit ? bandWidth : 0)
+        return leftWidth + (room * min(max(splitFraction, 0.2), 0.8)).rounded()
+    }
+    /// Where the right column starts, past the band.
+    var rightColumnX: Float { divider + (isSplit ? bandWidth : 0) }
+    /// The fraction that puts the band's middle at `x`.
+    func splitFraction(atX x: Float) -> Float {
+        let room = max(width - leftWidth - rightWidth - bandWidth, 1)
+        return min(max((x - bandWidth / 2 - leftWidth) / room, 0.2), 0.8)
+    }
     /// While split, the button that closes it, just before the window's buttons.
     var closeSplit: UIRect {
         let side = (24 * scale).rounded()
@@ -88,7 +105,7 @@ struct WindowLayout {
         if column == 0 {
             return Strip(range: 0..<n, start: tabsStart, newTabLimit: divider - newTabSide - (6 * scale).rounded(), scroll: tabScroll)
         }
-        return Strip(range: n..<tabCount, start: divider + (6 * scale).rounded(), newTabLimit: closeSplit.x - newTabSide - (4 * scale).rounded(),
+        return Strip(range: n..<tabCount, start: rightColumnX + (6 * scale).rounded(), newTabLimit: closeSplit.x - newTabSide - (4 * scale).rounded(),
                      scroll: rightTabScroll)
     }
 
@@ -96,7 +113,8 @@ struct WindowLayout {
     func column(ofTab i: Int) -> Int { splitCount.map { i >= $0 ? 1 : 0 } ?? 0 }
 
     private func visibleCount(_ s: Strip) -> Int { s.range.filter { !hiddenTabs.contains($0) }.count }
-    private func chipSpace(_ s: Strip) -> Float { chips.filter { s.range.contains($0.key) }.values.reduce(0) { $0 + $1 + chipGap } }
+    /// A chip has a gap on both sides: from the tab before it, and to its own first tab.
+    private func chipSpace(_ s: Strip) -> Float { chips.filter { s.range.contains($0.key) }.values.reduce(0) { $0 + $1 + chipGap * 2 } }
     private func fittingTabWidth(_ s: Strip) -> Float {
         (s.newTabLimit - (6 * scale).rounded() - s.start - chipSpace(s)) / Float(max(visibleCount(s), 1))
     }
@@ -150,10 +168,10 @@ struct WindowLayout {
         let s = strip(column(ofTab: i)), w = tabWidth(s)
         var x = overflows(s) ? viewport(s).x - s.scroll : s.start
         for k in s.range.lowerBound..<max(i, s.range.lowerBound) {
-            if let chip = chips[k] { x += chip + chipGap }
+            if let chip = chips[k] { x += chipGap + chip + chipGap }
             if !hiddenTabs.contains(k) { x += w }
         }
-        if let chip = chips[i] { x += chip + chipGap }
+        if let chip = chips[i] { x += chipGap + chip + chipGap }
         return x
     }
 
@@ -190,8 +208,10 @@ struct WindowLayout {
     }
     /// The right column's terminal, while split.
     var rightTerminal: UIRect {
-        UIRect(x: divider, y: tabBarHeight, width: max(width - rightWidth - divider, 0), height: terminal.height)
+        UIRect(x: rightColumnX, y: tabBarHeight, width: max(width - rightWidth - rightColumnX, 0), height: terminal.height)
     }
+    /// The band between the columns, while split.
+    var columnBand: UIRect? { isSplit ? UIRect(x: divider, y: tabBarHeight, width: bandWidth, height: terminal.height) : nil }
     var leftSidebar: UIRect { UIRect(x: 0, y: tabBarHeight, width: leftWidth, height: terminal.height) }
     var rightSidebar: UIRect { UIRect(x: width - rightWidth, y: tabBarHeight, width: rightWidth, height: terminal.height) }
     private var toggleSide: Float { (22 * scale).rounded() }
@@ -210,6 +230,7 @@ struct WindowLayout {
         guard y < tabBarHeight else {
             // A few pixels either side of each sidebar's border drag it.
             let grab = 3 * scale
+            if let band = columnBand, x >= band.x - grab, x < band.maxX + grab { return .columnDivider }
             if leftWidth > 0 && abs(x - leftWidth) <= grab { return .leftEdge }
             if rightWidth > 0 && abs(x - (width - rightWidth)) <= grab { return .rightEdge }
             if leftWidth > 0 && x < leftWidth { return .leftSidebar }

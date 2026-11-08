@@ -7,12 +7,28 @@ protocol ColumnPanel: AnyObject {
     func draw(on canvas: Canvas, in area: UIRect, scale: Float)
     /// True if it dealt with the mouse.
     func mouse(_ message: UINT, x: Float, y: Float, in area: UIRect, scale: Float) -> Bool
-    func wheel(notches: Int, x: Float, y: Float, in area: UIRect, scale: Float)
+    /// Scrolls by lines, up for positive: 3 a wheel notch, and one at a time under a finger.
+    func scroll(lines: Int, x: Float, y: Float, in area: UIRect, scale: Float)
     /// True if it dealt with the key. Characters come through `typed`.
     func key(_ key: Int32, shift: Bool, ctrl: Bool) -> Bool
     func typed(_ text: String)
     /// Looks again (the files, the history), as Refresh does.
     func reload()
+    /// The pointer has gone somewhere else: nothing stays hovered.
+    func mouseLeft()
+    /// About ten times a second, while it's in a tab: for work on a timer (a file followed as it changes).
+    func tick()
+    /// Edits not yet saved, which closing it would lose.
+    var hasUnsavedChanges: Bool { get }
+    /// Saves them; `done` with whether it worked.
+    func save(_ done: @escaping (Bool) -> Void)
+}
+
+extension ColumnPanel {
+    func mouseLeft() {}
+    func tick() {}
+    var hasUnsavedChanges: Bool { false }
+    func save(_ done: @escaping (Bool) -> Void) { done(true) }
 }
 
 /// Drawing in the interface font and in the terminal's, for the panels.
@@ -32,6 +48,11 @@ struct PanelPaint {
 
     func icon(_ glyph: UInt16, _ r: UIRect, pixels: Float = 12, color: UInt32? = nil, alpha: Float = 1) {
         sol_canvas_draw_icon(canvas.raw, r.x, r.y, r.width, r.height, glyph, pixels * scale, color ?? fg, alpha)
+    }
+
+    /// A background of the window's own, as see-through as the window is (see `sol_canvas_backdrop_rect`).
+    func backdrop(_ r: UIRect, _ color: UInt32) {
+        sol_canvas_backdrop_rect(canvas.raw, r.x, r.y, r.width, r.height, color)
     }
 
     func fill(_ r: UIRect, _ color: UInt32, _ alpha: Float, radius: Float = 0) {
@@ -274,12 +295,12 @@ final class GitChangesPanel: ColumnPanel {
 
     func draw(on canvas: Canvas, in a: UIRect, scale s: Float) {
         let p = PanelPaint(canvas: canvas, scale: s), fg = p.fg
-        p.fill(a, TerminalPalette.background, 1)
+        p.backdrop(a, TerminalPalette.background)
         sol_canvas_push_clip(canvas.raw, a.x, a.y, a.width, a.height)
         defer { sol_canvas_pop_clip(canvas.raw) }
         // The bar: what this is, the message, Commit.
         let h = header(a, s)
-        p.fill(h, TerminalPalette.chrome, 1)
+        p.backdrop(h, TerminalPalette.chrome)
         p.fill(UIRect(x: a.x, y: h.maxY - 1, width: a.width, height: 1), fg, 0.10)
         let title = "Git Changes" + (info.map { " · \($0.branch)" } ?? "")
         titleWidth = min(p.width(title, pixels: 13, semibold: true) + 20 * s, a.width * 0.3)
@@ -324,7 +345,10 @@ final class GitChangesPanel: ColumnPanel {
                     p.label(folder, UIRect(x: r.x + 40 * s + nameW, y: r.y, width: max(r.maxX - 70 * s - nameW - 40 * s, 0), height: r.height), pixels: 11.5, alpha: 0.45)
                 }
             }
-            if hoveredRow == i || (selected == i && rows.indices.contains(i)) {
+            // A header's Stage All or Unstage All always shows; a file's buttons, when it's hovered or selected.
+            var isHeader = false
+            if case .header = rows[i] { isHeader = true }
+            if isHeader || hoveredRow == i || (selected == i && rows.indices.contains(i)) {
                 for (action, b) in rowButtons(i, a, s) { p.button(glyph(action), b, hovered: hoveredPart == "\(i):\(action)") }
             }
         }
@@ -382,11 +406,11 @@ final class GitChangesPanel: ColumnPanel {
         return true
     }
 
-    func wheel(notches: Int, x: Float, y: Float, in a: UIRect, scale s: Float) {
+    func scroll(lines: Int, x: Float, y: Float, in a: UIRect, scale s: Float) {
         if diffArea(a, s).contains(x, y) {
-            diffScroll = min(max(diffScroll - notches * 3, 0), max(diff.count - 5, 0))
+            diffScroll = min(max(diffScroll - lines, 0), max(diff.count - 5, 0))
         } else {
-            listScroll = min(max(listScroll - notches * 2, 0), max(rows.count - 3, 0))
+            listScroll = min(max(listScroll - lines, 0), max(rows.count - 3, 0))
         }
         invalidate()
     }
@@ -426,194 +450,3 @@ final class GitChangesPanel: ColumnPanel {
     }
 }
 
-// MARK: - Git Graph
-
-/// Every branch's history, as VS Code's Git Graph draws it: a lane for each line of development, with branch and tag
-/// labels. Clicking a commit shows its details below.
-final class GitGraphPanel: ColumnPanel {
-    let place: GitPlace
-    private(set) var head = ""
-    private(set) var rows: [GraphRow] = []
-    private(set) var loaded = false
-    private(set) var selected: Int?
-    private var scroll = 0
-    private var hoveredRow: Int?
-    private var hoveredPart: String?
-    private(set) var details: [String] = []
-    var invalidate: () -> Void = {}
-    var close: () -> Void = {}
-    var copy: (String) -> Void = { _ in }
-    var post: (@escaping () -> Void) -> Void = { $0() }
-
-    init(place: GitPlace) { self.place = place }
-
-    static let laneColors: [UInt32] = [0x4FA3F7, 0xE5A445, 0x6CC97A, 0xD46FC9, 0xE06B6B, 0x5FC9C2, 0xA98BF2, 0xC9B55F]
-
-    func reload() {
-        place.run(GraphCommit.script, timeout: 60) { [weak self] status, out, _ in
-            let parsed: (head: String, commits: [GraphCommit]) = status == 0 ? GraphCommit.parse(out) : ("", [])
-            let rows = GraphLayout.rows(parsed.commits)
-            self?.post {
-                guard let self else { return }
-                self.head = parsed.head
-                self.rows = rows
-                self.loaded = true
-                if let s = self.selected, !rows.indices.contains(s) { self.selected = nil }
-                self.invalidate()
-            }
-        }
-    }
-
-    private func loadDetails() {
-        guard let i = selected, rows.indices.contains(i) else { details = []; return }
-        let hash = rows[i].commit.hash
-        details = ["Loading…"]
-        place.run("git show --stat --format='%H%n%an <%ae>%n%ad%n%n%B' --date=format:'%a %d %b %Y %H:%M' --no-color \(hash) | head -n 60", timeout: 20) { [weak self] _, out, _ in
-            let lines = String(decoding: out, as: UTF8.self).split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
-            self?.post {
-                guard let self, self.selected.map({ self.rows.indices.contains($0) && self.rows[$0].commit.hash == hash }) == true else { return }
-                self.details = lines
-                self.invalidate()
-            }
-        }
-    }
-
-    private func header(_ a: UIRect, _ s: Float) -> UIRect { UIRect(x: a.x, y: a.y, width: a.width, height: (40 * s).rounded()) }
-    private func closeButton(_ a: UIRect, _ s: Float) -> UIRect { UIRect(x: a.maxX - 34 * s, y: a.y + 8 * s, width: 24 * s, height: 24 * s) }
-    private func refreshButton(_ a: UIRect, _ s: Float) -> UIRect { UIRect(x: a.maxX - 62 * s, y: a.y + 8 * s, width: 24 * s, height: 24 * s) }
-    private func copyButton(_ a: UIRect, _ s: Float) -> UIRect { UIRect(x: refreshButton(a, s).x - 100 * s, y: a.y + 8 * s, width: 90 * s, height: 24 * s) }
-    private func detailsArea(_ a: UIRect, _ s: Float) -> UIRect? {
-        guard selected != nil else { return nil }
-        let h = min((220 * s).rounded(), a.height * 0.45)
-        return UIRect(x: a.x, y: a.maxY - h, width: a.width, height: h)
-    }
-    private func listArea(_ a: UIRect, _ s: Float) -> UIRect {
-        let h = header(a, s), bottom = detailsArea(a, s)?.y ?? a.maxY
-        return UIRect(x: a.x, y: h.maxY, width: a.width, height: max(bottom - h.maxY, 0))
-    }
-    private func rowHeight(_ s: Float) -> Float { (24 * s).rounded() }
-    private func laneWidth(_ s: Float) -> Float { (14 * s).rounded() }
-    private func rowRect(_ i: Int, _ a: UIRect, _ s: Float) -> UIRect {
-        let l = listArea(a, s)
-        return UIRect(x: l.x, y: l.y + Float(i - scroll) * rowHeight(s), width: l.width, height: rowHeight(s))
-    }
-    private var visibleRows: Int = 20
-
-    func draw(on canvas: Canvas, in a: UIRect, scale s: Float) {
-        let p = PanelPaint(canvas: canvas, scale: s), fg = p.fg
-        p.fill(a, TerminalPalette.background, 1)
-        sol_canvas_push_clip(canvas.raw, a.x, a.y, a.width, a.height)
-        defer { sol_canvas_pop_clip(canvas.raw) }
-        let h = header(a, s)
-        p.fill(h, TerminalPalette.chrome, 1)
-        p.fill(UIRect(x: a.x, y: h.maxY - 1, width: a.width, height: 1), fg, 0.10)
-        p.label("Git Graph" + (rows.isEmpty ? "" : " · \(rows.count) commit\(rows.count == 1 ? "" : "s")"), UIRect(x: a.x + 12 * s, y: h.y, width: a.width * 0.5, height: h.height),
-                pixels: 13, semibold: true)
-        if selected != nil { p.textButton("Copy Hash", copyButton(a, s), hovered: hoveredPart == "copy") }
-        p.button(0xE72C, refreshButton(a, s), hovered: hoveredPart == "refresh")
-        p.button(0xE8BB, closeButton(a, s), hovered: hoveredPart == "close")
-
-        let l = listArea(a, s), rh = rowHeight(s), lw = laneWidth(s)
-        visibleRows = max(Int(l.height / rh), 1)
-        if loaded && rows.isEmpty {
-            p.label("No commits here, or not a git repository.", UIRect(x: l.x + 14 * s, y: l.y + 10 * s, width: l.width - 28 * s, height: 22 * s), alpha: 0.55)
-        }
-        sol_canvas_push_clip(canvas.raw, l.x, l.y, l.width, l.height)
-        func laneX(_ lane: Int) -> Float { l.x + 14 * s + Float(lane) * lw }
-        func color(_ c: Int) -> UInt32 { Self.laneColors[c % Self.laneColors.count] }
-        for i in rows.indices where i >= scroll && i < scroll + visibleRows + 1 {
-            let r = rowRect(i, a, s), row = rows[i], mid = r.midY, thick = 1.6 * s
-            if selected == i { p.fill(r, TerminalPalette.accent, 0.20) } else if hoveredRow == i { p.fill(r, fg, 0.05) }
-            for (segment, c) in row.segments {
-                switch segment {
-                case .through(let lane): sol_canvas_line(canvas.raw, laneX(lane), r.y, laneX(lane), r.maxY, color(c), 0.9, thick)
-                case .top(let from, let to): sol_canvas_line(canvas.raw, laneX(from), r.y, laneX(to), mid, color(c), 0.9, thick)
-                case .bottom(let from, let to): sol_canvas_line(canvas.raw, laneX(from), mid, laneX(to), r.maxY, color(c), 0.9, thick)
-                }
-            }
-            let isHead = row.commit.hash == head
-            sol_canvas_fill_ellipse(canvas.raw, laneX(row.lane), mid, 4.5 * s, 4.5 * s, color(row.color), 1)
-            if isHead { sol_canvas_fill_ellipse(canvas.raw, laneX(row.lane), mid, 2 * s, 2 * s, TerminalPalette.background, 1) }
-            var x = laneX(row.width) + 6 * s
-            for label in GraphLabel.labels(row.commit.refs).prefix(4) {
-                let text = label.kind == .tag ? "◆ " + label.name : label.name + (label.onRemote ? " ☁" : "")
-                let w = min(p.width(text, pixels: 11, semibold: true) + 12 * s, 180 * s)
-                let pill = UIRect(x: x, y: mid - 9 * s, width: w, height: 18 * s)
-                p.fill(pill, label.kind == .tag ? 0xE5A445 : color(row.color), label.current ? 0.95 : 0.35, radius: 9)
-                p.label(text, UIRect(x: pill.x + 6 * s, y: pill.y, width: w - 12 * s, height: pill.height), pixels: 11, semibold: true,
-                        color: label.current ? TerminalPalette.background : nil)
-                x += w + 4 * s
-            }
-            let meta = row.commit.author + "  ·  " + GitLook.ago(row.commit.date) + "  ·  " + String(row.commit.hash.prefix(7))
-            let metaW = min(p.width(meta, pixels: 11.5), r.width * 0.4)
-            p.label(row.commit.subject, UIRect(x: x + 2 * s, y: r.y, width: max(r.maxX - metaW - 24 * s - x, 0), height: r.height), alpha: 0.92)
-            p.label(meta, UIRect(x: r.maxX - metaW - 12 * s, y: r.y, width: metaW + 2, height: r.height), pixels: 11.5, alpha: 0.45)
-        }
-        sol_canvas_pop_clip(canvas.raw)
-        if let d = detailsArea(a, s) {
-            p.fill(d, TerminalPalette.chrome, 1)
-            p.fill(UIRect(x: d.x, y: d.y, width: d.width, height: 1), fg, 0.12)
-            sol_canvas_push_clip(canvas.raw, d.x, d.y, d.width, d.height)
-            for (k, line) in details.enumerated() {
-                let y = d.y + 10 * s + Float(k) * 18 * s
-                guard y < d.maxY else { break }
-                let kind: GitDiffKind = line.contains("|") && (line.contains("+") || line.contains("-")) ? .context : k == 0 ? .hunk : .context
-                p.label(line, UIRect(x: d.x + 14 * s, y: y, width: d.width - 28 * s, height: 18 * s), pixels: k == 0 ? 11.5 : 12, semibold: k == 4,
-                        color: kind == .hunk ? TerminalPalette.accent : nil, alpha: k == 1 || k == 2 ? 0.6 : 0.9)
-            }
-            sol_canvas_pop_clip(canvas.raw)
-        }
-    }
-
-    func mouse(_ message: UINT, x: Float, y: Float, in a: UIRect, scale s: Float) -> Bool {
-        let before = (hoveredRow, hoveredPart)
-        hoveredPart = closeButton(a, s).contains(x, y) ? "close" : refreshButton(a, s).contains(x, y) ? "refresh"
-            : selected != nil && copyButton(a, s).contains(x, y) ? "copy" : nil
-        hoveredRow = listArea(a, s).contains(x, y) ? rows.indices.first { $0 >= scroll && rowRect($0, a, s).contains(x, y) } : nil
-        if message == Win.WM_LBUTTONUP {
-            switch hoveredPart {
-            case "close": close()
-            case "refresh": reload()
-            case "copy": if let i = selected { copy(rows[i].commit.hash) }
-            default:
-                if let i = hoveredRow {
-                    selected = selected == i ? nil : i
-                    loadDetails()
-                }
-            }
-        }
-        if before.0 != hoveredRow || before.1 != hoveredPart || message != Win.WM_MOUSEMOVE { invalidate() }
-        return true
-    }
-
-    func wheel(notches: Int, x: Float, y: Float, in a: UIRect, scale s: Float) {
-        scroll = min(max(scroll - notches * 3, 0), max(rows.count - 3, 0))
-        invalidate()
-    }
-
-    func key(_ key: Int32, shift: Bool, ctrl: Bool) -> Bool {
-        switch key {
-        case Win.VK_ESCAPE:
-            if selected != nil { selected = nil; details = [] } else { close() }
-        case Win.VK_UP, Win.VK_DOWN:
-            guard !rows.isEmpty else { return true }
-            selected = min(max((selected ?? -1) + (key == Win.VK_UP ? -1 : 1), 0), rows.count - 1)
-            if let i = selected {
-                if i < scroll { scroll = i }
-                if i >= scroll + visibleRows { scroll = i - visibleRows + 1 }
-            }
-            loadDetails()
-        case Win.VK_PRIOR: scroll = max(scroll - visibleRows, 0)
-        case Win.VK_NEXT: scroll = min(scroll + visibleRows, max(rows.count - 3, 0))
-        case 0x43 where ctrl: if let i = selected { copy(rows[i].commit.hash) }
-        default: return ctrl
-        }
-        invalidate()
-        return true
-    }
-
-    func typed(_ text: String) {}
-
-    // For tests
-    func selectRow(_ i: Int) { selected = i; loadDetails() }
-}

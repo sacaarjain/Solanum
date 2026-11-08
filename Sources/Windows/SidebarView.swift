@@ -89,7 +89,7 @@ struct SidebarView {
 
     func draw() {
         let a = layout.area, tree = sidebar.tree
-        sol_canvas_fill_rect(canvas.raw, a.x, a.y, a.width, a.height, TerminalPalette.chrome, 1)
+        sol_canvas_backdrop_rect(canvas.raw, a.x, a.y, a.width, a.height, TerminalPalette.chrome)
         sol_canvas_push_clip(canvas.raw, a.x, a.y, a.width, a.height)
         defer { sol_canvas_pop_clip(canvas.raw) }
 
@@ -159,7 +159,7 @@ struct SidebarView {
             icon(tree.isExpanded(entry.path) ? 0xE70D : 0xE76C, chevron, pixels: 8 * scale, alpha: 0.7)
         }
         let iconRect = UIRect(x: chevron.maxX + 3 * scale, y: r.y, width: 16 * scale, height: r.height)
-        icon(entry.isDirectory ? 0xE8B7 : 0xE7C3, iconRect, pixels: 13 * scale, color: entry.isDirectory ? TerminalPalette.accent : nil, alpha: entry.isDirectory ? 0.85 : 0.65)
+        icon(entry.isDirectory ? 0xE8B7 : FileKind(name: entry.name).glyph, iconRect, pixels: 13 * scale, color: entry.isDirectory ? TerminalPalette.accent : nil, alpha: entry.isDirectory ? 0.85 : 0.65)
         let textX = iconRect.maxX + 6 * scale
         // A name being typed: a field in the row, with its caret.
         if let editing = tree.editing, tree.editingRow == tree.rows.firstIndex(of: row) {

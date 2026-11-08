@@ -608,18 +608,7 @@ final class TerminalView: NSView, TerminalDelegate {
     /// Claude Code puts a status glyph before its title ("✳ Claude Code" when idle, a spinner such as "◐" while
     /// working); the tab already shows the agent's own mark and state, so the title goes without it. (Agent
     /// detection still reads the raw title.)
-    static func withoutStatusGlyph(_ title: String) -> String {
-        let scalars = title.unicodeScalars
-        guard let first = scalars.first, scalars.dropFirst().first == " " else { return title }
-        let v = first.value
-        let isGlyph = (0x2800...0x28FF).contains(v)       // braille spinners
-            || (0x25A0...0x25FF).contains(v)              // geometric shapes: ◐ ◓ ◑ ◒ ● ○
-            || (0x2700...0x27BF).contains(v)              // dingbats: ✳ ✶ ✻ ✽ ✢
-            || "·*+".unicodeScalars.contains(first)
-        guard isGlyph else { return title }
-        let rest = String(scalars.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-        return rest.isEmpty ? title : rest
-    }
+    static func withoutStatusGlyph(_ title: String) -> String { AgentKind.withoutStatusGlyph(title) }
 
     func refreshTitle() {
         // A command on the ssh host has finished once its prompt is back and the output has stopped.

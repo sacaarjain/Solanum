@@ -1,9 +1,15 @@
-import AppKit
+import Foundation
+#if canImport(Dispatch)
+import Dispatch
+#endif
+#if canImport(simd)
 import simd
+#endif
 
 /// The Outer Wilds planets, rendered pixel by pixel: lit spheres textured with procedural noise (terrain, craters,
 /// cloud bands, cracked crust, fog), atmospheres and glows, plus vines, shell slabs, sand and comet tails. The theme's
-/// planet sits in the status bar beside its name, as a still icon.
+/// planet sits in the status bar beside its name, as a still icon. Shared by the Mac and Windows: this makes the
+/// pixels, and each draws them its own way (PlanetArt+Mac.swift, WindowChrome.swift).
 enum PlanetArt {
     enum Planet: String, CaseIterable {
         case hourglass = "Hourglass", timberHearth = "Timber Hearth", attlerock = "Attlerock", brittleHollow = "Brittle Hollow"
@@ -11,41 +17,17 @@ enum PlanetArt {
     }
 
     /// The planet a theme is named after: a built-in planet theme, or a custom one whose name contains a planet's
-    /// (e.g. "My Hourglass").
-    static func planet(for theme: Theme) -> Planet? {
-        if ThemeLibrary.isVSCode(theme) { return nil }
-        return Planet.allCases.first { theme.name.localizedCaseInsensitiveContains($0.rawValue) }
+    /// (e.g. "My Hourglass"). VS Code's themes have none.
+    static func planet(themeName: String, isVSCode: Bool) -> Planet? {
+        if isVSCode { return nil }
+        return Planet.allCases.first { themeName.range(of: $0.rawValue, options: [.caseInsensitive]) != nil }
     }
 
-    // MARK: Drawing
-
-    /// Draws `planet` centered in `rect` (in a y-up context), rendered once per size and cached. An `icon` is just
+    /// `planet` in a square of `S` pixels: premultiplied RGBA, 4 bytes a pixel, the top row first. An `icon` is just
     /// the planet (both twins for Hourglass) filling the square, without moons or the Lantern.
-    static func draw(_ planet: Planet, in ctx: CGContext, rect: CGRect, icon: Bool = false) {
-        let t = ctx.userSpaceToDeviceSpaceTransform
-        let scale = max(1, CGFloat(hypot(Double(t.a), Double(t.b))))
-        let side = min(rect.width, rect.height)
-        let px = Int((side * scale).rounded())
-        guard px >= 8, px <= 1200, let img = image(planet, pixels: px, icon: icon) else { return }
-        // Rendered at the exact device size, so it lands on whole pixels unscaled and stays sharp.
-        var frame = ctx.convertToDeviceSpace(CGRect(x: rect.midX - side / 2, y: rect.midY - side / 2, width: side, height: side))
-        frame.origin = CGPoint(x: frame.minX.rounded(), y: frame.minY.rounded())
-        frame.size = CGSize(width: px, height: px)
-        ctx.saveGState()
-        ctx.interpolationQuality = .high
-        ctx.draw(img, in: ctx.convertToUserSpace(frame))
-        ctx.restoreGState()
-    }
-
-    private static var cache: [String: CGImage] = [:]
-
-    private static func image(_ planet: Planet, pixels: Int, icon: Bool) -> CGImage? {
-        let key = "\(planet.rawValue)|\(pixels)|\(icon)"
-        if let c = cache[key] { return c }
-        let img = render(planet, pixels: pixels, icon: icon)
-        if cache.count > 24 { cache.removeAll() }
-        cache[key] = img
-        return img
+    static func pixels(_ planet: Planet, size S: Int, icon: Bool) -> [UInt8] {
+        // Small ones take several samples per pixel, so fine detail blends instead of sparkling.
+        shade(scene(planet, icon: icon).pixel, S, samples: S < 64 ? 5 : S < 200 ? 3 : 1)
     }
 
     // MARK: Math
@@ -238,15 +220,8 @@ enum PlanetArt {
 
     private typealias Shader = (_ u: Float, _ v: Float, _ px: Float) -> C4
 
-    /// The planet in a square of `S` pixels.
-    private static func render(_ planet: Planet, pixels S: Int, icon: Bool) -> CGImage? {
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
-        // Small ones take several samples per pixel, so fine detail blends instead of sparkling.
-        return shade(scene(planet, icon: icon).pixel, S, samples: S < 64 ? 5 : S < 200 ? 3 : 1, space)
-    }
-
     /// Shades each pixel as the average of `samples`² points spread across it.
-    private static func shade(_ f: @escaping Shader, _ S: Int, samples n: Int, _ space: CGColorSpace) -> CGImage? {
+    private static func shade(_ f: @escaping Shader, _ S: Int, samples n: Int) -> [UInt8] {
         var data = [UInt8](repeating: 0, count: S * S * 4)
         let px: Float = 2 / Float(S)
         let sub = px / Float(n)
@@ -273,10 +248,7 @@ enum PlanetArt {
                 }
             }
         }
-        guard let provider = CGDataProvider(data: Data(data) as CFData) else { return nil }
-        return CGImage(width: S, height: S, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: S * 4, space: space,
-                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue), provider: provider,
-                       decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+        return data
     }
 
     private struct Scene {
@@ -706,3 +678,41 @@ enum PlanetArt {
         })
     }
 }
+
+#if !canImport(simd)
+// Apple's simd functions, for where there's no simd module (Windows): the few the planets use, on the standard
+// library's SIMD vectors.
+
+@inline(__always) func simd_dot<V: SIMD>(_ a: V, _ b: V) -> V.Scalar where V.Scalar: FloatingPoint { (a * b).sum() }
+@inline(__always) func simd_length_squared<V: SIMD>(_ v: V) -> V.Scalar where V.Scalar: FloatingPoint { (v * v).sum() }
+@inline(__always) func simd_length<V: SIMD>(_ v: V) -> V.Scalar where V.Scalar: FloatingPoint { simd_length_squared(v).squareRoot() }
+@inline(__always) func simd_normalize<V: SIMD>(_ v: V) -> V where V.Scalar: FloatingPoint { v / simd_length(v) }
+@inline(__always) func simd_clamp<V: SIMD>(_ v: V, _ lo: V, _ hi: V) -> V where V.Scalar: FloatingPoint { v.clamped(lowerBound: lo, upperBound: hi) }
+@inline(__always) func simd_max<V: SIMD>(_ a: V, _ b: V) -> V where V.Scalar: FloatingPoint { pointwiseMax(a, b) }
+@inline(__always) func simd_min<V: SIMD>(_ a: V, _ b: V) -> V where V.Scalar: FloatingPoint { pointwiseMin(a, b) }
+@inline(__always) func simd_cross(_ a: SIMD3<Float>, _ b: SIMD3<Float>) -> SIMD3<Float> {
+    SIMD3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
+}
+/// `i` reflected off the surface with normal `n`.
+@inline(__always) func simd_reflect(_ i: SIMD3<Float>, _ n: SIMD3<Float>) -> SIMD3<Float> { i - 2 * simd_dot(n, i) * n }
+@inline(__always) func floor<V: SIMD>(_ v: V) -> V where V.Scalar: FloatingPoint { v.rounded(.down) }
+
+/// A 3×3 matrix of floats, by rows, as simd's is used here: made from rows, multiplied together and with vectors.
+struct simd_float3x3 {
+    var rows: [SIMD3<Float>]
+    init(rows: [SIMD3<Float>]) { self.rows = rows }
+
+    var transpose: simd_float3x3 {
+        simd_float3x3(rows: (0..<3).map { c in SIMD3(rows[0][c], rows[1][c], rows[2][c]) })
+    }
+
+    static func * (m: simd_float3x3, v: SIMD3<Float>) -> SIMD3<Float> {
+        SIMD3(simd_dot(m.rows[0], v), simd_dot(m.rows[1], v), simd_dot(m.rows[2], v))
+    }
+
+    static func * (a: simd_float3x3, b: simd_float3x3) -> simd_float3x3 {
+        let columns = (0..<3).map { c in SIMD3(b.rows[0][c], b.rows[1][c], b.rows[2][c]) }
+        return simd_float3x3(rows: a.rows.map { r in SIMD3(simd_dot(r, columns[0]), simd_dot(r, columns[1]), simd_dot(r, columns[2])) })
+    }
+}
+#endif

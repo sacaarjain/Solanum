@@ -14,6 +14,7 @@ enum TerminalPalette {
     static var accent: UInt32 { current.accent }
     static var chrome: UInt32 { current.chrome }
     static var surface: UInt32 { current.surface }
+    static var isDark: Bool { current.isDark }
     static var ansi: [UInt32] { current.ansi }
 
     static func indexed(_ i: Int) -> UInt32 {
@@ -111,6 +112,22 @@ final class Canvas {
         sol_canvas_draw_image(raw, image ?? -1, r.x, r.y, r.width, r.height, alpha)
     }
 
+    /// A theme's planet (see Core/PlanetArt.swift), as its icon, filling the square `r`: rendered once for each size, at
+    /// the exact pixel size, so it stays sharp.
+    func drawPlanet(_ planet: PlanetArt.Planet, _ r: UIRect, alpha: Float = 1) {
+        let side = Int(min(r.width, r.height).rounded())
+        guard side >= 8, side <= 1200 else { return }
+        let key = "planet:\(planet.rawValue)@\(side)"
+        var image = loadedArt[key]
+        if image == nil {
+            let pixels = PlanetArt.pixels(planet, size: side, icon: true)
+            image = pixels.withUnsafeBufferPointer { sol_canvas_load_rgba(raw, $0.baseAddress, Int32(side), Int32(side), 0xFFFF_FFFF) }
+            loadedArt[key] = image
+        }
+        let x = (r.x + (r.width - Float(side)) / 2).rounded(), y = (r.y + (r.height - Float(side)) / 2).rounded()
+        sol_canvas_draw_image(raw, image ?? -1, x, y, Float(side), Float(side), alpha)
+    }
+
     func savePNG(to path: String) -> Bool {
         let wide = Array(path.utf16) + [0]
         return sol_canvas_save_png(raw, wide) >= 0
@@ -165,6 +182,8 @@ struct TerminalSelection: Equatable {
 
 /// Draws a terminal. One function for the window and for snapshots, so a snapshot shows what the window would.
 struct TerminalRenderer {
+    /// Text left undrawn, by line: "[Image #N]" where its image is drawn instead.
+    var hiddenText: [Int: [Range<Int>]] = [:]
     let canvas: Canvas
     let terminal: Terminal
     var scrollOffset = 0
@@ -255,6 +274,11 @@ struct TerminalRenderer {
             let cellStyle = style(cell.flags)
             drawDecorations(cell, col: col, y: y, color: fg)
             let extras = line.extras?[col]
+            // "[Image #N]" under its thumbnail (see ImageChips) isn't drawn.
+            if let covered = hiddenText[abs], covered.contains(where: { $0.contains(col) }) {
+                flush()
+                continue
+            }
             if cell.ch == 0 || cell.ch == 32 || cell.flags.contains(.invisible) {
                 flush()
                 continue
