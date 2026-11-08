@@ -88,6 +88,35 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-git-bar"), CommandLin
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }
 
+// Ctrl+F's two bars at 200%, for comparing with the Mac's by eye: a file's (Replace showing) above the terminal's.
+// --draw-find <png>
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-find"), CommandLine.arguments.indices.contains(flag + 1) {
+    let width: Float = 1400, height: Float = 900, s: Float = 2
+    guard let canvas = Canvas(width: Int(width), height: Int(height), fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    let text = "{\n  \"name\": \"solanum\",\n  \"cat\": \"Cat cat concat\",\n  \"more\": [\"cat\", \"dog\"]\n}\n"
+    let file = FileEditorPanel(path: "C:\\demo.json", name: "demo.json", folder: "C:\\", isLocal: true, read: { _, done in done(Data(text.utf8), false) },
+                               write: { _, done in done(nil) })
+    file.cellSize = (canvas.metrics.cellWidth, canvas.metrics.cellHeight)
+    file.reload()
+    _ = file.key(0x48, shift: false, ctrl: true)
+    "cat".forEach { file.typed(String($0)) }
+    file.draw(on: canvas, in: UIRect(x: 0, y: 0, width: width, height: 420), scale: s)
+    // The terminal's, over a transcript.
+    canvas.terminalArea = UIRect(x: 0, y: 440, width: width, height: 460)
+    let grid = TerminalRenderer.grid(width: Int(width), height: 460, canvas: canvas)
+    let terminal = Terminal(cols: grid.cols, rows: grid.rows, scrollbackLimit: 100)
+    Array("PS C:\\demo> cat notes.txt\r\nthe cat sat\r\nconcatenate\r\nPS C:\\demo> ".utf8).withUnsafeBufferPointer { terminal.feed($0) }
+    let bar = TerminalFindBar()
+    bar.type("cat")
+    bar.search(terminal, bottomLine: terminal.lastAbs)
+    var renderer = TerminalRenderer(canvas: canvas, terminal: terminal)
+    renderer.findMatches = bar.cells
+    renderer.drawContents()
+    bar.draw(on: canvas, in: canvas.terminalArea!, scale: s)
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
+}
+
 // A file changed on disk under unsaved edits, saved: its header, the conflict bar, and Compare when asked:
 // --draw-file-conflict <png> [compare]
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-file-conflict"), CommandLine.arguments.indices.contains(flag + 1) {

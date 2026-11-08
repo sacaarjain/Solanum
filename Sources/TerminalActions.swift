@@ -370,75 +370,20 @@ extension TerminalView: NSMenuItemValidation {
         searchQuery = query
         clearSearchMatches()
         guard !query.isEmpty else { needsDisplay = true; return }
-        let caseSensitive = query.contains { $0.isUppercase }
-        let opts: NSString.CompareOptions = caseSensitive ? [] : [.caseInsensitive]
-        let (commandCols, promptLines) = searchScope == .all ? ([:], []) : commandAndPromptLines()
-        var a = terminal.firstAbs
-        while a <= terminal.lastAbs {
-            defer { a += 1 }
-            let minCol: Int
-            switch searchScope {
-            case .all: minCol = 0
-            case .commands:
-                guard let c = commandCols[a] else { continue }
-                minCol = c
-            case .output:
-                guard commandCols[a] == nil, !promptLines.contains(a) else { continue }
-                minCol = 0
-            }
-            guard let l = terminal.line(abs: a) else { continue }
-            var s = ""
-            var map: [Int] = []
-            for x in 0..<l.cells.count {
-                let c = l.cells[x]
-                if c.width == 0 { continue }
-                let str = c.ch == 0 ? " " : String(Character(Unicode.Scalar(c.ch) ?? " "))
-                for _ in str.utf16 { map.append(x) }
-                s += str
-            }
-            let ns = s as NSString
-            var range = NSRange(location: 0, length: ns.length)
-            while range.length > 0 {
-                let r = ns.range(of: query, options: opts, range: range)
-                if r.location == NSNotFound { break }
-                let m = SearchMatch(line: a, start: map[r.location], end: map[max(r.location, r.location + r.length - 1)])
-                if m.start >= minCol {
-                    matchesByLine[a, default: []].append(searchMatches.count)
-                    searchMatches.append(m)
-                }
-                let next = r.location + max(r.length, 1)
-                range = NSRange(location: next, length: ns.length - next)
-            }
+        // Which cells match is Core's (TerminalSearch), shared with Windows.
+        for m in TerminalSearch.matches(query, in: terminal, scope: searchScope) {
+            matchesByLine[m.line, default: []].append(searchMatches.count)
+            searchMatches.append(m)
         }
         if !searchMatches.isEmpty {
             // Start from the match nearest the bottom of the current view.
             computeRowMap()
             let bottom = rowMap.last(where: { $0 >= 0 }) ?? terminal.lastAbs
-            currentMatch = searchMatches.lastIndex(where: { $0.line <= bottom }) ?? searchMatches.count - 1
+            currentMatch = TerminalSearch.startIndex(searchMatches, bottomLine: bottom) ?? searchMatches.count - 1
             revealMatch()
         }
         searchBar?.updateCount(currentMatch + 1, searchMatches.count)
         needsDisplay = true
-    }
-
-    /// Lines holding typed commands (shell commands and agent prompts) mapped to the column the text starts at,
-    /// plus shell-prompt (PS1) lines, which count as neither commands nor output.
-    private func commandAndPromptLines() -> ([Int: Int], Set<Int>) {
-        var commands: [Int: Int] = [:]
-        var prompts = Set<Int>()
-        for b in terminal.blocks {
-            guard let c = b.commandLine else {
-                if b.state == .prompt { for a in b.promptLine...b.lastLine(cursorAbs: terminal.cursorAbs) { prompts.insert(a) } }
-                continue
-            }
-            for a in stride(from: b.promptLine, to: c, by: 1) { prompts.insert(a) }
-            let end = max(c, b.state == .prompt ? b.lastLine(cursorAbs: terminal.cursorAbs) : (b.outputLine ?? c + 1) - 1)
-            for a in c...end { commands[a] = a == c ? b.commandCol : 0 }
-            for t in terminal.agentTurns(in: b) {
-                for a in t.promptLine...t.promptEnd { commands[a] = 2 }
-            }
-        }
-        return (commands, prompts)
     }
 
     private func stepMatch(_ d: Int) {

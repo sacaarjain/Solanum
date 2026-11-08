@@ -4,7 +4,8 @@ import WinSDK
 
 /// The buttons along the top of a sidebar, in order. Each has its icon and what it says when hovered.
 enum SidebarButton: Int, CaseIterable {
-    case pin, parent, newFile, newFolder, refresh, more
+    /// As the Mac's, left to right; the magnifying glass is Search in Project Folder (Ctrl+Shift+F) on this folder.
+    case pin, parent, newFile, newFolder, refresh, search, more
 
     var glyph: UInt16 {
         switch self {
@@ -13,6 +14,7 @@ enum SidebarButton: Int, CaseIterable {
         case .newFile: return 0xE8A5
         case .newFolder: return 0xE8B7
         case .refresh: return 0xE72C
+        case .search: return 0xE721
         case .more: return 0xE712
         }
     }

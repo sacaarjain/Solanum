@@ -1201,6 +1201,21 @@ enum WindowSelfTest {
                 && pane.link(atLine: file.line, col: file.col)?.target.lowercased().hasSuffix("\\repo\\tracked.txt") == true
                 && pane.link(atLine: file.line, col: file.col + 20) == nil
         }))
+        // Find in the terminal, as the Mac's ⌘F.
+        steps.append(Step(name: "terminal find: Ctrl+F and typing finds in what's printed", action: {
+            _ = window.keyDown(0x46, shift: false, ctrl: true, alt: false)
+            window.typeIntoWindow("example.com")
+        }, done: {
+            guard let bar = pane.findBar else { return false }
+            return pane.findFocused && bar.matches.count >= 1 && bar.count?.text == "\(bar.matches.count)/\(bar.matches.count)"
+                && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\terminal-find.png") } ?? true)
+        }))
+        steps.append(Step(name: "terminal find: typing doesn't reach the shell, and Esc closes it", action: {
+            _ = window.keyDown(Win.VK_ESCAPE, shift: false, ctrl: false, alt: false)
+        }, done: { pane.findBar == nil && !pane.cursorRowText.contains("example.com") }))
+        steps.append(Step(name: "sidebar: the magnifying glass searches its folder", action: { window.click(window.leftButton(.search)) },
+                          done: { window.isPaletteOpen }))
+        steps.append(Step(name: "sidebar: and closes", action: { pane.pressEscape() }, done: { !window.isPaletteOpen }))
         steps.append(Step(name: "git: out of the repository", action: {
             pane.type("cd ..")
             pane.pressEnter()

@@ -1924,9 +1924,9 @@ extension FileEditorPanel {
         findBox = nil
         guard let f = find, case .text = content, compareRows == nil else { return }
         let b = body(a, s), rowH = (Self.findRowHeight * s).rounded()
-        let w = min((470 * s).rounded(), b.width - 24 * s)
+        let w = min((420 * s).rounded(), b.width - 24 * s)
         guard w > 160 * s else { return }
-        let box = UIRect(x: (b.maxX - w - 18 * s).rounded(), y: (b.y + 6 * s).rounded(), width: w, height: f.showsReplace ? rowH * 2 + 1 : rowH)
+        let box = UIRect(x: (b.maxX - w - 12 * s).rounded(), y: (b.y + 6 * s).rounded(), width: w, height: f.showsReplace ? rowH * 2 + 1 : rowH)
         findBox = box
         let side = (22 * s).rounded()
         func centered(_ x: Float, _ width: Float, row: Int = 0) -> UIRect {
@@ -1951,16 +1951,16 @@ extension FileEditorPanel {
             right -= 2 * s
         }
         if let count = findCount { right -= p.width(count.text, pixels: 11) + 10 * s }
-        findParts.append((.field, UIRect(x: x, y: box.y + 6 * s, width: max(right - x - 2 * s, 40 * s), height: rowH - 12 * s)))
+        findParts.append((.field, UIRect(x: x, y: box.y + 8 * s, width: max(right - x - 2 * s, 40 * s), height: rowH - 16 * s)))
         if f.showsReplace {
             var r2 = box.maxX - 6 * s
-            for (part, title) in [(FindPart.replaceAll, "All"), (.replaceOne, "Replace")].map({ ($0.0, $0.1) }) {
-                let bw = p.width(title, pixels: 12, semibold: true) + 18 * s
-                r2 -= bw
-                findParts.append((part, centered(r2, bw, row: 1)))
-                r2 -= 4 * s
+            // Replace and Replace All, as the Mac's arrow.turn.down.left and text.badge.checkmark.
+            for part in [FindPart.replaceAll, .replaceOne] {
+                r2 -= 24 * s
+                findParts.append((part, centered(r2, 24 * s, row: 1)))
+                r2 -= 2 * s
             }
-            findParts.append((.replaceField, UIRect(x: x, y: box.y + rowH + 1 + 6 * s, width: max(r2 - x - 4 * s, 40 * s), height: rowH - 12 * s)))
+            findParts.append((.replaceField, UIRect(x: x, y: box.y + rowH + 1 + 8 * s, width: max(r2 - x - 4 * s, 40 * s), height: rowH - 16 * s)))
         }
     }
 
@@ -1997,11 +1997,13 @@ extension FileEditorPanel {
                 if part == .wholeWord { p.fill(UIRect(x: lx, y: (r.midY + 6 * s).rounded(), width: tw, height: max((1 * s).rounded(), 1)), on || hovered ? accent : fg, on || hovered ? 1 : 0.6) }
             case .previous, .next, .close:
                 if hovered { p.fill(r, accent, 0.13, radius: 5) }
-                let glyph: UInt16 = part == .previous ? 0xE74A : part == .next ? 0xE74B : 0xE8BB
+                let glyph: UInt16 = part == .previous ? 0xE70E : part == .next ? 0xE70D : 0xE8BB
                 let enabled = part == .close || !f.matches.isEmpty
                 p.icon(glyph, r, pixels: part == .close ? 9 : 11, color: hovered && enabled ? accent : nil, alpha: enabled ? (hovered ? 1 : 0.6) : 0.25)
             case .replaceOne, .replaceAll:
-                p.textButton(part == .replaceOne ? "Replace" : "All", r, hovered: hovered, enabled: !f.matches.isEmpty)
+                let enabled = !f.matches.isEmpty
+                if hovered && enabled { p.fill(r, accent, 0.13, radius: 5) }
+                p.icon(part == .replaceOne ? 0xE751 : 0xE9D5, r, pixels: 12, color: hovered && enabled ? accent : nil, alpha: enabled ? (hovered ? 1 : 0.6) : 0.25)
             case .bar: break
             }
         }
@@ -2014,9 +2016,8 @@ extension FileEditorPanel {
 
     /// A field: its text (scrolled to keep the caret in view), the caret while it has the keyboard, or its placeholder.
     private func drawField(_ field: TextFieldState, selected: Bool, placeholder: String, focused: Bool, _ r: UIRect, _ p: PanelPaint, _ s: Float) {
-        p.fill(r, p.fg, focused ? 0.08 : 0.05, radius: 5)
-        if focused { sol_canvas_stroke_rounded(p.canvas.raw, r.x + 0.5, r.y + 0.5, r.width - 1, r.height - 1, 5 * s, TerminalPalette.accent, 0.8, 1) }
-        let inner = UIRect(x: r.x + 7 * s, y: r.y, width: r.width - 14 * s, height: r.height)
+        // Plain text on the bar, as the Mac's fields are: the caret shows which has the keyboard.
+        let inner = UIRect(x: r.x + 2 * s, y: r.y, width: r.width - 4 * s, height: r.height)
         guard !field.text.isEmpty else {
             p.label(placeholder, inner, pixels: 12.5, alpha: 0.4)
             if focused { p.fill(UIRect(x: inner.x, y: r.y + 5 * s, width: max((1.5 * s).rounded(), 1), height: r.height - 10 * s), TerminalPalette.accent, 1) }
@@ -2053,9 +2054,9 @@ extension FileEditorPanel {
                     // The caret at the character nearest the click.
                     let p = PanelPaint(canvas: canvas, scale: lastScale)
                     var field = replacing ? find!.replace : find!.field
-                    let chars = Array(field.text), inner = r.x + 7 * lastScale
+                    let chars = Array(field.text), inner = r.x + 2 * lastScale
                     let whole = p.width(field.text, pixels: 12.5), caretX = p.width(field.beforeCaret, pixels: 12.5)
-                    let shift = max(0, min(caretX - (r.width - 14 * lastScale) + 4 * lastScale, whole - (r.width - 14 * lastScale) + 4 * lastScale))
+                    let shift = max(0, min(caretX - (r.width - 4 * lastScale) + 4 * lastScale, whole - (r.width - 4 * lastScale) + 4 * lastScale))
                     var best = chars.count
                     for i in 0...chars.count where p.width(String(chars[..<i]), pixels: 12.5) - shift + inner >= x - 3 * lastScale { best = i; break }
                     field.move(to: best)

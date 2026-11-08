@@ -19,24 +19,7 @@ struct Selection {
     var cols: ClosedRange<Int> { min(aStart.col, hStart.col)...max(aEnd.col, hEnd.col) }
 }
 
-struct SearchMatch {
-    var line: Int
-    var start: Int
-    var end: Int
-}
-
-/// Which part of the transcript ⌘F searches.
-enum SearchScope: Int, CaseIterable {
-    case all, commands, output
-
-    var title: String {
-        switch self {
-        case .all: return "All"
-        case .commands: return "Commands"
-        case .output: return "Output"
-        }
-    }
-}
+// SearchMatch and SearchScope are Core's (TerminalSearch.swift), shared with Windows.
 
 /// Pre-resolved CGColors for the current theme.
 final class RenderPalette {

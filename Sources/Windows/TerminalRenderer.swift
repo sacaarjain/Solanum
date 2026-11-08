@@ -201,6 +201,8 @@ struct TerminalRenderer {
     let terminal: Terminal
     var scrollOffset = 0
     var selection: TerminalSelection?
+    /// Find's matches by line (see TerminalFindBar): shaded yellow, the current one orange with black text, as on the Mac.
+    var findMatches: [Int: [(start: Int, end: Int, current: Bool)]] = [:]
     var focused = true
     /// Off for the dark half of a blink.
     var cursorShown = true
@@ -246,6 +248,16 @@ struct TerminalRenderer {
         return (fg, bg)
     }
 
+    /// A cell's colors with the selection and find's matches on it; the selection wins, as on the Mac.
+    private func look(_ line: Line, abs: Int, col: Int) -> (fg: UInt32, bg: UInt32) {
+        let selected = selection?.contains(line: abs, col: col) ?? false
+        var c = colors(line.cell(col), selected: selected)
+        if !selected, let ms = findMatches[abs], let m = ms.first(where: { col >= $0.start && col <= $0.end }) {
+            if m.current { c = (0x000000, 0xFF9F1C) } else { c.bg = TerminalPalette.mix(TerminalPalette.ansi[3], c.bg, 0.35) }
+        }
+        return c
+    }
+
     private func style(_ flags: CellFlags) -> Int32 {
         (flags.contains(.bold) ? Int32(SOL_STYLE_BOLD) : 0) | (flags.contains(.italic) ? Int32(SOL_STYLE_ITALIC) : 0)
     }
@@ -259,9 +271,9 @@ struct TerminalRenderer {
         var col = 0
         while col < cols {
             let start = col
-            let bg = colors(line.cell(col), selected: selection?.contains(line: abs, col: col) ?? false).bg
+            let bg = look(line, abs: abs, col: col).bg
             col += 1
-            while col < cols, colors(line.cell(col), selected: selection?.contains(line: abs, col: col) ?? false).bg == bg { col += 1 }
+            while col < cols, look(line, abs: abs, col: col).bg == bg { col += 1 }
             if bg != TerminalPalette.background {
                 sol_canvas_fill_rect(canvas.raw, canvas.contentX + Float(start) * m.cellWidth, y,
                                      Float(col - start) * m.cellWidth, m.cellHeight, bg, 1)
@@ -283,7 +295,7 @@ struct TerminalRenderer {
             let cell = line.cell(col)
             defer { col += 1 }
             if cell.width == 0 { continue }
-            let (fg, _) = colors(cell, selected: selection?.contains(line: abs, col: col) ?? false)
+            let (fg, _) = look(line, abs: abs, col: col)
             let cellStyle = style(cell.flags)
             drawDecorations(cell, col: col, y: y, color: fg)
             let extras = line.extras?[col]

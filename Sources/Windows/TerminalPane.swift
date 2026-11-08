@@ -732,6 +732,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
         var renderer = TerminalRenderer(canvas: canvas, terminal: terminal)
         renderer.scrollOffset = scrollOffset
         renderer.selection = selection
+        renderer.findMatches = findBar?.cells ?? [:]
         renderer.focused = focused
         renderer.cursorShown = cursorShown
         renderer.cursorStyle = style
@@ -758,6 +759,124 @@ final class TerminalPane: TerminalDelegate, Groupable {
         drawSelectedStop()
         drawLostBar()
         drawQuestion()
+        if let findBar, let area = canvas.terminalArea { findBar.draw(on: canvas, in: area, scale: Float(GetDpiForWindow(hwnd)) / 96) }
+    }
+
+    // MARK: - Find (Ctrl+F), as the Mac's ⌘F
+
+    private(set) var findBar: TerminalFindBar?
+    /// The find bar has the keyboard.
+    var findFocused: Bool { findBar?.focused == true }
+    /// Opens the scope's menu under a rectangle (the window's menus).
+    var showFindScopeMenu: (_ items: [MenuItem], _ under: UIRect) -> Void = { _, _ in }
+
+    /// Ctrl+F: the bar, its text selected to type over; again, back to it.
+    func showFind() {
+        if findBar == nil {
+            findBar = TerminalFindBar()
+            runFind()
+        }
+        findBar?.focused = true
+        findBar?.fieldSelected = true
+        invalidate()
+    }
+
+    func closeFind() {
+        findBar = nil
+        invalidate()
+    }
+
+    /// Searches again, from the last match at or above the bottom of what's showing, and shows it.
+    private func runFind() {
+        guard let bar = findBar else { return }
+        bar.search(terminal, bottomLine: terminal.screenTopAbs - scrollOffset + terminal.rows - 1)
+        revealFindMatch()
+        invalidate()
+    }
+
+    func stepFind(_ d: Int) {
+        guard let bar = findBar else { return }
+        if bar.matches.isEmpty && !bar.field.text.isEmpty { bar.search(terminal, bottomLine: terminal.screenTopAbs - scrollOffset + terminal.rows - 1) }
+        else { bar.step(d) }
+        revealFindMatch()
+        invalidate()
+    }
+
+    /// The current match in view: scrolled so it's in the middle, when it isn't showing.
+    private func revealFindMatch() {
+        guard let line = findBar?.currentLine else { return }
+        let top = terminal.screenTopAbs - scrollOffset
+        guard line < top || line >= top + terminal.rows else { return }
+        scrollOffset = min(max(terminal.screenTopAbs - (line - terminal.rows / 2), 0), max(terminal.screenTopAbs - terminal.firstAbs, 0))
+    }
+
+    /// A key while the bar has the keyboard; nil for those that go on as usual (the app's Ctrl keys).
+    func findKey(_ key: Int32, shift: Bool, ctrl: Bool) -> Bool? {
+        guard let bar = findBar else { return nil }
+        switch key {
+        case Win.VK_ESCAPE: closeFind()
+        case Win.VK_RETURN, 0x72: stepFind(shift ? -1 : 1)
+        case Win.VK_UP, Win.VK_DOWN, Win.VK_PRIOR, Win.VK_NEXT, Win.VK_TAB: break
+        case 0x41 where ctrl: bar.fieldSelected = true
+        case 0x43 where ctrl: setClipboard(bar.field.text)
+        case 0x56 where ctrl:
+            if let text = clipboardText()?.split(whereSeparator: \.isNewline).first.map(String.init) {
+                bar.type(text)
+                runFind()
+            }
+        case 0x46 where ctrl: bar.fieldSelected = true
+        default:
+            if ctrl { return nil }
+            if bar.edit(key, ctrl: ctrl) { runFind() }
+            invalidate()
+            // Characters come as WM_CHAR.
+            return [Win.VK_BACK, Win.VK_DELETE, Win.VK_LEFT, Win.VK_RIGHT, Win.VK_HOME, Win.VK_END].contains(key)
+        }
+        invalidate()
+        return true
+    }
+
+    func findTyped(_ unit: UInt16) {
+        guard let bar = findBar, unit >= 0x20, unit != 0x7F, let scalar = Unicode.Scalar(unit) else { return }
+        bar.type(String(Character(scalar)))
+        runFind()
+    }
+
+    /// The pointer over the bar: true when it's taken. A press elsewhere in the terminal gives it the keyboard back.
+    func findMouse(_ message: UINT, x: Float, y: Float) -> Bool {
+        guard let bar = findBar else { return false }
+        let part = bar.part(atX: x, y: y)
+        if part != bar.hovered { bar.hovered = part; invalidate() }
+        guard let part else {
+            if message == Win.WM_LBUTTONDOWN && bar.focused { bar.focused = false; invalidate() }
+            return false
+        }
+        if message == Win.WM_LBUTTONDOWN {
+            bar.focused = true
+            if part == .field { bar.fieldSelected = false; bar.field.move(to: bar.field.text.count) }
+            invalidate()
+        }
+        if message == Win.WM_LBUTTONDBLCLK && part == .field { bar.fieldSelected = true; invalidate() }
+        if message == Win.WM_LBUTTONUP {
+            switch part {
+            case .previous: stepFind(-1)
+            case .next: stepFind(1)
+            case .close: closeFind()
+            case .scope:
+                if let r = bar.rect(.scope) {
+                    let items = SearchScope.allCases.map { scope in
+                        MenuItem(title: scope.title, isChecked: scope == bar.scope) { [weak self, weak bar] in
+                            bar?.scope = scope
+                            bar?.focused = true
+                            self?.runFind()
+                        }
+                    }
+                    showFindScopeMenu(items, r)
+                }
+            default: break
+            }
+        }
+        return true
     }
 
     /// What's drawn over the terminal (the lost connection bar, ssh's question), on another canvas: for snapshots.

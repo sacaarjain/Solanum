@@ -550,6 +550,10 @@ final class TerminalWindow {
         guard let pane = TerminalPane(host: self, commandLine: line, cols: grid.cols, rows: grid.rows, cwd: cwd, restoring: text) else { return false }
         pane.shell = shell ?? Shells.identify(line)
         pane.column = col
+        pane.showFindScopeMenu = { [weak self] items, r in
+            guard let self else { return }
+            self.openMenu(items, x: r.x, y: r.maxY + 4 * self.scale, above: false)
+        }
         pane.onRemoteChange = { [weak self, weak pane] in
             guard let self, let pane, self.visiblePanes.contains(where: { $0 === pane }) else { return }
             if pane === self.leftActivePane { self.left.followed = nil }
@@ -1114,6 +1118,8 @@ final class TerminalWindow {
                 }
             } else if palette != nil {
                 paletteTyped(UInt16(truncatingIfNeeded: wParam))
+            } else if !panes.isEmpty, activePane.findFocused, !activePane.editorFocused {
+                activePane.findTyped(UInt16(truncatingIfNeeded: wParam))
             } else if !panes.isEmpty, let panel = activePane.focusedPanel {
                 let unit = UInt16(truncatingIfNeeded: wParam)
                 if unit >= 0x20, unit != 0x7F, let scalar = Unicode.Scalar(unit) { panel.typed(String(Character(scalar))) }
@@ -1591,6 +1597,11 @@ final class TerminalWindow {
         }
         if sidebarMouse(message, part: part, x: x, y: y) { return }
         if part == .terminal && !terminalHasMouse && lostBarMouse(message, x: x, y: y) { return }
+        if part == .terminal && !terminalHasMouse && pane(atX: x).findMouse(message, x: x, y: y) {
+            if message == Win.WM_LBUTTONDOWN { focusTerminal() }
+            invalidate()
+            return
+        }
         let under = pane(atX: x)
         // The pages above a tab's terminal, their strip, and the line between.
         if editorMouse(message, part: part, x: x, y: y) { return }
@@ -2151,6 +2162,7 @@ final class TerminalWindow {
             let picked = sidebar.tree.selection.flatMap { path in sidebar.tree.rows.first { $0.entry.path == path }?.entry }
             if let folder = targetFolder(picked, in: sidebar) { beginNew(folder: button == .newFolder, in: folder, sidebar) }
         case .refresh: sidebar.tree.refresh()
+        case .search: showSearch(from: sidebar)
         case .more:
             let anchor = sidebarLayout(sidebar).button(SidebarButton.more.rawValue)
             openMenu([
@@ -3048,9 +3060,10 @@ final class TerminalWindow {
     private var search: Search?
 
     /// Ctrl+Shift+F: the text of the files under the folder the sidebar is on (or the terminal's), as on the Mac.
-    func showSearch() {
-        let pane = activePane
-        let sidebar = pane.column == 1 && rightIsShowing ? right : left
+    /// `from`: the sidebar whose magnifying glass was pressed, which searches its own folder.
+    func showSearch(from pressed: FileSidebar? = nil) {
+        let pane = pressed.map { self.pane(for: $0) } ?? activePane
+        let sidebar = pressed ?? (pane.column == 1 && rightIsShowing ? right : left)
         let onHost = pane.sshArguments != nil
         let folder = (sidebar.isVisible ? sidebar.tree.root : nil).flatMap { AnyPath.isUnix($0) == onHost ? $0 : nil }
             ?? (onHost ? pane.remoteFolder : pane.terminal.cwd)
@@ -5156,6 +5169,28 @@ final class TerminalWindow {
         }
         if !panes.isEmpty, activePane.hasQuestion { return activePane.questionKey(key, ctrl: ctrl) }
         if naming != nil { return namingKey(key, ctrl: ctrl) }
+        // The terminal's find bar, while it has the keyboard; the app's own Ctrl keys still work.
+        if palette == nil, editingSidebar == nil, !panes.isEmpty, activePane.findFocused, !activePane.editorFocused,
+           let used = activePane.findKey(key, shift: shift, ctrl: ctrl) { return used }
+        // Ctrl+F, as the Mac's ⌘F: find in the file that has the keyboard, else in the terminal. From a sidebar, in the
+        // file it's showing, if there is one.
+        if ctrl && !alt && !shift && key == 0x46 && palette == nil && !panes.isEmpty && editingSidebar == nil {
+            if let file = activePane.focusedPanel as? FileEditorPanel {
+                file.showFind(replace: false)
+            } else if focusedSidebar != nil, let file = activePane.panel as? FileEditorPanel {
+                left.isFocused = false
+                right.isFocused = false
+                setEditorFocus(true, in: activePane)
+                file.showFind(replace: false)
+            } else if activePane.focusedPanel == nil {
+                focusTerminal()
+                activePane.showFind()
+            } else {
+                return true
+            }
+            invalidate()
+            return true
+        }
         if editingSidebar != nil { return sidebarEditKey(key, ctrl: ctrl) }
         // Ctrl+Alt+T and Ctrl+Alt+G, as the Mac's Command-Option-T and G: a new tab in this group, and a new group.
         if ctrl && alt && !shift && key == 0x54 { newTabInGroup(); return true }
