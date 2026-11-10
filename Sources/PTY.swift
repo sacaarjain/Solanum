@@ -279,8 +279,24 @@ enum ShellIntegration {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Solanum/shell")
     }
 
+    /// Each pane's own shell history (see `PaneState.history`), kept across restarts.
+    /// (SOLANUM_HISTORY_DIR for a dev run, so a test's shells keep out of the user's.)
+    static var historyDir: URL {
+        if let d = ProcessInfo.processInfo.environment["SOLANUM_HISTORY_DIR"] { return URL(fileURLWithPath: d) }
+        return dir.deletingLastPathComponent().appendingPathComponent("history")
+    }
+
+    static func historyFile(_ id: String) -> String { historyDir.appendingPathComponent(id).path }
+
     static func install() {
         let fm = FileManager.default
+        // Panes' histories nobody's used for 60 days (their tabs were closed long ago).
+        try? fm.createDirectory(at: historyDir, withIntermediateDirectories: true)
+        let old = Date().addingTimeInterval(-60 * 86400)
+        for name in (try? fm.contentsOfDirectory(atPath: historyDir.path)) ?? [] {
+            let p = historyDir.appendingPathComponent(name).path
+            if let d = (try? fm.attributesOfItem(atPath: p))?[.modificationDate] as? Date, d < old { try? fm.removeItem(atPath: p) }
+        }
         try? fm.createDirectory(at: dir.appendingPathComponent("zsh"), withIntermediateDirectories: true)
         try? (bashScript + sshWrapper + extras).write(to: dir.appendingPathComponent("solanum.bash"), atomically: true, encoding: .utf8)
         try? (zshScript + sshWrapper + extras).write(to: dir.appendingPathComponent("solanum.zsh"), atomically: true, encoding: .utf8)
@@ -414,8 +430,46 @@ enum ShellIntegration {
             printf '\033]7;file://%s%s\007' "${HOSTNAME:-localhost}" "$PWD"
             # Save each command as it runs so ⌃H history includes other tabs' commands.
             builtin history -a 2>/dev/null
+            __solanum_pane_history
             __solanum_load_aliases
             return $ret
+        }
+
+        # This pane's own history ($SOLANUM_HISTFILE, kept across restarts), so ↑ in a restored tab starts with what
+        # was run in it rather than in whichever tab ran something last. Read in at the first prompt, after the shared
+        # file (bash reads $HISTFILE only once this init file is done); each command then goes into both.
+        __solanum_histcmd=
+        # The newest history entry, as "<number> <command>" ($HISTCMD and `fc -ln -1` don't give it from PROMPT_COMMAND
+        # in macOS's bash 3.2: the first is 1, the second the entry before).
+        __solanum_lasthist() {
+            local h
+            h=$(HISTTIMEFORMAT= builtin history 1 2>/dev/null)
+            h="${h#"${h%%[![:space:]]*}"}"
+            __solanum_lastnum="${h%%[!0-9]*}"
+            h="${h#"$__solanum_lastnum"}"
+            __solanum_lasttext="${h#"${h%%[![:space:]]*}"}"
+        }
+        __solanum_pane_history() {
+            [ -n "$SOLANUM_HISTFILE" ] || return 0
+            __solanum_lasthist
+            if [ -z "$__solanum_histcmd" ]; then
+                if [ -r "$SOLANUM_HISTFILE" ]; then
+                    local n
+                    n=$(wc -l < "$SOLANUM_HISTFILE" 2>/dev/null)
+                    if [ "${n:-0}" -gt 2000 ]; then
+                        tail -n 1000 "$SOLANUM_HISTFILE" > "$SOLANUM_HISTFILE.tmp" 2>/dev/null && mv -f "$SOLANUM_HISTFILE.tmp" "$SOLANUM_HISTFILE"
+                    fi
+                    builtin history -r "$SOLANUM_HISTFILE"
+                    __solanum_lasthist
+                fi
+                __solanum_histcmd=${__solanum_lastnum:-0}
+                return 0
+            fi
+            # A new history entry since the last prompt (none for a blank line, or one HISTCONTROL left out).
+            [ "${__solanum_lastnum:-0}" = "$__solanum_histcmd" ] && return 0
+            __solanum_histcmd=${__solanum_lastnum:-0}
+            [ -n "$__solanum_lasttext" ] && builtin printf '%s\n' "$__solanum_lasttext" >> "$SOLANUM_HISTFILE"
+            return 0
         }
 
         __solanum_postcmd() {
@@ -469,9 +523,32 @@ enum ShellIntegration {
         (( _solanum_running )) && print -n "\e]133;D;${ret}\a"
         _solanum_running=0
         print -n "\e]7;file://${HOST}${PWD}\a"
+        _solanum_pane_history
         __solanum_load_aliases
         precmd_functions=(${precmd_functions:#_solanum_post} _solanum_post)
         return $ret
+    }
+    # This pane's own history ($SOLANUM_HISTFILE, kept across restarts): read in at the first prompt, after the shared
+    # file, so ↑ in a restored tab starts with what was run in it; each command then goes into it too.
+    typeset -g _solanum_histcmd=
+    _solanum_pane_history() {
+        [[ -n "$SOLANUM_HISTFILE" ]] || return 0
+        if [[ -z "$_solanum_histcmd" ]]; then
+            if [[ -r "$SOLANUM_HISTFILE" ]]; then
+                local n=$(wc -l < "$SOLANUM_HISTFILE" 2>/dev/null)
+                if (( ${n:-0} > 2000 )); then
+                    tail -n 1000 "$SOLANUM_HISTFILE" > "$SOLANUM_HISTFILE.tmp" 2>/dev/null && mv -f "$SOLANUM_HISTFILE.tmp" "$SOLANUM_HISTFILE"
+                fi
+                fc -RI "$SOLANUM_HISTFILE"
+            fi
+            _solanum_histcmd=$HISTCMD
+            return 0
+        fi
+        [[ "$HISTCMD" == "$_solanum_histcmd" ]] && return 0
+        _solanum_histcmd=$HISTCMD
+        local c="$(fc -ln -1 2>/dev/null)"
+        [[ -n "$c" ]] && print -r -- "$c" >> "$SOLANUM_HISTFILE"
+        return 0
     }
     _solanum_post() {
         [[ "$PS1" == *'133;A'* ]] || PS1=$'%{\e]133;A\a%}'"$PS1"

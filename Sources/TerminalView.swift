@@ -272,6 +272,8 @@ final class TerminalView: NSView, TerminalDelegate {
     /// What this pane was restored from, saved again unchanged until its shell starts (a tab not shown yet
     /// would otherwise come back empty, and without its Claude Code conversation, after the next quit).
     var restoredFrom: PaneState?
+    /// Names this pane's own shell history, kept across restarts (see `PaneState.history`).
+    var historyID = UUID().uuidString
     /// When the program last printed anything (see `whenOutputQuiet`).
     var lastOutputAt = Date.distantPast
     /// The coding agent running here and what it's doing (see AgentStatus.swift); nil when none.
@@ -289,6 +291,8 @@ final class TerminalView: NSView, TerminalDelegate {
     /// Copy buttons drawn this frame, by index into `codeBoxes`.
     var codeCopyButtons: [(CGRect, Int)] = []
     var hoverCopyButton: Int?
+    /// The box under the mouse: only its Copy button shows (they'd cover the line above each box otherwise).
+    var hoverBox: Int?
     /// The box whose button shows "Copied" for a moment.
     var copiedBox: Int?
     /// "Copy output" on the hovered command's first line, and the block it just copied.
@@ -393,7 +397,9 @@ final class TerminalView: NSView, TerminalDelegate {
             Array(text.utf8).withUnsafeBufferPointer { terminal.feed($0) }
         }
         let cmd = ShellIntegration.launchCommand()
-        guard let p = PTYProcess(executable: cmd.exe, args: cmd.args, env: cmd.env, cwd: initialDirectory, cols: cols, rows: rows) else {
+        var env = cmd.env
+        env["SOLANUM_HISTFILE"] = ShellIntegration.historyFile(historyID)
+        guard let p = PTYProcess(executable: cmd.exe, args: cmd.args, env: env, cwd: initialDirectory, cols: cols, rows: rows) else {
             let msg = "\r\n  Solanum could not start \(cmd.exe)\r\n"
             Array(msg.utf8).withUnsafeBufferPointer { terminal.feed($0) }
             return
@@ -843,6 +849,12 @@ final class TerminalView: NSView, TerminalDelegate {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, generation == self.boxScanGeneration else { return }
                     self.codeBoxes = boxes.filter { self.terminal.stillShows($0) }
+                    // The boxes may have moved under the mouse (or been found again in another order).
+                    if let w = self.window {
+                        let p = self.convert(w.mouseLocationOutsideOfEventStream, from: nil)
+                        let line = self.gridPos(at: p).line
+                        self.hoverBox = self.bounds.contains(p) ? self.codeBoxes.firstIndex { $0.contains(line: line) } : nil
+                    }
                     self.needsDisplay = true
                 }
             }
@@ -1541,11 +1553,12 @@ final class TerminalView: NSView, TerminalDelegate {
         return path
     }
 
-    /// "Copy" at the top right of each box whose first line is on screen.
+    /// "Copy" at the top right of the box under the mouse (and one just copied, saying so), when its first line is on
+    /// screen.
     private func drawCopyButtons(_ ctx: CGContext) {
         codeCopyButtons = []
         let th = palette.theme
-        for (i, b) in codeBoxes.enumerated() {
+        for (i, b) in codeBoxes.enumerated() where i == hoverBox || i == copiedBox {
             guard let r = rowMap.firstIndex(of: b.first) else { continue }
             let copied = copiedBox == i
             // Above the box when the line there is empty (Claude leaves one), so it never covers a long first line:

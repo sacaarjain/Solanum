@@ -596,6 +596,34 @@ enum SelfTest {
                 check("ssh watch: reports a change within a couple of seconds", seen.count == 2 && seen[1] != nil && seen[1] != seen[0])
                 withExtendedLifetime(token) {}
             }
+            do {
+                // A read of a growing file stops at the size its signature says (so the next read carries on from
+                // there and the watch agrees nothing else changed), here and through the ssh script (run by sh).
+                let f = NSTemporaryDirectory() + "solanum-part-\(UUID().uuidString).log"
+                defer { try? FileManager.default.removeItem(atPath: f) }
+                try? String(repeating: "0123456789\n", count: 100).write(toFile: f, atomically: false, encoding: .utf8)
+                let sock = NSTemporaryDirectory() + "solanum-devssh-socket"
+                FileManager.default.createFile(atPath: sock, contents: nil)
+                for (name, fs) in [("here", LocalFileSystem.shared as FileSystem), ("over ssh", RemoteSession(devLocal: sock, latency: 0))] {
+                    // (They may finish in either order.)
+                    var whole: FilePart?, rest: FilePart?
+                    fs.readPart(f, from: nil, whole: 1 << 20, tail: 1 << 20) { if case .success(let p) = $0 { whole = p } }
+                    fs.readPart(f, from: 1000, whole: 0, tail: 1 << 20) { if case .success(let p) = $0 { rest = p } }
+                    let end = Date(timeIntervalSinceNow: 5)
+                    while whole == nil || rest == nil, Date() < end { RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02)) }
+                    let got = [whole, rest].compactMap { $0 }
+                    let sized = got.allSatisfy { p in p.signature?.split(separator: " ").dropLast().last.flatMap { Int($0) } == p.size }
+                    check("files: a read's signature has the size it read up to (\(name))", got.count == 2 && sized
+                          && whole?.data.count == 1100 && rest?.data.count == 100)
+                    // Lines before a byte (a big file's line numbers): 100 lines of 11 bytes, so 45 before byte 500.
+                    var counted: [Int?] = []
+                    fs.countLines(f, upTo: 500) { counted.append($0) }
+                    fs.countLines(f, upTo: 1100) { counted.append($0) }
+                    let until = Date(timeIntervalSinceNow: 5)
+                    while counted.count < 2, Date() < until { RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02)) }
+                    check("files: lines counted up to a byte (\(name))", Set(counted.compactMap { $0 }) == [45, 100])
+                }
+            }
             check("ssh: a typed host to connect to", SSHHosts.newTarget("ssh bob@build9") == "bob@build9"
                   && SSHHosts.newTarget("  bob@build9 ") == "bob@build9" && SSHHosts.newTarget("ssh -p 2222 bob@h.example.com") == "-p 2222 bob@h.example.com"
                   && SSHHosts.newTarget("build") == nil && SSHHosts.newTarget("ssh ") == nil && SSHHosts.newTarget("ssh bob@") == nil
@@ -770,7 +798,7 @@ extension NSWorkspace {
 /// Development aid: SOLANUM_SNAPSHOT=/path.png renders the first window to a PNG after a delay.
 /// SOLANUM_SNAPSHOT_INPUT types text first; SOLANUM_SNAPSHOT_ACTIONS=split,palette,select-block,collapse,jump-prompt,find,find-commands,find-output,click:<col>:<row>,keys:<text>,theme:<name>,
 /// newtab,rename-tab,new-group,edit:<text>,select-tab:<i>,collapse-group:<i>,split-down,save-session,
-/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,sleep:<seconds>,screen-boxes,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,strip-scroll:<points>,strip-activate:<i>,strip-arrow:<-1|1>,print-strip-scroll,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,print-editor-text,open-slow-file-tab:<path>,print-sidebar-rows,lost-notice:<command>,notice-reconnect,notice-secret:<text>,print-notice,editor-insert:<text>,editor-save,editor-conflict:<Compare|Overwrite|Revert|Cancel>,watch-tag:<live|off>,crumb-menu[:<item>],crumb-context[:<label>[:<item>]],drop-files:<index>:<path>|<path>,drop-hover:<x>,press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,git-action:<name>[:<path>],git-message:<text>,git-press:<button>,print-git-box,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>,log-menu[:<menu>>…>item],graph-type:<text>,graph-press:<Branch|User|Date|Paths>,graph-click:<Branch|User|Date|Paths>,dropdown-type:<text>,hosts-dropdown,dropdown-option,chip-dropdown,print-watch-script:<path>|<path>,dropdown-run:<title>,graph-menu-run:<title>,graph-branch:<title>,graph-branch-filter:<text>,graph-path:<path>,print-graph,log-marker-text:<text>,log-select:<text>,editor-end,editor-edge-drag:<fraction>:<seconds>,print-deleted,editor-lost-bar:<host>,print-time,hang-watch,display-time,log-import:<path>,print-log-format,theme-edit:<name>,theme-background:<hex>,theme-ansi:<i>:<hex>,theme-bar:<Save Changes|Reset>,theme-leave:<page>,print-theme,print-samehost,release-history,print-releases,settings-window-png:<path>,settings-sheet-press:<title>,themed-alert[:problem],themed-alert-ok,window-png:<path>,settings-sidebar-png:<path>
+/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,pane-up,sleep:<seconds>,screen-boxes,hover-box:<i>,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,strip-scroll:<points>,strip-activate:<i>,strip-arrow:<-1|1>,print-strip-scroll,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,print-editor-text,open-slow-file-tab:<path>,open-devssh-file-tab:<path>,print-sidebar-rows,lost-notice:<command>,notice-reconnect,notice-secret:<text>,print-notice,editor-insert:<text>,editor-save,editor-conflict:<Compare|Overwrite|Revert|Cancel>,watch-tag:<live|off>,editor-race,freeze:<seconds>,crash-trap,editor-tail,live-scroll,print-window,print-view,wheel-up:<points>,window-jump:<fraction>,editor-scroll-steps:<n>:<dy>,editor-live-steps:<n>:<dy>,print-editor-end,crumb-menu[:<item>],crumb-context[:<label>[:<item>]],drop-files:<index>:<path>|<path>,drop-hover:<x>,press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,git-action:<name>[:<path>],git-message:<text>,git-press:<button>,print-git-box,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>,log-menu[:<menu>>…>item],graph-type:<text>,graph-press:<Branch|User|Date|Paths>,graph-click:<Branch|User|Date|Paths>,dropdown-type:<text>,hosts-dropdown,dropdown-option,chip-dropdown,print-watch-script:<path>|<path>,dropdown-run:<title>,graph-menu-run:<title>,graph-branch:<title>,graph-branch-filter:<text>,graph-path:<path>,print-graph,log-marker-text:<text>,log-select:<text>,editor-end,editor-edge-drag:<fraction>:<seconds>,print-deleted,editor-lost-bar:<host>,print-time,hang-watch,display-time,log-import:<path>,print-log-format,theme-edit:<name>,theme-background:<hex>,theme-ansi:<i>:<hex>,theme-bar:<Save Changes|Reset>,theme-leave:<page>,print-theme,print-samehost,release-history,print-releases,settings-window-png:<path>,settings-sheet-press:<title>,themed-alert[:problem],themed-alert-ok,window-png:<path>,settings-sidebar-png:<path>
 /// (with SOLANUM_SESSION_FILE set, which also makes the run restore from that file).
 /// Dev aid: files on this Mac, served as if from an ssh host whose folder listings take `delay` seconds (DevTools
 /// open-slow-file-tab), to see what the sidebar shows while one is on its way.
@@ -784,10 +812,17 @@ final class DevSlowFileSystem: FileSystem {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { LocalFileSystem.shared.list(dir, done) }
     }
     func read(_ path: String, limit: Int, _ done: @escaping (Result<Data, Error>) -> Void) { LocalFileSystem.shared.read(path, limit: limit, done) }
+    /// The next file read takes this long (a slow host), to see what lands while it's on its way.
+    var slowNextRead: TimeInterval = 0
     func readPart(_ path: String, from offset: Int?, whole: Int, tail: Int, _ done: @escaping (Result<FilePart, Error>) -> Void) {
-        LocalFileSystem.shared.readPart(path, from: offset, whole: whole, tail: tail, done)
+        let wait = slowNextRead
+        slowNextRead = 0
+        LocalFileSystem.shared.readPart(path, from: offset, whole: whole, tail: tail) { r in
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { done(r) }
+        }
     }
     func write(_ data: Data, to path: String, _ done: @escaping (Error?) -> Void) { LocalFileSystem.shared.write(data, to: path, done) }
+    func countLines(_ path: String, upTo offset: Int, _ done: @escaping (Int?) -> Void) { LocalFileSystem.shared.countLines(path, upTo: offset, done) }
     func perform(_ op: FileOp, _ done: @escaping (Error?) -> Void) { LocalFileSystem.shared.perform(op, done) }
 }
 
@@ -874,6 +909,9 @@ enum SnapshotHelper {
                             FileHandle.standardError.write("\(name)=\(pane.encodeKey(e) ?? [])\n".data(using: .utf8)!)
                         }
                     }
+                case let a where a.hasPrefix("hover-box:"):
+                    pane.hoverBox = Int(a.dropFirst(10))
+                    pane.needsDisplay = true
                 case "screen-boxes":
                     // The boxes found from the screen alone (tables and quotes), as if Claude were running.
                     pane.codeBoxes = pane.terminal.snapshot().findBoxes(code: [])
@@ -896,6 +934,7 @@ enum SnapshotHelper {
                         FileHandle.standardError.write(out.data(using: .utf8)!)
                     }
                 case "redo": pane.redo(nil)
+                case "pane-up": pane.send("\u{1b}[A")
                 case "print-input": FileHandle.standardError.write("input=\(String(describing: pane.promptInput)) redo=\(pane.redoStack.count)\n".data(using: .utf8)!)
                 case "print-claude-fg":
                     // A beat later, so a command typed in the same batch has started.
@@ -1204,6 +1243,13 @@ enum SnapshotHelper {
                         }
                     }
                     if action.hasPrefix("select-tab:"), let i = Int(action.dropFirst(11)) { c.select(index: i) }
+                    if action.hasPrefix("open-devssh-file-tab:") {
+                        // A file "over ssh" to this Mac (see RemoteSession.init(devLocal:)), with a link this slow.
+                        let sock = NSTemporaryDirectory() + "solanum-devssh-socket"
+                        FileManager.default.createFile(atPath: sock, contents: nil)
+                        let session = RemoteSession(devLocal: sock, latency: 0.15)
+                        c.focused.addFileTab(FileEditorView(fs: session, path: String(action.dropFirst(21))))
+                    }
                     if action.hasPrefix("open-slow-file-tab:") {
                         c.focused.addFileTab(FileEditorView(fs: DevSlowFileSystem.shared, path: String(action.dropFirst(19))))
                     }
@@ -1269,6 +1315,11 @@ enum SnapshotHelper {
                         if n.count == 2 { c.activeTab?.editor?.devEdgeDrag(fraction: CGFloat(n[0]), seconds: n[1]) }
                     }
                     if action == "editor-end" { c.activeTab?.editor?.devScrollToEnd() }
+                    if action == "editor-tail" { c.activeTab?.editor?.devToggleTail() }
+                    if action.hasPrefix("editor-scroll-steps:") || action.hasPrefix("editor-live-steps:") {
+                        let v = action.split(separator: ":").dropFirst().compactMap { Double($0) }
+                        if v.count == 2 { c.activeTab?.editor?.devScrollSteps(Int(v[0]), CGFloat(v[1]), live: action.hasPrefix("editor-live")) }
+                    }
                     if action == "display-time" {
                         let a = Date()
                         if let v = c.window?.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
@@ -1418,6 +1469,17 @@ enum SnapshotHelper {
                     if action.hasPrefix("editor-insert:") { c.activeTab?.editor?.devInsert(String(action.dropFirst(14))) }
                     if action == "editor-save" { c.activeTab?.editor?.devSave() }
                     if action.hasPrefix("editor-conflict:") { c.activeTab?.editor?.devConflict(String(action.dropFirst(16))) }
+                    if action == "print-editor-end", let ed = c.activeTab?.editor { FileHandle.standardError.write("editor end: \(ed.devTextEnd)\n".data(using: .utf8)!) }
+                    if action == "editor-race" { c.activeTab?.editor?.devRefreshRace() }
+                    if action.hasPrefix("freeze:"), let s = Double(action.dropFirst(7)) { Thread.sleep(forTimeInterval: s) }
+                    if action == "crash-trap" { let a: [Int] = []; _ = a[Int(ProcessInfo.processInfo.processIdentifier) % 1 + 1] }
+                    if action == "live-scroll", let ed = c.activeTab?.editor { ed.devLiveScroll() }
+                    if action == "print-window", let ed = c.activeTab?.editor {
+                        FileHandle.standardError.write("window: \(ed.devWindowState)\ntop line: \(ed.devTopLine)\n".data(using: .utf8)!)
+                    }
+                    if action.hasPrefix("wheel-up:"), let p = Double(action.dropFirst(9)) { c.activeTab?.editor?.devWheelUp(CGFloat(p)) }
+                    if action == "print-view", let ed = c.activeTab?.editor { FileHandle.standardError.write("view: \(ed.devView)\n".data(using: .utf8)!) }
+                    if action.hasPrefix("window-jump:"), let f = Double(action.dropFirst(12)) { c.activeTab?.editor?.devJump(f) }
                     if action.hasPrefix("watch-tag:") { c.activeTab?.editor?.devWatchTag(String(action.dropFirst(10))) }
                     if action == "print-editors" {
                         let eds = c.allTabs.flatMap { $0.editors.map { "\($0.displayName) @ \($0.path)" } }

@@ -40,6 +40,8 @@ protocol FileSystem: AnyObject {
     func readPart(_ path: String, from offset: Int?, whole: Int, tail: Int, _ done: @escaping (Result<FilePart, Error>) -> Void)
     func write(_ data: Data, to path: String, _ done: @escaping (Error?) -> Void)
     func perform(_ op: FileOp, _ done: @escaping (Error?) -> Void)
+    /// How many lines the file has before byte `offset` (its newlines), in the background; nil if it can't be told.
+    func countLines(_ path: String, upTo offset: Int, _ done: @escaping (Int?) -> Void)
 }
 
 extension FileSystem {
@@ -54,6 +56,17 @@ let maxEditableFileSize = 50 * 1024 * 1024
 let maxReadableFileSize = 512 * 1024 * 1024
 /// How much of the end of a file past `maxReadableFileSize` shows.
 let fileTailSize = 10 * 1024 * 1024
+
+/// Past this a file is shown as `less` shows one (see `FileEditorView`, "Big files"): read-only, and only a
+/// window of it held at a time, fetched in pieces of `windowChunk` as it's scrolled through. A log, past
+/// `windowedLogSize` (a log isn't edited, and its mix of short and very long lines is what makes a long text jump as
+/// it's laid out).
+let windowedFileSize = 16 * 1024 * 1024
+let windowedLogSize = 1024 * 1024
+/// Small enough that adding one above the view, laid out in full (so nothing on screen moves), takes ~25 ms.
+let windowChunk = 64 * 1024
+/// The most a window holds before the far end of it is let go.
+let windowMax = 6 * windowChunk
 
 /// Tells editors showing files from an ssh host when those files change there. One command runs on the host for
 /// all of them, for as long as any is showing: once a second it stats each, and it prints only what changed (and a
@@ -145,6 +158,7 @@ final class RemoteFileWatch {
             restart()
             if process == nil { live = false }
         } else if Date().timeIntervalSince(lastHeard) > 12 {
+            Diagnostics.log("watch: nothing from the host for 12 s: starting it again")
             // Running but silent: the connection hung. Start over (on a new channel once it's back).
             live = false
             paths = []
@@ -184,8 +198,10 @@ final class RemoteFileWatch {
                 self.process = nil
                 self.paths = []
                 self.live = false
+                Diagnostics.log("watch: ended by itself (exit \(ended.terminationStatus))")
             }
         }
+        Diagnostics.log("watch: following \(wanted.count) file(s) over ssh: \(wanted.map { ($0 as NSString).lastPathComponent })")
         do {
             try p.run()
             process = p
@@ -332,19 +348,47 @@ final class LocalFileSystem: FileSystem {
 
     func readPart(_ path: String, from offset: Int?, whole: Int, tail: Int, _ done: @escaping (Result<FilePart, Error>) -> Void) {
         async({
-            let signature = Self.signature(path)
             let h = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
             defer { try? h.close() }
-            let size = Int(try h.seekToEnd())
+            // The size and signature of what's open, and only that much read (it may be growing): the next read
+            // carries on from there, and the signature matches what a stat says until it changes again.
+            var st = stat()
+            let opened = fstat(h.fileDescriptor, &st) == 0
+            let size = opened ? Int(st.st_size) : Int(try h.seekToEnd())
+            let signature = opened && st.st_mode & S_IFMT == S_IFREG
+                ? "\(st.st_mtimespec.tv_sec).\(st.st_mtimespec.tv_nsec) \(st.st_size) \(st.st_ino)" : nil
             let start = offset.map { min($0, size) } ?? (size <= whole ? 0 : size - tail)
             try h.seek(toOffset: UInt64(start))
-            return FilePart(size: size, data: try h.read(upToCount: offset == nil && size <= whole ? size : tail) ?? Data(), signature: signature)
+            let count = min(offset == nil && size <= whole ? size : tail, size - start)
+            return FilePart(size: size, data: count > 0 ? try h.read(upToCount: count) ?? Data() : Data(), signature: signature)
         }, done)
     }
 
     /// Not atomic, so the file keeps its permissions (e.g. an executable script stays executable).
     func write(_ data: Data, to path: String, _ done: @escaping (Error?) -> Void) {
         async({ try data.write(to: URL(fileURLWithPath: path)) }) { done($0.error) }
+    }
+
+    func countLines(_ path: String, upTo offset: Int, _ done: @escaping (Int?) -> Void) {
+        async({ () -> Int in
+            let h = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+            defer { try? h.close() }
+            var left = offset, n = 0
+            while left > 0, let block = try h.read(upToCount: min(left, 4 << 20)), !block.isEmpty {
+                n += block.withUnsafeBytes { raw -> Int in
+                    guard let base = raw.baseAddress else { return 0 }
+                    let end = base + raw.count
+                    var p = base, c = 0
+                    while p < end, let hit = memchr(p, 0x0A, end - p) {
+                        c += 1
+                        p = UnsafeRawPointer(hit) + 1
+                    }
+                    return c
+                }
+                left -= block.count
+            }
+            return n
+        }) { done(try? $0.get()) }
     }
 
     /// Something that changes whenever the file does (its modified time, size and inode), to tell an open file it
@@ -466,6 +510,18 @@ final class RemoteSession: FileSystem {
         self.controlPath = controlPath
         self.sshArgs = sshArgs
         awaitingLogin = false
+    }
+
+    /// Dev aid: an "ssh host" that's this Mac, its commands run by a local sh after `latency` seconds (a slow link),
+    /// so the remote code paths (reads, the watch) can be tried without a server. `controlPath` must exist.
+    private var devLatency: TimeInterval?
+    init(devLocal controlPath: String, latency: TimeInterval) {
+        self.controlPath = controlPath
+        sshArgs = nil
+        awaitingLogin = false
+        hostLabel = "dev@local"
+        home = NSHomeDirectory()
+        devLatency = latency
     }
 
     /// For files restored from a saved session that were open on `host`, reached with `sshArgs`.
@@ -628,6 +684,11 @@ final class RemoteSession: FileSystem {
 
     fileprivate func sshProcess(_ script: String) -> Process {
         let p = Process()
+        if let lag = devLatency {
+            p.executableURL = URL(fileURLWithPath: "/bin/sh")
+            p.arguments = ["-c", "sleep \(lag)\n" + script]
+            return p
+        }
         p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         // The host name is a placeholder: with -S the command goes straight to the existing master.
         p.arguments = ["-S", controlPath, "-o", "ControlMaster=no", "-o", "BatchMode=yes", "-o", "LogLevel=ERROR",
@@ -649,7 +710,17 @@ final class RemoteSession: FileSystem {
         }
         // Waits its turn: each of these is a channel on the user's own ssh connection (see `ChannelGate`).
         let gate = ChannelGate.shared(for: controlPath)
+        let asked = Date()
+        let what = Diagnostics.enabled ? Self.diagLabel(script) : ""
+        let report: (Int32, Data, String) -> Void = { status, out, err in
+            let took = Diagnostics.ms(asked)
+            if took > 1000 || status != 0 { Diagnostics.log("ssh \(self.hostLabel ?? "?"): \(what) took \(took) ms, exit \(status), \(out.count) bytes") }
+            done(status, out, err)
+        }
         gate.enter { [self] in
+            if Diagnostics.enabled, Date().timeIntervalSince(asked) > 0.5 {
+                Diagnostics.log("[bg] ssh \(hostLabel ?? "?"): \(what) waited \(Diagnostics.ms(asked)) ms for a free channel")
+            }
             let p = sshProcess(script)
             let outPipe = Pipe(), errPipe = Pipe(), inPipe = Pipe()
             p.standardOutput = outPipe
@@ -658,7 +729,7 @@ final class RemoteSession: FileSystem {
             DispatchQueue.global(qos: .userInitiated).async {
                 do { try p.run() } catch {
                     gate.leave()
-                    DispatchQueue.main.async { done(255, Data(), error.localizedDescription) }
+                    DispatchQueue.main.async { report(255, Data(), error.localizedDescription) }
                     return
                 }
                 DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { if p.isRunning { p.terminate() } }
@@ -674,16 +745,23 @@ final class RemoteSession: FileSystem {
                 guard group.wait(timeout: .now() + timeout + 3) == .success else {
                     if p.isRunning { p.terminate() }
                     gate.leave()
-                    DispatchQueue.main.async { done(124, Data(), "Timed out.") }
+                    DispatchQueue.main.async { report(124, Data(), "Timed out.") }
                     return
                 }
                 p.waitUntilExit()
                 gate.leave()
                 let status = p.terminationStatus
                 let errText = String(decoding: err, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                DispatchQueue.main.async { done(status, out, errText) }
+                DispatchQueue.main.async { report(status, out, errText) }
             }
         }
+    }
+
+    /// What a script does, for the diagnostics log: its first line that isn't just setting the file.
+    private static func diagLabel(_ script: String) -> String {
+        let lines = script.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        let line = lines.first { !$0.isEmpty && !$0.hasPrefix("f=") && !$0.hasPrefix("[ -f") && !$0.hasPrefix("#") } ?? lines.first ?? ""
+        return "\"" + String(line.prefix(70)) + "\""
     }
 
     private func check(_ status: Int32, _ err: String, _ fallback: String) -> Error? {
@@ -727,13 +805,22 @@ final class RemoteSession: FileSystem {
 
     /// The size on the first line, then the bytes; only the part asked for crosses the connection.
     func readPart(_ path: String, from offset: Int?, whole: Int, tail: Int, _ done: @escaping (Result<FilePart, Error>) -> Void) {
-        let part = offset.map { "tail -c +\($0 + 1) -- \"$f\" | head -c \(tail)" }
-            ?? "if [ \"$s\" -le \(whole) ]; then cat -- \"$f\"; else tail -c \(tail) -- \"$f\"; fi"
+        // Only up to the size its signature has, though the file may have grown since: the next read carries on
+        // from there, and the watch (which reports that same signature) doesn't see a change that isn't one.
+        let part = offset.map { """
+            n=$(($s - \($0))); [ "$n" -gt \(tail) ] && n=\(tail)
+            if [ "$n" -gt 0 ]; then tail -c +\($0 + 1) -- "$f" | head -c "$n"; fi
+            """ } ?? """
+            if [ "$s" -le \(whole) ]; then head -c "$s" -- "$f"; else tail -c +$(($s - \(tail) + 1)) -- "$f" | head -c \(tail); fi
+            """
         let script = """
         f=\(shellQuote(path))
         [ -f "$f" ] || { echo "Not a regular file." >&2; exit 1; }
+        # Opened first: on a network mount that makes the client ask the server (as the watch does).
+        { : < "$f"; } 2>/dev/null
         g=$(\(Self.statCommand))
-        s=$(wc -c < "$f" | tr -d ' ')
+        s=$(printf '%s\\n' "$g" | awk '{print $(NF-1)}')
+        case "$s" in ''|*[!0-9]*) s=$(wc -c < "$f" | tr -d ' ') ;; esac
         printf '%s\\t%s\\n' "$s" "$g"
         \(part)
         """
@@ -752,6 +839,12 @@ final class RemoteSession: FileSystem {
     /// A file's signature on the host, as `LocalFileSystem.signature` is here (its modified time, size and inode), for
     /// the file in `$f`: GNU stat (Linux, to the nanosecond), else BSD's. Empty when it isn't there.
     static let statCommand = #"stat -c '%y %s %i' -- "$f" 2>/dev/null || stat -f '%Fm %z %i' -- "$f" 2>/dev/null"#
+
+    func countLines(_ path: String, upTo offset: Int, _ done: @escaping (Int?) -> Void) {
+        run("head -c \(max(0, offset)) -- \(shellQuote(path)) | wc -l", timeout: 120) { status, out, _ in
+            done(status == 0 ? Int(String(decoding: out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)) : nil)
+        }
+    }
 
     /// The signature now (one command; `fileWatch` follows files that are showing without one each time).
     func signature(_ path: String, _ done: @escaping (String?) -> Void) {

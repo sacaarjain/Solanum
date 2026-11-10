@@ -890,6 +890,16 @@ extension TerminalView {
         // A hand over an open popup (clicking it opens the image).
         if !imageChipState.popupRect.isNull { updateCursor() }
         let copyHover = codeCopyButtons.first { $0.0.contains(p) }?.1
+        // Over a box (or its Copy button, which may sit just above it): that box's button shows.
+        var boxHover = copyHover
+        if boxHover == nil, !terminal.usingAlt, bounds.contains(p) {
+            let line = gridPos(at: p).line
+            boxHover = codeBoxes.firstIndex { $0.contains(line: line) }
+        }
+        if boxHover != hoverBox {
+            hoverBox = boxHover
+            needsDisplay = true
+        }
         let blockHover = blockCopyButton?.rect.contains(p) ?? false
         let pillHover = jumpPillRect.contains(p)
         let barHover = inScrollbarZone(p)
@@ -930,6 +940,10 @@ extension TerminalView {
     override func mouseExited(with e: NSEvent) {
         if imageChipState.hover != nil {
             imageChipState.hover = nil
+            needsDisplay = true
+        }
+        if hoverBox != nil {
+            hoverBox = nil
             needsDisplay = true
         }
         if hoverBlock != nil || hoverURL != nil || hoverCopyButton != nil || hoverBlockCopy || hoverBlockSend || hoverJumpPill || scrollbarHover {

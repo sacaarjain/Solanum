@@ -73,10 +73,73 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private var carry = Data()
     /// Tail File, in the header: the end stays in view as the file grows (tail -f), even after scrolling up. Without
     /// it a growing file scrolls along only while its end is showing. Either way the file keeps up with the disk.
+    /// A big file (past `windowedFileSize`), shown as `less` shows one: the text is a window of it, bytes
+    /// `winStart..<diskSize`, made of whole lines, fetched and let go a piece at a time as it's scrolled through
+    /// (see "Big files"). Read-only, unwrapped, and every line the same height, so text added above the view can
+    /// be made up for exactly.
+    private var windowed = false
+    private var winStart = 0
+    /// The whole file's size, as last seen (the window may end before it).
+    private var fileSize = 0
+    /// The pieces the window is made of, top to bottom: their bytes in the file, characters in the text, lines.
+    private var winChunks: [WinChunk] = []
+    private struct WinChunk { var bytes: Int; var chars: Int; var lines: Int }
+    /// A piece is being fetched (one at a time).
+    private var winBusy = false
+    /// Bumped by a jump, so pieces fetched for the window before it are dropped.
+    private var winGeneration = 0
+    /// Lines let go from the top, less lines added there, since the start: to place a line count that was asked
+    /// for before the window moved (see `countWindowLines`).
+    private var winTopShift = 0
+    private var fileScroller: FileScroller?
+    /// The window reaches the end of the file (so it grows as the file does).
+    private var windowAtEnd: Bool { diskSize >= fileSize }
+
+    /// A scroll (trackpad, wheel or scroller) is under way.
+    private var liveScrolling = false
+    /// The file needs reading again in full, held off until the scroll under way ends (see `loadText`).
+    private var reloadAfterScroll = false
+    /// The last few lines are on screen.
+    private var endInView: Bool {
+        scroll.contentView.bounds.maxY >= textView.frame.maxY - (textView.font?.pointSize ?? 13) * 3
+    }
+    /// Scrolled all the way down (new lines are followed from here, without Tail File).
+    /// (Less the margin below the text, which scrolling to the end leaves.)
+    private var atVeryEnd: Bool { scroll.contentView.bounds.maxY >= textView.frame.maxY - textView.textContainerInset.height - 4 }
+    /// Solanum moving the view (rather than the user).
+    private func programmatically(_ move: () -> Void) { move() }
+
+    /// The user scrolling up (a wheel or trackpad over the text, or ↑, Page Up or Home in it) leaves Tail File.
+    /// Watched as input, not as the view moving: a long text's estimated height is revised as it's laid out, which
+    /// moves the view by itself (and a wheel sends no live-scroll notifications).
+    fileprivate func userInput(_ e: NSEvent) {
+        guard tailing, let w = window, e.window === w else { return }
+        let up: Bool
+        switch e.type {
+        case .scrollWheel:
+            up = e.scrollingDeltaY > 0.5 && scroll.bounds.contains(scroll.convert(e.locationInWindow, from: nil))
+        case .keyDown:
+            up = w.firstResponder === textView && [126, 116, 115].contains(e.keyCode)
+        default:
+            up = false
+        }
+        if up { userScrolledUp() }
+    }
+
+    private func userScrolledUp() {
+        guard tailing else { return }
+        Diagnostics.log("tail \(diagName): the user scrolled up")
+        tailing = false
+    }
+    private var inputMonitor: Any?
     private var tailing = false {
         didSet {
             header.tailing = tailing
-            if tailing { textView.scrollToEndOfDocument(nil); syncWithDisk() }
+            Diagnostics.log("tail \(diagName): \(tailing ? "on" : "off")")
+            if tailing {
+                if windowed, !windowAtEnd { jumpWindow(to: nil) } else { programmatically { textView.scrollToEndOfDocument(nil) } }
+                syncWithDisk()
+            }
         }
     }
     private var refreshing = false
@@ -192,10 +255,29 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             self?.applyTheme()
         })
         scroll.contentView.postsBoundsChangedNotifications = true
+        // A scroll under way (trackpad, wheel, scroller) is never moved under the user: new text still arrives, but
+        // the view only follows the end again once they're done (and back there), and a whole reload waits for it.
+        observers.append(NotificationCenter.default.addObserver(forName: NSScrollView.willStartLiveScrollNotification, object: scroll, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.liveScrolling = true
+            Diagnostics.log("scroll \(self.diagName): started at y \(Int(self.scroll.contentView.bounds.minY)) of \(Int(self.textView.frame.height)), \(self.textView.textStorage?.length ?? 0) chars")
+        })
+        observers.append(NotificationCenter.default.addObserver(forName: NSScrollView.didEndLiveScrollNotification, object: scroll, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.liveScrolling = false
+            Diagnostics.log("scroll \(self.diagName): ended at y \(Int(self.scroll.contentView.bounds.minY)) of \(Int(self.textView.frame.height))")
+            // Scrolled away from the end: that's leaving the tail (back to the end, or the button, follows it again).
+            if self.tailing, !self.endInView { self.tailing = false }
+            if self.reloadAfterScroll {
+                self.reloadAfterScroll = false
+                self.loadText(keepPlace: true)
+            }
+        })
         observers.append(NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak self] _ in
             self?.ruler.needsDisplay = true
             self?.refreshFindHighlights()
             self?.paintVisibleLog()
+            self?.windowScrolled()
         })
         observers.append(NotificationCenter.default.addObserver(forName: .solanumRemoteReady, object: nil, queue: .main) { [weak self] note in
             if let session = note.object as? RemoteSession { self?.follow(session) }
@@ -242,6 +324,15 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         updateDiskWatch()
+        if window != nil, inputMonitor == nil, mode == .file {
+            inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .keyDown]) { [weak self] e in
+                self?.userInput(e)
+                return e
+            }
+        } else if window == nil, let m = inputMonitor {
+            NSEvent.removeMonitor(m)
+            inputMonitor = nil
+        }
         // Whether the file is still there: a stat every 2 seconds here; over ssh, whether the connection is (a
         // local check, as often) and a folder listing every 16.
         existsTimer?.invalidate()
@@ -263,6 +354,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     }
 
     deinit {
+        if let m = inputMonitor { NSEvent.removeMonitor(m) }
         existsTimer?.invalidate()
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         if let dir = mediaCopy?.deletingLastPathComponent() { try? FileManager.default.removeItem(at: dir) }
@@ -320,6 +412,10 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         scroll.frame = NSRect(x: 0, y: header.frame.maxY, width: bounds.width, height: bounds.height - header.frame.maxY)
         let mh: CGFloat = 60
         message.frame = NSRect(x: 20, y: header.frame.maxY + (scroll.frame.height - mh) / 2, width: bounds.width - 40, height: mh)
+        if let s = fileScroller {
+            s.frame = NSRect(x: scroll.frame.maxX - FileScroller.width, y: scroll.frame.minY, width: FileScroller.width,
+                             height: scroll.frame.height - (scroll.hasHorizontalScroller ? 12 : 0))
+        }
         media?.frame = scroll.frame
         diffView?.frame = scroll.frame
         graphView?.frame = scroll.frame
@@ -458,6 +554,11 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         let space = (" " as NSString).size(withAttributes: [.font: font]).width
         para.defaultTabInterval = space * 4
         para.tabStops = []
+        if windowed {
+            // Every line the same height (see `windowed`).
+            para.minimumLineHeight = lineHeight
+            para.maximumLineHeight = lineHeight
+        }
         textView.defaultParagraphStyle = para
         textView.typingAttributes = [.font: font, .foregroundColor: th.foreground, .paragraphStyle: para]
         if let storage = textView.textStorage, storage.length > 0 {
@@ -517,10 +618,36 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     /// (a big log, over ssh too) and past that its last `fileTailSize`. `keepPlace` (a reload) keeps the caret and
     /// scroll position.
     private func loadText(keepPlace: Bool) {
-        fs.readPart(path, from: nil, whole: maxReadableFileSize, tail: fileTailSize) { [weak self] result in
+        if keepPlace, ProcessInfo.processInfo.environment["SOLANUM_RELOAD_DEBUG"] != nil {
+            FileHandle.standardError.write("reload: whole text read again (\((path as NSString).lastPathComponent))\n".data(using: .utf8)!)
+        }
+        // Not under a scroll: it'd move the text the user's moving through. Once it ends.
+        if keepPlace, liveScrolling {
+            if !reloadAfterScroll { Diagnostics.log("load \(diagName): held until the scroll ends") }
+            reloadAfterScroll = true
+            return
+        }
+        // A big file read again (rotated, say): its window again, where it was (or at the end, following it).
+        if keepPlace, windowed {
+            Diagnostics.log("load \(diagName): the window again")
+            let following = atVeryEnd && windowAtEnd || tailing
+            return jumpWindow(to: following ? nil : visibleByte(), keepView: !following)
+        }
+        let asked = Date()
+        Diagnostics.log("load \(diagName): reading the whole text\(keepPlace ? " again (keeping the place)" : "")")
+        // Past `windowedFileSize` (a log, `windowedLogSize`), only its end: the rest comes as it's scrolled to (see
+        // "Big files").
+        let windowFrom = SyntaxLanguage(path: path) == .log ? windowedLogSize : windowedFileSize
+        fs.readPart(path, from: nil, whole: windowFrom, tail: 4 * windowChunk) { [weak self] result in
             guard let self else { return }
+            let applying = Date()
+            if Diagnostics.enabled, case .success(let part) = result {
+                Diagnostics.log("load \(self.diagName): \(part.data.count) of \(part.size) bytes arrived in \(Diagnostics.ms(asked)) ms")
+            }
+            defer { Diagnostics.log("load \(self.diagName): shown, \(Diagnostics.ms(applying)) ms on the main thread\(self.liveScrolling ? " (DURING A SCROLL)" : "")") }
             switch result {
             case .failure(let e):
+                Diagnostics.log("load \(self.diagName): failed: \(e.localizedDescription)")
                 if !keepPlace { self.showMessage(e.localizedDescription) }
             case .success(let part):
                 // Typed into while it was read: what's typed stays (it isn't replaced under you).
@@ -529,9 +656,21 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 self.changedOnDisk = false
                 var data = part.data
                 let cut = part.size > data.count
-                let partial = part.size > maxEditableFileSize
+                let partial = cut || part.size > maxEditableFileSize
                 // A cut-off end starts at the first whole line.
-                if cut, let nl = data.firstIndex(of: 0x0A) { data = Data(data[data.index(after: nl)...]) }
+                var dropped = 0
+                if cut, let nl = data.firstIndex(of: 0x0A) {
+                    dropped = nl - data.startIndex + 1
+                    data = Data(data[data.index(after: nl)...])
+                }
+                self.windowed = cut
+                self.winGeneration += 1
+                if cut {
+                    self.winStart = part.size - part.data.count + dropped
+                    self.fileSize = part.size
+                    self.winBusy = false
+                    self.winTopShift = 0
+                }
                 if data.prefix(8000).contains(0) {
                     self.showMessage("This looks like a binary file, so it isn't shown.")
                     return
@@ -557,8 +696,12 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 self.logPainted = IndexSet()
                 let caret = self.textView.selectedRange()
                 let origin = self.scroll.contentView.bounds.origin
-                // Long texts lay out only what's on screen.
-                self.textView.layoutManager?.allowsNonContiguousLayout = text.utf16.count > 100_000
+                // Long texts lay out only what's on screen, estimating the rest's height from its characters. Not a big
+                // file's window: where line lengths vary a lot (a log's JSON lines), each correction of the estimate as
+                // more is laid out moved what was on screen, several lines at a time. The window's small enough to lay
+                // out in full.
+                self.textView.layoutManager?.allowsNonContiguousLayout = !cut && text.utf16.count > 100_000
+                if cut, self.wraps { self.wraps = false; self.applyWrap() }
                 self.textView.string = text
                 if self.language == .log { self.chooseLogFormat() }
                 self.findTextChanged()
@@ -566,8 +709,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 self.partial = partial
                 self.textView.isEditable = !partial
                 self.header.editable = !partial
-                self.header.subtitle = cut ? "\(self.location) · last \(fileTailSize >> 20) MB of \(part.size >> 20) MB · read-only"
-                    : partial ? "\(self.location) · \(part.size >> 20) MB · read-only" : self.location
+                self.header.subtitle = partial ? "\(self.location) · \(part.size >> 20) MB · read-only" : self.location
                 self.textView.undoManager?.removeAllActions()
                 self.diskSize = part.size
                 self.diskTail = Data(part.data.suffix(256))
@@ -575,17 +717,30 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 if keepPlace {
                     let n = (text as NSString).length
                     self.textView.setSelectedRange(NSRange(location: min(caret.location, n), length: 0))
-                    self.scroll.contentView.scroll(to: origin)
-                    self.scroll.reflectScrolledClipView(self.scroll.contentView)
+                    self.programmatically {
+                        self.scroll.contentView.scroll(to: origin)
+                        self.scroll.reflectScrolledClipView(self.scroll.contentView)
+                    }
                 } else {
                     self.textView.setSelectedRange(NSRange(location: partial ? (text as NSString).length : 0, length: 0))
-                    if partial { self.textView.scrollRangeToVisible(self.textView.selectedRange()) }
+                    // At the very end (so new lines are followed from the start).
+                    if partial { self.programmatically { self.textView.scrollToEndOfDocument(nil) } }
                 }
                 self.loaded = true
                 self.isDirty = false
                 self.updateDiskWatch()
                 self.message.isHidden = true
                 self.scroll.isHidden = false
+                if cut {
+                    self.winChunks = [WinChunk(bytes: whole.count, chars: (text as NSString).length, lines: Self.newlines(in: text))]
+                    self.splitLastChunk()
+                    self.ruler.lineBase = nil
+                    self.countWindowLines()
+                } else {
+                    self.winChunks = []
+                    self.ruler.lineBase = 0
+                }
+                self.showFileScroller(cut)
                 self.ruler.invalidateLines()
                 // Only if asked for: a file shown by clicking it in the sidebar leaves the focus on the sidebar.
                 if self.focusWhenLoaded { self.focus() }
@@ -705,6 +860,9 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     /// scroll. With unsaved edits it only says so: they stay, and saving asks first.
     private func diskSignatureNow(_ sig: String?) {
         guard mode == .file, loaded, media == nil else { return }
+        if sig != diskSignature, !refreshing, !saving {
+            Diagnostics.log("changed \(diagName): \(sig.map { "size " + ($0.split(separator: " ").dropLast().last.map(String.init) ?? "?") } ?? "gone")\(isDirty ? " (has unsaved edits)" : "")")
+        }
         // Busy reading or saving: look again in a moment (the host's watch reports a change only once).
         if refreshing || saving {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -716,6 +874,21 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         guard let sig else { return checkExists() }
         if isDeleted { checkExists() }
         guard sig != diskSignature else { return }
+        // A big file's window: only one that reaches the end grows with it; otherwise just the scroller learns
+        // the new size. Smaller than the window reaches: rotated or cut short, so the window again.
+        if windowed, let size = sig.split(separator: " ").dropLast().last.flatMap({ Int($0) }) {
+            let wasAtEnd = windowAtEnd
+            fileSize = size
+            fileScroller?.needsDisplay = true
+            if size < diskSize {
+                diskSignature = sig
+                return loadText(keepPlace: true)
+            }
+            if !wasAtEnd {
+                diskSignature = sig
+                return
+            }
+        }
         if isDirty {
             changedOnDisk = true
             return
@@ -802,25 +975,63 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     func refreshFromDisk(changed: Bool = false) {
         guard mode == .file, loaded, media == nil, !isDirty, !refreshing, !saving else { return }
         refreshing = true
-        let from = max(0, diskSize - diskTail.count)
+        let size = diskSize, tail = diskTail
+        let from = max(0, size - tail.count)
+        let asked = Date()
         fs.readPart(path, from: from, whole: 0, tail: fileTailSize) { [weak self] result in
             guard let self else { return }
             self.refreshing = false
-            guard case .success(let part) = result else { return self.checkExists() }
+            let applying = Date()
+            guard case .success(let part) = result else {
+                Diagnostics.log("update \(self.diagName): read failed after \(Diagnostics.ms(asked)) ms")
+                return self.checkExists()
+            }
             guard !self.isDirty else { return }
+            // Reloaded while this was read (a revert, a rotated log, a save): that's newer than what this was
+            // reading from, and the watch reports anything after it.
+            guard self.diskSize == size, self.diskTail == tail else {
+                Diagnostics.log("update \(self.diagName): dropped (reloaded while it was read)")
+                return
+            }
             if let sig = part.signature { self.diskSignature = sig }
-            let known = self.diskSize - from
-            guard part.size >= self.diskSize, part.data.count >= known, part.data.prefix(known) == self.diskTail else {
+            let known = size - from
+            guard known >= 0, part.size >= size, part.data.count >= known, part.data.prefix(known) == tail else {
+                Diagnostics.log("update \(self.diagName): the end no longer matches (size \(size) → \(part.size)): reloading the whole text")
                 return self.loadText(keepPlace: true)
             }
-            let added = Data(part.data.dropFirst(known))
+            let added = Data(part.data.dropFirst(known).prefix(max(0, part.size - size)))
             // More arrived than one read brings: start again from the end.
-            if part.size - self.diskSize > added.count { return self.loadText(keepPlace: true) }
-            guard !added.isEmpty else { return changed ? self.loadText(keepPlace: true) : () }
+            if part.size - self.diskSize > added.count {
+                Diagnostics.log("update \(self.diagName): \(part.size - self.diskSize) bytes added, more than one read: reloading the whole text")
+                return self.loadText(keepPlace: true)
+            }
+            guard !added.isEmpty else {
+                // The same size and the same end: on a network drive often just its modified time catching up. Read
+                // again in full only for a small file, where an edit in the middle at the same size (an agent's,
+                // say) is worth catching and costs little; for a big one it'd move the view for nothing.
+                guard changed, !self.windowed, part.size <= 1 << 20 else {
+                    if changed { Diagnostics.log("update \(self.diagName): its time changed but not its size or end: nothing to do") }
+                    return
+                }
+                Diagnostics.log("update \(self.diagName): changed but nothing added (size \(part.size)): reloading the whole text")
+                return self.loadText(keepPlace: true)
+            }
+            defer {
+                Diagnostics.log("update \(self.diagName): +\(added.count) bytes (now \(part.size)), read in \(Diagnostics.ms(asked)) ms, shown in \(Diagnostics.ms(applying)) ms\(self.liveScrolling ? " (DURING A SCROLL)" : "")\(self.tailing ? " tailing" : "")")
+            }
             self.diskSize = part.size
             self.diskTail = Data((self.diskTail + added).suffix(256))
             let (whole, rest) = Self.splitUTF8(self.carry + added)
             self.carry = rest
+            if self.windowed {
+                self.fileSize = max(self.fileSize, part.size)
+                if !self.winChunks.isEmpty {
+                    let shown = String(decoding: Self.droppingCR(whole).0, as: UTF8.self)
+                    self.winChunks[self.winChunks.count - 1].bytes += whole.count
+                    self.winChunks[self.winChunks.count - 1].chars += (shown as NSString).length
+                    self.winChunks[self.winChunks.count - 1].lines += Self.newlines(in: shown)
+                }
+            }
             let bytes = Self.droppingCR(whole).0
             let text = String(decoding: bytes, as: UTF8.self)
             guard !text.isEmpty, let storage = self.textView.textStorage else { return }
@@ -828,8 +1039,12 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 self.textView.hidesEscapes = true
                 if self.language == nil { self.language = .log; self.chooseLogFormat() }
             }
-            let visible = self.scroll.contentView.bounds
-            let atEnd = visible.maxY >= self.textView.frame.maxY - (self.textView.font?.pointSize ?? 13) * 3
+            // Whether to follow, decided before the text goes in (after, the end has moved away from the view).
+            let follow = !self.liveScrolling && (self.tailing || self.atVeryEnd)
+            // Not following: the line at the top stays there. In a long text only what's on screen is laid out and
+            // the rest's height estimated (from its characters), so text added at the end can move what's above it
+            // when lines differ a lot in length (a log's JSON lines): put the view back on that line.
+            let anchor = follow ? nil : self.topAnchor()
             let end = storage.length
             storage.append(NSAttributedString(string: text, attributes: self.textView.typingAttributes))
             if self.language == .log {
@@ -838,7 +1053,16 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             } else if self.language != nil, storage.length <= SyntaxHighlighter.maxLength { self.highlightSyntax() }
             self.ruler.linesAppended(from: end)
             self.findTextChanged()
-            if atEnd || self.tailing { self.textView.scrollToEndOfDocument(nil) }
+            // Following the end: with Tail File on, or from the very end (not a line or two above it: that's the user
+            // having scrolled up, a little), and never while they're scrolling. Only their own scroll turns Tail
+            // File off (see `userScrolled`).
+            if follow { self.programmatically { self.textView.scrollToEndOfDocument(nil) } }
+            else if let anchor { self.restoreTop(anchor, shift: 0) }
+            if self.windowed {
+                self.splitLastChunk()
+                self.trimWindow(fromTop: true)
+                self.fileScroller?.needsDisplay = true
+            }
             self.paintVisibleLog()
         }
     }
@@ -1242,6 +1466,49 @@ final class FileEditorView: NSView, NSTextViewDelegate {
 
     /// Dev aid: to the end, as a followed log sits.
     func devScrollToEnd() { textView.scrollToEndOfDocument(nil) }
+    func devToggleTail() { tailing.toggle() }
+    /// Dev aid: scrolls `steps` times by `dy` points (negative: up), as a scroll wheel would, drawing after each,
+    /// and prints how long each step took.
+    func devScrollSteps(_ steps: Int, _ dy: CGFloat, live: Bool = false) {
+        if live { NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll) }
+        // One step a frame (60 a second), as a fast trackpad scroll goes, so fetches land between them.
+        var times: [Int] = []
+        var left = steps
+        var rows: [Int] = []
+        func topRow() -> Int? {
+            let t = self.devTopLine
+            guard let r = t.range(of: #"row \d+"#, options: .regularExpression) else { return nil }
+            return Int(t[r].dropFirst(4))
+        }
+        Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
+            guard let self, left > 0 else {
+                timer.invalidate()
+                if live, let self { NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: self.scroll) }
+                let sorted = times.sorted()
+                let deltas = zip(rows.dropFirst(), rows).map { $0 - $1 }
+                let usual = deltas.isEmpty ? 0 : deltas.sorted()[deltas.count / 2]
+                let odd = deltas.enumerated().filter { abs($0.element - usual) > 1 }
+                FileHandle.standardError.write("scroll steps: \(times.count), median \(sorted.isEmpty ? 0 : sorted[sorted.count / 2]) ms, worst \(sorted.last ?? 0) ms, over 16 ms: \(times.filter { $0 > 16 }.count); rows per step \(usual), jumps: \(odd.count) \(odd.prefix(5).map { "step \($0.offset): \($0.element)" })\n".data(using: .utf8)!)
+                return
+            }
+            left -= 1
+            let t = Date()
+            let o = self.scroll.contentView.bounds.origin
+            let h0 = self.textView.frame.height, r0 = topRow()
+            self.scroll.contentView.scroll(to: NSPoint(x: o.x, y: max(0, o.y + dy)))
+            self.scroll.reflectScrolledClipView(self.scroll.contentView)
+            let y1 = self.scroll.contentView.bounds.minY, h1 = self.textView.frame.height, r1 = topRow()
+            self.window?.displayIfNeeded()
+            let y2 = self.scroll.contentView.bounds.minY, h2 = self.textView.frame.height
+            times.append(Int(Date().timeIntervalSince(t) * 1000))
+            if let r = topRow() {
+                if let prev = rows.last, r - prev > 1 || (r0 != nil && r0 != prev) {
+                    FileHandle.standardError.write("jump at step \(steps - left): rows \(prev) → (before step \(r0 ?? -1)) → after scroll \(r1 ?? -1) → after display \(r); y \(Int(o.y)) → \(Int(y1)) → \(Int(y2)); height \(Int(h0)) → \(Int(h1)) → \(Int(h2))\n".data(using: .utf8)!)
+                }
+                rows.append(r)
+            }
+        }
+    }
 
     /// Dev aid: selects `text`'s first occurrence (to offer it as a marker).
     func devSelect(_ text: String) {
@@ -1387,6 +1654,38 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     }
     func devInsert(_ text: String) { textView.insertText(text, replacementRange: textView.selectedRange()) }
     func devSave() { save(then: nil) }
+
+    /// Dev aid: a scroll gesture as AppKit announces one (start, a few steps up, end), as a trackpad would.
+    func devLiveScroll() {
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        for _ in 0..<5 {
+            let o = scroll.contentView.bounds.origin
+            scroll.contentView.scroll(to: NSPoint(x: o.x, y: max(0, o.y - 200)))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
+            NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+        }
+    }
+
+    /// For the diagnostics log: the file's name, and its host when it's over ssh.
+    private var diagName: String {
+        let name = (path as NSString).lastPathComponent
+        return fs.isRemote ? "\(fs.hostLabel ?? "ssh"):\(name)" : name
+    }
+    /// Dev aid: how the text ends, and how many "line N" rows it has (to compare with the file).
+    var devTextEnd: String {
+        let t = textView.string
+        return "ends \(String(t.suffix(60)).debugDescription), \(t.components(separatedBy: "] - line ").count - 1) appended rows, \(t.utf8.count) bytes"
+    }
+    /// Dev aid: a catch-up still on its way (a slow read) when the file's reloaded shorter (a rotated log).
+    func devRefreshRace() {
+        try? (String(repeating: "old line\n", count: 200) + "more\n").write(toFile: path, atomically: false, encoding: .utf8)
+        (fs as? DevSlowFileSystem)?.slowNextRead = 1
+        refreshFromDisk(changed: true)
+        try? "rotated\n".write(toFile: path, atomically: false, encoding: .utf8)
+        loadText(keepPlace: true)
+    }
     func devConflict(_ title: String) { conflictBar?.devPress(title) }
     /// The ssh watch tag as it would show (a local file has none): "live", "off", or anything else for none.
     func devWatchTag(_ state: String) { header.watchLive = state == "live" ? true : state == "off" ? false : nil }
@@ -2124,12 +2423,518 @@ final class EditorHeaderView: NSView {
     }
 }
 
+// MARK: Big files
+
+/// A file past `windowedFileSize` is shown the way `less` shows one, so it's as quick to open and move through at
+/// 400 MB as at 4: the text is a window of it (`windowed`), at most `windowMax` bytes of whole lines. Coming within a
+/// few screens of either edge fetches the next `windowChunk` there in the background, and the far end is let go;
+/// text added above the view moves it down by exactly its lines (every line is the same height), so nothing on
+/// screen moves. A scroller for the whole file (`FileScroller`) stands in for the text view's own, and dragging it
+/// fetches the window there in one read. Line numbers are counted on the host. New lines at the end arrive as for any
+/// file while the window reaches the end; when it doesn't, only the scroller hears the file grew.
+extension FileEditorView {
+    fileprivate var lineHeight: CGFloat {
+        (textView.layoutManager ?? NSLayoutManager()).defaultLineHeight(for: FontSet.current.regular as NSFont)
+    }
+
+    fileprivate static func newlines(in s: String) -> Int {
+        var n = 0
+        for b in s.utf8 where b == 10 { n += 1 }
+        return n
+    }
+
+    private func decodeWindow(_ data: Data) -> String {
+        let (bytes, crlf) = Self.droppingCR(data)
+        if crlf { usesCRLF = true }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    /// Where in the file the window's character `ch` is (in proportion within its piece: close enough for a
+    /// scroller, and exact at the pieces' edges).
+    private func byteOffset(ofChar ch: Int) -> Int {
+        var c = 0, b = winStart
+        for k in winChunks {
+            if ch < c + k.chars { return b + Int(Double(ch - c) / Double(max(1, k.chars)) * Double(k.bytes)) }
+            c += k.chars
+            b += k.bytes
+        }
+        return b
+    }
+
+    /// The byte at the top of the view.
+    fileprivate func visibleByte() -> Int {
+        guard let lm = textView.layoutManager, let tc = textView.textContainer, (textView.textStorage?.length ?? 0) > 0 else { return winStart }
+        let top = max(0, scroll.contentView.bounds.minY - textView.textContainerOrigin.y)
+        let g = lm.glyphIndex(for: NSPoint(x: 0, y: top), in: tc)
+        return byteOffset(ofChar: lm.characterIndexForGlyph(at: g))
+    }
+
+    /// The character at the top of the view, and how far into its line the view starts: to put the view back on
+    /// that same line after text is added or let go above it (`restoreTop`).
+    fileprivate func topAnchor() -> (char: Int, into: CGFloat)? {
+        guard let lm = textView.layoutManager, let tc = textView.textContainer, (textView.textStorage?.length ?? 0) > 0 else { return nil }
+        let top = max(0, scroll.contentView.bounds.minY - textView.textContainerOrigin.y)
+        let g = lm.glyphIndex(for: NSPoint(x: 0, y: top), in: tc)
+        let line = lm.lineFragmentRect(forGlyphAt: g, effectiveRange: nil)
+        return (lm.characterIndexForGlyph(at: g), top - line.minY)
+    }
+
+    /// The view back on the line `anchor` named, now `shift` characters along (text was added or taken away above).
+    fileprivate func restoreTop(_ anchor: (char: Int, into: CGFloat), shift: Int) {
+        guard let lm = textView.layoutManager, let length = textView.textStorage?.length, length > 0 else { return }
+        let ch = min(max(0, anchor.char + shift), length - 1)
+        let line = lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: ch), effectiveRange: nil)
+        programmatically {
+            scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.minX, y: line.minY + anchor.into + textView.textContainerOrigin.y))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+    }
+
+    /// About how many of the file's bytes fit on screen.
+    private var visibleBytes: Int {
+        let lines = max(1, winChunks.reduce(0) { $0 + $1.lines })
+        let bytes = winChunks.reduce(0) { $0 + $1.bytes }
+        return Int(scroll.contentView.bounds.height / max(1, lineHeight)) * max(1, bytes / lines)
+    }
+
+    /// For `FileScroller`: where the view is in the whole file, and how much of it shows, as fractions.
+    fileprivate func filePosition() -> (top: Double, size: Double) {
+        guard fileSize > 0 else { return (0, 1) }
+        let seen = visibleBytes
+        let room = max(1, fileSize - seen)
+        // At the very end of a window that reaches the file's end: the bottom.
+        if windowAtEnd, endInView { return (1, min(1, Double(seen) / Double(fileSize))) }
+        return (min(1, Double(visibleByte()) / Double(room)), min(1, Double(seen) / Double(fileSize)))
+    }
+
+    fileprivate func showFileScroller(_ on: Bool) {
+        scroll.hasVerticalScroller = !on
+        if on, fileScroller == nil {
+            let s = FileScroller()
+            s.position = { [weak self] in self?.filePosition() ?? (0, 1) }
+            s.onJump = { [weak self] f in self?.scrollerJumped(to: f) }
+            s.scrollTarget = scroll
+            addSubview(s, positioned: .above, relativeTo: scroll)
+            fileScroller = s
+            needsLayout = true
+        } else if !on, let s = fileScroller {
+            s.removeFromSuperview()
+            fileScroller = nil
+        }
+    }
+
+    private func scrollerJumped(to f: Double) {
+        if f >= 0.999 {
+            if windowAtEnd { textView.scrollToEndOfDocument(nil) } else { jumpWindow(to: nil) }
+            return
+        }
+        if tailing { tailing = false }
+        let target = Int(f * Double(max(0, fileSize - visibleBytes)))
+        // Already held (and not at its edge): just there.
+        let held = diskSize - winStart
+        if target >= winStart, target < diskSize - min(held / 4, windowChunk), target >= winStart + (winStart > 0 ? min(held / 4, windowChunk) : 0) {
+            scrollToByte(target)
+        } else {
+            jumpWindow(to: target)
+        }
+    }
+
+    /// Puts the line holding byte `byte` (in the window) at the top.
+    private func scrollToByte(_ byte: Int) {
+        guard let lm = textView.layoutManager, let storage = textView.textStorage, storage.length > 0 else { return }
+        var c = 0, b = winStart, ch = storage.length
+        for k in winChunks {
+            if byte < b + k.bytes { ch = c + Int(Double(byte - b) / Double(max(1, k.bytes)) * Double(k.chars)); break }
+            c += k.chars
+            b += k.bytes
+        }
+        ch = min(max(0, ch), storage.length - 1)
+        let line = (storage.string as NSString).lineRange(for: NSRange(location: ch, length: 0))
+        let rect = lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: line.location), effectiveRange: nil)
+        programmatically {
+            scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.minX, y: rect.minY + textView.textContainerOrigin.y))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+    }
+
+    /// The view moved: near an edge of the window, the next piece there.
+    func windowScrolled() {
+        guard windowed else { return }
+        fileScroller?.needsDisplay = true
+        guard loaded, !winBusy else { return }
+        let visible = scroll.contentView.bounds
+        // A piece and a half ahead (or 8 screens, if more): a fast scroll doesn't reach the edge before the next
+        // piece arrives (a read over ssh takes a few hundred ms).
+        let lines = winChunks.reduce(0) { $0 + $1.lines }
+        let pieceHeight = CGFloat(lines / max(1, winChunks.count)) * lineHeight
+        let margin = max(max(visible.height, 200) * 8, pieceHeight * 1.5)
+        if visible.minY - textView.textContainerOrigin.y < margin, winStart > 0 {
+            extendWindow(up: true)
+        } else if textView.frame.height - visible.maxY < margin, !windowAtEnd {
+            extendWindow(up: false)
+        }
+    }
+
+    /// Fetches the piece above or below the window and adds it, letting go of the far end if it's grown too big.
+    private func extendWindow(up: Bool) {
+        winBusy = true
+        let gen = winGeneration, asked = Date()
+        if up {
+            let end = winStart, start = max(0, end - windowChunk)
+            fs.readPart(path, from: start, whole: 0, tail: end - start) { [weak self] result in
+                guard let self, gen == self.winGeneration else { return }
+                self.winBusy = false
+                guard self.winStart == end, case .success(let part) = result, let storage = self.textView.textStorage else { return }
+                var data = part.data.prefix(end - start)
+                var from = start
+                // From the first whole line (a line longer than a piece comes whole).
+                if start > 0, let nl = data.firstIndex(of: 0x0A), nl + 1 < data.endIndex {
+                    from = start + (nl - data.startIndex) + 1
+                    data = data[(nl + 1)...]
+                }
+                guard !data.isEmpty else { return }
+                let applying = Date()
+                let text = self.decodeWindow(Data(data))
+                let chars = (text as NSString).length, lines = Self.newlines(in: text)
+                let anchor = self.topAnchor()
+                storage.insert(NSAttributedString(string: text, attributes: self.textView.typingAttributes), at: 0)
+                // Every line moved along: the gutter finds them again (a scan of the window, a few ms).
+                self.ruler.invalidateLines()
+                self.logPainted.shift(startingAt: 0, by: chars)
+                self.winStart = from
+                self.winChunks.insert(WinChunk(bytes: data.count, chars: chars, lines: lines), at: 0)
+                self.winTopShift -= lines
+                self.ruler.lineBase = self.ruler.lineBase.map { $0 - lines }
+                // What's on screen stays put: the same line at the top.
+                if let anchor { self.restoreTop(anchor, shift: chars) }
+                self.trimWindow(fromTop: false)
+                self.windowChanged()
+                Diagnostics.log("window \(self.diagName): +\(data.count >> 10) KB above (from byte \(from)), read in \(Diagnostics.ms(asked)) ms, added in \(Diagnostics.ms(applying)) ms; holding \((self.diskSize - self.winStart) >> 10) KB")
+            }
+        } else {
+            let start = diskSize
+            // From a little before the window's end, to keep the bytes that end it (`diskTail`) once it's the file's.
+            let overlap = min(256, start - winStart)
+            fs.readPart(path, from: start - overlap, whole: 0, tail: windowChunk + overlap) { [weak self] result in
+                guard let self, gen == self.winGeneration else { return }
+                self.winBusy = false
+                guard self.diskSize == start, case .success(let part) = result, part.data.count >= overlap,
+                      let storage = self.textView.textStorage else { return }
+                self.fileSize = max(self.fileSize, part.size)
+                var data = part.data.dropFirst(overlap)
+                let reachedEnd = start + data.count >= part.size
+                var rest = Data()
+                if !reachedEnd, let nl = data.lastIndex(of: 0x0A) {
+                    data = data[...nl]
+                } else if reachedEnd {
+                    let (whole, tail) = Self.splitUTF8(Data(data))
+                    data = whole[...]
+                    rest = tail
+                }
+                guard !data.isEmpty || !rest.isEmpty else { return }
+                let applying = Date()
+                let text = self.decodeWindow(Data(data))
+                let before = storage.length
+                storage.append(NSAttributedString(string: text, attributes: self.textView.typingAttributes))
+                self.winChunks.append(WinChunk(bytes: data.count, chars: (text as NSString).length, lines: Self.newlines(in: text)))
+                self.diskSize = start + data.count + rest.count
+                self.carry = rest
+                self.diskTail = Data(part.data.prefix(overlap + data.count + rest.count).suffix(256))
+                self.ruler.linesAppended(from: before)
+                self.trimWindow(fromTop: true)
+                self.windowChanged()
+                Diagnostics.log("window \(self.diagName): +\(data.count >> 10) KB below\(reachedEnd ? " (to the end)" : ""), read in \(Diagnostics.ms(asked)) ms, added in \(Diagnostics.ms(applying)) ms; holding \((self.diskSize - self.winStart) >> 10) KB")
+            }
+        }
+    }
+
+    /// The last piece split (at lines) into pieces of about `windowChunk`, so the window lets go of a piece at a
+    /// time: what a load or a jump brought in one read, or new lines that kept arriving into it.
+    fileprivate func splitLastChunk() {
+        guard let storage = textView.textStorage else { return }
+        let s = storage.string as NSString
+        while var last = winChunks.last, last.bytes > windowChunk * 3 / 2, last.lines > 1 {
+            let start = s.length - last.chars
+            // About a piece's worth of characters in (as many as bytes, near enough), to the end of that line.
+            let cut = s.lineRange(for: NSRange(location: start + min(last.chars - 1, windowChunk), length: 0))
+            let firstChars = NSMaxRange(cut) - start
+            guard firstChars > 0, firstChars < last.chars else { return }
+            let firstText = s.substring(with: NSRange(location: start, length: firstChars))
+            let firstLines = Self.newlines(in: firstText)
+            let firstBytes = firstText.utf8.count + (usesCRLF ? firstLines : 0)
+            last.bytes -= firstBytes
+            last.chars -= firstChars
+            last.lines -= firstLines
+            winChunks[winChunks.count - 1] = WinChunk(bytes: firstBytes, chars: firstChars, lines: firstLines)
+            winChunks.append(last)
+        }
+    }
+
+    /// Lets go of whole pieces at one end while the window holds more than `windowMax`, never what's on screen or
+    /// within two screens of it. `fromTop`: the top end (as the window moves down).
+    fileprivate func trimWindow(fromTop: Bool) {
+        guard let storage = textView.textStorage else { return }
+        var total = winChunks.reduce(0) { $0 + $1.bytes }
+        let h = lineHeight
+        var trimmed = 0
+        while total > windowMax, winChunks.count > 1 {
+            let visible = scroll.contentView.bounds
+            if fromTop {
+                let k = winChunks[0]
+                guard k.chars <= storage.length, CGFloat(k.lines) * h < visible.minY - visible.height * 2 else { break }
+                let anchor = topAnchor()
+                storage.deleteCharacters(in: NSRange(location: 0, length: k.chars))
+                logPainted.remove(integersIn: 0..<k.chars)
+                logPainted.shift(startingAt: k.chars, by: -k.chars)
+                winStart += k.bytes
+                winTopShift += k.lines
+                ruler.lineBase = ruler.lineBase.map { $0 + k.lines }
+                winChunks.removeFirst()
+                if let anchor { restoreTop(anchor, shift: -k.chars) }
+                total -= k.bytes
+            } else {
+                let k = winChunks[winChunks.count - 1]
+                let keptHeight = CGFloat(winChunks.dropLast().reduce(0) { $0 + $1.lines }) * h
+                guard k.chars <= storage.length, keptHeight > visible.maxY + visible.height * 2 else { break }
+                storage.deleteCharacters(in: NSRange(location: storage.length - k.chars, length: k.chars))
+                logPainted.remove(integersIn: storage.length..<(storage.length + k.chars))
+                winChunks.removeLast()
+                total -= k.bytes
+                // No longer the file's end: what ended it, and any part of a character there, go too.
+                diskSize = winStart + total
+                carry = Data()
+                diskTail = Data()
+            }
+            trimmed += 1
+        }
+        if trimmed > 0 {
+            ruler.invalidateLines()
+            Diagnostics.log("window \(diagName): let go of \(trimmed) piece(s) at the \(fromTop ? "top" : "bottom"); holding \((diskSize - winStart) >> 10) KB")
+        }
+    }
+
+    /// The window again, around byte `byte` (its line at the top), or at the file's end (nil): one read.
+    /// `keepView`: not the user's jump but the file read again; where the view is when it arrives is kept (and if
+    /// they're scrolling then, it waits for them to stop).
+    fileprivate func jumpWindow(to byte: Int?, keepView: Bool = false) {
+        winGeneration += 1
+        let gen = winGeneration, asked = Date()
+        winBusy = true
+        let size = fileSize
+        let target = byte.map { min(max(0, $0), size) }
+        let start = target.map { max(0, $0 - windowChunk) } ?? max(0, size - 2 * windowChunk)
+        fs.readPart(path, from: start, whole: 0, tail: 2 * windowChunk) { [weak self] result in
+            guard let self, gen == self.winGeneration else { return }
+            self.winBusy = false
+            guard case .success(let part) = result, let storage = self.textView.textStorage else {
+                Diagnostics.log("window \(self.diagName): the read failed")
+                return
+            }
+            if keepView, self.liveScrolling {
+                Diagnostics.log("window \(self.diagName): read again during a scroll; again once it ends")
+                self.reloadAfterScroll = true
+                return
+            }
+            // Where the view is now (it may have moved since this was asked for).
+            let target = keepView ? self.visibleByte() : target
+            let applying = Date()
+            self.fileSize = part.size
+            var data = part.data[...]
+            var from = start
+            if start > 0, let nl = data.firstIndex(of: 0x0A), nl + 1 < data.endIndex {
+                from = start + (nl - data.startIndex) + 1
+                data = data[(nl + 1)...]
+            }
+            let reachedEnd = start + part.data.count >= part.size
+            var rest = Data()
+            if !reachedEnd, let nl = data.lastIndex(of: 0x0A) {
+                data = data[...nl]
+            } else if reachedEnd {
+                let (whole, tail) = Self.splitUTF8(Data(data))
+                data = whole[...]
+                rest = tail
+            }
+            // The view moved out of what was read (scrolled on while it came): read around where it is now.
+            if keepView, let t = target, t < from || t > from + data.count {
+                Diagnostics.log("window \(self.diagName): the view moved on while it was read; reading there")
+                return self.jumpWindow(to: t, keepView: true)
+            }
+            let text = self.decodeWindow(Data(data))
+            storage.setAttributedString(NSAttributedString(string: text, attributes: self.textView.typingAttributes))
+            self.logPainted = IndexSet()
+            self.winStart = from
+            self.diskSize = from + data.count + rest.count
+            self.carry = rest
+            self.diskTail = Data(part.data.prefix(self.diskSize - start).suffix(256))
+            self.winChunks = [WinChunk(bytes: data.count, chars: (text as NSString).length, lines: Self.newlines(in: text))]
+            self.splitLastChunk()
+            self.ruler.lineBase = nil
+            self.ruler.invalidateLines()
+            self.countWindowLines()
+            self.textView.setSelectedRange(NSRange(location: 0, length: 0))
+            if let target, target > from { self.scrollToByte(target) }
+            else if target == nil { self.programmatically { self.textView.scrollToEndOfDocument(nil) } }
+            else {
+                self.programmatically {
+                    self.scroll.contentView.scroll(to: .zero)
+                    self.scroll.reflectScrolledClipView(self.scroll.contentView)
+                }
+            }
+            self.windowChanged()
+            Diagnostics.log("window \(self.diagName): moved to \(target.map { "byte \($0)" } ?? "the end") of \(part.size), read in \(Diagnostics.ms(asked)) ms, shown in \(Diagnostics.ms(applying)) ms")
+        }
+    }
+
+    /// Counts (on the host, over ssh) the lines before the window, for its line numbers.
+    fileprivate func countWindowLines() {
+        let gen = winGeneration, start = winStart, shift = winTopShift, asked = Date()
+        fs.countLines(path, upTo: start) { [weak self] n in
+            guard let self, let n, gen == self.winGeneration else { return }
+            self.ruler.lineBase = n + (self.winTopShift - shift)
+            Diagnostics.log("window \(self.diagName): \(n) lines before byte \(start), counted in \(Diagnostics.ms(asked)) ms")
+        }
+    }
+
+    private func windowChanged() {
+        findTextChanged()
+        paintVisibleLog()
+        fileScroller?.needsDisplay = true
+        // Still near an edge (a quick scroll): the next piece too.
+        DispatchQueue.main.async { [weak self] in self?.windowScrolled() }
+    }
+
+    /// Dev aid: where the window is, and what it holds.
+    var devWindowState: String {
+        "windowed=\(windowed) bytes \(winStart)..<\(diskSize) of \(fileSize), \(winChunks.count) pieces, \(textView.textStorage?.length ?? 0) chars, lineBase \(ruler.lineBase.map(String.init) ?? "counting"), top byte \(visibleByte()), first line \((textView.string as NSString).substring(with: (textView.string as NSString).lineRange(for: NSRange(location: min(textView.textStorage?.length ?? 0, (textView.layoutManager.flatMap { lm in textView.textContainer.map { lm.characterIndexForGlyph(at: lm.glyphIndex(for: NSPoint(x: 0, y: max(0, scroll.contentView.bounds.minY - textView.textContainerOrigin.y)), in: $0)) } }) ?? 0), length: 0))).trimmingCharacters(in: .newlines).prefix(80))"
+    }
+    func devJump(_ fraction: Double) { scrollerJumped(to: fraction) }
+    /// Dev aid: a scroll wheel turned up over the text (what the input monitor reports), and the view moving up.
+    func devWheelUp(_ points: CGFloat) {
+        userScrolledUp()
+        let o = scroll.contentView.bounds.origin
+        scroll.contentView.scroll(to: NSPoint(x: o.x, y: max(0, o.y - points)))
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+    var devView: String {
+        "y \(Int(scroll.contentView.bounds.minY)) of \(Int(textView.frame.height)), \(atVeryEnd ? "at the very end" : "\(Int(textView.frame.maxY - scroll.contentView.bounds.maxY)) px above the end"), tail \(tailing ? "on" : "off"), \(devTopLine)"
+    }
+    /// Dev aid: the line number the gutter gives the top line on screen, and that line's text.
+    var devTopLine: String {
+        guard let lm = textView.layoutManager, let tc = textView.textContainer else { return "-" }
+        let top = max(0, scroll.contentView.bounds.minY - textView.textContainerOrigin.y)
+        let ch = lm.characterIndexForGlyph(at: lm.glyphIndex(for: NSPoint(x: 0, y: top), in: tc))
+        let s = textView.string as NSString
+        let before = ruler.lineIndex(ofChar: min(ch, s.length))
+        let text = s.substring(with: s.lineRange(for: NSRange(location: min(ch, s.length), length: 0))).trimmingCharacters(in: .newlines)
+        let row = text.range(of: #"row \d+"#, options: .regularExpression).map { String(text[$0]) } ?? String(text.prefix(40))
+        return "gutter says \(ruler.lineBase.map { String($0 + before + 1) } ?? "?"), the line says \(row)"
+    }
+}
+
+/// The scroller for a big file (see "Big files"): where the view is in the whole file, not just the window held.
+/// Dragging it shows where it'll land and fetches there on letting go; a click on the track jumps there.
+final class FileScroller: NSView {
+    static let width: CGFloat = 12
+    var position: () -> (top: Double, size: Double) = { (0, 1) }
+    var onJump: ((Double) -> Void)?
+    /// Wheel and trackpad scrolling over it go to the text.
+    weak var scrollTarget: NSScrollView?
+    private var drag: (grab: CGFloat, fraction: Double)?
+    private var hover = false
+
+    override var isFlipped: Bool { true }
+
+    private func thumb(_ p: (top: Double, size: Double)) -> NSRect {
+        let h = min(bounds.height, max(28, CGFloat(p.size) * bounds.height))
+        return NSRect(x: 3, y: (CGFloat(p.top) * (bounds.height - h)).rounded(), width: bounds.width - 6, height: h)
+    }
+
+    private var current: (top: Double, size: Double) {
+        let p = position()
+        return drag.map { ($0.fraction, p.size) } ?? p
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let th = Config.shared.theme
+        if hover || drag != nil {
+            th.foreground.withAlphaComponent(0.05).setFill()
+            bounds.fill()
+        }
+        let r = thumb(current)
+        th.foreground.withAlphaComponent(drag != nil ? 0.5 : hover ? 0.38 : 0.25).setFill()
+        NSBezierPath(roundedRect: r, xRadius: r.width / 2, yRadius: r.width / 2).fill()
+        if let d = drag {
+            let label = "\(Int((d.fraction * 100).rounded()))%" as NSString
+            let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium), .foregroundColor: th.foreground]
+            let size = label.size(withAttributes: attrs)
+            let box = NSRect(x: -size.width - 14, y: r.midY - 9, width: size.width + 10, height: 18)
+            th.background.withAlphaComponent(0.95).setFill()
+            NSBezierPath(roundedRect: box, xRadius: 4, yRadius: 4).fill()
+            label.draw(at: NSPoint(x: box.minX + 5, y: box.midY - size.height / 2), withAttributes: attrs)
+        }
+    }
+
+    // The percentage label draws to its left.
+    override var wantsDefaultClipping: Bool { false }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with e: NSEvent) { hover = true; needsDisplay = true }
+    override func mouseExited(with e: NSEvent) { hover = false; needsDisplay = true }
+    override func scrollWheel(with e: NSEvent) { scrollTarget?.scrollWheel(with: e) }
+
+    private func fraction(atThumbTop y: CGFloat, _ p: (top: Double, size: Double)) -> Double {
+        let h = thumb(p).height
+        return Double(min(1, max(0, y / max(1, bounds.height - h))))
+    }
+
+    override func mouseDown(with e: NSEvent) {
+        let pt = convert(e.locationInWindow, from: nil)
+        let p = position()
+        let r = thumb(p)
+        if r.contains(pt) {
+            drag = (pt.y - r.minY, p.top)
+        } else {
+            // A click on the track: there, with the thumb centred on it.
+            onJump?(fraction(atThumbTop: pt.y - r.height / 2, p))
+        }
+        needsDisplay = true
+    }
+
+    override func mouseDragged(with e: NSEvent) {
+        guard let d = drag else { return }
+        let pt = convert(e.locationInWindow, from: nil)
+        drag = (d.grab, fraction(atThumbTop: pt.y - d.grab, position()))
+        needsDisplay = true
+    }
+
+    override func mouseUp(with e: NSEvent) {
+        guard let d = drag else { return }
+        drag = nil
+        needsDisplay = true
+        onJump?(d.fraction)
+    }
+}
+
 /// Line numbers in the editor's gutter.
 final class LineNumberRuler: NSRulerView {
     weak var textView: NSTextView?
     var font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
     /// UTF-16 offsets where each line starts; rebuilt lazily after edits.
     private var lineStarts: [Int]?
+    /// Lines in the file before the text shown (a big file shows a window of itself); nil while that's being
+    /// counted, when no numbers show.
+    var lineBase: Int? = 0 {
+        didSet {
+            guard lineBase != oldValue else { return }
+            if let l = lineStarts { fitWidth(lines: l.count) }
+            needsDisplay = true
+        }
+    }
 
     override var isFlipped: Bool { true }
 
@@ -2176,7 +2981,7 @@ final class LineNumberRuler: NSRulerView {
 
     /// Wide enough for the largest line number.
     private func fitWidth(lines: Int) {
-        let digits = max(3, String(lines).count)
+        let digits = max(3, String(lines + (lineBase ?? 0)).count)
         let w = (CGFloat(digits) * ("8" as NSString).size(withAttributes: [.font: font]).width + 22).rounded()
         if abs(ruleThickness - w) > 0.5 {
             reservedThicknessForMarkers = 0
@@ -2187,41 +2992,52 @@ final class LineNumberRuler: NSRulerView {
         }
     }
 
-    override func drawHashMarksAndLabels(in rect: NSRect) {
-        let th = Config.shared.theme
-        guard let tv = textView, let lm = tv.layoutManager, let tc = tv.textContainer else { return }
+    /// The index of the line holding character `ch` (from 0, in the text shown).
+    func lineIndex(ofChar ch: Int) -> Int {
         let lines = starts()
-        let visible = tv.visibleRect
-        let glyphs = lm.glyphRange(forBoundingRect: visible, in: tc)
-        let firstChar = lm.characterIndexForGlyph(at: glyphs.location)
-        let caret = tv.selectedRange().location
-        // Binary search for the first line on screen.
         var lo = 0, hi = lines.count - 1
         while lo < hi {
             let mid = (lo + hi + 1) / 2
-            if lines[mid] <= firstChar { lo = mid } else { hi = mid - 1 }
+            if lines[mid] <= ch { lo = mid } else { hi = mid - 1 }
         }
-        let length = (tv.string as NSString).length
+        return lo
+    }
+
+    /// Only the lines on screen, as already laid out to show them: asking where any other line is would make AppKit
+    /// lay out (and in a long text, generate glyphs for) everything up to it, which in a text of many MB with the
+    /// caret at its end froze the app for seconds on every scroll.
+    override func drawHashMarksAndLabels(in rect: NSRect) {
+        let th = Config.shared.theme
+        guard let tv = textView, let lm = tv.layoutManager, let tc = tv.textContainer, let base = lineBase else { return }
+        let lines = starts()
+        let visible = tv.visibleRect
+        let glyphs = lm.glyphRange(forBoundingRect: visible, in: tc)
+        let caret = tv.selectedRange().location
+        let caretLine = lineIndex(ofChar: caret)
         let originY = tv.textContainerOrigin.y
-        var line = lo
-        while line < lines.count {
-            let start = lines[line]
-            let frag: NSRect
-            if start >= length {
-                // Empty last line after a trailing newline.
-                guard start == length, length > 0 else { break }
-                frag = lm.extraLineFragmentRect
-            } else {
-                frag = lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: start), effectiveRange: nil)
+        let length = (tv.string as NSString).length
+        func label(_ line: Int, at fragment: NSRect) {
+            let y = convert(NSPoint(x: 0, y: fragment.minY + originY), from: tv).y
+            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: line == caretLine ? th.foreground.withAlphaComponent(0.85) : th.dimText.withAlphaComponent(0.45)]
+            let text = "\(base + line + 1)" as NSString
+            let size = text.size(withAttributes: attrs)
+            text.draw(at: NSPoint(x: ruleThickness - size.width - 12, y: y + (fragment.height - size.height) / 2), withAttributes: attrs)
+        }
+        if glyphs.length > 0 {
+            lm.enumerateLineFragments(forGlyphRange: glyphs) { fragment, _, _, range, _ in
+                let ch = lm.characterIndexForGlyph(at: range.location)
+                let line = self.lineIndex(ofChar: ch)
+                // A wrapped line's later parts get no number.
+                guard lines[line] == ch else { return }
+                label(line, at: fragment)
             }
-            let y = convert(NSPoint(x: 0, y: frag.minY + originY), from: tv).y
-            if y > bounds.height { break }
-            let isCaretLine = caret >= start && (line + 1 >= lines.count || caret < lines[line + 1])
-            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: isCaretLine ? th.foreground.withAlphaComponent(0.85) : th.dimText.withAlphaComponent(0.45)]
-            let label = "\(line + 1)" as NSString
-            let size = label.size(withAttributes: attrs)
-            label.draw(at: NSPoint(x: ruleThickness - size.width - 12, y: y + (frag.height - size.height) / 2), withAttributes: attrs)
-            line += 1
+        }
+        // The empty last line after a final newline.
+        if length > 0, NSMaxRange(glyphs) >= lm.numberOfGlyphs, lines.last == length {
+            let extra = lm.extraLineFragmentRect
+            if !extra.isEmpty { label(lines.count - 1, at: extra) }
+        } else if length == 0 {
+            label(0, at: lm.extraLineFragmentRect)
         }
     }
 

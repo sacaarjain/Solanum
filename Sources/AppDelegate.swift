@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Writes to a pipe whose reader died (e.g. an ssh helper for the file sidebar) must fail, not kill the app.
         signal(SIGPIPE, SIG_IGN)
+        Diagnostics.start()
         ShellIntegration.install()
         InstalledAgents.shared.refresh()
         Config.shared.load()
@@ -112,6 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        Diagnostics.quitting()
         if forgettingSession { SessionStore.forget() } else { SessionStore.save(windows, sync: true) }
         SessionStore.stopSaving()
         for w in windows { w.tabs.forEach { $0.terminateAll() } }

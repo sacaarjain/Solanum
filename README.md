@@ -43,12 +43,14 @@ purple, and each planet theme is colored like its planet, with that planet besid
 - A Git Graph of every branch's history (⌃⌘G, the status bar's branch picker, or Show Git Graph in the command palette):
   colored lanes, branch and tag labels, and a card with each commit's author, date, message and size on hover.
 - A plain-text editor above the terminal, with syntax colors for JSON, YAML and XML, Beautify (⌥⌘F) to
-  re-indent them, and previews for images, PDFs, video and audio. Files up to 50 MB open for editing; bigger ones
-  (logs, on ssh hosts too) open read-only, in full up to 512 MB and past that their last 10 MB. Open files stay
+  re-indent them, and previews for images, PDFs, video and audio. Files up to 16 MB open for editing; bigger ones
+  (logs, on ssh hosts too) open read-only and as `less` shows them: at their end at once, whatever their size, with
+  the rest fetched in pieces as you scroll, a scroller for the whole file to jump anywhere, and line numbers
+  counted on the host. Open files stay
   current as they change on disk (an agent's edits, git, a formatter), as in VS Code: at once on this Mac, and
   within a second on ssh hosts while the file is showing. With unsaved edits the tab says "Changed on Disk" instead,
   and saving offers Compare, Overwrite or Revert. Tail File in the editor's header keeps a growing file's end in
-  view, like tail -f.
+  view, like tail -f; scrolling up pauses it, and scrolling back to the end follows again.
 - Logs (`.log`, `.out`, rotated `app.log.1`, or any file with color codes) are colored like Notepad++'s log
   highlighters: time, thread, level, logger, numbers, strings, paths and URLs, exceptions and stack traces, with
   error and warning entries (and their stack traces) tinted red and yellow. Color codes a logger wrote into the file

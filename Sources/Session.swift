@@ -18,6 +18,9 @@ struct PaneState: Codable {
     /// Restoring logs in again and goes back there, once the tab is first shown.
     var ssh: String?
     var remoteCwd: String?
+    /// Names this pane's own shell history (see `ShellIntegration.historyFile`), so ↑ after a restart gives what was
+    /// run here.
+    var history: String?
 }
 
 indirect enum PaneNode: Codable {
@@ -187,6 +190,7 @@ extension TabSession {
             // Not shown since it was restored: saved again as it came back, its agent and ssh session included.
             if !t.hasStarted, var saved = t.restoredFrom {
                 saved.cwd = t.currentDirectory
+                saved.history = t.historyID
                 if !Config.shared.restoreScrollback { saved.text = nil }
                 return .pane(saved)
             }
@@ -199,7 +203,7 @@ extension TabSession {
                 : running == nil && waiting != nil ? t.restoredFrom?.agentSession : nil
             return .pane(PaneState(cwd: t.currentDirectory, text: text?.isEmpty == false ? text : nil,
                                    agent: running?.command ?? waiting, agentSession: session,
-                                   ssh: ssh, remoteCwd: ssh == nil ? nil : t.browseDirectory))
+                                   ssh: ssh, remoteCwd: ssh == nil ? nil : t.browseDirectory, history: t.historyID))
         }
         if let s = v as? PaneSplitView {
             let children = s.arrangedSubviews.compactMap(node)
@@ -217,6 +221,7 @@ extension TabSession {
             case .pane(let p):
                 let v = TerminalView(cwd: p.cwd.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil })
                 v.restoredFrom = p
+                if let h = p.history { v.historyID = h }
                 if let text = p.text { v.restoredText = text + TabSession.restoredBanner }
                 if let command = TabSession.continueCommand(agent: p.agent ?? (p.claude == true ? "claude" : nil), session: p.agentSession) {
                     v.pendingCommand = command

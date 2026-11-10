@@ -144,7 +144,7 @@ extension TerminalView {
             if isSelected(b) || b.failed || showsRunningBar(b) { h.combine(s.last) }
         }
         for b in codeBoxes { h.combine(b.first); h.combine(b.last); h.combine(b.indent); h.combine(b.kind == .table) }
-        h.combine(copiedBox); h.combine(hoverCopyButton)
+        h.combine(copiedBox); h.combine(hoverCopyButton); h.combine(hoverBox)
         if layoutChips { layoutImageChips() }
         let st = imageChipState
         for s in st.strips {
