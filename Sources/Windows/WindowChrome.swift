@@ -102,6 +102,8 @@ struct WindowChrome {
     var themeHovered = false
     /// Keep Awake's time left ("7h 59m"), shown over its cup; nil while off.
     var keepAwakeLeft: String?
+    /// Where the cup's steam is in its rise (seconds, any origin) while Keep Awake is on and animating; nil draws it still.
+    var steamTime: Double?
     /// A tab being dragged, and where its left edge is.
     /// Each group's chip, by its first tab, and the run of tabs it spans.
     var chips: [Int: (label: String, color: UInt32, last: Int, collapsed: Bool)] = [:]
@@ -410,6 +412,39 @@ struct WindowChrome {
         }
     }
 
+    /// A coffee cup, in outline, on a 24-unit square: its body, then its handle (one path, so where they meet isn't
+    /// drawn twice).
+    private static let cup = "M5 12H16.5V15.5C16.5 17.7 14.7 19.5 12.5 19.5H9C6.8 19.5 5 17.7 5 15.5Z M16.5 13.2H17.8C19.1 13.2 20 14.1 20 15.2C20 16.3 19.1 17.2 17.8 17.2H16.5"
+
+    /// Keep Awake's cup, centered in `r`; with steam rising from it while it's on (`steam`, in seconds, moves it).
+    static func drawCup(on canvas: Canvas, in r: UIRect, scale: Float, color: UInt32, alpha: Float, steam: Double?) {
+        // 24 units across 16 pixels at 100%.
+        let unit = 16 * scale / 24, side = 24 * unit
+        let x = (r.x + (r.width - side) / 2).rounded(), y = (r.y + (r.height - side) / 2).rounded()
+        sol_canvas_stroke_svg_path(canvas.raw, cup, x, y, unit, color, alpha, 1.7)
+        guard let t = steam else { return }
+        // Three wisps, each a wave travelling up and fading out at the top, a little out of step with each other.
+        for (k, base) in [Float(7.4), 10.75, 14.1].enumerated() {
+            let phase = Float(t.truncatingRemainder(dividingBy: 1000)) * 3.2 + Float(k) * 2.1
+            var points: [Float] = []
+            let bottom: Float = 10.2, top: Float = 3, steps = 10
+            for i in 0...steps {
+                let f = Float(i) / Float(steps), yy = bottom - (bottom - top) * f
+                // Wider as it rises, as steam spreads.
+                let sway = (0.2 + 0.5 * f) * sin(yy * 0.95 + phase)
+                points += [x + (base + sway) * unit, y + yy * unit]
+            }
+            // The lower half strong, the upper fainter: two strokes, meeting at the middle point.
+            let split = steps / 2
+            points.withUnsafeBufferPointer { p in
+                sol_canvas_stroke_polyline(canvas.raw, p.baseAddress, Int32(split + 1), 0, color, alpha * 0.8, 1.05 * scale)
+            }
+            Array(points[(split * 2)...]).withUnsafeBufferPointer { p in
+                sol_canvas_stroke_polyline(canvas.raw, p.baseAddress, Int32(p.count / 2), 0, color, alpha * 0.35, 1.05 * scale)
+            }
+        }
+    }
+
     /// What the pointer over Keep Awake's cup shows: whether it's on, and for how much longer.
     var keepAwakeTip: String {
         keepAwakeLeft.map { "Keeping this PC awake \u{00B7} \($0) left" } ?? "Caffeinate is off \u{00B7} click to start it"
@@ -637,8 +672,9 @@ struct WindowChrome {
         // Keep Awake's cup: in the accent color while it's on, grey while it's off.
         let cup = layout.keepAwakeButton
         if hovered == .keepAwake { sol_canvas_fill_rounded(canvas.raw, cup.x, cup.y, cup.width, cup.height, 4 * scale, fg, 0.10) }
-        icon(0xEC32, cup, pixels: 12 * scale, color: keepAwakeLeft != nil ? TerminalPalette.accent : nil,
-             alpha: keepAwakeLeft != nil ? 1 : hovered == .keepAwake ? 0.7 : 0.45)
+        let on = keepAwakeLeft != nil
+        Self.drawCup(on: canvas, in: cup, scale: scale, color: on ? TerminalPalette.accent : fg,
+                     alpha: on ? 1 : hovered == .keepAwake ? 0.7 : 0.45, steam: on ? (steamTime ?? 0) : nil)
 
         // Each column's half: over ssh the host, git, then the folder's parts, each of which opens a menu of what's in it.
         // `hoveredCrumb` counts the left half's parts first, then the right's.

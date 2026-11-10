@@ -171,7 +171,7 @@ final class TerminalWindow {
         canvas.padding = scaledPadding()
         applyBackdrop()
         AppSettings.shared.onChange.append { [weak self] in self?.settingsChanged() }
-        KeepAwake.onChange.append { [weak self] in self?.invalidate() }
+        KeepAwake.onChange.append { [weak self] in self?.updateSteam(); self?.invalidate() }
         // WSL's distributions, for the shell menus, once known.
         Shells.findWSL(post: { [weak self] work in self?.runOnWindowThread(work) }, done: {})
         Self.windows[created] = self
@@ -490,6 +490,17 @@ final class TerminalWindow {
     private static let slideTimer: UINT_PTR = 5
     /// While the Quantum Moon's reading animates.
     private static let readingTimer: UINT_PTR = 6
+    /// While Keep Awake is on: the cup's steam rising, about 12 times a second.
+    private static let steamTimer: UINT_PTR = 7
+    private var steaming = false
+
+    /// The steam moves while Keep Awake is on, the window's showing and Windows' animation effects are on; else it stands still.
+    func updateSteam() {
+        let want = KeepAwake.isOn && animatesSidebars && !IsIconic(hwnd)
+        guard want != steaming else { return }
+        steaming = want
+        if want { _ = SetTimer(hwnd, Self.steamTimer, 80, nil) } else { _ = KillTimer(hwnd, Self.steamTimer) }
+    }
 
     /// Windows' own "Animation effects" setting, which turns off motion like this.
     var animatesSidebars: Bool {
@@ -870,6 +881,7 @@ final class TerminalWindow {
         }
         chrome.themeName = AppSettings.shared.themeName.uppercased()
         chrome.keepAwakeLeft = KeepAwake.secondsLeft.map(KeepAwake.shortDuration)
+        chrome.steamTime = steaming ? Date().timeIntervalSinceReferenceDate : nil
         // As on the Mac: a planet theme's planet, Solanum Default's flower, and nothing for the rest. The Quantum Moon
         // may have wandered off (see QuantumMoon), leaving its name.
         let theme = AppSettings.shared.themeName, custom = AppSettings.shared.customThemes.contains { $0.name == theme }
@@ -1103,6 +1115,9 @@ final class TerminalWindow {
                 slideStep()
             } else if wParam == WPARAM(Self.readingTimer) {
                 readingTick()
+            } else if wParam == WPARAM(Self.steamTimer) {
+                updateSteam()
+                invalidate()
             } else {
                 // An agent starting, stopping or changing what it's doing shows on its tab.
                 if panes.map({ $0.tick() }).contains(true) { invalidate() }
@@ -1118,6 +1133,7 @@ final class TerminalWindow {
                 }
                 lookForChanges()
                 KeepAwake.tick()
+                updateSteam()
                 let awake = KeepAwake.secondsLeft.map(KeepAwake.shortDuration)
                 if awake != keepAwakeShown { keepAwakeShown = awake; invalidate() }
                 updateBlink()

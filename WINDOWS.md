@@ -67,7 +67,7 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
     Save Command as Snippet and Edit Snippets, in the Mac's snippets.json; Refresh Tab has the program redraw.
   - Keep Awake (Ctrl+Shift+A, the Mac's ⇧⌘A): Windows has no caffeinate, so Solanum asks Windows itself to keep the PC
     and display awake for Settings' length (8 hours to start with). Its coffee cup sits after the console button in the
-    status bar, in the accent color while on and grey while off; the pointer on it shows the time left, and a click
+    status bar, in the accent color with steam rising from it while on, and grey while off; the pointer on it shows the time left, and a click
     offers Start Caffeinate, or while on, Add 1 Hour, Subtract 1 Hour and End Caffeinate. Quitting Solanum ends it.
   - Send to Chat (Ctrl+Alt+S, the Mac's ⌥⌘S): the picked (or last) command and its output go to a coding agent's chat,
     one running in any tab or a new one with an agent found on the PATH, as a paste that waits in its input box. Its

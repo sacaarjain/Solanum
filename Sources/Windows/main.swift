@@ -95,6 +95,21 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-git-bar"), CommandLin
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }
 
+// Keep Awake's cup large: off, then five moments of its steam rising, and at 100% and 200%. --draw-cup <png>
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-cup"), CommandLine.arguments.indices.contains(flag + 1) {
+    guard let canvas = Canvas(width: 1100, height: 260, fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.chrome) >= 0 else { exit(1) }
+    WindowChrome.drawCup(on: canvas, in: UIRect(x: 10, y: 10, width: 160, height: 160), scale: 8, color: TerminalPalette.foreground, alpha: 0.45, steam: nil)
+    for i in 0..<5 {
+        WindowChrome.drawCup(on: canvas, in: UIRect(x: 190 + Float(i) * 180, y: 10, width: 160, height: 160), scale: 8, color: TerminalPalette.accent,
+                             alpha: 1, steam: Double(i) * 0.4)
+    }
+    WindowChrome.drawCup(on: canvas, in: UIRect(x: 20, y: 200, width: 22, height: 22), scale: 1, color: TerminalPalette.accent, alpha: 1, steam: 0)
+    WindowChrome.drawCup(on: canvas, in: UIRect(x: 60, y: 190, width: 44, height: 44), scale: 2, color: TerminalPalette.accent, alpha: 1, steam: 0)
+    WindowChrome.drawCup(on: canvas, in: UIRect(x: 120, y: 190, width: 44, height: 44), scale: 2, color: TerminalPalette.foreground, alpha: 0.45, steam: nil)
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
+}
+
 // Ctrl+F's two bars at 200%, for comparing with the Mac's by eye: a file's (Replace showing) above the terminal's.
 // --draw-find <png>
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-find"), CommandLine.arguments.indices.contains(flag + 1) {
