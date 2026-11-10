@@ -72,6 +72,8 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
     one running in any tab or a new one with an agent found on the PATH, as a paste that waits in its input box. When
     it can't be pasted safely it goes on the clipboard, with a card saying so. Settings › Preferences › Continue Agents
     has the command that continues each agent on restore (continue-command-<agent>, as on the Mac).
+  - The pointer over a finished command shows its badge (✓ 1.2s, ✕ exit 1 · 3s) with Send to chat and Copy output, as
+    on the Mac; Ctrl+click picks several (the Mac's ⌘-click), with a bar to Copy All, Send to Chat or Clear them.
   - In a file, as the Mac's ⌘F and VS Code's: Ctrl+F finds and Ctrl+H replaces ("3 of 12", every match shaded), Enter
     or F3 steps on and Shift with them back, Alt+C, Alt+W and Alt+R match case, whole words and regular expressions
     ($1 and the like in the replacement), Tab moves to the Replace field, Ctrl+Enter there replaces all, and Esc closes
