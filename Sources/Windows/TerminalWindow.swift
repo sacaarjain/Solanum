@@ -468,6 +468,11 @@ final class TerminalWindow {
         var l = WindowLayout(width: Float(clientWidth), height: Float(clientHeight), scale: scale, tabCount: panes.count, tabScroll: tabScroll,
                              chips: chipWidths(), hiddenTabs: hiddenTabs, leftWidth: leftWidth, rightWidth: rightIsShowing ? sidebarWidth(right) : 0,
                              showsRightToggle: isSplit, splitCount: splitCount, rightTabScroll: rightTabScroll, splitFraction: splitFraction)
+        // A group opening or closing: its tabs part shown.
+        if let a = groupMotion {
+            let f = a.shown
+            for i in panes.indices where panes[i].group === a.group { l.tabShown[i] = f }
+        }
         // Windows' shells, beside the ssh hosts button.
         l.hasShellButton = true
         return l
@@ -502,6 +507,34 @@ final class TerminalWindow {
     private var slideStart = Date.distantPast
     private var slideFrom: Float = 0
     private static let slideTimer: UINT_PTR = 5
+    /// While a group's tabs slide into or out of its chip.
+    private static let groupTimer: UINT_PTR = 8
+
+    /// A group opening or closing, as on the Mac: its tabs slide out of its chip, or back into it, over a fifth of a second.
+    private struct GroupMotion {
+        let group: TabGroup
+        let opening: Bool
+        let start = Date()
+        static let duration: Double = 0.2
+        var progress: Float { Float(min(Date().timeIntervalSince(start) / Self.duration, 1)) }
+        /// How much of each tab shows: eased out, quick then settling.
+        var shown: Float {
+            let e = 1 - pow(1 - progress, 3)
+            return opening ? e : 1 - e
+        }
+    }
+    private var groupMotion: GroupMotion?
+
+    private func groupStep() {
+        guard let a = groupMotion, a.progress < 1 else {
+            groupMotion = nil
+            KillTimer(hwnd, Self.groupTimer)
+            settleTabScroll()
+            invalidate()
+            return
+        }
+        invalidate()
+    }
     /// While the Quantum Moon's reading animates.
     private static let readingTimer: UINT_PTR = 6
     /// While Keep Awake is on: the cup's steam rising, about 12 times a second.
@@ -1127,6 +1160,8 @@ final class TerminalWindow {
                 activePane.runQuietWork()
             } else if wParam == WPARAM(Self.slideTimer) {
                 slideStep()
+            } else if wParam == WPARAM(Self.groupTimer) {
+                groupStep()
             } else if wParam == WPARAM(Self.readingTimer) {
                 readingTick()
             } else if wParam == WPARAM(Self.steamTimer) {
@@ -1212,8 +1247,14 @@ final class TerminalWindow {
             // A touchpad's sideways swipe or a tilting wheel, which moves the tabs. It's in small steps on a touchpad, so
             // in proportion. Positive is to the right.
             let point = screenPoint(lParam)
-            guard !panes.isEmpty, point.y < layout.tabBarHeight else { return 0 }
+            guard !panes.isEmpty else { return 0 }
             let swiped = Float(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Float(Win.WHEEL_DELTA)
+            // Over a tab's file sub-tabs, it moves those along, as it does the tabs.
+            if point.y >= layout.tabBarHeight {
+                let under = pane(atX: point.x)
+                if let strip = editorStrip(for: under), strip.strip.contains(point.x, point.y) { scrollStrip(under, by: swiped * 80 * scale) }
+                return 1
+            }
             let column = isSplit && point.x >= layout.divider ? 1 : 0
             scrollTabs(by: swiped * layout.tabWidth(column: column), column: column)
             return 1
@@ -4030,6 +4071,11 @@ final class TerminalWindow {
     /// For tests: what's typed in the open dropdown's search box; nil without one.
     var menuSearchText: String? { menu?.search?.text }
 
+    /// For tests: a tab's sub-tab strip, and how far it's scrolled.
+    func subTabStrip(for pane: TerminalPane) -> (rect: UIRect, scroll: Float, maxScroll: Float)? {
+        editorStrip(for: pane).map { ($0.strip, pane.stripScroll, $0.maxScroll) }
+    }
+
     func menuRow(_ title: String) -> UIRect? {
         guard let menu, let i = menu.items.indices.first(where: { menu.title($0) == title }) else { return nil }
         return menu.rect(i)
@@ -4893,7 +4939,13 @@ final class TerminalWindow {
 
     /// Collapsing the group the active tab is in moves to the nearest tab still showing, or a new one if there's none.
     func setCollapsed(_ group: TabGroup, _ collapsed: Bool) {
+        guard group.collapsed != collapsed else { return }
         group.collapsed = collapsed
+        // Its tabs slide into the chip, or out of it, unless Windows has animations off.
+        if animatesSidebars {
+            groupMotion = GroupMotion(group: group, opening: !collapsed)
+            _ = SetTimer(hwnd, Self.groupTimer, 10, nil)
+        }
         if collapsed, activePane.group === group {
             let order = panes.indices.filter { panes[$0].column == activePane.column }.sorted { abs($0 - activeIndex) < abs($1 - activeIndex) }
             if let i = order.first(where: { panes[$0].group?.collapsed != true }) { selectTab(i) } else { addPane() }
@@ -5823,6 +5875,18 @@ final class TerminalWindow {
         _ = SendMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, at(Int(band.x + band.width / 2)))
         _ = SendMessageW(hwnd, Win.WM_MOUSEMOVE, 1, at(Int(x)))
         _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, at(Int(x)))
+    }
+
+    /// For tests: closes every page open in a tab, unsaved changes and all.
+    func closeAllEditors(in pane: TerminalPane) {
+        while !pane.editors.isEmpty { closeEditor(at: pane.editors.count - 1, in: pane, force: true) }
+    }
+
+    /// A sideways swipe over a spot, as a touchpad sends it.
+    func swipe(at r: UIRect, delta: Int) {
+        var point = POINT(x: LONG(r.x + r.width / 2), y: LONG(r.midY))
+        ClientToScreen(hwnd, &point)
+        PostMessageW(hwnd, Win.WM_MOUSEHWHEEL, WPARAM(UInt16(truncatingIfNeeded: delta)) << 16, LPARAM(Int(point.x) & 0xFFFF) | (LPARAM(Int(point.y) & 0xFFFF) << 16))
     }
 
     /// A sideways swipe over the tab bar, as a touchpad sends it.

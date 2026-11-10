@@ -37,6 +37,9 @@ struct WindowLayout {
     var chips: [Int: Float] = [:]
     /// Tabs in collapsed groups, which take no room.
     var hiddenTabs: Set<Int> = []
+    /// Tabs of a group opening or closing: how much of each shows (0 to 1), over what `hiddenTabs` says. They slide
+    /// out of, or back into, the group's chip.
+    var tabShown: [Int: Float] = [:]
     /// How wide the sidebars are, 0 when hidden.
     var leftWidth: Float = 0
     var rightWidth: Float = 0
@@ -114,11 +117,14 @@ struct WindowLayout {
     /// Which column a tab is in: 0 unless it's split and the tab is the right one's.
     func column(ofTab i: Int) -> Int { splitCount.map { i >= $0 ? 1 : 0 } ?? 0 }
 
-    private func visibleCount(_ s: Strip) -> Int { s.range.filter { !hiddenTabs.contains($0) }.count }
+    /// How much of a tab shows: none in a collapsed group, all otherwise, or part of it while its group opens or closes.
+    private func shown(_ i: Int) -> Float { tabShown[i] ?? (hiddenTabs.contains(i) ? 0 : 1) }
+    /// How many tabs' worth show, counting part of one while it opens or closes.
+    private func visibleCount(_ s: Strip) -> Float { s.range.reduce(0) { $0 + shown($1) } }
     /// A chip has a gap on both sides: from the tab before it, and to its own first tab.
     private func chipSpace(_ s: Strip) -> Float { chips.filter { s.range.contains($0.key) }.values.reduce(0) { $0 + $1 + chipGap * 2 } }
     private func fittingTabWidth(_ s: Strip) -> Float {
-        (s.newTabLimit - (6 * scale).rounded() - s.start - chipSpace(s)) / Float(max(visibleCount(s), 1))
+        (s.newTabLimit - (6 * scale).rounded() - s.start - chipSpace(s)) / max(visibleCount(s), 1)
     }
     private func overflows(_ s: Strip) -> Bool {
         guard !s.range.isEmpty else { return false }
@@ -129,7 +135,7 @@ struct WindowLayout {
         return overflows(s) ? minTabWidth : min(fittingTabWidth(s), 230 * scale).rounded()
     }
     /// Everything in the strip end to end: tabs and chips.
-    private func contentWidth(_ s: Strip) -> Float { Float(visibleCount(s)) * tabWidth(s) + chipSpace(s) }
+    private func contentWidth(_ s: Strip) -> Float { visibleCount(s) * tabWidth(s) + chipSpace(s) }
     private func scrollLeft(_ s: Strip) -> UIRect { UIRect(x: s.start, y: tabTop, width: arrowWidth, height: tabBarHeight - tabTop) }
     private func scrollRight(_ s: Strip) -> UIRect {
         UIRect(x: s.newTabLimit - (6 * scale).rounded() - arrowWidth, y: tabTop, width: arrowWidth, height: tabBarHeight - tabTop)
@@ -171,7 +177,7 @@ struct WindowLayout {
         var x = overflows(s) ? viewport(s).x - s.scroll : s.start
         for k in s.range.lowerBound..<max(i, s.range.lowerBound) {
             if let chip = chips[k] { x += chipGap + chip + chipGap }
-            if !hiddenTabs.contains(k) { x += w }
+            x += w * shown(k)
         }
         if let chip = chips[i] { x += chipGap + chip + chipGap }
         return x
@@ -179,7 +185,7 @@ struct WindowLayout {
 
     /// A tab, or an empty rectangle where a collapsed one would be.
     func tab(_ i: Int) -> UIRect {
-        UIRect(x: start(of: i), y: tabTop, width: hiddenTabs.contains(i) ? 0 : tabWidth(strip(column(ofTab: i))), height: tabBarHeight - tabTop)
+        UIRect(x: start(of: i), y: tabTop, width: (tabWidth(strip(column(ofTab: i))) * shown(i)).rounded(), height: tabBarHeight - tabTop)
     }
 
     /// The chip of the group starting at tab `i`.

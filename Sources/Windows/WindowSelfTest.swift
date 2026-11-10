@@ -491,6 +491,11 @@ enum WindowSelfTest {
         results.check("groups: a chip sits before its first tab", withChips.chip(1)!.maxX + 6 == withChips.tab(1).x && withChips.part(atX: withChips.chip(1)!.x + 5, y: withChips.chip(1)!.midY) == .chip(1))
         let collapsedChips = WindowLayout(width: 1200, height: 640, scale: 1, tabCount: 4, chips: [1: 60], hiddenTabs: [1, 2])
         results.check("groups: collapsed tabs take no room", collapsedChips.tab(1).width == 0 && collapsedChips.tab(3).x == collapsedChips.chip(1)!.maxX + 6)
+        var halfway = collapsedChips
+        halfway.tabShown = [1: 0.5, 2: 0.5]
+        results.check("groups: halfway through closing, its tabs are half wide, the rest right after them",
+                      abs(halfway.tab(1).width - halfway.tab(0).width / 2) <= 1 && abs(halfway.tab(3).x - halfway.tab(2).maxX) <= 1,
+                      "\(halfway.tab(0).width) \(halfway.tab(1).width) \(halfway.tab(2).maxX) \(halfway.tab(3).x)")
 
         print("ssh")
         var hostEntries: [SSHHostEntry] = [], covered = Set<String>()
@@ -1393,6 +1398,20 @@ enum WindowSelfTest {
             _ = window.keyDown(0x41, shift: true, ctrl: true, alt: false)
             _ = window.keyDown(0x41, shift: true, ctrl: true, alt: false)
         }, done: { !KeepAwake.isOn }))
+        // A tab's file sub-tabs, when they don't all fit: a sideways swipe moves them along, as it does the tabs.
+        steps.append(Step(name: "subtabs: a dozen files open in the tab", action: {
+            for i in 0..<12 {
+                let path = windowsFolder + "\\subtab-file-with-a-long-name-\(i).txt"
+                _ = FileManager.default.createFile(atPath: path, contents: Data("\(i)\n".utf8))
+                window.showFile(path, in: pane, focus: false)
+            }
+        }, done: { pane.editors.count >= 12 && (window.subTabStrip(for: pane)?.maxScroll ?? 0) > 0 }))
+        var subTabScroll: Float = 0
+        steps.append(Step(name: "subtabs: a sideways swipe moves them along", action: {
+            subTabScroll = window.subTabStrip(for: pane)?.scroll ?? 0
+            if let s = window.subTabStrip(for: pane) { window.swipe(at: s.rect, delta: subTabScroll > 0 ? -240 : 240) }
+        }, done: { (window.subTabStrip(for: pane)?.scroll).map { $0 != subTabScroll } ?? false }))
+        steps.append(Step(name: "subtabs: closed again", action: { window.closeAllEditors(in: pane) }, done: { pane.editors.isEmpty }))
         // A command's buttons, and picking several, as on the Mac.
         steps.append(Step(name: "blocks: two commands", action: {
             pane.type("echo pick-one")
@@ -1630,7 +1649,8 @@ enum WindowSelfTest {
         }, done: { !window.panes.contains { $0 === chatPane } && pane.atPrompt }))
 
         // Tab groups.
-        steps.append(Step(name: "groups: tabs to group", action: { window.newTab(); window.newTab() },
+        // Four tabs, however many earlier sections left (two in a full run; one when run by itself).
+        steps.append(Step(name: "groups: tabs to group", action: { while window.panes.count < 4 { window.newTab() } },
                           done: { window.panes.count == 4 && pane.atPrompt }))
         steps.append(Step(name: "groups: Ctrl and Shift pick tabs", action: {
             window.selectTab(1)
@@ -2063,6 +2083,21 @@ enum WindowSelfTest {
         boxRun("delete across three rows", from: "epsilon", through: "rho", act: { pane.pressBackspace() },
                leaves: "alpha beta gamma delta  sigma")
 
+        // `--window-test graph,ssh`: just the sections whose names start with those (each step is "section: what"),
+        // after the first step (the shell at its prompt). A section that builds on another needs that one listed too
+        // ("git,graph"). Such a run stops at its first failure, as later steps would only be working from a wrong start.
+        let flag = CommandLine.arguments.firstIndex(of: "--window-test")
+        var stopsAtFailure = false
+        if let flag, CommandLine.arguments.indices.contains(flag + 1), !CommandLine.arguments[flag + 1].hasPrefix("--") {
+            let wanted = CommandLine.arguments[flag + 1].lowercased().split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            let first = steps[0]
+            steps = [first] + steps.dropFirst().filter { step in
+                let section = step.name.split(separator: ":").first.map { String($0).lowercased() } ?? ""
+                return wanted.contains { section.hasPrefix($0) }
+            }
+            stopsAtFailure = true
+            print("Only \(wanted.joined(separator: ", ")): \(steps.count) steps.")
+        }
         var index = 0
         var deadline = Date().addingTimeInterval(45)
         steps[0].action()
@@ -2077,6 +2112,7 @@ enum WindowSelfTest {
             guard passed || Date() > deadline else { return }
             results.check(step.name, passed, pane.visibleText.suffix(600).description)
             index += 1
+            if !passed && stopsAtFailure { index = steps.count + 1 }
             guard index < steps.count else {
                 results.check("window: painted", window.paints > 0, "\(window.paints)")
                 if let dir = snapshotDirectory {
@@ -2092,6 +2128,7 @@ enum WindowSelfTest {
         TerminalWindow.runLoop()
         print("Clipboard found busy \(TerminalPane.clipboardBusyCount) times; got through \(index) of \(steps.count) steps.")
         return results.finish() && index == steps.count ? 0 : 1
+
     }
 }
 
