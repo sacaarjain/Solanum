@@ -1693,8 +1693,16 @@ enum WindowSelfTest {
             shown.split == 1 && window.isSplit && window.panes.last?.column == 1 && window.panes.last?.group == nil
                 && (snapshotDirectory.map { _ in true } ?? true)
         }))
-        steps.append(Step(name: "groups: and the split closes again", action: { window.closeSplit() },
-                          done: { !window.isSplit && window.chipRect(1) != nil }))
+        steps.append(Step(name: "groups: while split, a tab after the group on the left, and the right one joins the group", action: {
+            window.selectTab(0)
+            window.newTab()
+            window.panes.last { $0.column == 1 }?.group = window.panes[1].group
+        }, done: { window.panes.count == 5 && window.panes.filter { $0.column == 0 }.count == 4 }))
+        steps.append(Step(name: "groups: and the split closes again, the group's tabs together under one chip", action: { window.closeSplit() }, done: {
+            let g = window.panes[1].group, members = window.panes.indices.filter { window.panes[$0].group === g && g != nil }
+            return !window.isSplit && window.chipRect(1) != nil && members == [1, 2, 3]
+                && (0..<window.panes.count).filter { window.chipRect($0) != nil } == [1]
+        }))
         steps.append(Step(name: "groups: the chip's menu", action: { window.rightClick(window.chipRect(1)!) },
                           done: { window.menuTitles.contains("Ungroup") && window.menuTitles.contains("Purple") }))
         steps.append(Step(name: "groups: ungroups", action: { window.click(window.menuRow("Ungroup")!) },

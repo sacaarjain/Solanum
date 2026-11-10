@@ -226,7 +226,18 @@ final class TerminalWindow {
     private func normalizeColumns() {
         if !panes.contains(where: { $0.column == 0 }) { panes.forEach { $0.column = 0 } }
         let active = panes.indices.contains(activeIndex) ? panes[activeIndex] : nil
-        panes = panes.filter { $0.column == 0 } + panes.filter { $0.column == 1 }
+        // Each column's tabs, with a group's tabs together after its first one: a tab that joined a group from the other
+        // column, then came back when the split closed, sits with its group, not at the end under a second chip.
+        func gathered(_ list: [TerminalPane]) -> [TerminalPane] {
+            var out: [TerminalPane] = [], placed = Set<ObjectIdentifier>()
+            for p in list where !placed.contains(ObjectIdentifier(p)) {
+                let run = p.group.map { g in list.filter { $0.group === g } } ?? [p]
+                out += run
+                run.forEach { placed.insert(ObjectIdentifier($0)) }
+            }
+            return out
+        }
+        panes = gathered(panes.filter { $0.column == 0 }) + gathered(panes.filter { $0.column == 1 })
         if let active, let i = panes.firstIndex(where: { $0 === active }) { activeIndex = i }
         if !isSplit {
             otherActiveID = nil
