@@ -578,6 +578,12 @@ final class Terminal {
         pendingWrap = false
     }
 
+    /// The row above `y` no longer runs on into it: what's there now was put there, not wrapped onto it. Text that
+    /// runs off the end of that row again joins them again (see printScalar).
+    private func endContinuation(into y: Int) {
+        if y > 0 && y < screen.count { screen[y - 1].wrapped = false }
+    }
+
     private func insertLines(_ n: Int) {
         guard cursorY >= scrollTop && cursorY <= scrollBottom else { return }
         let n = min(max(n, 1), scrollBottom - cursorY + 1)
@@ -585,6 +591,9 @@ final class Terminal {
             screen.remove(at: scrollBottom)
             screen.insert(Line(cols: cols, fill: blankCell()), at: cursorY)
         }
+        // A blank row now follows the one above, and the last row of the region lost whatever it ran on into.
+        endContinuation(into: cursorY)
+        screen[scrollBottom].wrapped = false
         cursorX = 0
         pendingWrap = false
     }
@@ -596,6 +605,8 @@ final class Terminal {
             screen.remove(at: cursorY)
             screen.insert(Line(cols: cols, fill: blankCell()), at: scrollBottom)
         }
+        // Another row now follows the one above.
+        endContinuation(into: cursorY)
         cursorX = 0
         pendingWrap = false
     }
@@ -608,12 +619,15 @@ final class Terminal {
             if line.cells[cursorX].width == 0 && cursorX > 0 { line.cells[cursorX - 1] = b }
             for x in cursorX..<cols { line.cells[x] = b; line.extras?[x] = nil; line.links?[x] = nil }
             line.wrapped = false
+            // From the row's start, the whole row: whatever's printed there next isn't the rest of the line above.
+            if cursorX == 0 { endContinuation(into: cursorY) }
         case 1:
             let end = min(cursorX, cols - 1)
             if end + 1 < cols && line.cells[end].width == 2 { line.cells[end + 1] = b }
             for x in 0...end { line.cells[x] = b; line.extras?[x] = nil; line.links?[x] = nil }
         case 2:
             line.clear(b)
+            endContinuation(into: cursorY)
         default: break
         }
         pendingWrap = false

@@ -70,6 +70,24 @@ enum CoreSelfTest {
             results.check(name, cond, detail())
         }
         do {
+            // A line that runs off the end of a row goes on onto the next; a row cleared and printed over isn't its rest.
+            let (t, _) = make(10, 5)
+            feed(t, "0123456789abcde")
+            check("wrapping: a long line runs on onto the next row", t.screen[0].wrapped)
+            feed(t, "\u{1b}[2;1H\u{1b}[Kfinal")
+            check("wrapping: a row cleared from its start and printed over isn't the line above's rest",
+                  !t.screen[0].wrapped && row(t, 1) == "final")
+            feed(t, "\u{1b}[1;1H0123456789xyz")
+            check("wrapping: running off the end again joins them again", t.screen[0].wrapped)
+            // A shell redrawing a long command: back to where it starts, cleared from there, printed again.
+            feed(t, "\u{1b}[1;4H\u{1b}[J3456789ABC")
+            check("wrapping: a redraw from the middle of a row keeps the line whole", t.screen[0].wrapped && row(t, 1) == "ABC")
+            feed(t, "\u{1b}[2;1H\u{1b}[L")
+            check("wrapping: a line put in under a row ends its run", !t.screen[0].wrapped && row(t, 1) == "")
+            feed(t, "\u{1b}[1;1H0123456789xyz\u{1b}[2;1H\u{1b}[2K")
+            check("wrapping: clearing the whole next row ends it too", !t.screen[0].wrapped)
+        }
+        do {
             // Find in a file: the three toggles, separately and together.
             let text = "Cat cat concat\ncat.dog (cat)\nline three\n"
             func count(_ q: String, _ o: EditorFindOptions) -> Int? {
