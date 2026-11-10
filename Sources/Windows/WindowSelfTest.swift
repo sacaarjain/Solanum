@@ -785,8 +785,18 @@ enum WindowSelfTest {
                 act()
                 acted = Date()
             }, done: { Date().timeIntervalSince(acted) > 3 }))
-            steps.append(Step(name: "box: \(name): leaves the right text", action: { pane.pressEscape() },
-                              done: { hasLine("final=" + expected) && pane.terminal.currentBlock?.state == .prompt }))
+            var boxState = ""
+            steps.append(Step(name: "box: \(name): leaves the right text", action: { pane.pressEscape() }, done: {
+                // On a row of its own, as it shows: the program can print it over a row the line above had wrapped onto,
+                // which then still reads as part of that line when lines are joined back together.
+                let printed = pane.terminal.screen.contains { $0.text().trimmingCharacters(in: .whitespaces) == "final=" + expected }
+                let prompt = pane.terminal.currentBlock?.state == .prompt
+                if !(printed && prompt) {
+                    let state = "printed=\(printed) block=\(pane.terminal.currentBlock.map { "\($0.state)" } ?? "none")"
+                    if state != boxState { boxState = state; print("    waiting: " + state); CoreSelfTest.Results.annotate("notice", "box \(name): " + state) }
+                }
+                return printed && prompt
+            }))
         }
         // Tabs. Each has its own shell, and what's typed goes to the one on screen.
         steps.append(Step(name: "tabs: the + button opens one", action: { window.click(window.currentLayout.newTab) },
