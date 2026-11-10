@@ -85,6 +85,23 @@ enum CoreSelfTest {
                   && Dropdown.filter(rows, query: " ").count == rows.count)
             check("dropdown: opens on what's checked, else the first item",
                   Dropdown.initialHighlight(rows) == 3 && Dropdown.initialHighlight(Array(rows.prefix(3))) == 0)
+            struct Host: DropdownRow {
+                var dropdownKind = DropdownRowKind.item
+                var title = ""
+                var detail: String?
+                var isChecked = false
+                var isEnabled = true
+                var fillsSearch = false
+            }
+            let hosts = [Host(title: "New Connection…", fillsSearch: true), Host(dropdownKind: .separator), Host(title: "pi"), Host(title: "build")]
+            let made = [Host(title: "ssh me@box")]
+            let onlySSH = Dropdown.shown(hosts, typed: "ssh ", prefix: "ssh ", separator: Host(dropdownKind: .separator))
+            let typedHost = Dropdown.shown(hosts, typed: "ssh bu", prefix: "ssh ", made: made, separator: Host(dropdownKind: .separator))
+            check("dropdown: the prefix alone shows every host, without New Connection, nothing highlighted",
+                  onlySSH.rows.map(\.title) == ["pi", "build"] && onlySSH.highlight == nil)
+            check("dropdown: past the prefix it searches, then what's typed as a row", typedHost.rows.map(\.title) == ["build", "ssh me@box"] && typedHost.highlight == 0)
+            check("ssh: a typed target", SSHTarget.newTarget("ssh -p 2222 me@box") == "-p 2222 me@box" && SSHTarget.newTarget("me@box") == "me@box"
+                  && SSHTarget.newTarget("box") == nil && SSHTarget.newTarget("ssh box; rm x") == nil)
             check("dropdown: arrows skip headers, lines and what's off, and stop at the ends",
                   Dropdown.step(rows, from: 0, by: 1) == 3 && Dropdown.step(rows, from: 4, by: 1) == 4 && Dropdown.step(rows, from: 3, by: -1) == 0
                   && Dropdown.step(rows, from: nil, by: -1) == 4)

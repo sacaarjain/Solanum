@@ -1309,7 +1309,7 @@ enum WindowSelfTest {
         steps.append(Step(name: "graph filters: Branch opens a dropdown under it, with a search box", action: {
             if let r = graph()?.toolbarRect("branch") { window.click(r) }
         }, done: { window.menuTitles.contains("All Branches") && window.menuSearchText == "" && window.menuTitles.contains { $0.hasPrefix("HEAD") } }))
-        steps.append(Step(name: "graph filters: typing narrows it", action: { window.typeIntoWindow("head") },
+        steps.append(Step(name: "graph filters: typing narrows it", action: { window.typeKeys("head") },
                           done: { window.menuSearchText == "head" && window.menuTitles.count == 1 && window.menuTitles[0].hasPrefix("HEAD") }))
         steps.append(Step(name: "graph filters: Enter picks what's highlighted", action: { pane.pressEnter() },
                           done: { !window.isMenuOpen && graph()?.filter.branch == "HEAD" }))
@@ -1804,7 +1804,12 @@ enum WindowSelfTest {
         }, done: { flowerLit }))
         // ssh: the hosts button, and where GitHub's machine has an ssh server with a password, the whole flow.
         steps.append(Step(name: "ssh: the hosts button opens its menu", action: { window.click(window.hostsButtonRect) },
-                          done: { window.menuTitles.contains("Edit SSH Config…") }))
+                          done: { window.menuTitles.contains("Edit SSH Config…") && window.menuSearchText == "" }))
+        steps.append(Step(name: "ssh: New Connection… types ssh in the search box and stays open", action: {
+            if let r = window.menuRow("New Connection…") { window.click(r) }
+        }, done: { window.isMenuOpen && window.menuSearchText == "ssh " && !window.menuTitles.contains("New Connection…") }))
+        steps.append(Step(name: "ssh: a host that isn't listed, typed, becomes a row to connect to it", action: { window.typeKeys("me@box.test") },
+                          done: { window.menuSearchText == "ssh me@box.test" && window.menuTitles.contains("ssh me@box.test") }))
         steps.append(Step(name: "ssh: closes", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
         let env = ProcessInfo.processInfo.environment
         if let user = env["SOLANUM_TEST_SSH_USER"], let password = env["SOLANUM_TEST_SSH_PASSWORD"] {

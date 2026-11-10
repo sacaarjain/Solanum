@@ -21,6 +21,8 @@ struct MenuItem {
     var detail: String?
     /// A glyph at the right end.
     var trailingIcon: UInt16?
+    /// Picking it puts this in the search box instead of running anything ("New Connection…" puts "ssh ").
+    var fill: String?
     /// The keys that do the same, dim at the right, as the Mac's menus show them.
     var shortcut = ""
     var run: () -> Void = {}
@@ -34,6 +36,7 @@ struct MenuItem {
 /// Filtering, the highlight and the arrows are Core's (Dropdown), shared with the Mac's ThemedDropdown.
 extension MenuItem: DropdownRow {
     var dropdownKind: DropdownRowKind { isSeparator ? .separator : isHeader ? .header : .item }
+    var fillsSearch: Bool { fill != nil }
 }
 
 /// A dropdown: what's in it, where it goes, what's highlighted, and (optionally) a search box at the top that narrows
@@ -56,6 +59,10 @@ final class MenuModel {
     var onHighlight: ((Int?) -> Void)?
     /// Told when it closes, picked from or not (a button it opened from stops showing pressed).
     var onClose: (() -> Void)?
+    /// Typed before what's searched for, and left out of the search ("ssh " in the hosts dropdown).
+    var prefix: String?
+    /// Rows made from what's typed, above the matches (connecting to a host that isn't listed).
+    var extra: ((String) -> [MenuItem])?
     /// Opened upward: as the search narrows it, it keeps its bottom edge.
     private let above: Bool
     /// The tallest it may grow where it is.
@@ -155,6 +162,8 @@ final class MenuModel {
     func type(_ text: String) { editSearch { $0.insert(text) } }
     func deleteBackward(word: Bool = false) { editSearch { $0.deleteBackward(word: word) } }
     func moveCaret(by delta: Int) { editSearch { $0.move(by: delta) } }
+    /// A row that fills the search box was picked: its text goes there, caret at the end, and the list follows.
+    func fillSearch(_ text: String) { editSearch { $0 = TextFieldState(text) } }
 
     private func editSearch(_ edit: (inout TextFieldState) -> Void) {
         guard var field = search else { return }
@@ -163,13 +172,14 @@ final class MenuModel {
         search = field
         guard field.text != before else { return }
         let anchorY = above ? frame.maxY : frame.y
-        items = Dropdown.filter(all, query: field.text)
+        // What's left and what's highlighted are Core's, as on the Mac.
+        let shown = Dropdown.shown(all, typed: field.text, prefix: prefix, made: extra?(field.text) ?? [], separator: .separator)
+        items = shown.rows
         scroll = 0
         fit(anchorY: anchorY)
-        let first = Dropdown.firstPickable(items, from: 0, by: 1)
-        if first != highlighted {
-            highlighted = first
-            onHighlight?(first)
+        if shown.highlight != highlighted {
+            highlighted = shown.highlight
+            onHighlight?(shown.highlight)
         }
     }
 }

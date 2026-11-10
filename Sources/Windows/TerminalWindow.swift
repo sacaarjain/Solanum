@@ -4010,6 +4010,28 @@ final class TerminalWindow {
         return Dictionary(menu.items.indices.map { (menu.title($0), menu.items[$0].shortcut) }, uniquingKeysWith: { a, _ in a })
     }
 
+    /// For tests: types into the window as the keyboard would (key downs, which Windows makes into characters), so it
+    /// goes the way real typing does. Letters, digits, space and a few marks.
+    func typeKeys(_ text: String) {
+        for ch in text {
+            let shifted = ch.isUppercase || "@_".contains(ch)
+            let vk: Int32
+            switch ch {
+            case "@": vk = 0x32
+            case " ": vk = 0x20
+            case ".": vk = 0xBE
+            case "-": vk = 0xBD
+            case "_": vk = 0xBD
+            default: vk = Int32(String(ch).uppercased().unicodeScalars.first!.value)
+            }
+            let scan = LPARAM(MapVirtualKeyW(UINT(vk), 0)) << 16
+            if shifted { PostMessageW(hwnd, Win.WM_KEYDOWN, WPARAM(Win.VK_SHIFT), LPARAM(MapVirtualKeyW(UINT(Win.VK_SHIFT), 0)) << 16 | 1) }
+            PostMessageW(hwnd, Win.WM_KEYDOWN, WPARAM(vk), scan | 1)
+            PostMessageW(hwnd, Win.WM_KEYUP, WPARAM(vk), scan | 1 | (LPARAM(3) << 30))
+            if shifted { PostMessageW(hwnd, Win.WM_KEYUP, WPARAM(Win.VK_SHIFT), LPARAM(MapVirtualKeyW(UINT(Win.VK_SHIFT), 0)) << 16 | 1 | (LPARAM(3) << 30)) }
+        }
+    }
+
     /// For tests: what's typed in the open dropdown's search box; nil without one.
     var menuSearchText: String? { menu?.search?.text }
 
@@ -4058,13 +4080,23 @@ final class TerminalWindow {
             // Outside it dismisses. The click stops there.
             if !menu.frame.contains(x, y) { closeMenu() }
         case Win.WM_LBUTTONUP:
-            if let row, menu.items[row].isEnabled {
-                let run = menu.action(row)
-                closeMenu()
-                run()
-            }
+            if let row, menu.items[row].isEnabled { pickMenuItem(row) }
         default: break
         }
+    }
+
+    /// Runs a dropdown's row and closes it; a row that fills the search box ("New Connection…") puts its text there
+    /// instead, and it stays open.
+    private func pickMenuItem(_ i: Int) {
+        guard let menu, menu.items.indices.contains(i) else { return }
+        if let fill = menu.items[i].fill, menu.search != nil {
+            menu.fillSearch(fill)
+            invalidate()
+            return
+        }
+        let run = menu.action(i)
+        closeMenu()
+        run()
     }
 
     private func menuKey(_ key: Int32) -> Bool {
@@ -4074,17 +4106,14 @@ final class TerminalWindow {
         case Win.VK_UP: menu.moveHighlight(by: -1)
         case Win.VK_DOWN: menu.moveHighlight(by: 1)
         case Win.VK_RETURN:
-            if let i = menu.highlighted {
-                let run = menu.action(i)
-                closeMenu()
-                run()
-            }
+            if let i = menu.highlighted { pickMenuItem(i) }
         // The search box's own keys; what's typed comes as WM_CHAR.
         case Win.VK_BACK where menu.search != nil: menu.deleteBackward(word: isDown(Win.VK_CONTROL))
         case Win.VK_LEFT where menu.search != nil: menu.moveCaret(by: -1)
         case Win.VK_RIGHT where menu.search != nil: menu.moveCaret(by: 1)
         case Win.VK_F4: return false
-        default: break
+        // With a search box, other keys go on to become characters (WM_CHAR), which are typed into it.
+        default: if menu.search != nil && !isDown(Win.VK_CONTROL) { return false }
         }
         invalidate()
         return true
@@ -4266,36 +4295,53 @@ final class TerminalWindow {
     }
 
     /// Hosts from ~/.ssh/config and known_hosts, as on the Mac. A new tab connects; with Alt held, this one does.
+    /// The status bar's ssh hosts, as the Mac's dropdown: New Connection… (which types "ssh " to put a host after),
+    /// the ones typed before under Recent, those in ~\.ssh\config, the known ones, and Edit SSH Config…. Typing narrows
+    /// them, and "ssh user@host" (or just user@host) that isn't listed becomes a row to connect to it. A new tab, or
+    /// with Alt held, this pane.
     private func showHostsMenu() {
         let folder = (ProcessInfo.processInfo.environment["USERPROFILE"] ?? "") + "\\.ssh"
         let (configured, known) = SSHHostList.load(sshFolder: folder)
-        func connect(_ host: SSHHostEntry, here: Bool) {
-            let command = "ssh " + host.target
+        func connect(_ target: String, here: Bool, remember: Bool) {
+            if remember { SSHRecent.remember(target) }
             // In this pane only when its shell is at a prompt to take it; otherwise a new tab, rather than typing into
             // whatever's running.
             if !(here && activePane.atPrompt) { newTab() }
-            activePane.pendingCommand = command
+            activePane.pendingCommand = "ssh " + target
         }
         // Hold Alt to connect in this pane instead of a new tab, as Option does on the Mac.
-        func item(_ host: SSHHostEntry, title: String) -> MenuItem {
-            var item = MenuItem(title: title) { connect(host, here: false) }
-            item.alternate = ("\(host.title) — in This Pane", { connect(host, here: true) })
+        func item(_ target: String, title: String, detail: String?, icon: UInt16, remember: Bool = false) -> MenuItem {
+            var item = MenuItem(title: title, icon: icon, detail: detail) { connect(target, here: false, remember: remember) }
+            item.alternate = ("\(title) \u{2014} in This Pane", { connect(target, here: true, remember: remember) })
             return item
         }
-        var items = [MenuItem(title: configured.isEmpty ? "No hosts in ~\\.ssh\\config" : "Connect in a new tab (Alt: this pane)", isEnabled: false)]
-        items += configured.map { host in item(host, title: host.title + (host.detail.map { "  —  " + $0 } ?? "")) }
-        if !known.isEmpty {
-            items += [.separator, MenuItem(title: "Known Hosts", isEnabled: false)]
-            items += known.prefix(60).map { host in item(host, title: host.title) }
+        let server: UInt16 = 0xE774, clock: UInt16 = 0xE81C
+        var items = [MenuItem(title: "New Connection\u{2026}", icon: 0xE710, fill: "ssh "), .separator]
+        let recent = SSHRecent.list
+        if !recent.isEmpty {
+            items += [.header("Recent")] + recent.map { item($0, title: $0, detail: nil, icon: clock, remember: true) } + [.separator]
         }
-        items += [.separator, MenuItem(title: "Edit SSH Config…") {
+        items.append(.header(configured.isEmpty ? "No hosts in ~\\.ssh\\config" : "SSH Config"))
+        items += configured.map { item($0.target, title: $0.title, detail: $0.detail, icon: server) }
+        if !known.isEmpty {
+            items += [.separator, .header("Known Hosts")]
+            items += known.prefix(200).map { item($0.target, title: $0.title, detail: nil, icon: server) }
+        }
+        items += [.separator, MenuItem(title: "Edit SSH Config\u{2026}", icon: 0xE70F) {
             try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
             let config = folder + "\\config"
             if !FileManager.default.fileExists(atPath: config) { _ = FileManager.default.createFile(atPath: config, contents: Data()) }
             _ = wide(config).withUnsafeBufferPointer { ShellExecuteW(nil, nil, $0.baseAddress, nil, nil, 1) }
         }]
+        let listed = Set((configured + known).flatMap { [$0.title.lowercased(), $0.target.lowercased()] } + recent.map { $0.lowercased() })
         let anchor = layout.hostsButton
-        openMenu(items, x: anchor.x, y: anchor.y - 2 * scale, above: true)
+        openMenu(items, x: anchor.x, y: anchor.y - 2 * scale, above: true, search: "Connect to a host (Alt: this pane)", minWidth: 320 * scale)
+        menu?.prefix = "ssh "
+        menu?.extra = { typed in
+            // "ssh user@host" that isn't listed: a row to connect to it, kept under Recent after.
+            guard let target = SSHTarget.newTarget(typed), !listed.contains(target.lowercased()) else { return [] }
+            return [item(target, title: "ssh " + target, detail: "new connection", icon: 0xE72A, remember: true)]
+        }
     }
 
     var hostsButtonRect: UIRect { layout.hostsButton }

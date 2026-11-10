@@ -47,6 +47,7 @@ extension DropdownItem: DropdownRow {
     }
     var isChecked: Bool { checked }
     var isEnabled: Bool { true }
+    var fillsSearch: Bool { fill != nil }
 }
 
 /// A button a dropdown opens from: it shows pressed while its dropdown is open, and a second click while the list
@@ -331,24 +332,11 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
     }
 
     func controlTextDidChange(_ obj: Notification) {
-        var q = field.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
-        if let p = prefix?.lowercased() {
-            let bare = p.trimmingCharacters(in: .whitespaces)
-            if q == bare { q = "" } else if q.hasPrefix(p) { q = q.dropFirst(p.count).trimmingCharacters(in: .whitespaces) }
-        }
-        let made = extra?(field.stringValue) ?? []
-        // Only the prefix typed ("ssh ", from New Connection…): the whole list, less what fills the field, and
-        // nothing picked yet, so ↩ doesn't connect to the first host by surprise.
-        let onlyPrefix = q.isEmpty && !field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty
-        if q.isEmpty {
-            let rest = onlyPrefix ? Array(all.drop { $0.fill != nil || $0.kind == .separator }) : all
-            list.items = made + (made.isEmpty ? [] : [.separator]) + rest
-        } else {
-            // Just the matching items (with no headers or lines between, which only grouped the full list).
-            // What's typed, made into rows, comes after anything it matches ("ssh lanode2" → lanode23 first).
-            list.items = Dropdown.filter(all.filter { $0.fill == nil }, query: q) + made
-        }
-        list.highlighted = onlyPrefix && made.isEmpty ? nil : Dropdown.firstPickable(list.items, from: 0, by: 1)
+        // What's left, and what's highlighted, are Core's (Dropdown.shown), shared with Windows: the prefix ("ssh ")
+        // alone shows every host with nothing picked; past it, the matches, then what's typed made into rows.
+        let shown = Dropdown.shown(all, typed: field.stringValue, prefix: prefix, made: extra?(field.stringValue) ?? [], separator: .separator)
+        list.items = shown.rows
+        list.highlighted = shown.highlight
         list.frame.size.height = list.contentHeight
         let top = Self.fieldHeight + 6
         panel.frame.size.height = min(top + list.contentHeight + 6, tallest)

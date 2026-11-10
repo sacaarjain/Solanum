@@ -233,6 +233,12 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-send-menu"), CommandL
                           window: UIRect(x: 0, y: 0, width: width, height: height), scale: s, searchPlaceholder: "Branch or tag")
     typed.type("log")
     MenuView(canvas: canvas, menu: typed).draw()
+    // The hosts dropdown's rows, as it opens.
+    let hosts = [MenuItem(title: "New Connection\u{2026}", icon: 0xE710, fill: "ssh "), .separator, .header("Recent"),
+                 MenuItem(title: "me@box", icon: 0xE81C), .separator, .header("SSH Config"), MenuItem(title: "pi", icon: 0xE968, detail: "pi@raspberry.local"),
+                 MenuItem(title: "ssh me@new", icon: 0xE72A, detail: "new connection"), .separator, MenuItem(title: "Edit SSH Config\u{2026}", icon: 0xE70F)]
+    MenuView(canvas: canvas, menu: MenuModel(items: hosts, anchorX: 540, anchorY: 860, above: false, width: 420, window: UIRect(x: 0, y: 0, width: width, height: height),
+                                              scale: s, searchPlaceholder: "Connect to a host\u{2026} (Alt for this pane)")).draw()
     print("frost: \(MenuView.lastFrost)")
     guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
