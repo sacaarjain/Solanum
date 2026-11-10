@@ -1551,9 +1551,14 @@ enum WindowSelfTest {
             sendingIndex = window.activeIndex
             window.newTab()
         }, done: { pane.atPrompt && window.activeIndex != sendingIndex }))
-        steps.append(Step(name: "chat: running there", action: {
+        steps.append(Step(name: "chat: a stand-in for Claude Code there", action: {
             chatPane = window.activePane
-            pane.type("function claude { Start-Sleep -Seconds 60 }; claude")
+            pane.type("function claude { Start-Sleep -Seconds 60 }")
+            pane.pressEnter()
+        }, done: { pane.atPrompt }))
+        // An agent is known by the program a command starts with, so it runs on its own line.
+        steps.append(Step(name: "chat: running there", action: {
+            pane.type("claude")
             pane.pressEnter()
         }, done: { chatPane?.agent?.kind == .claude }))
         steps.append(Step(name: "chat: Ctrl+Alt+S, back in the first tab, lists it", action: {
