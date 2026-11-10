@@ -40,13 +40,11 @@ final class Config {
     var themeIcon = true
     /// File and folder icons: "solanum", or the id of an installed VS Code icon theme (see IconPacks).
     var fileIcons = IconPacks.solanumID
-    /// How long ⇧⌘A's `caffeinate` runs.
+    /// How long Keep Awake (⇧⌘A, or the status bar's cup) keeps the Mac awake.
     static let defaultKeepAwakeSeconds = 28800
     var keepAwakeSeconds = Config.defaultKeepAwakeSeconds {
         didSet { keepAwakeSeconds = min(max(keepAwakeSeconds, 1), 31_536_000) }
     }
-    var keepAwakeCommand: String { "caffeinate -d -i -s -t \(keepAwakeSeconds)" }
-    var keepAwakeTitle: String { "Keep Awake (caffeinate \(Self.shortDuration(keepAwakeSeconds)))" }
 
     /// 28800 as "8h", 5400 as "1h 30m", 90 as "1m 30s".
     static func shortDuration(_ seconds: Int) -> String {
@@ -210,7 +208,7 @@ final class Config {
         # Notify when a command running in the background takes at least this long (0 = off).
         notify-after-seconds = \(fmt(CGFloat(notifyAfterSeconds)))
 
-        # How long Keep Awake (⇧⌘A) runs caffeinate, in seconds.
+        # How long Keep Awake (⇧⌘A, or the cup in the status bar) keeps the Mac awake, in seconds.
         keep-awake-seconds = \(keepAwakeSeconds)
 
         confirm-quit = \(confirmQuit)

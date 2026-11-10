@@ -1690,7 +1690,7 @@ enum SettingsPages {
         }
         card(v, [
             SettingRow(icon: "cup.and.saucer", title: "Keep awake for (seconds)",
-                       detail: "How long ⇧⌘A runs caffeinate. The default, 28800, is 8 hours.", accessory: awake, width: 90),
+                       detail: "How long Keep Awake (⇧⌘A, or the cup in the status bar) keeps the Mac awake. The default, 28800, is 8 hours.", accessory: awake, width: 90),
         ])
 
         v.add(sectionHeader("File Transfers"), height: 16, gap: 10)

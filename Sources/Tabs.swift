@@ -722,6 +722,12 @@ final class StatusBarView: NSView {
     var onPin: ((String?) -> Void)?
     /// The ssh hosts button; the point is where to pop up its menu.
     var onShowHosts: ((NSPoint) -> Void)?
+    /// Keep Awake's cup, after the hosts button (in the window's first bar): accent and steaming while it's on, grey
+    /// while off. Clicked, with where it is.
+    var showsKeepAwake = false { didSet { if showsKeepAwake != oldValue { watchKeepAwake(); needsDisplay = true } } }
+    var onKeepAwake: ((NSRect) -> Void)?
+    private var keepAwakeObserver: NSObjectProtocol?
+    private var steamTimer: Timer?
     /// The focused pane's repository, when its folder is in one.
     var git: GitInfo? { didSet { needsDisplay = true } }
     /// "Pulling…" etc. while a git command runs.
@@ -769,7 +775,51 @@ final class StatusBarView: NSView {
     var onSync: ((NSPoint) -> Void)?
     var onChanges: ((NSPoint) -> Void)?
 
-    private enum Button { case sidebar, hosts, branch, sync, changes, rightSidebar, theme, moon }
+    private enum Button { case sidebar, hosts, keepAwake, branch, sync, changes, rightSidebar, theme, moon }
+
+    /// The cup's rect, for its menu to open from.
+    var keepAwakeRect: NSRect? { buttons.first { $0.kind == .keepAwake }?.rect }
+
+    private func watchKeepAwake() {
+        if let o = keepAwakeObserver { NotificationCenter.default.removeObserver(o) }
+        keepAwakeObserver = nil
+        guard showsKeepAwake else { return updateSteam() }
+        keepAwakeObserver = NotificationCenter.default.addObserver(forName: KeepAwake.changed, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.updateSteam()
+            if let r = self.keepAwakeRect { self.setNeedsDisplay(r) }
+            if self.hoverButton == .keepAwake { self.toolTip = KeepAwake.tip }
+        }
+        updateSteam()
+    }
+
+    /// The steam waves while Keep Awake is on and the window shows (still with Reduce Motion), redrawing just the cup.
+    private func updateSteam() {
+        let want = showsKeepAwake && KeepAwake.isOn && window?.occlusionState.contains(.visible) == true
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if want, steamTimer == nil {
+            let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+                guard let self, let r = self.keepAwakeRect else { return }
+                self.setNeedsDisplay(r)
+            }
+            RunLoop.main.add(t, forMode: .common)
+            steamTimer = t
+        } else if !want, let t = steamTimer {
+            t.invalidate()
+            steamTimer = nil
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+        if let w = window {
+            NotificationCenter.default.addObserver(self, selector: #selector(occlusionChanged), name: NSWindow.didChangeOcclusionStateNotification, object: w)
+        }
+        updateSteam()
+    }
+
+    @objc private func occlusionChanged() { updateSteam() }
 
     private var crumbs: [(rect: NSRect, path: String, label: String)] = []
     private var buttons: [(rect: NSRect, kind: Button)] = []
@@ -910,6 +960,15 @@ final class StatusBarView: NSView {
         }
         if onShowHosts != nil {
             x = drawButton(.hosts, at: x, icon: "server.rack", color: dimIcon)
+        }
+        if showsKeepAwake {
+            x = drawButton(.keepAwake, at: x, icon: "", color: dimIcon, iconSpace: 17)
+            if let r = keepAwakeRect {
+                let on = KeepAwake.isOn
+                CupArt.draw(in: NSRect(x: r.minX, y: r.minY, width: r.width, height: r.height - 1),
+                            color: on ? th.accent : th.foreground, alpha: on ? 1 : hoverButton == .keepAwake ? 0.75 : 0.5,
+                            steam: on && steamTimer != nil ? Date.timeIntervalSinceReferenceDate : nil)
+            }
         }
         if !buttons.isEmpty { x += 4 }
         let rightEdge = transferRect.isNull ? rightItems : transferRect
@@ -1081,6 +1140,7 @@ final class StatusBarView: NSView {
         case .theme: return "Theme: \(Config.shared.theme.name) — click to switch"
         case .moon: return "The Quantum Moon?"
         case .hosts: return "SSH Hosts"
+        case .keepAwake: return KeepAwake.tip
         case .branch: return git.map { $0.detached ? "Detached at \($0.branch) — switch branch" : "On \($0.branch) — switch branch" } ?? ""
         case .sync:
             guard let git else { return "" }
@@ -1135,6 +1195,7 @@ final class StatusBarView: NSView {
             case .rightSidebar: onToggleRightSidebar?()
             case .theme: onThemeMenu?(at)
             case .hosts: onShowHosts?(at)
+            case .keepAwake: onKeepAwake?(b.rect)
             case .branch: onBranch?()
             case .sync: if gitBusy == nil { onSync?(at) }
             case .changes: onChanges?(at)
@@ -1790,6 +1851,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         bar.showsSidebarToggle = true
         bar.onToggleFileSidebar = { [weak self] in self?.toggleFileSidebar(nil) }
         bar.onShowHosts = { [weak self] at in self?.showHostsMenu(at: at) }
+        bar.showsKeepAwake = true
+        bar.onKeepAwake = { [weak self] rect in self?.keepAwakeClicked(rect) }
         bar.showsThemeName = true
         bar.onThemeMenu = { [weak bar] at in
             guard let bar else { return }
@@ -1952,6 +2015,19 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
 
     /// The status bar's ssh hosts: those in ~/.ssh/config, then the known ones, in Solanum's own dropdown (searchable,
     /// as every one is). Picking one connects in a new tab; ⌥ connects in the focused pane.
+    /// The cup: off, a click starts Keep Awake straight away (for Settings' length); on, its menu (as on Windows).
+    private func keepAwakeClicked(_ rect: NSRect) {
+        guard let left = KeepAwake.secondsLeft else { return KeepAwake.start(seconds: Config.shared.keepAwakeSeconds) }
+        var items: [DropdownItem] = [.header("Caffeinated · \(KeepAwake.shortDuration(left)) left"),
+                                     .item("Add 1 Hour", symbol: "plus") { KeepAwake.extend(by: 3600) }]
+        if left > 3600 { items.append(.item("Subtract 1 Hour", symbol: "minus") { KeepAwake.extend(by: -3600) }) }
+        items += [.separator, .item("End Caffeinate", symbol: "cup.and.saucer", detail: "⇧⌘A") { KeepAwake.stop() }]
+        ThemedDropdown.show(items, under: rootView.statusBar, rect: rect, minWidth: 220, searchable: false)
+    }
+
+    /// Dev aid (DevTools keep-awake-menu): clicks the cup.
+    func devClickKeepAwake() { rootView.statusBar.keepAwakeRect.map(keepAwakeClicked) }
+
     private func showHostsMenu(at point: NSPoint) {
         let bar = rootView.statusBar
         let (configured, known) = SSHHosts.load()

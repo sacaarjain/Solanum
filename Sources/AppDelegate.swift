@@ -39,8 +39,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             UNUserNotificationCenter.current().delegate = self
         }
         NotificationCenter.default.addObserver(forName: .solanumConfigChanged, object: nil, queue: .main) { [weak self] _ in
-            self?.keepAwakeItem?.title = Config.shared.keepAwakeTitle
+            self?.keepAwakeItem?.title = KeepAwake.menuTitle
             self?.rebuildThemeMenu()
+        }
+        NotificationCenter.default.addObserver(forName: KeepAwake.changed, object: nil, queue: .main) { [weak self] _ in
+            if self?.keepAwakeItem?.title != KeepAwake.menuTitle { self?.keepAwakeItem?.title = KeepAwake.menuTitle }
         }
         Extensions.start()
         reopenWorkspace()
@@ -454,7 +457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         _ = add(shell, "Close Tab", #selector(TerminalWindowController.closeTab(_:)), "w", [.command, .option])
         _ = add(shell, "Close Window", #selector(NSWindow.performClose(_:)), "w", [.command, .shift])
         shell.addItem(.separator())
-        keepAwakeItem = add(shell, Config.shared.keepAwakeTitle, #selector(TerminalView.keepAwake(_:)), "a", [.command, .shift])
+        keepAwakeItem = add(shell, KeepAwake.menuTitle, #selector(TerminalView.keepAwake(_:)), "a", [.command, .shift])
         _ = add(shell, "Show Git Graph", #selector(TerminalWindowController.showGitGraph(_:)), "g", [.command, .control])
         _ = add(shell, "Show Git Changes", #selector(TerminalWindowController.showGitStatus(_:)), "s", [.command, .control])
 

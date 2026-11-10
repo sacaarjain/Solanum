@@ -319,18 +319,9 @@ extension TerminalView: NSMenuItemValidation {
 
     // MARK: - Keep awake
 
-    /// Types and runs `caffeinate` (display, idle and system sleep blocked for as long as Settings says). If this pane is
-    /// busy (e.g. Claude Code), it runs in a new tab instead so it doesn't land in that program's input.
-    @objc func keepAwake(_ sender: Any?) {
-        let cmd = Config.shared.keepAwakeCommand + "\r"
-        guard pty?.hasForegroundJob == true, let wc = window?.windowController as? TerminalWindowController else {
-            send(cmd)
-            scrollOffset = 0
-            return
-        }
-        wc.newTab(nil)
-        wc.activeTab?.focusedPane.send(cmd)
-    }
+    /// Starts Keep Awake (display, idle and system sleep blocked for as long as Settings says), or ends it: in the
+    /// background, as the status bar's cup does, not in a terminal.
+    @objc func keepAwake(_ sender: Any?) { KeepAwake.toggle() }
 
     // MARK: - Find
 
