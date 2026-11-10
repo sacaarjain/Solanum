@@ -20,6 +20,25 @@ struct CodeBoxView {
         return min(textEnd + 4 * scale, limit).rounded()
     }
 
+    /// Prompts sent to Claude Code, in place of the grey it paints behind them: a box in the theme's accent with a border,
+    /// as the code boxes have. Returns the lines whose grey the renderer shouldn't paint (see TerminalRenderer).
+    func drawPromptBands() -> [Int: UInt32] {
+        // From a little above the screen, so a prompt that starts above it is still known as one.
+        let bands = PromptBands.find({ terminal.line(abs: $0) }, from: max(top - 40, 0), through: top + terminal.rows - 1)
+        var plain: [Int: UInt32] = [:]
+        let m = canvas.metrics, s = scale, c = canvas.raw, accent = TerminalPalette.accent
+        for b in bands {
+            for a in b.first...b.last { plain[a] = b.bg }
+            let r0 = max(b.first - top, 0), r1 = min(b.last - top, terminal.rows - 1)
+            guard r0 <= r1 else { continue }
+            let x = max(2 * s, canvas.contentX - 6 * s), right = canvas.contentX + Float(terminal.cols) * m.cellWidth + 4 * s
+            let y = canvas.contentY + Float(r0) * m.cellHeight - 2 * s, h = Float(r1 - r0 + 1) * m.cellHeight + 4 * s
+            sol_canvas_fill_rounded(c, x, y, right - x, h, 8 * s, accent, TerminalPalette.isDark ? 0.10 : 0.08)
+            sol_canvas_stroke_rounded(c, x + 0.5, y + 0.5, right - x - 1, h - 1, 8 * s, accent, 0.45, 1)
+        }
+        return plain
+    }
+
     func drawPanels() {
         guard !boxes.isEmpty, !terminal.usingAlt else { return }
         let m = canvas.metrics, s = scale, c = canvas.raw, fg = TerminalPalette.foreground

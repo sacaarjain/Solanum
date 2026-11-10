@@ -587,6 +587,13 @@ final class TerminalPane: TerminalDelegate, Groupable {
         CodeBoxView(canvas: canvas, terminal: terminal, boxes: codeBoxes, top: top, scale: dpiScale).drawPanels()
     }
 
+    /// Prompts sent to Claude Code: in place of the grey it paints behind them, a box in the theme's accent with a
+    /// border, as the boxes around code have (see Core's PromptBands).
+    private func drawPromptBands(top: Int, renderer: inout TerminalRenderer) {
+        // From a little above the screen, so a prompt that starts above it is still known as one.
+        renderer.plainBackgrounds = CodeBoxView(canvas: canvas, terminal: terminal, boxes: [], top: top, scale: dpiScale).drawPromptBands()
+    }
+
     private func drawCopyButtons(top: Int) {
         if let copied = copiedBox, Date() >= copied.until { copiedBox = nil }
         copyButtons = CodeBoxView(canvas: canvas, terminal: terminal, boxes: codeBoxes, top: top, scale: dpiScale)
@@ -756,6 +763,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
         // with some in view they wait until it's expanded or scrolled away, rather than be drawn on the wrong rows.
         let screenTop = overlayTop
         if !hiddenInView { drawCodeBoxes(top: screenTop) }
+        if agent != nil && !terminal.usingAlt && !hiddenInView { drawPromptBands(top: screenTop, renderer: &renderer) }
         renderer.drawContents()
         if !hiddenInView { drawCopyButtons(top: screenTop) } else { copyButtons = [] }
         drawCollapsedChips()

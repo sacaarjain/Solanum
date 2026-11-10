@@ -70,6 +70,15 @@ enum CoreSelfTest {
             results.check(name, cond, detail())
         }
         do {
+            // A prompt sent to Claude Code, painted grey across the width: found, so it can be drawn in the theme's colors.
+            let (t, _) = make(30, 8)
+            feed(t, "recap\r\n\u{1b}[48;2;55;55;55m\u{276F} explain Ax = B\u{1b}[K\r\n  and update it\u{1b}[K\u{1b}[0m\r\n  1 skill\r\n")
+            feed(t, "\u{1b}[48;2;55;55;55m> next\u{1b}[K\u{1b}[0m\r\n")
+            let bands = PromptBands.find({ t.line(abs: $0) }, from: 0, through: 7)
+            check("prompt bands: a prompt's rows, and one after it on its own", bands.count == 2 && bands[0].first == 1 && bands[0].last == 2
+                  && bands[1].first == 4 && bands[1].last == 4, "\(bands)")
+        }
+        do {
             // Dropdowns, on both platforms: what typing leaves, where the highlight starts, and the arrows.
             struct Row: DropdownRow {
                 var dropdownKind = DropdownRowKind.item

@@ -197,6 +197,9 @@ struct TerminalSelection: Equatable {
 struct TerminalRenderer {
     /// Text left undrawn, by line: "[Image #N]" where its image is drawn instead.
     var hiddenText: [Int: [Range<Int>]] = [:]
+    /// Lines (absolute) whose background of this color (packed) isn't painted: a prompt sent to Claude Code, which gets
+    /// a box in the theme's colors instead (see PromptBands).
+    var plainBackgrounds: [Int: UInt32] = [:]
     let canvas: Canvas
     let terminal: Terminal
     var scrollOffset = 0
@@ -258,7 +261,9 @@ struct TerminalRenderer {
     /// A cell's colors with the selection and find's matches on it; the selection wins, as on the Mac.
     private func look(_ line: Line, abs: Int, col: Int) -> (fg: UInt32, bg: UInt32) {
         let selected = selection?.contains(line: abs, col: col) ?? false
-        var c = colors(line.cell(col), selected: selected)
+        var cell = line.cell(col)
+        if let plain = plainBackgrounds[abs], cell.bg == plain { cell.bg = 0 }
+        var c = colors(cell, selected: selected)
         if !selected, let ms = findMatches[abs], let m = ms.first(where: { col >= $0.start && col <= $0.end }) {
             if m.current { c = (0x000000, 0xFF9F1C) } else { c.bg = TerminalPalette.mix(TerminalPalette.ansi[3], c.bg, 0.35) }
         }

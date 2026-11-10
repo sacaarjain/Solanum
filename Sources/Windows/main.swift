@@ -195,6 +195,25 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-block-buttons"), Comm
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }
 
+// A prompt sent to Claude Code, which paints it grey: drawn in the theme's colors instead, at 200%. --draw-prompt <png>
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-prompt"), CommandLine.arguments.indices.contains(flag + 1) {
+    let width: Float = 1500, height: Float = 400
+    guard let canvas = Canvas(width: Int(width), height: Int(height), fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    canvas.terminalArea = UIRect(x: 0, y: 0, width: width, height: height)
+    canvas.padding = 16
+    let grid = TerminalRenderer.grid(width: Int(width), height: Int(height), canvas: canvas)
+    let terminal = Terminal(cols: grid.cols, rows: grid.rows, scrollbackLimit: 100)
+    let text = "\u{203B} recap: you're preparing a presentation for November 20.\r\n\r\n"
+        + "\u{1b}[48;2;55;55;55m\u{276F} Ok, regarding something I saw in lesson 3 regarding the footprint. Can you explain\u{1b}[K\r\n"
+        + "  what the calculation could be referring to here?\u{1b}[K\u{1b}[0m\r\n  \u{2514} 1 skill available\r\n\r\n\u{1b}[38;2;217;120;87m\u{273B} Garnishing\u{2026}\u{1b}[0m (3s)\r\n"
+    Array(text.utf8).withUnsafeBufferPointer { terminal.feed($0) }
+    var renderer = TerminalRenderer(canvas: canvas, terminal: terminal)
+    renderer.plainBackgrounds = CodeBoxView(canvas: canvas, terminal: terminal, boxes: [], top: terminal.screenTopAbs, scale: 2).drawPromptBands()
+    renderer.drawContents()
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
+}
+
 // The Send to Chat menu, as the Mac's: chats with their agents' marks and groups' chips, then new ones, at 200%:
 // --draw-send-menu <png>
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-send-menu"), CommandLine.arguments.indices.contains(flag + 1) {
