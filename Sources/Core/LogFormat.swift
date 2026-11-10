@@ -721,7 +721,8 @@ struct LogFormat {
 
     /// A time at the start of a line, as most loggers write one (ISO 8601, syslog, Apache, nginx, Go, Android…).
     private static let genericTime = try! NSRegularExpression(pattern: [
-        #"^\[?(?:\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}| ?[A-Z]{3,4}\b)?"#,
+        // A zone's letters (UTC, CEST), but not a level that follows the time (INFO, WARN), which isn't one.
+        #"^\[?(?:\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}| ?(?!(?:INFO|WARN|CRIT|FINE|DBG|ERR)\b)[A-Z]{3,4}\b)?"#,
         #"\d{4}/\d{2}/\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?"#,
         #"\d{2}/[A-Z][a-z]{2}/\d{4}:\d{2}:\d{2}:\d{2}(?: [+-]\d{4})?"#,
         #"[A-Z][a-z]{2} [ \d]\d \d{2}:\d{2}:\d{2}(?:\.\d+)?"#,

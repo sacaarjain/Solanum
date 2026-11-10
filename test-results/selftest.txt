@@ -1,0 +1,233 @@
+﻿  ✓ console resize: starts with scrollback
+  ✓ console resize: growing leaves scrollback and rows alone
+  ✓ console resize: shrinking keeps the cursor on screen
+  ✓ console resize: width fits every row
+  ✓ agent turns
+  ✓ ED 2 keeps running block
+  ✓ click: in the command
+  ✓ click: past its end stays at the end
+  ✓ click: above the command is no place
+  ✓ selection: offsets in the command
+  ✓ selection: clipped to the command
+  ✓ selection: outside the command
+  ✓ click: finds Claude Code's input box
+  ✓ click: left in the input box
+  ✓ click: not past its text
+  ✓ click: not into the gutter
+  ✓ selection: offsets in Claude Code's input
+  ✓ agent session: by name, also a path or an .exe
+Solanum emulator self-test
+  ✓ print + CRLF
+  ✓ autowrap
+  ✓ scroll into scrollback
+  ✓ CUP + EL
+  ✓ ED 2
+  ✓ SGR colors
+  ✓ SGR colon forms
+  ✓ alt screen enter
+  ✓ alt screen exit restores
+  ✓ scroll region
+  ✓ wide chars
+  ✓ reflow wider
+  ✓ reflow narrower
+  ✓ DSR/DA responses
+  ✓ ssh exit reported before the session clears
+  ✓ OSC 133 blocks
+  ✓ DEC line drawing
+  ✓ combining marks
+  ✓ OSC 8 links
+  ✓ OSC 8 erased
+  ✓ OSC 8 links reflow
+  ✓ scroll: scrollback keeps text
+  ✓ scroll: scrollback lines trimmed
+  ✓ scroll: new lines blank and full width
+  ✓ scroll: erase color fills reused lines
+  ✓ scroll: plain lines after colored ones
+  ✓ scroll: region reuses its line blank
+  ✓ scroll: reverse index in a region
+  ✓ git: status from Windows' git
+  ✓ git: staged apart from not
+  ✓ git: branches, with remote twins left out
+  ✓ graph: commits and lanes
+  ✓ graph: labels, current branch first
+  ✓ diff: kinds of line
+  ✓ search: matches from grep and git grep
+  ✓ links: web addresses, punctuation left off
+Drawing
+  ✓ canvas: font metrics
+  ✓ canvas: grid from size
+  ✓ canvas: draws and saves
+  ✓ selection: backwards still orders
+  ✓ selection: text
+  ✓ selection: spans lines
+Window layout
+  ✓ app: has its icon
+  ✓ layout: window buttons at the right end
+  ✓ layout: tabs clear of the + button
+  ✓ layout: the + button follows the last tab
+  ✓ layout: the + button is level with the tabs' x
+  ✓ layout: and stays clear of the window's buttons
+  ✓ layout: the flower is at the left end, before the tabs
+  ✓ layout: the terminal is between the bars
+  ✓ layout: finds a tab
+  ✓ layout: finds its close button
+  ✓ layout: finds the window buttons
+  ✓ layout: the rest of the bar drags
+  ✓ layout: below the bars is the terminal
+  ✓ layout: many tabs still fit
+  ✓ overflow: the arrows, tabs and + don't overlap
+  ✓ overflow: the arrows start after the flower
+  ✓ overflow: finds the arrows
+  ✓ overflow: tabs out of view can't be clicked
+  ✓ overflow: a tab in view can
+  ✓ overflow: scrolls to show a tab past the end
+  ✓ overflow: and back to the first
+  ✓ overflow: not when they fit
+  ✓ layout: scales with the display
+  ✓ text: home is ~
+  ✓ text: not home
+  ✓ text: a program's title is the tab's
+  ✓ text: a shell's own path isn't
+  ✓ text: nor as administrator
+File tree
+  ✓ path: join
+  ✓ path: parent
+  ✓ path: name
+  ✓ tree: folders first, dots after, numbers in order
+  ✓ tree: asks for the root
+  ✓ tree: hides what's hidden
+  ✓ tree: or shows it
+  ✓ tree: opening asks for its contents
+  ✓ tree: contents go under it, indented
+  ✓ tree: the same listing changes nothing
+  ✓ tree: a new file shows
+  ✓ tree: arrow keys
+  ✓ tree: left goes to the folder holding it
+  ✓ tree: left closes a folder
+  ✓ tree: right opens one
+  ✓ tree: an unreadable folder shows empty, and doesn't lose the rest
+  ✓ tree: moving resets the view
+  ✓ tree: says when it can't read the root
+  ✓ sidebars: the terminal fits between them
+  ✓ sidebars: tabs start at the terminal
+  ✓ sidebars: found by position
+  ✓ sidebars: their borders can be grabbed
+  ✓ sidebars: the left switch is always there
+  ✓ sidebars: the right switch only in a split
+  ✓ split: each column has its tabs
+  ✓ split: and its terminal
+  ✓ split: its parts are found
+  ✓ split: a crowded column scrolls on its own
+  ✓ path: parts know their folders
+  ✓ path: from the drive
+  ✓ tree: a place comes back whole
+Menus
+  ✓ menu: opens below
+  ✓ menu: or above
+  ✓ menu: stays in the window
+  ✓ menu: finds its rows, not its lines
+  ✓ menu: arrows skip lines and what's off
+  ✓ menu: what's off can't be highlighted
+  ✓ menu: a long one fits and scrolls
+  ✓ menu: the highlighted row stays in view
+  ✓ sidebars: none when hidden
+  ✓ sidebars: rows from the top of the list
+Themes and settings
+  ✓ themes: all fourteen
+  ✓ hex: six digits
+  ✓ hex: with alpha
+  ✓ hex: three digits
+  ✓ theme: Solanum Default's chrome
+  ✓ theme: a light one
+  ✓ theme: a see-through selection is mixed into the background
+  ✓ theme: from a Mac theme file
+  ✓ settings: reads the file
+  ✓ settings: numbers kept in range
+  ✓ settings: writes it back, keeping keys it doesn't know
+  ✓ settings: and reads what it wrote
+  ✓ field: typing and deleting words
+  ✓ field: Delete at the start
+  ✓ aliases: valid ones become PowerShell
+  ✓ aliases: a dot in a name is fine
+Tab groups
+  ✓ groups: picked tabs gather where the first was
+  ✓ groups: a new one gets the first free color
+  ✓ groups: added tabs go to the end of the group
+  ✓ groups: a new group never lands inside another
+  ✓ groups: removing moves it past the group
+  ✓ groups: a tab dragged away from its group leaves it
+  ✓ groups: a tab dropped inside a group joins it
+  ✓ groups: chip labels
+  ✓ groups: a chip sits before its first tab
+  ✓ groups: collapsed tabs take no room
+ssh
+  ✓ hosts: concrete ones from the config, with details
+  ✓ hosts: their names count as covered
+  ✓ hosts: known ones, skipping hashed entries
+  ✓ ssh: finds the destination
+  ✓ ssh: past grouped flags
+  ✓ ssh: the label drops the user
+  ✓ askpass: knows a password question
+  ✓ secret: comes back as it went in
+  ✓ remote: arguments for the sidebar's connection
+  ✓ remote: a listing's folders and files
+  ✓ hidden process: arguments quoted for Windows
+  ✓ remote: quoting for sh
+  ✓ paths: Unix ones
+  ✓ go to: relative paths start at the terminal's folder
+  ✓ go to: ~, drives, either slash
+  ✓ go to: never above the top
+  ✓ go to: home shows as ~
+  ✓ go to: what's typed splits at the last slash
+  ✓ go to: on a host
+  ✓ palette: a live one works its rows out from the field
+  ✓ reconnect: words for PowerShell
+  ✓ paths: a host's folders from /
+  ✓ paths: home is ~ on a host too
+  ✓ menu: Alt shows alternates, where there are any
+Command palette
+  ✓ palette: lists everything
+  ✓ palette: fuzzy search
+  ✓ palette: word starts win
+  ✓ palette: finds by category
+  ✓ palette: no matches
+  ✓ palette: typing starts over
+  ✓ palette: arrows move
+  ✓ palette: a page past the end stops there
+  ✓ palette: typing goes in at the caret
+  ✓ palette: Delete
+  ✓ palette: recents, newest first, without repeats
+  ✓ palette: recents on top
+  ✓ palette: starts past the header
+  ✓ palette: arrows step over headers
+  ✓ palette: a recent that no longer exists isn't shown
+  ✓ palette: the selection stays in view
+  ✓ palette: centered, and stays put as it shrinks
+  ✓ palette: finds a row
+  ✓ palette: fits a small window
+  ✓ chrome: draws
+  ✓ chrome: draws with too many tabs
+  ✓ palette: draws
+ConPTY
+  ✓ conpty: output reaches the emulator
+  ✓ conpty: exit code
+  ✓ conpty: failing exit code
+  ✓ conpty: input reaches the program
+  ✓ conpty: unicode output
+  ✓ conpty: program sees the size
+  ✓ conpty: program sees a resize
+  ✓ conpty: terminate stops the program and reports it
+  ✓ conpty: unicode input in cmd
+PowerShell hook
+  ✓ powershell: reports its folder
+  ✓ powershell: a block with its exit status
+  ✓ powershell: the block knows its command
+  ✓ powershell: follows cd
+  ✓ powershell: unicode output
+  ✓ powershell: unicode input
+  ✓ powershell: typing after a resize stays on the prompt
+  ✓ powershell: resizing keeps scrollback
+  ✓ powershell: Esc clears the line
+  ✓ powershell: exits
+  - pwsh.exe isn't installed
+All 220 checks passed.

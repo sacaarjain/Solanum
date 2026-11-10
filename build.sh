@@ -50,7 +50,7 @@ OBJ="$BUILD_DIR/obj-$MODE-$ARCH"
 mkdir -p "$OBJ"
 {
   printf '{"": {"swift-dependencies": "%s/master.swiftdeps"}' "$OBJ"
-  for f in Sources/*.swift; do
+  for f in Sources/*.swift Sources/Core/*.swift; do
     b="$(basename "$f" .swift)"
     printf ',\n"%s": {"object": "%s/%s.o", "swift-dependencies": "%s/%s.swiftdeps"}' "$f" "$OBJ" "$b" "$OBJ" "$b"
   done
@@ -63,7 +63,7 @@ swiftc $OPT -swift-version 5 \
   -target "$ARCH-apple-macosx14.0" \
   -import-objc-header Support/Bridging.h \
   -framework AppKit -framework Carbon -framework UserNotifications -framework AVKit -framework PDFKit -framework WebKit \
-  Sources/*.swift \
+  Sources/*.swift Sources/Core/*.swift \
   -o "$APP/Contents/MacOS/$APP_NAME" 2>&1 | grep -v -E "^(.*warning:|\s*[0-9]*\s*\||\s*$|.*note:)" || true
 [[ -x "$APP/Contents/MacOS/$APP_NAME" ]] || fail "Build failed (the compiler's errors are above)."
 

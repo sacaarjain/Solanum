@@ -648,36 +648,14 @@ extension TerminalView {
         scrollOffset = 0
     }
 
-    /// Characters (not cells: wide-char tails don't count) in columns from..<to of a line.
-    private func charCount(_ a: Int, from: Int, to: Int) -> Int {
-        guard let l = terminal.line(abs: a) else { return 0 }
-        let hi = min(to, l.cells.count)
-        guard from < hi else { return 0 }
-        return l.cells[from..<hi].reduce(0) { $0 + ($1.width != 0 ? 1 : 0) }
-    }
-
-    /// Readline soft-wraps by cell, so the command is one run of cells from the end of PS1 through
-    /// the cursor's line and any continuation lines; left/right arrows step through it linearly.
-    /// `index` maps a cell to a character offset in the command (cells before it count as 0).
+    /// A shell's input, if a shell is what's waiting for it.
     private func shellInput(_ b: Block) -> (start: Int, last: Int, index: (Int, Int) -> Int)? {
-        guard b.state == .prompt, let start = b.commandLine, pty?.hasForegroundJob == false else { return nil }
-        var last = max(start, terminal.cursorAbs)
-        while last < terminal.lastAbs, terminal.line(abs: last)?.wrapped == true { last += 1 }
-        let index: (Int, Int) -> Int = { [unowned self] line, col in
-            guard line >= start else { return 0 }
-            return (start...line).reduce(0) { n, a in
-                n + self.charCount(a, from: a == start ? b.commandCol : 0, to: a == line ? col : self.terminal.cols)
-            }
-        }
-        return (start, last, index)
+        pty?.hasForegroundJob == false ? terminal.shellInput(b) : nil
     }
 
     private func placeShellCursor(_ b: Block, at pos: GridPos) -> Bool {
-        guard let input = shellInput(b), pos.line >= input.start, pos.line <= input.last else { return false }
-        let cursor = input.index(terminal.cursorAbs, terminal.cursorX)
-        let textEnd = input.index(input.last, terminal.line(abs: input.last)?.trimmedLength ?? 0)
-        let target = min(input.index(pos.line, pos.col), max(textEnd, cursor))
-        sendArrows(target - cursor, back: "D", forward: "C")
+        guard pty?.hasForegroundJob == false, let arrows = terminal.shellCursorArrows(b, line: pos.line, col: pos.col) else { return false }
+        sendArrows(arrows, back: "D", forward: "C")
         return true
     }
 
@@ -705,8 +683,8 @@ extension TerminalView {
                   en.line >= rows.lowerBound, st.line <= rows.upperBound {
             // Any number of rows of Claude Code's input box (the selection is clipped to the box's text).
             let first = max(st.line, rows.lowerBound), last = min(en.line, rows.upperBound)
-            let startCol = first == st.line ? max(2, min(st.col, agentTextEnd(first))) : 2
-            let endCol = last == en.line ? min(en.col + 1, agentTextEnd(last)) : agentTextEnd(last)
+            let startCol = first == st.line ? max(2, min(st.col, terminal.agentTextEnd(first))) : 2
+            let endCol = last == en.line ? min(en.col + 1, terminal.agentTextEnd(last)) : terminal.agentTextEnd(last)
             let target = GridPos(line: first, col: startCol)
             guard GridPos(line: last, col: endCol) > target else { return false }
             let targetOffset = agentInputOffset(rows, target)
@@ -714,7 +692,7 @@ extension TerminalView {
             // once. Within a row the count is exact. Across rows it re-wraps as characters go and the breaks between
             // rows may or may not be characters, so those are counted and topped up after it's redrawn.
             let selected = (first...last).reduce(0) { n, a in
-                n + charCount(a, from: a == first ? startCol : 2, to: a == last ? endCol : agentTextEnd(a))
+                n + terminal.charCount(a, from: a == first ? startCol : 2, to: a == last ? endCol : terminal.agentTextEnd(a))
             }
             let oneRow = first == last
             // In the queue from the start, so it goes even if the cursor can't be placed.
@@ -760,8 +738,8 @@ extension TerminalView {
     /// space a word-wrap swallowed, or a typed line break; only a word too long for a row breaks without one).
     private func agentInputOffset(_ rows: ClosedRange<Int>, _ p: GridPos) -> Int {
         var n = 0
-        for a in rows.lowerBound..<p.line { n += charCount(a, from: 2, to: agentTextEnd(a)) + 1 }
-        return n + charCount(p.line, from: 2, to: p.col)
+        for a in rows.lowerBound..<p.line { n += terminal.charCount(a, from: 2, to: terminal.agentTextEnd(a)) + 1 }
+        return n + terminal.charCount(p.line, from: 2, to: p.col)
     }
 
     /// Backspaces from the cursor back to `target` characters into Claude Code's input. It re-wraps its text as
@@ -797,22 +775,6 @@ extension TerminalView {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    /// Where the text actually typed on a row of Claude Code's input box ends. Its suggestions (a placeholder
-    /// like Try "…", or a completion after what's typed) are drawn dim, the first character inverted as its
-    /// cursor. They aren't text yet: arrowing into them accepts the suggestion, so clicks stop short of them.
-    func agentTextEnd(_ a: Int) -> Int {
-        guard let l = terminal.line(abs: a) else { return 0 }
-        let full = l.trimmedLength
-        var end = full
-        while end > 0 {
-            let f = l.cells[end - 1].flags
-            if f.contains(.dim) { end -= 1; continue }
-            if f.contains(.inverse), end < full, l.cells[end].flags.contains(.dim) { end -= 1; continue }
-            break
-        }
-        return end
-    }
-
     /// Claude Code word-wraps its input box itself, so cells don't map linearly to text. Move to the
     /// target row with up/down first (it moves by visual row), wait for the redraw, then fix the column.
     private func placeAgentCursor(row: Int, col: Int, sentVertical: Bool, giveUpAt: Date = .distantFuture, then: (() -> Void)? = nil) {
@@ -829,9 +791,7 @@ extension TerminalView {
         guard rows.contains(target) else { return }
         let cursorLine = terminal.cursorAbs
         if cursorLine == target {
-            let cx = terminal.cursorX
-            let c = max(2, min(col, max(cx, agentTextEnd(target))))
-            sendArrows(c >= cx ? charCount(target, from: cx, to: c) : -charCount(target, from: c, to: cx), back: "D", forward: "C")
+            sendArrows(terminal.agentCursorArrows(toCol: col), back: "D", forward: "C")
             then?()
             return
         }

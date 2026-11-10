@@ -104,6 +104,11 @@ struct Theme {
         while self.ansi.count < 16 { self.ansi.append(foreground) }
     }
 
+    init(spec: ThemeSpec) {
+        self.init(name: spec.name, bg: spec.background, bg2: spec.background2, fg: spec.foreground, cursor: spec.cursor,
+                  selection: spec.selection, accent: spec.accent, chrome: spec.chrome, ansi: spec.ansi)
+    }
+
     /// Color for an xterm 256-palette index.
     func paletteColor(_ i: Int) -> NSColor {
         if i < 16 { return ansi[i] }
@@ -119,67 +124,20 @@ struct Theme {
 
 enum ThemeLibrary {
     /// The planets of Outer Wilds, each colored like the planet itself (and its status-bar icon, see PlanetArt).
-    static let outerWilds: [Theme] = [
-        // Ash and Ember Twin: burnt-orange sand under a close, hot sun; red rock, cactus, the Nomai warp towers.
-        Theme(name: "Hourglass", bg: "#3A1D0F", bg2: "#160904", fg: "#F6E1C3", accent: "#FFA940", chrome: "#5A2208",
-              ansi: ["#4A2A18", "#F05A2E", "#C4BC56", "#FFB83D", "#7FAAD0", "#E58A9C", "#79C7A6", "#E8CEAD",
-                     "#8C6448", "#FF7C50", "#D8D27A", "#FFCD6E", "#A2C4E4", "#F2A8B6", "#9ADBBF", "#FFF2DE"]),
-        // Home: deep pine forest, red canyon rock, wooden cabins, the campfire and a blue sky.
-        Theme(name: "Timber Hearth", bg: "#15291B", bg2: "#08130B", fg: "#EAE4CC", accent: "#9BD465", chrome: "#163A1C",
-              ansi: ["#22382A", "#F0683E", "#8FD05E", "#F4C35A", "#6DB6F2", "#C892DC", "#5FCDB4", "#D9D2B8",
-                     "#5E7360", "#FF8A62", "#ADE27E", "#FFD57E", "#94CBF6", "#DBAEEA", "#84DEC8", "#F8F3E2"]),
-        // Timber Hearth's moon: cold grey dust and deep craters. The light theme.
-        Theme(name: "Attlerock", bg: "#ECEDEF", bg2: "#C7C9CE", fg: "#24262B", accent: "#56606E", chrome: "#4A4F58",
-              ansi: ["#2A2C31", "#B83A2C", "#3E7D4A", "#946A12", "#33609E", "#7E4CB2", "#22797E", "#8A8D94",
-                     "#5C6068", "#D0503E", "#4F955C", "#AD801E", "#4677B8", "#9663C9", "#2F9298", "#B4B7BD"]),
-        // A dark slate crust, frosted and cracked, over a black hole; lit orange by the lava of Hollow's Lantern.
-        Theme(name: "Brittle Hollow", bg: "#1B1D2B", bg2: "#040408", fg: "#D8DCEA", accent: "#FF7442", chrome: "#22243A",
-              ansi: ["#282B3C", "#FF5F45", "#74D3AA", "#FFBF55", "#6F8CFF", "#A98BFF", "#84D6F6", "#C2CBE6",
-                     "#525C86", "#FF8668", "#98E2C2", "#FFD381", "#93A8FF", "#C3AAFF", "#A8E4FA", "#EEF2FF"]),
-        // Ocean world: deep green water under pale streaming clouds and cyclones.
-        Theme(name: "Giant's Deep", bg: "#0B3328", bg2: "#021410", fg: "#D4F0E2", accent: "#4FD8A0", chrome: "#07402F",
-              ansi: ["#10402F", "#F4766A", "#43DC92", "#EEDC66", "#3FA4E0", "#B48FEA", "#3EDCD6", "#B9DFD6",
-                     "#4A7C76", "#FF968C", "#6AE8AE", "#F6E98E", "#69BBEC", "#C9AAF2", "#6EE8E3", "#E8FCF7"]),
-        // A pale icy shell split by black thorned vines; fog, and the anglerfish lures glowing in it. Muted on purpose.
-        Theme(name: "Dark Bramble", bg: "#1D1F1D", bg2: "#060606", fg: "#D2D6CE", accent: "#F1D27C", chrome: "#262725",
-              ansi: ["#2C322C", "#CF5C46", "#8DA67A", "#E6C266", "#7896AC", "#A891BA", "#8EBAB0", "#B4B9AB",
-                     "#5E655D", "#E07A64", "#A7BE95", "#F2D58E", "#95AFC2", "#C0AAD0", "#AACFC6", "#E7EADE"]),
-        // The comet: blue-white ice around a core of ghost matter, which only shows up green-blue on camera.
-        Theme(name: "Interloper", bg: "#0F2336", bg2: "#02060B", fg: "#E6F4FC", accent: "#8ED8FF", chrome: "#0A2C4C",
-              ansi: ["#1B3046", "#F27C8E", "#56F0B4", "#ECE296", "#6FBCFF", "#B3A0FF", "#86EEF6", "#CDE2EE",
-                     "#4E6880", "#FF9DAC", "#82F6C8", "#F5EDB2", "#99D0FF", "#CBBDFF", "#ADF4FA", "#F5FBFF"]),
-        // Solanum's home: grey rock wrapped in a shifting grey-white fog.
-        Theme(name: "Quantum Moon", bg: "#202125", bg2: "#09090B", fg: "#E6E6EA", accent: "#C9CCD6", chrome: "#33304C",
-              ansi: ["#2E2F35", "#EC7A8A", "#93D8AE", "#E8D492", "#93A9D8", "#C5A3D8", "#93D2DC", "#CFD0D6",
-                     "#62646C", "#F799A6", "#B0E6C6", "#F2E2AE", "#B0C2E6", "#D8BEE6", "#B0E2EA", "#F6F6F8"]),
-    ]
+    static let outerWilds: [Theme] = ThemeSpecs.outerWilds.map(Theme.init(spec:))
 
     /// Solanum's own look, and the default: near-black with the signature purple (the first Dark Bramble). Its
     /// status-bar mark is the Solanum flower in outline (see `StatusBarView`).
-    static let solanumDefault = Theme(name: "Solanum Default", bg: "#111312", bg2: "#050606", fg: "#D7D3C7", accent: "#A584E8",
-        ansi: ["#272B28", "#E3573F", "#8BA47B", "#E9B54D", "#6F90A9", "#A98CC1", "#8FB9B1", "#BCB7A9",
-               "#5A5F5A", "#F47A63", "#A4BC95", "#F5C86F", "#8DA8BE", "#C0A6D4", "#A9CEC7", "#ECE8DC"])
+    static let solanumDefault = Theme(spec: ThemeSpecs.solanumDefault)
 
     /// VS Code's built-in themes, with its default terminal colors. Listed after Solanum's own.
-    static let vsCode: [Theme] = {
-        let dark = ["#000000", "#CD3131", "#0DBC79", "#E5E510", "#2472C8", "#BC3FBC", "#11A8CD", "#E5E5E5",
-                    "#666666", "#F14C4C", "#23D18B", "#F5F543", "#3B8EEA", "#D670D6", "#29B8DB", "#E5E5E5"]
-        let light = ["#000000", "#CD3131", "#107C10", "#949800", "#0451A5", "#BC05BC", "#0598BC", "#555555",
-                     "#666666", "#CD3131", "#14CE14", "#B5BA00", "#0451A5", "#BC05BC", "#0598BC", "#A5A5A5"]
-        return [
-            Theme(name: "Dark Modern", bg: "#181818", fg: "#CCCCCC", cursor: "#0078D4", selection: "#264F78", accent: "#0078D4", ansi: dark),
-            Theme(name: "Dark+", bg: "#1E1E1E", fg: "#CCCCCC", cursor: "#AEAFAD", selection: "#264F78", accent: "#007ACC", ansi: dark),
-            Theme(name: "Light Modern", bg: "#F8F8F8", fg: "#3B3B3B", cursor: "#005FB8", selection: "#ADD6FF", accent: "#005FB8", ansi: light),
-            Theme(name: "Light+", bg: "#FFFFFF", fg: "#333333", cursor: "#000000", selection: "#ADD6FF", accent: "#007ACC", ansi: light),
-            Theme(name: "Dark High Contrast", bg: "#000000", fg: "#FFFFFF", cursor: "#FFFFFF", selection: "#FFFFFF66", accent: "#F38518", ansi: dark),
-        ]
-    }()
+    static let vsCode: [Theme] = ThemeSpecs.vsCode.map(Theme.init(spec:))
 
     static var builtIn: [Theme] { [solanumDefault] + outerWilds + vsCode }
 
     static func isVSCode(_ t: Theme) -> Bool { !t.isCustom && vsCode.contains { $0.name == t.name } }
 
-    static let defaultName = "Solanum Default"
+    static let defaultName = ThemeSpecs.defaultName
 
     /// Themes loaded from ~/.config/solanum/themes/*.json
     static private(set) var custom: [Theme] = []

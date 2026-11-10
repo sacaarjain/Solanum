@@ -417,7 +417,7 @@ final class BlockSelectionBar: NSView {
 
     var count = 0 {
         didSet {
-            label.stringValue = "\(count) commands selected"
+            label.stringValue = BlockActions.selectionLabel(count)
             needsLayout = true
             superview?.needsLayout = true
         }

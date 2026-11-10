@@ -1031,18 +1031,17 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         return cell
     }
 
+    /// The kind of file (Core/FileKind.swift, shared with Windows) as an SF Symbol.
     static func symbol(for name: String) -> String {
-        switch (name as NSString).pathExtension.lowercased() {
-        case "png", "jpg", "jpeg", "gif", "heic", "tiff", "bmp", "webp", "svg", "ico": return "photo"
-        case "zip", "gz", "tgz", "bz2", "xz", "tar", "7z", "rar": return "doc.zipper"
-        case "pdf": return "doc.richtext"
-        case "mp4", "m4v", "mov", "avi", "mkv", "webm": return "film"
-        case "mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "caf", "ogg": return "waveform"
-        case "md", "txt", "rst", "log", "csv", "tsv": return "doc.text"
-        case "swift", "py", "js", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "m", "go", "rs", "java", "kt", "rb", "php",
-             "sh", "bash", "zsh", "json", "yaml", "yml", "toml", "xml", "html", "css", "sql", "r", "pl", "lua":
-            return "chevron.left.forwardslash.chevron.right"
-        default: return "doc"
+        switch FileKind(name: name) {
+        case .image: return "photo"
+        case .archive: return "doc.zipper"
+        case .pdf: return "doc.richtext"
+        case .video: return "film"
+        case .audio: return "waveform"
+        case .text: return "doc.text"
+        case .code: return "chevron.left.forwardslash.chevron.right"
+        case .other: return "doc"
         }
     }
 

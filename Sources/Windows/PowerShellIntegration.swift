@@ -1,0 +1,112 @@
+import Foundation
+import WinSDK
+
+/// What `ShellIntegration` does for bash and zsh on the Mac, for PowerShell: marks the prompt, the command and its exit
+/// status (OSC 133) and reports the folder (OSC 1337), so blocks and the sidebar can follow along. Sets UTF-8 as well.
+enum PowerShellIntegration {
+    /// Runs after the user's profile, so it wraps whatever prompt that set up. `PSConsoleHostReadLine` returns as a
+    /// command is entered, the one moment PowerShell offers before the command runs. Without PSReadLine it doesn't
+    /// exist, and blocks then have no command or status, only prompts and folders.
+    static let hook = #"""
+    if (-not $global:__solanum_hooked) {
+        $global:__solanum_hooked = $true
+        # UTF-8 both ways, for this shell's own output and for what it exchanges with other programs.
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+        [Console]::InputEncoding = [Console]::OutputEncoding
+        $global:OutputEncoding = [Console]::OutputEncoding
+        $global:__solanum_running = $false
+        $global:__solanum_prompt = $function:prompt
+        function global:__solanum_osc([string]$text) { [char]27 + ']' + $text + [char]7 }
+        function global:prompt {
+            $ok = $?
+            $code = $global:LASTEXITCODE
+            # Settings › Aliases, read again whenever they've changed, so edits reach open tabs.
+            if ($env:SOLANUM_ALIASES -and (Test-Path -LiteralPath $env:SOLANUM_ALIASES)) {
+                $at = (Get-Item -LiteralPath $env:SOLANUM_ALIASES).LastWriteTimeUtc
+                if ($at -ne $global:__solanum_aliases_at) {
+                    $global:__solanum_aliases_at = $at
+                    try { Invoke-Expression (Get-Content -Raw -LiteralPath $env:SOLANUM_ALIASES) } catch {}
+                }
+            }
+            $marks = ''
+            if ($global:__solanum_running) {
+                $status = if ($ok) { 0 } elseif ($code) { $code } else { 1 }
+                $marks += __solanum_osc "133;D;$status"
+            }
+            $global:__solanum_running = $false
+            if ($PWD.Provider.Name -eq 'FileSystem') { $marks += __solanum_osc "1337;CurrentDir=$($PWD.ProviderPath)" }
+            $text = & $global:__solanum_prompt
+            $global:LASTEXITCODE = $code
+            $marks + (__solanum_osc '133;A') + $text + (__solanum_osc '133;B')
+        }
+        # Sent after a resize (see reanchorKey).
+        if (Get-Command Set-PSReadLineKeyHandler -ErrorAction SilentlyContinue) {
+            Set-PSReadLineKeyHandler -Chord 'Ctrl+Alt+F12' -ScriptBlock {
+                # A long prompt and what's typed can wrap, so the first row may be a few above the cursor. The window may
+                # have changed again by now, so it's kept inside the console, and it's no use complaining if it isn't.
+                try {
+                    $line = $null; $at = 0
+                    [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$at)
+                    $text = ((& $global:__solanum_prompt) -join '') -replace "$([char]27)\[[0-9;]*[A-Za-z]", ''
+                    $size = $Host.UI.RawUI.BufferSize
+                    $rows = [Math]::Floor(($text.Length + $at) / [Math]::Max($size.Width, 1))
+                    $top = [Math]::Min([Math]::Max($Host.UI.RawUI.CursorPosition.Y - $rows, 0), [Math]::Max($size.Height - 1, 0))
+                    [Microsoft.PowerShell.PSConsoleReadLine]::InvokePrompt($null, $top)
+                } catch {}
+            }
+        }
+        # ssh tells Solanum when a session starts and ends, and asks Solanum for passwords (see Askpass), so the sidebar
+        # can sign in with the same one. Anything not at a person's terminal goes straight to ssh.
+        function global:ssh {
+            if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected -or -not $env:SOLANUM_ASKPASS_EXE) { & ssh.exe @args; return }
+            $words = @($args | ForEach-Object { "$_" })
+            $joined = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($words -join [char]0x1F)))
+            [Console]::Write((__solanum_osc "1337;SolanumSSHArgs=$joined"))
+            $session = [guid]::NewGuid().ToString('N')
+            [Console]::Write((__solanum_osc "1337;SolanumSSH=$session"))
+            $env:SSH_ASKPASS = $env:SOLANUM_ASKPASS_EXE
+            $env:SSH_ASKPASS_REQUIRE = 'force'
+            $env:SOLANUM_ASKPASS = '1'
+            # A tag the remote shell carries, so the sidebar's own connection can find it and read its folder. Most
+            # servers take LC_ variables (Debian's sshd does by default); one that doesn't just leaves it out.
+            $env:LC_SOLANUM_SESSION = $session
+            try { & ssh.exe -o SendEnv=LC_SOLANUM_SESSION @args; $code = $LASTEXITCODE }
+            finally { Remove-Item Env:\SSH_ASKPASS, Env:\SSH_ASKPASS_REQUIRE, Env:\SOLANUM_ASKPASS, Env:\LC_SOLANUM_SESSION -ErrorAction SilentlyContinue }
+            [Console]::Write((__solanum_osc "1337;SolanumSSHExit=$code"))
+            [Console]::Write((__solanum_osc '1337;SolanumSSH='))
+            $global:LASTEXITCODE = $code
+        }
+        if (Test-Path Function:\PSConsoleHostReadLine) {
+            $global:__solanum_readline = $function:PSConsoleHostReadLine
+            function global:PSConsoleHostReadLine {
+                $line = & $global:__solanum_readline
+                if ($line.Trim().Length -gt 0) {
+                    $global:__solanum_running = $true
+                    [Console]::Write((__solanum_osc '133;C'))
+                }
+                $line
+            }
+        }
+    }
+    """#
+
+    /// Shrinking the window moves the console's rows up, and PSReadLine isn't told, so it goes on drawing the line being
+    /// typed on the row the prompt used to be on. This key, Ctrl+Alt+F12, makes it start again from where the cursor is.
+    /// It's only for a shell waiting at its prompt: another program would take it as a key press.
+    static let reanchorKey = Array("\u{1b}[24;7~".utf8)
+
+    /// PowerShell 7 if it's installed, otherwise the Windows PowerShell every Windows has.
+    static func executable() -> String {
+        var path = [UInt16](repeating: 0, count: Int(MAX_PATH))
+        let found = SearchPathW(nil, Array("pwsh.exe".utf16) + [0], nil, DWORD(path.count), &path, nil)
+        return found > 0 ? "pwsh.exe" : "powershell.exe"
+    }
+
+    /// The command line for an interactive shell with the hook. Encoded rather than a script file, because the default
+    /// execution policy on Windows refuses to run script files.
+    static func commandLine(executable: String = executable(), loadProfile: Bool = true) -> String {
+        let bytes = hook.utf16.flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] }
+        let encoded = Data(bytes).base64EncodedString()
+        return "\(executable) -NoLogo -NoExit \(loadProfile ? "" : "-NoProfile ")-EncodedCommand \(encoded)"
+    }
+}

@@ -17,7 +17,7 @@ enum AgentChats {
         }
     }
 
-    static func transcript(_ parts: [String]) -> String { parts.joined(separator: "\n\n") }
+    static func transcript(_ parts: [String]) -> String { BlockActions.transcript(parts) }
 
     /// Whether a chat just started can take a paste without it going astray: the agent has asked for pastes to be
     /// marked (so newlines in them don't submit), isn't asking a question (a trust prompt, say), and has stopped drawing.
@@ -256,7 +256,7 @@ final class InstalledAgents {
 }
 
 extension TerminalView {
-    func chronological(_ blocks: [Block]) -> [Block] { blocks.sorted { $0.id < $1.id } }
+    func chronological(_ blocks: [Block]) -> [Block] { BlockActions.chronological(blocks) }
 
     /// The selected commands with their output, oldest first.
     var selectedTranscript: String {

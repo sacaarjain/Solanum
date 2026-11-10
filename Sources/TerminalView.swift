@@ -1,11 +1,7 @@
 import AppKit
 import UserNotifications
 
-struct GridPos: Comparable, Hashable {
-    var line: Int
-    var col: Int
-    static func < (a: GridPos, b: GridPos) -> Bool { a.line != b.line ? a.line < b.line : a.col < b.col }
-}
+// GridPos is in Core/CodeBoxFinder.swift, shared with Windows.
 
 struct Selection {
     enum Mode { case char, word, line }
@@ -23,24 +19,7 @@ struct Selection {
     var cols: ClosedRange<Int> { min(aStart.col, hStart.col)...max(aEnd.col, hEnd.col) }
 }
 
-struct SearchMatch {
-    var line: Int
-    var start: Int
-    var end: Int
-}
-
-/// Which part of the transcript ⌘F searches.
-enum SearchScope: Int, CaseIterable {
-    case all, commands, output
-
-    var title: String {
-        switch self {
-        case .all: return "All"
-        case .commands: return "Commands"
-        case .output: return "Output"
-        }
-    }
-}
+// SearchMatch and SearchScope are Core's (TerminalSearch.swift), shared with Windows.
 
 /// Pre-resolved CGColors for the current theme.
 final class RenderPalette {
@@ -736,18 +715,7 @@ final class TerminalView: NSView, TerminalDelegate {
     /// Claude Code puts a status glyph before its title ("✳ Claude Code" when idle, a spinner such as "◐" while
     /// working); the tab already shows the agent's own mark and state, so the title goes without it. (Agent
     /// detection still reads the raw title.)
-    static func withoutStatusGlyph(_ title: String) -> String {
-        let scalars = title.unicodeScalars
-        guard let first = scalars.first, scalars.dropFirst().first == " " else { return title }
-        let v = first.value
-        let isGlyph = (0x2800...0x28FF).contains(v)       // braille spinners
-            || (0x25A0...0x25FF).contains(v)              // geometric shapes: ◐ ◓ ◑ ◒ ● ○
-            || (0x2700...0x27BF).contains(v)              // dingbats: ✳ ✶ ✻ ✽ ✢
-            || "·*+".unicodeScalars.contains(first)
-        guard isGlyph else { return title }
-        let rest = String(scalars.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-        return rest.isEmpty ? title : rest
-    }
+    static func withoutStatusGlyph(_ title: String) -> String { AgentKind.withoutStatusGlyph(title) }
 
     func refreshTitle() {
         // A command on the ssh host has finished once its prompt is back and the output has stopped.
@@ -1969,8 +1937,7 @@ final class TerminalView: NSView, TerminalDelegate {
             }
 
             // "Copy output" beside the badge while the pointer is over a finished command that printed something.
-            if startsHere, b === hoverBlock || b === copiedBlock, b.state == .finished, !b.isAgentSession,
-               let o = b.outputLine, let e = b.endLine, e >= o {
+            if startsHere, b === hoverBlock || b === copiedBlock, BlockActions.offersButtons(b) {
                 let right = (badgeRect?.minX ?? bounds.width - padX) - 6
                 let rect = drawCopyPill(b === copiedBlock ? "Copied" : "Copy output", copied: b === copiedBlock, hover: hoverBlockCopy,
                                         rightX: right, top: { self.rowY(s.first) + (self.fonts.cellH - $0) / 2 }, ctx)
@@ -2008,18 +1975,15 @@ final class TerminalView: NSView, TerminalDelegate {
     }
 
     /// The status badge on a block's first line, if it shows one.
+    /// What it says is Core's (BlockActions.badge), shared with Windows; its color is the theme's.
     func blockBadge(_ b: Block) -> (text: String, color: NSColor)? {
-        guard let d = b.duration, isSelected(b) || b === hoverBlock || b.failed || b.state == .running else { return nil }
+        guard let badge = BlockActions.badge(b, shown: isSelected(b) || b === hoverBlock) else { return nil }
         let th = palette.theme
-        switch b.state {
-        case .running:
-            guard d > 1 && !b.isAgentSession else { return nil }
-            return ("● running  \(TerminalView.formatDuration(d))", th.accent)
-        default:
-            // How a command on an ssh host exited isn't known: just how long it took.
-            if b.onHost { return (TerminalView.formatDuration(d), th.dimText) }
-            if b.failed { return ("✕ exit \(b.exitCode ?? -1)  ·  \(TerminalView.formatDuration(d))", th.red) }
-            return ("✓ \(TerminalView.formatDuration(d))", th.green)
+        switch badge.kind {
+        case .running: return (badge.text, th.accent)
+        case .plain: return (badge.text, th.dimText)
+        case .failed: return (badge.text, th.red)
+        case .succeeded: return (badge.text, th.green)
         }
     }
 

@@ -305,9 +305,7 @@ enum FilePaths {
     }
 }
 
-func shellQuote(_ s: String) -> String {
-    "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-}
+// shellQuote is Core's (GitGraphFilter.swift).
 
 // MARK: - Local
 

@@ -36,6 +36,20 @@ struct DropdownItem {
     static let separator = DropdownItem(kind: .separator)
 }
 
+/// How it behaves (filtering, the highlight, the arrows) is Core's (Dropdown), shared with the Windows build's menus.
+extension DropdownItem: DropdownRow {
+    var dropdownKind: DropdownRowKind {
+        switch kind {
+        case .item: return .item
+        case .header: return .header
+        case .separator: return .separator
+        }
+    }
+    var isChecked: Bool { checked }
+    var isEnabled: Bool { true }
+    var fillsSearch: Bool { fill != nil }
+}
+
 /// A button a dropdown opens from: it shows pressed while its dropdown is open, and a second click while the list
 /// is still being fetched (from git, say) cancels it instead of opening it late.
 protocol DropdownAnchor: AnyObject {
@@ -205,7 +219,7 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
             panel.addSubview(field)
             panel.searchField = field
         }
-        list.highlighted = list.items.firstIndex { $0.kind == .item && $0.checked } ?? list.firstSelectable(from: 0, by: 1)
+        list.highlighted = Dropdown.initialHighlight(list.items)
         if items.contains(where: { $0.optionDetail != nil }) {
             list.optionHeld = NSEvent.modifierFlags.contains(.option)
             flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] e in
@@ -290,8 +304,7 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
     override func scrollWheel(with e: NSEvent) {}
 
     private func move(_ d: Int) {
-        let start = (list.highlighted ?? (d > 0 ? -1 : list.items.count)) + d
-        if let i = list.firstSelectable(from: start, by: d) {
+        if let i = Dropdown.step(list.items, from: list.highlighted, by: d) {
             list.highlighted = i
             scrollToHighlighted()
         }
@@ -319,25 +332,11 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
     }
 
     func controlTextDidChange(_ obj: Notification) {
-        var q = field.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
-        if let p = prefix?.lowercased() {
-            let bare = p.trimmingCharacters(in: .whitespaces)
-            if q == bare { q = "" } else if q.hasPrefix(p) { q = q.dropFirst(p.count).trimmingCharacters(in: .whitespaces) }
-        }
-        let made = extra?(field.stringValue) ?? []
-        // Only the prefix typed ("ssh ", from New Connection…): the whole list, less what fills the field, and
-        // nothing picked yet, so ↩ doesn't connect to the first host by surprise.
-        let onlyPrefix = q.isEmpty && !field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty
-        if q.isEmpty {
-            let rest = onlyPrefix ? Array(all.drop { $0.fill != nil || $0.kind == .separator }) : all
-            list.items = made + (made.isEmpty ? [] : [.separator]) + rest
-        } else {
-            // Just the matching items (with no headers or lines between, which only grouped the full list).
-            // What's typed, made into rows, comes after anything it matches ("ssh lanode2" → lanode23 first).
-            list.items = all.filter { $0.kind == .item && $0.fill == nil
-                && ($0.title.lowercased().contains(q) || ($0.detail?.lowercased().contains(q) ?? false)) } + made
-        }
-        list.highlighted = onlyPrefix && made.isEmpty ? nil : list.firstSelectable(from: 0, by: 1)
+        // What's left, and what's highlighted, are Core's (Dropdown.shown), shared with Windows: the prefix ("ssh ")
+        // alone shows every host with nothing picked; past it, the matches, then what's typed made into rows.
+        let shown = Dropdown.shown(all, typed: field.stringValue, prefix: prefix, made: extra?(field.stringValue) ?? [], separator: .separator)
+        list.items = shown.rows
+        list.highlighted = shown.highlight
         list.frame.size.height = list.contentHeight
         let top = Self.fieldHeight + 6
         panel.frame.size.height = min(top + list.contentHeight + 6, tallest)
@@ -475,16 +474,6 @@ final class DropdownListView: NSView {
             let h = height(item)
             if p.y >= y, p.y < y + h { return item.kind == .item ? i : nil }
             y += h
-        }
-        return nil
-    }
-
-    /// The first pickable row from `start` going `by` (+1 down, -1 up).
-    func firstSelectable(from start: Int, by d: Int) -> Int? {
-        var i = start
-        while items.indices.contains(i) {
-            if items[i].kind == .item { return i }
-            i += d
         }
         return nil
     }

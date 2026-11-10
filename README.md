@@ -201,7 +201,7 @@ it tints the whole line instead. Colors are theme color names (`red`, `bright-bl
 | `Tabs.swift`, `TabColumn.swift` | Windows, tab bar and groups, split panes and columns, status bar |
 | `FileSidebar.swift`, `Files.swift`, `GitStatus.swift` | File sidebar, local and ssh file access, transfers, git |
 | `FileEditor.swift`, `EditorArea.swift`, `MediaPreview.swift` | Editor and media previews above the terminal |
-| `Syntax.swift`, `Diff.swift`, `GitGraph.swift` | JSON / YAML / XML syntax colors, the working tree diff, the git graph |
+| `SyntaxHighlighting.swift`, `Diff.swift`, `GitGraph.swift` | JSON / YAML / XML syntax colors, the working tree diff, the git graph |
 | `Settings.swift`, `ThemeEditor.swift`, `Theme.swift`, `Config.swift` | Settings window, themes, preferences |
 | `Session.swift`, `Notices.swift` | Session save and restore, corner notices |
 | `CommandPalette.swift`, `QuickTerminal.swift`, `History.swift`, `Aliases.swift`, `SSHHosts.swift` | The UI around the terminal |

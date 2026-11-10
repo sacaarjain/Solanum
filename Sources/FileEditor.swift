@@ -158,7 +158,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     /// What was to happen after the save that hit the conflict (closing the editor, say).
     private var afterConflict: (() -> Void)?
     private var wraps = false
-    /// Colored as JSON, YAML, XML or a log (see Syntax.swift, LogFormat.swift); other files stay plain.
+    /// Colored as JSON, YAML, XML or a log (see SyntaxHighlighting.swift, LogFormat.swift); other files stay plain.
     private var language: SyntaxLanguage? { didSet { header.canFormat = language?.canFormat ?? false } }
     private var pendingHighlight: DispatchWorkItem?
     /// A log's coloring: the format chosen for it (an imported one, or the built-in), and the one picked from the
@@ -1871,7 +1871,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         let text = expression == nil ? nil : (textView.string as NSString).copy() as? NSString
         let work = DispatchWorkItem {
             DispatchQueue.global(qos: .userInitiated).async {
-                let (ranges, capped) = expression.flatMap { e in text.map { EditorFind.matches(of: e, in: $0) } } ?? buffer.matches(of: query, options)
+                let (ranges, capped) = expression.flatMap { e in text.map { EditorFind.matches(of: e, in: $0 as String) } } ?? buffer.matches(of: query, options)
                 DispatchQueue.main.async { finish(ranges, capped) }
             }
         }
@@ -1995,7 +1995,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         let t2 = CACurrentMediaTime()
         let again = b.matches(of: q, o)
         let t3 = CACurrentMediaTime()
-        let regex = (try? EditorFind.expression(q, o)).map { EditorFind.matches(of: $0, in: textView.string as NSString) }
+        let regex = (try? EditorFind.expression(q, o)).map { EditorFind.matches(of: $0, in: textView.string) }
         let t4 = CACurrentMediaTime()
         func ms(_ a: Double, _ b: Double) -> String { String(format: "%.2fms", (b - a) * 1000) }
         return "chars=\(b.chars.count) copy=\(ms(t0, t1)) plain=\(ms(t1, t2)) again=\(ms(t2, t3)) (\(again.ranges.count)) regex=\(ms(t3, t4)) (\(regex?.ranges.count ?? -1)) plainCount=\(plain.ranges.count)"

@@ -38,8 +38,13 @@ final class Block {
     var failed: Bool { state == .finished && (exitCode ?? 0) != 0 }
 
     /// True when the command launched an AI agent session (Claude Code), whose run time isn't meaningful.
-    var isAgentSession: Bool {
-        command.split(separator: " ").contains { ($0 as NSString).lastPathComponent == "claude" }
+    var isAgentSession: Bool { Block.namesAgentSession(command) }
+
+    static func namesAgentSession(_ command: String) -> Bool {
+        command.split(separator: " ").contains { word in
+            let name = word.split { $0 == "/" || $0 == "\\" }.last
+            return name == "claude" || name == "claude.exe"
+        }
     }
 
     var duration: TimeInterval? {
@@ -120,6 +125,10 @@ final class Terminal {
     private(set) var cursorVisible = true
     private(set) var bracketedPaste = false
     private(set) var focusEvents = false
+    /// ConPTY asks for the console's own key format (see `Win32Input`). Nothing else uses it.
+    private(set) var win32InputMode = false
+    /// Set on Windows: see `resizeForConsole`.
+    var repaintedByConsole = false
     private(set) var mouseMode: MouseMode = .none
     private(set) var mouseSGR = false
     private(set) var altScroll = true
@@ -569,6 +578,12 @@ final class Terminal {
         pendingWrap = false
     }
 
+    /// The row above `y` no longer runs on into it: what's there now was put there, not wrapped onto it. Text that
+    /// runs off the end of that row again joins them again (see printScalar).
+    private func endContinuation(into y: Int) {
+        if y > 0 && y < screen.count { screen[y - 1].wrapped = false }
+    }
+
     private func insertLines(_ n: Int) {
         guard cursorY >= scrollTop && cursorY <= scrollBottom else { return }
         let n = min(max(n, 1), scrollBottom - cursorY + 1)
@@ -576,6 +591,9 @@ final class Terminal {
             screen.remove(at: scrollBottom)
             screen.insert(Line(cols: cols, fill: blankCell()), at: cursorY)
         }
+        // A blank row now follows the one above, and the last row of the region lost whatever it ran on into.
+        endContinuation(into: cursorY)
+        screen[scrollBottom].wrapped = false
         cursorX = 0
         pendingWrap = false
     }
@@ -587,6 +605,8 @@ final class Terminal {
             screen.remove(at: cursorY)
             screen.insert(Line(cols: cols, fill: blankCell()), at: scrollBottom)
         }
+        // Another row now follows the one above.
+        endContinuation(into: cursorY)
         cursorX = 0
         pendingWrap = false
     }
@@ -599,12 +619,15 @@ final class Terminal {
             if line.cells[cursorX].width == 0 && cursorX > 0 { line.cells[cursorX - 1] = b }
             for x in cursorX..<cols { line.cells[x] = b; line.extras?[x] = nil; line.links?[x] = nil }
             line.wrapped = false
+            // From the row's start, the whole row: whatever's printed there next isn't the rest of the line above.
+            if cursorX == 0 { endContinuation(into: cursorY) }
         case 1:
             let end = min(cursorX, cols - 1)
             if end + 1 < cols && line.cells[end].width == 2 { line.cells[end + 1] = b }
             for x in 0...end { line.cells[x] = b; line.extras?[x] = nil; line.links?[x] = nil }
         case 2:
             line.clear(b)
+            endContinuation(into: cursorY)
         default: break
         }
         pendingWrap = false
@@ -832,6 +855,7 @@ final class Terminal {
         case 5: reverseVideo = on
         case 6: originMode = on; setCursor(x: 0, y: 0)
         case 7: autowrap = on
+        case 9001: win32InputMode = on
         case 9: mouseMode = on ? .x10 : .none
         case 25: cursorVisible = on
         case 47, 1047:
@@ -1283,6 +1307,15 @@ final class Terminal {
     // MARK: - Clear buffer (⌘K)
 
     /// Clears scrollback and screen, keeping the current prompt (if idle) at the top.
+    /// Only what's scrolled off the top: the screen stays as it is (so a console that keeps its own copy of the screen,
+    /// as Windows' ConPTY does, still agrees with it).
+    func clearScrollback() {
+        guard !usingAlt else { return }
+        dropped += scrollback.count
+        scrollback.removeAll()
+        pruneBlocks()
+    }
+
     func clearBuffer() {
         guard !usingAlt else { return }
         var keepFrom = cursorY
@@ -1311,6 +1344,10 @@ final class Terminal {
     func resize(cols newColsIn: Int, rows newRowsIn: Int) {
         let newCols = max(2, newColsIn), newRows = max(1, newRowsIn)
         guard newCols != cols || newRows != rows else { return }
+        if repaintedByConsole {
+            resizeForConsole(newCols, newRows)
+            return
+        }
         if usingAlt {
             let sc = savedCursors[0]
             let r = reflowPrimary(screenLines: primaryScreen, cursorY: sc.y, cursorX: sc.x, newCols: newCols, newRows: newRows)
@@ -1336,6 +1373,44 @@ final class Terminal {
             savedCursors[i].x = min(savedCursors[i].x, cols - 1)
             savedCursors[i].y = min(savedCursors[i].y, rows - 1)
         }
+    }
+
+    /// ConPTY redraws the whole screen after a resize, wrapping lines its own way, so anything rearranged here would be
+    /// overwritten: lines pulled back from scrollback would be lost for good. This only does what the console does to
+    /// the rows, which is to move them up as far as it takes to keep the cursor on screen.
+    private func resizeForConsole(_ newCols: Int, _ newRows: Int) {
+        func fit(_ lines: inout [Line], cursorY: inout Int, intoScrollback: Bool) {
+            let shift = max(0, cursorY - (newRows - 1))
+            for _ in 0..<shift {
+                let removed = lines.removeFirst()
+                guard intoScrollback else { continue }
+                removed.trimForScrollback()
+                if scrollback.append(removed) { dropped += 1 }
+                scrollbackPushes += 1
+            }
+            cursorY -= shift
+            if lines.count > newRows { lines.removeLast(lines.count - newRows) }
+            for line in lines { line.resize(cols: newCols) }
+            while lines.count < newRows { lines.append(Line(cols: newCols)) }
+        }
+        if usingAlt {
+            fit(&primaryScreen, cursorY: &savedCursors[0].y, intoScrollback: true)
+            fit(&screen, cursorY: &cursorY, intoScrollback: false)
+        } else {
+            fit(&screen, cursorY: &cursorY, intoScrollback: true)
+        }
+        cols = newCols
+        rows = newRows
+        scrollTop = 0
+        scrollBottom = rows - 1
+        tabStops = Terminal.defaultTabs(cols)
+        pendingWrap = false
+        cursorX = min(cursorX, cols - 1)
+        for i in 0..<2 {
+            savedCursors[i].x = min(savedCursors[i].x, cols - 1)
+            savedCursors[i].y = min(savedCursors[i].y, rows - 1)
+        }
+        pruneBlocks()
     }
 
     private func resizeAlt(_ newCols: Int, _ newRows: Int) {
