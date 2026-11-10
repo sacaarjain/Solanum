@@ -414,7 +414,7 @@ struct WindowChrome {
 
     /// A coffee cup, in outline, on a 24-unit square: its body, then its handle (one path, so where they meet isn't
     /// drawn twice).
-    private static let cup = "M5 12H16.5V15.5C16.5 17.7 14.7 19.5 12.5 19.5H9C6.8 19.5 5 17.7 5 15.5Z M16.5 13.2H17.8C19.1 13.2 20 14.1 20 15.2C20 16.3 19.1 17.2 17.8 17.2H16.5"
+    private static let cup = "M5.5 9.5H16V16.5C16 18.7 14.2 20.5 12 20.5H9.5C7.3 20.5 5.5 18.7 5.5 16.5Z M16 11.2H17.5C18.9 11.2 20 12.3 20 13.7C20 15.1 18.9 16.2 17.5 16.2H16"
 
     /// Keep Awake's cup, centered in `r`; with steam rising from it while it's on (`steam`, in seconds, moves it).
     static func drawCup(on canvas: Canvas, in r: UIRect, scale: Float, color: UInt32, alpha: Float, steam: Double?) {
@@ -424,23 +424,23 @@ struct WindowChrome {
         sol_canvas_stroke_svg_path(canvas.raw, cup, x, y, unit, color, alpha, 1.7)
         guard let t = steam else { return }
         // Three wisps, each a wave travelling up and fading out at the top, a little out of step with each other.
-        for (k, base) in [Float(7.4), 10.75, 14.1].enumerated() {
+        for (k, base) in [Float(8.3), 10.75, 13.2].enumerated() {
             let phase = Float(t.truncatingRemainder(dividingBy: 1000)) * 3.2 + Float(k) * 2.1
             var points: [Float] = []
-            let bottom: Float = 10.2, top: Float = 3, steps = 10
+            let bottom: Float = 7.9, top: Float = 3.4, steps = 10
             for i in 0...steps {
                 let f = Float(i) / Float(steps), yy = bottom - (bottom - top) * f
                 // Wider as it rises, as steam spreads.
-                let sway = (0.2 + 0.5 * f) * sin(yy * 0.95 + phase)
+                let sway = (0.15 + 0.35 * f) * sin(yy * 1.3 + phase)
                 points += [x + (base + sway) * unit, y + yy * unit]
             }
             // The lower half strong, the upper fainter: two strokes, meeting at the middle point.
             let split = steps / 2
             points.withUnsafeBufferPointer { p in
-                sol_canvas_stroke_polyline(canvas.raw, p.baseAddress, Int32(split + 1), 0, color, alpha * 0.8, 1.05 * scale)
+                sol_canvas_stroke_polyline(canvas.raw, p.baseAddress, Int32(split + 1), 0, color, alpha * 0.8, 0.9 * scale)
             }
             Array(points[(split * 2)...]).withUnsafeBufferPointer { p in
-                sol_canvas_stroke_polyline(canvas.raw, p.baseAddress, Int32(p.count / 2), 0, color, alpha * 0.35, 1.05 * scale)
+                sol_canvas_stroke_polyline(canvas.raw, p.baseAddress, Int32(p.count / 2), 0, color, alpha * 0.35, 0.9 * scale)
             }
         }
     }
