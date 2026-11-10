@@ -23,6 +23,8 @@ struct DropdownItem {
     var color: NSColor?
     /// Picking it doesn't close the dropdown: the search field gets this text instead ("ssh ", to type a host after).
     var fill: String?
+    /// A picture where the check mark goes (an agent's mark, a group's swatch), from a menu item's image.
+    var image: NSImage?
 
     static func item(_ title: String, checked: Bool = false, symbol: String? = nil, detail: String? = nil, color: NSColor? = nil,
                      option: (() -> Void)? = nil, optionDetail: String? = nil, _ action: @escaping () -> Void) -> DropdownItem {
@@ -534,6 +536,23 @@ final class DropdownListView: NSView {
                         ring.lineWidth = 1.5
                         ring.stroke()
                     }
+                } else if let img = item.image, !item.checked {
+                    let side = min(16, max(img.size.width, img.size.height))
+                    let scale = side / max(img.size.width, img.size.height, 1)
+                    let w = img.size.width * scale, h = img.size.height * scale
+                    let r2 = NSRect(x: 20 - w / 2, y: (r.midY - h / 2).rounded(), width: w, height: h)
+                    if img.isTemplate {
+                        let tint = i == highlighted ? th.accent : th.foreground.withAlphaComponent(0.7)
+                        let tinted = NSImage(size: img.size, flipped: false) { rect in
+                            img.draw(in: rect)
+                            tint.set()
+                            rect.fill(using: .sourceAtop)
+                            return true
+                        }
+                        tinted.draw(in: r2, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+                    } else {
+                        img.draw(in: r2, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+                    }
                 } else if let symbol = item.symbol, !item.checked {
                     let cfg = NSImage.SymbolConfiguration(pointSize: 11.5, weight: .regular)
                         .applying(.init(paletteColors: [i == highlighted ? th.accent : th.foreground.withAlphaComponent(0.7)]))
@@ -563,5 +582,102 @@ final class DropdownListView: NSView {
                 }
             }
         }
+    }
+}
+
+// MARK: AppKit menus, shown as Solanum's dropdown
+
+extension ThemedDropdown {
+    /// A menu built as an `NSMenu` (its items, separators, checks, shortcuts, and a group color set as an item's
+    /// `representedObject`), shown as this dropdown instead, as Windows draws every menu. A submenu is laid flat: a
+    /// heading with its items under it, as Windows does it. Picking an item does what the menu item would (its action).
+    /// `responder`: where an item with no target of its own (Copy, Paste) goes, as a context menu sends it: the view it
+    /// was opened on and those it's in, then the window's focus.
+    /// `open`: how a long or nested submenu opens in place of this one (a row with › that does); without it, or for a
+    /// short one (a few chats, a few groups), the submenu is laid flat under a heading, as on Windows.
+    static func items(from menu: NSMenu, responder: NSResponder? = nil, open: ((NSMenu) -> Void)? = nil) -> [DropdownItem] {
+        var out: [DropdownItem] = []
+        func separator() { if let last = out.last, last.kind != .separator { out.append(.separator) } }
+        for item in menu.items where !item.isHidden {
+            if item.isSeparatorItem { separator(); continue }
+            if let sub = item.submenu {
+                let nested = sub.items.contains { $0.submenu != nil }
+                if let open, nested || sub.items.filter({ !$0.isSeparatorItem && !$0.isHidden }).count > 10 {
+                    out.append(.item(item.title, detail: "›") { open(sub) })
+                    continue
+                }
+                separator()
+                out.append(.header(item.title))
+                out += items(from: sub, responder: responder, open: open).filter { $0.kind != .header || !$0.title.isEmpty }
+                separator()
+                continue
+            }
+            // A title that does nothing ("Log Coloring" over its choices): a heading.
+            guard item.action != nil, item.isEnabled || item.target != nil else {
+                out.append(.header(item.title))
+                continue
+            }
+            // Who handles it, and what the menu would grey out (Copy with nothing selected), which is left out.
+            var target: AnyObject? = item.target
+            if target == nil, let action = item.action {
+                var r = responder
+                while let x = r, !x.responds(to: action) { r = x.nextResponder }
+                target = r ?? NSApp.target(forAction: action, to: nil, from: item) as AnyObject?
+            }
+            guard target != nil else { continue }
+            if let v = target as? NSMenuItemValidation, !v.validateMenuItem(item) { continue }
+            let run = { [weak item, weak target] in
+                guard let item, let action = item.action else { return }
+                NSApp.sendAction(action, to: target, from: item)
+            }
+            // ⌥'s version of the row before it.
+            if item.isAlternate, !out.isEmpty, out[out.count - 1].kind == .item {
+                out[out.count - 1].optionAction = run
+                out[out.count - 1].optionDetail = item.title
+                continue
+            }
+            var row = DropdownItem.item(item.title, checked: item.state == .on, detail: shortcut(item), color: item.representedObject as? NSColor, run)
+            if row.color == nil { row.image = item.image }
+            out.append(row)
+        }
+        while out.last?.kind == .separator { out.removeLast() }
+        while out.first?.kind == .separator { out.removeFirst() }
+        return out
+    }
+
+    /// "⇧⌘O" for an item's key equivalent; nil without one.
+    private static func shortcut(_ item: NSMenuItem) -> String? {
+        guard !item.keyEquivalent.isEmpty else { return nil }
+        let m = item.keyEquivalentModifierMask
+        var s = ""
+        if m.contains(.control) { s += "⌃" }
+        if m.contains(.option) { s += "⌥" }
+        if m.contains(.shift) || item.keyEquivalent != item.keyEquivalent.lowercased() { s += "⇧" }
+        if m.contains(.command) { s += "⌘" }
+        let key: String
+        switch item.keyEquivalent {
+        case "\r": key = "↩"
+        case "\u{8}", "\u{7F}": key = "⌫"
+        case " ": key = "Space"
+        default: key = item.keyEquivalent.uppercased()
+        }
+        return s + key
+    }
+
+    /// `menu` as this dropdown, from `point` in `view` (where a right-click was), or under `rect` there. A long one gets
+    /// the search box.
+    static func show(_ menu: NSMenu, at point: NSPoint, in view: NSView, minWidth: CGFloat = 180) {
+        show(menu, under: view, rect: NSRect(x: point.x, y: point.y, width: 1, height: 1), minWidth: minWidth)
+    }
+
+    /// `back`: reopens the menu this one came from (a submenu opened in place), shown as a Back row at the top.
+    static func show(_ menu: NSMenu, under view: NSView, rect: NSRect, minWidth: CGFloat = 180, back: (() -> Void)? = nil) {
+        var rows = items(from: menu, responder: view) { [weak view] sub in
+            guard let view else { return }
+            show(sub, under: view, rect: rect, minWidth: minWidth) { show(menu, under: view, rect: rect, minWidth: minWidth, back: back) }
+        }
+        if let back { rows.insert(contentsOf: [.item("Back", symbol: "chevron.left", back), .separator], at: 0) }
+        guard !rows.isEmpty else { return }
+        show(rows, under: view, rect: rect, minWidth: minWidth, searchable: rows.filter { $0.kind == .item }.count > 12)
     }
 }

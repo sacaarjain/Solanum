@@ -167,8 +167,6 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         outline.action = #selector(rowClicked(_:))
         outline.doubleAction = #selector(rowDoubleClicked(_:))
         outline.sidebar = self
-        outline.menu = NSMenu()
-        outline.menu?.delegate = self
         outline.registerForDraggedTypes([.fileURL, internalDragType])
         NotificationCenter.default.addObserver(self, selector: #selector(filesChanged(_:)), name: .solanumFilesChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appBecameActive(_:)), name: NSApplication.didBecomeActiveNotification, object: nil)
@@ -1189,7 +1187,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         let hidden = ActionMenuItem("Show Hidden Files", checked: showHidden) { [weak self] in self?.toggleHidden() }
         menu.addItem(hidden)
         menu.addItem(ActionMenuItem("Collapse All") { [weak self] in self?.outline.collapseItem(nil, collapseChildren: true) })
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+        ThemedDropdown.show(menu, under: sender, rect: sender.bounds)
     }
 
     private func toggleHidden() {
@@ -1638,6 +1636,23 @@ final class RemoteFilePromise: NSFilePromiseProvider, NSFilePromiseProviderDeleg
 /// ⌘C / ⌘X / ⌘V copy, cut and paste.
 final class FileOutlineView: NSOutlineView {
     weak var sidebar: FileSidebarView?
+
+    /// Right-click: the row under the pointer is picked (as in Finder; on empty space, nothing is), and its menu shows as
+    /// Solanum's dropdown, acting on what's picked.
+    override func rightMouseDown(with e: NSEvent) { _ = menu(for: e) }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let sidebar else { return nil }
+        let p = convert(event.locationInWindow, from: nil)
+        let r = row(at: p)
+        if r >= 0, !selectedRowIndexes.contains(r) { selectRowIndexes([r], byExtendingSelection: false) }
+        if r < 0 { deselectAll(nil) }
+        let m = NSMenu()
+        sidebar.menuNeedsUpdate(m)
+        sidebar.menuDidClose(m)
+        ThemedDropdown.show(m, at: p, in: self)
+        return nil
+    }
 
     // Disclosure triangles and row contents sit a little in from the edge, inside the rounded selection
     // highlight (which is inset 6pt) instead of hanging off its left end.

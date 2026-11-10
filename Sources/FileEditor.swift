@@ -1407,7 +1407,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private func showLogFormatMenu() {
         let menu = logFormatMenu()
         let r = header.rect(ofButton: "Log Coloring") ?? NSRect(x: header.bounds.maxX - 120, y: 0, width: 22, height: header.bounds.height)
-        menu.popUp(positioning: nil, at: NSPoint(x: r.minX, y: r.maxY + 2), in: header)
+        ThemedDropdown.show(menu, under: header, rect: r)
     }
 
     private func logFormatMenu() -> NSMenu {

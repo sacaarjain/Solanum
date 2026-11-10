@@ -395,6 +395,7 @@ final class FileTabStrip: NSView {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
+        // Shown as Solanum's dropdown (see ThemedDropdown.show(_:at:in:)).
         guard let tab else { return nil }
         let p = convert(event.locationInWindow, from: nil)
         guard let i = index(at: p) else { return nil }
@@ -409,6 +410,7 @@ final class FileTabStrip: NSView {
                 tab?.editors.filter { $0 !== ed }.forEach { $0.requestClose() }
             })
         }
-        return m
+        ThemedDropdown.show(m, at: p, in: self)
+        return nil
     }
 }

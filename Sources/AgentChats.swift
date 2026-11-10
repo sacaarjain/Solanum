@@ -278,7 +278,7 @@ extension TerminalView {
         let text = AgentChats.transcript(chronological(blocks).map { blockText($0, includeCommand: true) })
         let menu = AgentChats.menu(sending: text, from: self)
         devSendMenu = menu
-        menu.popUp(positioning: nil, at: point, in: view ?? self)
+        ThemedDropdown.show(menu, at: point, in: view ?? self, minWidth: 240)
     }
 
     func updateSelectionBar() {

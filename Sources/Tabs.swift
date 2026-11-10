@@ -1309,7 +1309,8 @@ final class StatusBarView: NSView {
     override func menu(for event: NSEvent) -> NSMenu? {
         let p = convert(event.locationInWindow, from: nil)
         guard let crumb = crumbs.first(where: { $0.rect.contains(p) }) else { return nil }
-        return contextMenu(crumb.path)
+        ThemedDropdown.show(contextMenu(crumb.path), at: p, in: self)
+        return nil
     }
 
     private func contextMenu(_ folder: String) -> NSMenu {
@@ -2730,10 +2731,10 @@ extension NSMenu {
     /// where `popUp(positioning:at:in:)` would hang it down from there and squeeze it against the screen's edge.
     /// It's hung from its last row: then a menu taller than the room above (a long ssh host list) fills that
     /// room and scrolls, its bottom still at `point`, instead of being pushed down over it.
+    /// Shown as Solanum's own dropdown (see `ThemedDropdown.show(_:at:in:)`), which opens upward where there's no
+    /// room below, as from the status bar.
     func popUpAbove(_ point: NSPoint, in view: NSView) {
-        guard let last = items.last(where: { !$0.isHidden && !$0.isAlternate }) else { return }
-        let up = rowAndPadding(below: last)
-        popUp(positioning: last, at: NSPoint(x: point.x, y: point.y + (view.isFlipped ? -up : up)), in: view)
+        ThemedDropdown.show(self, at: point, in: view)
     }
 
     /// How far the menu reaches below the top of `item`'s row when it's the last one: its height plus the menu's
@@ -4114,7 +4115,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
                 menu.addItem(ActionMenuItem("Close Split and Its Tabs") { [weak w] in w?.closeSplitAndTabs() })
             }
         }
-        NSMenu.popUpContextMenu(menu, with: e, for: self)
+        ThemedDropdown.show(menu, at: p, in: self)
     }
 
     // MARK: Mouse

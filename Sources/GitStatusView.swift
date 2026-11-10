@@ -677,7 +677,14 @@ final class GitStatusRowsView: NSView {
     }
 
     /// Right-click: the changes in a tab, the file itself, and where it is.
+    /// Right-click: shown as Solanum's dropdown (see `contextMenu(for:)`).
     override func menu(for event: NSEvent) -> NSMenu? {
+        guard let m = contextMenu(for: event) else { return nil }
+        ThemedDropdown.show(m, at: convert(event.locationInWindow, from: nil), in: self)
+        return nil
+    }
+
+    func contextMenu(for event: NSEvent) -> NSMenu? {
         guard let (entry, mode) = entry(fileRow(at: event)) else { return nil }
         let path = full(entry)
         let menu = NSMenu()

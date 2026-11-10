@@ -407,7 +407,7 @@ extension TerminalView: NSMenuItemValidation {
 /// Floating find bar shown in the top-right of a terminal pane.
 final class SearchBar: NSView, NSTextFieldDelegate {
     let field = NSTextField()
-    private let scopeButton = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let scopeButton = ChoicePopup(SearchScope.allCases.map(\.title), selected: SearchScope.all.title, flat: true)
     private let countLabel = NSTextField(labelWithString: "")
     private weak var terminal: TerminalView?
     /// VS Code's toggles, as in the file editor's bar, whose settings they share (`EditorFindBar.lastOptions`).
@@ -435,14 +435,10 @@ final class SearchBar: NSView, NSTextFieldDelegate {
         addSubview(icon)
 
         // VS Code-style scope dropdown: search everything, only typed commands/prompts, or only output.
+        scopeButton.font12 = NSFont.systemFont(ofSize: 12, weight: .medium)
         scopeButton.frame = NSRect(x: 30, y: 6, width: 100, height: 24)
-        scopeButton.isBordered = false
-        scopeButton.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        scopeButton.contentTintColor = th.foreground.withAlphaComponent(0.75)
-        scopeButton.addItems(withTitles: SearchScope.allCases.map(\.title))
         scopeButton.selectItem(at: terminal.searchScope.rawValue)
-        scopeButton.target = self
-        scopeButton.action = #selector(scopeChanged)
+        scopeButton.onChange = { [weak self] _ in self?.scopeChanged() }
         addSubview(scopeButton)
 
         let divider = NSView(frame: NSRect(x: 132, y: 9, width: 1, height: 18))
@@ -557,7 +553,7 @@ final class SearchBar: NSView, NSTextFieldDelegate {
         field.placeholderAttributedString = NSAttributedString(string: text, attributes: [.foregroundColor: th.dimText, .font: NSFont.systemFont(ofSize: 13)])
     }
 
-    @objc private func scopeChanged() {
+    private func scopeChanged() {
         guard let t = terminal, let scope = SearchScope(rawValue: scopeButton.indexOfSelectedItem) else { return }
         t.searchScope = scope
         updatePlaceholder()

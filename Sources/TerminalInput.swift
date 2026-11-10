@@ -992,7 +992,14 @@ extension TerminalView {
 
     // MARK: - Context menu
 
+    /// Right-click: shown as Solanum's dropdown (see `contextMenu(for:)`).
     override func menu(for event: NSEvent) -> NSMenu? {
+        guard let m = contextMenu(for: event) else { return nil }
+        ThemedDropdown.show(m, at: convert(event.locationInWindow, from: nil), in: self, minWidth: 220)
+        return nil
+    }
+
+    func contextMenu(for event: NSEvent) -> NSMenu? {
         let p = convert(event.locationInWindow, from: nil)
         let menu = NSMenu()
         if let u = urlAt(p) {

@@ -691,23 +691,95 @@ final class ValueSlider: NSView {
     }
 }
 
-/// Pop-up menu that reports the chosen title.
-final class ChoicePopup: NSPopUpButton {
+/// A choice of titles, drawn in the theme's colors (as Windows draws its own) and opening Solanum's dropdown, with the
+/// current one checked; a long list (fonts) gets its search box. Reports the chosen title. `flat`: no box around it (as
+/// in the terminal's find bar).
+final class ChoicePopup: NSControl, DropdownAnchor {
     var onChange: ((String) -> Void)?
+    private(set) var itemTitles: [String]
+    private(set) var titleOfSelectedItem: String?
+    private let flat: Bool
+    var font12 = NSFont.systemFont(ofSize: 12.5)
+    private var hovering = false { didSet { needsDisplay = true } }
+    var dropdownWanted: Bool { true }
+    var dropdownOpen = false { didSet { needsDisplay = true } }
 
-    init(_ titles: [String], selected: String) {
-        super.init(frame: .zero, pullsDown: false)
-        addItems(withTitles: titles)
-        if item(withTitle: selected) == nil { addItem(withTitle: selected) }
-        selectItem(withTitle: selected)
-        target = self
-        action = #selector(chose)
+    init(_ titles: [String], selected: String, flat: Bool = false) {
+        itemTitles = titles
+        if !titles.contains(selected) { itemTitles.append(selected) }
+        titleOfSelectedItem = selected
+        self.flat = flat
+        super.init(frame: .zero)
         sizeToFit()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    @objc private func chose() { onChange?(titleOfSelectedItem ?? "") }
+    override var isFlipped: Bool { true }
+
+    var indexOfSelectedItem: Int { titleOfSelectedItem.flatMap { itemTitles.firstIndex(of: $0) } ?? -1 }
+
+    func selectItem(withTitle t: String) { if itemTitles.contains(t) { titleOfSelectedItem = t; needsDisplay = true } }
+    func selectItem(at i: Int) { if itemTitles.indices.contains(i) { selectItem(withTitle: itemTitles[i]) } }
+
+    /// Picks `t` as a click in the list would.
+    func choose(_ t: String) {
+        guard itemTitles.contains(t) else { return }
+        titleOfSelectedItem = t
+        needsDisplay = true
+        onChange?(t)
+    }
+
+    override func sizeToFit() {
+        let widest = itemTitles.prefix(60).map { ($0 as NSString).size(withAttributes: [.font: font12]).width }.max() ?? 40
+        setFrameSize(NSSize(width: min(ceil(widest) + (flat ? 26 : 38), 320), height: flat ? 24 : 26))
+    }
+
+    override var intrinsicContentSize: NSSize { frame.size }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let th = Config.shared.theme
+        let r = bounds.insetBy(dx: 0.5, dy: 0.5)
+        if !flat {
+            let box = NSBezierPath(roundedRect: r, xRadius: 6, yRadius: 6)
+            th.surface.withAlphaComponent(hovering || dropdownOpen ? 1 : 0.85).setFill()
+            box.fill()
+            th.border.setStroke()
+            box.stroke()
+        } else if hovering || dropdownOpen {
+            th.foreground.withAlphaComponent(0.08).setFill()
+            NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5).fill()
+        }
+        let attrs: [NSAttributedString.Key: Any] = [.font: font12, .foregroundColor: th.foreground.withAlphaComponent(flat ? 0.8 : 0.92)]
+        let title = (titleOfSelectedItem ?? "") as NSString
+        let size = title.size(withAttributes: attrs)
+        let para = NSMutableParagraphStyle()
+        para.lineBreakMode = .byTruncatingTail
+        var a = attrs
+        a[.paragraphStyle] = para
+        title.draw(in: NSRect(x: flat ? 6 : 10, y: (bounds.height - size.height) / 2, width: bounds.width - (flat ? 24 : 34), height: size.height + 1), withAttributes: a)
+        let cfg = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold).applying(.init(paletteColors: [th.foreground.withAlphaComponent(0.55)]))
+        if let img = NSImage(systemSymbolName: "chevron.up.chevron.down", accessibilityDescription: nil)?.withSymbolConfiguration(cfg) {
+            img.draw(in: NSRect(x: bounds.width - img.size.width - (flat ? 6 : 10), y: (bounds.height - img.size.height) / 2,
+                                width: img.size.width, height: img.size.height), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with e: NSEvent) { hovering = true }
+    override func mouseExited(with e: NSEvent) { hovering = false }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+
+    override func mouseDown(with e: NSEvent) {
+        if dropdownOpen { return ThemedDropdown.dismissCurrent() }
+        let items = itemTitles.map { t in DropdownItem.item(t, checked: t == titleOfSelectedItem) { [weak self] in self?.choose(t) } }
+        ThemedDropdown.show(items, under: self, rect: bounds, minWidth: max(bounds.width, 160), searchable: itemTitles.count > 12)
+    }
 }
 
 /// Single-line field in the theme's colors; reports on Return or when focus leaves.
@@ -965,7 +1037,7 @@ final class ThemeCardView: NSView {
             m.addItem(.separator())
             m.addItem(ActionMenuItem("Delete Theme…") { [weak self] in self?.onDelete?() })
         }
-        NSMenu.popUpContextMenu(m, with: e, for: self)
+        ThemedDropdown.show(m, at: convert(e.locationInWindow, from: nil), in: self)
     }
 }
 
@@ -1530,7 +1602,7 @@ enum SettingsPages {
         weak var getButton: NSButton?
         let get = linkButton(IconPacks.downloading == nil ? "Download…" : "Downloading…") {
             guard let b = getButton else { return }
-            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: b.isFlipped ? b.bounds.height + 4 : -4), in: b)
+            ThemedDropdown.show(menu, under: b, rect: b.bounds)
         }
         getButton = get
         get.isEnabled = IconPacks.downloading == nil
