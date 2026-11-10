@@ -87,6 +87,10 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
   the format (Automatic, the built-in one or an imported logging config) and the colors of each level and field, and
   adds markers: text picked out wherever it appears, such as `[FAIL]` (the selection is offered). They're kept in
   `%APPDATA%\Solanum\log-formats`, in the Mac's rules files. A custom color is a hex in the rules file for now.
+- **Git Graph and Git Changes**, as on the Mac: the graph's toolbar searches messages or a hash (with .* and Aa) and
+  filters by Branch, User, Date and Paths, git doing the filtering (Ctrl+F there goes to the search, Esc clears the
+  filters, then closes it). Git Changes splits Staged, Changes and Untracked, each with its own Stage All, Unstage All
+  or Discard All (which asks first).
 - **Pages above the terminal:** as on the Mac, Git Graph, Git Changes, a commit's changes and files open in sub-tabs above
   the tab's terminal, which stays below (the line between drags, and the strip's terminal button hides it). Clicking
   them gives them the keyboard and clicking the terminal takes it back; Ctrl+W closes the page that has it. In Git

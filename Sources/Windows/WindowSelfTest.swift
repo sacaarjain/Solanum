@@ -1259,6 +1259,9 @@ enum WindowSelfTest {
             let terminal = window.paneArea(pane)
             return pane.editorFocused && terminal.height > 0 && terminal.y >= editor.maxY && editor.y == split.column.y
         }))
+        steps.append(Step(name: "git: an untracked file has a section of its own, as on the Mac", action: {}, done: {
+            (window.activePanel as? GitChangesPanel)?.rows.contains(.header(.untracked, count: 1)) == true
+        }))
         steps.append(Step(name: "git: staging there", action: { (window.activePanel as? GitChangesPanel)?.act(.stageAll, on: nil) }, done: {
             guard let rows = (window.activePanel as? GitChangesPanel)?.fileRows else { return false }
             return rows.count == 1 && rows[0].staged && (window.activePanel as? GitChangesPanel)?.diff.contains { $0.kind == .added } == true
@@ -1290,6 +1293,26 @@ enum WindowSelfTest {
         steps.append(Step(name: "git: Esc closes the commit, then the graph", action: { pane.pressEscape(); pane.pressEscape() }, done: {
             window.activePanel == nil && pane.editors.isEmpty && !pane.editorFocused && window.paneArea(pane) == window.editorSplit(for: pane).column
         }))
+        // Git Graph's filters, as the Mac's toolbar.
+        func graph() -> GitGraphPanel? { window.activePanel as? GitGraphPanel }
+        steps.append(Step(name: "graph filters: Ctrl+Shift+G again", action: { _ = window.keyDown(0x47, shift: true, ctrl: true, alt: false) },
+                          done: { graph()?.loaded == true && (graph()?.rows.count ?? 0) >= 2 && graph()?.toolbarRect("date") != nil }))
+        steps.append(Step(name: "graph filters: Date has its choices", action: {
+            if let r = graph()?.toolbarRect("date") { window.click(r) }
+        }, done: { window.menuTitles.contains("Last 7 Days") && window.menuTitles.contains("Any Time") }))
+        steps.append(Step(name: "graph filters: and closes", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
+        steps.append(Step(name: "graph filters: a user with no commits leaves none", action: {
+            graph()?.setFilterForTesting { $0.user = "nobody-at-all" }
+        }, done: { graph()?.loaded == true && graph()?.rows.isEmpty == true && graph()?.toolbarRect("clear") != nil }))
+        steps.append(Step(name: "graph filters: text finds a commit by its message", action: {
+            graph()?.setFilterForTesting { $0 = GraphFilter(); $0.text = "one" }
+        }, done: {
+            guard let g = graph(), g.loaded, !g.rows.isEmpty else { return false }
+            return g.rows.allSatisfy { $0.commit.subject.lowercased().contains("one") }
+        }))
+        steps.append(Step(name: "graph filters: Esc clears them, then closes the graph", action: { pane.pressEscape() },
+                          done: { graph()?.filter.isEmpty == true && (graph()?.rows.count ?? 0) >= 2 }))
+        steps.append(Step(name: "graph filters: closed", action: { pane.pressEscape() }, done: { window.activePanel == nil }))
         // Search in Project Folder.
         steps.append(Step(name: "search: Ctrl+Shift+F finds text in the folder", action: {
             _ = window.keyDown(0x46, shift: true, ctrl: true, alt: false)

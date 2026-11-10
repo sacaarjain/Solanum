@@ -131,6 +131,21 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-find"), CommandLine.a
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }
 
+// Git Graph with its filters, on the repository in the folder given, at 200%: --draw-graph <png> <folder>
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-graph"), CommandLine.arguments.indices.contains(flag + 2) {
+    let width: Float = 1500, height: Float = 640, s: Float = 2
+    let panel = GitGraphPanel(place: GitPlace(dir: CommandLine.arguments[flag + 2], remote: nil))
+    panel.reload()
+    let until = Date().addingTimeInterval(20)
+    while !panel.loaded && Date() < until { Thread.sleep(forTimeInterval: 0.1) }
+    panel.setFilterForTesting { $0.days = 30; $0.branch = "windows-compat" }
+    while !panel.loaded && Date() < until { Thread.sleep(forTimeInterval: 0.1) }
+    guard let canvas = Canvas(width: Int(width), height: Int(height), fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    panel.draw(on: canvas, in: UIRect(x: 0, y: 0, width: width, height: height), scale: s)
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
+}
+
 // A file changed on disk under unsaved edits, saved: its header, the conflict bar, and Compare when asked:
 // --draw-file-conflict <png> [compare]
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-file-conflict"), CommandLine.arguments.indices.contains(flag + 1) {

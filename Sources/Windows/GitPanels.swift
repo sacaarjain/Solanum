@@ -124,11 +124,13 @@ enum GitLook {
 
 /// The repository's changes, staged and not, with the selected file's diff beside them and a message to commit with.
 final class GitChangesPanel: ColumnPanel {
+    /// As the Mac's (and VS Code's) Source Control: what's staged, changes to tracked files, and files git doesn't track.
+    enum Section: Equatable { case staged, changes, untracked }
     enum Row: Equatable {
-        case header(staged: Bool, count: Int)
+        case header(Section, count: Int)
         case file(GitChange, staged: Bool)
     }
-    enum Action: Equatable { case stage, unstage, discard, stageAll, unstageAll }
+    enum Action: Equatable { case stage, unstage, discard, stageAll, unstageAll, stageTracked, stageUntracked, discardAll }
 
     let place: GitPlace
     private(set) var info: GitInfo?
@@ -169,10 +171,12 @@ final class GitChangesPanel: ColumnPanel {
         let before = selected.flatMap { rows.indices.contains($0) ? rows[$0] : nil }
         let changes = info?.changes ?? []
         let staged = changes.filter { $0.staged != "." && $0.staged != "?" }
-        let unstaged = changes.filter { $0.unstaged != "." }
+        let tracked = changes.filter { $0.unstaged != "." && $0.unstaged != "?" }
+        let untracked = changes.filter { $0.unstaged == "?" }
         rows = []
-        if !staged.isEmpty { rows += [.header(staged: true, count: staged.count)] + staged.map { .file($0, staged: true) } }
-        rows += [.header(staged: false, count: unstaged.count)] + unstaged.map { .file($0, staged: false) }
+        if !staged.isEmpty { rows += [.header(.staged, count: staged.count)] + staged.map { .file($0, staged: true) } }
+        if !tracked.isEmpty || untracked.isEmpty { rows += [.header(.changes, count: tracked.count)] + tracked.map { .file($0, staged: false) } }
+        if !untracked.isEmpty { rows += [.header(.untracked, count: untracked.count)] + untracked.map { .file($0, staged: false) } }
         // The same file stays selected, or the first there is.
         if let before, case .file(let c, let s) = before {
             selected = rows.firstIndex { if case .file(let d, let t) = $0 { return d.path == c.path && t == s }; return false }
@@ -233,6 +237,14 @@ final class GitChangesPanel: ColumnPanel {
         case .unstage: perform("Unstaging…", "git restore --staged -- \(p) 2>/dev/null || git rm -q --cached -- \(p)")
         case .stageAll: perform("Staging…", "git add -A")
         case .unstageAll: perform("Unstaging…", "git restore --staged -- . 2>/dev/null || git rm -rq --cached -- .")
+        // As the Mac's section links: Changes' Stage All is the tracked files, Untracked's the rest.
+        case .stageTracked: perform("Staging…", "git add -u")
+        case .stageUntracked: perform("Staging…", "git ls-files -z -o --exclude-standard | xargs -0 git add --")
+        case .discardAll:
+            let n = info?.changes.filter { $0.unstaged != "." && $0.unstaged != "?" }.count ?? 0
+            confirm("Discard all \(n) change\(n == 1 ? "" : "s")? Untracked files stay. This can't be undone.", "Discard All") { [weak self] in
+                self?.perform("Discarding…", "git restore -- . 2>/dev/null || git checkout -- .")
+            }
         case .discard:
             guard let change else { return }
             let untracked = change.unstaged == "?"
@@ -281,15 +293,21 @@ final class GitChangesPanel: ColumnPanel {
         let r = row(i, a, s), side = 22 * s
         func at(_ k: Int) -> UIRect { UIRect(x: r.maxX - 8 * s - side * Float(k + 1) - 2 * s * Float(k), y: r.y + (r.height - side) / 2, width: side, height: side) }
         switch rows[i] {
-        case .header(let staged, let count): return count == 0 ? [] : [(staged ? .unstageAll : .stageAll, at(0))]
+        case .header(let section, let count):
+            guard count > 0 else { return [] }
+            switch section {
+            case .staged: return [(.unstageAll, at(0))]
+            case .changes: return [(.stageTracked, at(0)), (.discardAll, at(1))]
+            case .untracked: return [(.stageUntracked, at(0))]
+            }
         case .file(_, let staged): return staged ? [(.unstage, at(0))] : [(.stage, at(0)), (.discard, at(1))]
         }
     }
     private func glyph(_ a: Action) -> UInt16 {
         switch a {
-        case .stage, .stageAll: return 0xE710      // +
-        case .unstage, .unstageAll: return 0xE738  // −
-        case .discard: return 0xE7A7               // undo
+        case .stage, .stageAll, .stageTracked, .stageUntracked: return 0xE710  // +
+        case .unstage, .unstageAll: return 0xE738                              // −
+        case .discard, .discardAll: return 0xE7A7                              // undo
         }
     }
 
@@ -330,8 +348,9 @@ final class GitChangesPanel: ColumnPanel {
             let r = row(i, a, s)
             guard r.y < l.maxY else { break }
             switch rows[i] {
-            case .header(let staged, let count):
-                p.label((staged ? "STAGED CHANGES" : "CHANGES") + "  \(count)", UIRect(x: r.x + 14 * s, y: r.y + 4 * s, width: r.width - 60 * s, height: r.height - 4 * s),
+            case .header(let section, let count):
+                let title = section == .staged ? "STAGED CHANGES" : section == .changes ? "CHANGES" : "UNTRACKED"
+                p.label(title + "  \(count)", UIRect(x: r.x + 14 * s, y: r.y + 4 * s, width: r.width - 60 * s, height: r.height - 4 * s),
                         pixels: 11, semibold: true, alpha: 0.5)
             case .file(let c, let staged):
                 if selected == i { p.fill(UIRect(x: r.x + 4 * s, y: r.y + 1, width: r.width - 8 * s, height: r.height - 2), TerminalPalette.accent, 0.22, radius: 5) }

@@ -70,6 +70,17 @@ enum CoreSelfTest {
             results.check(name, cond, detail())
         }
         do {
+            // Git Graph's filters: git does the filtering, from the whole history.
+            var f = GraphFilter()
+            check("graph filter: none is every branch", f.isEmpty && f.script().contains("--all") && !f.script().contains("--author"))
+            f.user = "Jo O'Neil"; f.days = 7; f.path = "src/a b"; f.branch = "main"
+            let s = f.script()
+            check("graph filter: user, date, path and branch go to git log", s.contains("git log 'main'") && s.contains("--author='^Jo O'\\''Neil <'")
+                  && s.contains("--since='7 days ago'") && s.contains("-- 'src/a b'\n") && f.keepsAncestry == false)
+            f = GraphFilter(); f.text = "fix"
+            check("graph filter: text searches messages, ignoring case", f.script().contains("--grep='fix' -F -i") && f.script().contains("--topo-order"))
+        }
+        do {
             // Which agent a command started, for continuing it with the command Settings has for it.
             check("agents: a command's agent, through npx or a full path", AgentResume.agent(typed: "claude --model x") == "claude"
                   && AgentResume.agent(typed: "npx codex") == "codex" && AgentResume.agent(typed: #"& 'C:\tools\agy.exe' -c"#) == "agy"

@@ -2421,6 +2421,12 @@ final class TerminalWindow {
         panel.copy = { [weak pane] text in pane?.setClipboard(text) }
         panel.close = { [weak self, weak panel] in if let self, let panel, let pane = self.owner(of: panel) { self.closeEditor(panel, in: pane) } }
         panel.openCommit = { [weak self, weak pane] hash, subject in pane.map { self?.showCommit(hash, subject: subject, place: place, in: $0) } }
+        panel.showMenu = { [weak self] items, r in
+            guard let self else { return }
+            self.openMenu(items, x: r.x, y: r.maxY + 4 * self.scale, above: false)
+        }
+        panel.pickFromList = { [weak self] placeholder, choices, done in self?.pickFromList(placeholder, choices, done) }
+        panel.paste = { [weak pane] in pane?.clipboardText() }
         openEditor(EditorItem(key: key, title: "Git Graph", glyph: EditorItem.Glyph.graph, panel: panel), in: pane)
     }
 
@@ -3307,6 +3313,18 @@ final class TerminalWindow {
             SnippetStore.shared.load()
             SnippetStore.shared.add(Snippet(name: name, command: command))
         }
+    }
+
+    // MARK: - A long list to pick from, in the palette
+
+    /// The palette over `choices`, narrowed as you type (a choice starting "#" is a header); Enter picks one.
+    private func pickFromList(_ placeholder: String, _ choices: [String], _ done: @escaping (String) -> Void) {
+        let items = choices.map { c -> PaletteItem in
+            c.hasPrefix("#") ? .header(String(c.dropFirst())) : PaletteItem(title: c) { done(c) }
+        }
+        palette = PaletteModel(items: items, placeholder: placeholder, icon: 0xE71C, emptyMessage: "Nothing matches")
+        if !panes.isEmpty { activePane.setFocused(false) }
+        invalidate()
     }
 
     // MARK: - A line of text, asked for in the palette
