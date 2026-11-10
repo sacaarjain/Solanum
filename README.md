@@ -14,7 +14,13 @@ purple, and each planet theme is colored like its planet, with that planet besid
 - ⌥-click moves the cursor (in vim, nano and the like too); ⌥-drag selects a rectangle.
 - A bell in a background tab marks it until you look; the alert sound is optional (`audible-bell`).
 - Command blocks (via shell integration for bash and zsh): select, copy, re-run, collapse or jump between commands.
-- Split panes, tabs, tab groups (named, colored, collapsible) and a split window with two independent columns.
+- Split panes, tabs, tab groups (named, colored, collapsible) and a split window with two independent columns. A tab
+  dragged off its strip lifts out and follows the pointer: over the terminals it splits the window, over the other
+  column's strip a bar shows where it lands (in a group's color when it would join that group).
+- ⌘F in the terminal (and Claude Code chats), files and Markdown previews, with Match Case, Whole Word and Regular
+  Expression toggles shared between them.
+- Keep Awake (⇧⌘A, or the cup in the status bar): the Mac stays awake for as long as Settings says, with an hour more,
+  an hour less, or ending it from the cup's menu.
 - Command palette (⇧⌘P), searchable history (⌃H), snippets and aliases.
 - A quick-terminal drop-down available from any app (⌃` by default).
 - Session restore: windows, tabs, splits, groups, open files and recent output come back on launch and after closing
@@ -138,7 +144,11 @@ Create one in Settings › Appearance, or drop a JSON file into `~/.config/solan
 }
 ```
 
-`background2` is optional and gives a vertical gradient. The built-in themes are in `Sources/Theme.swift`.
+`background2` is optional and gives a vertical gradient. A theme can have a picture behind it (Settings › Appearance ›
+Edit Theme › Background picture, or `"background-image"` with `"background-image-blur"` and `"background-image-tint"`),
+blurred and tinted with the background color. With a see-through background, `see-through = wallpaper` shows your
+desktop's picture, drawn by Solanum so it looks the same in front or not, instead of the windows behind. The built-in
+themes are in `Sources/Theme.swift`.
 
 On light themes, text too faint to read (colors a program chose for dark backgrounds) is darkened just enough to
 read, keeping its hue. Turn it off with `minimum-contrast = false`, or in Settings › Appearance.
