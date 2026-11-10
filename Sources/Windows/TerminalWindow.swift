@@ -300,6 +300,9 @@ final class TerminalWindow {
         if let index, let i = panes.firstIndex(where: { $0 === pane }) {
             panes.remove(at: i)
             panes.insert(pane, at: min(index, panes.count))
+            // Put among a group's tabs over there, it joins that group, as it would in its own column. Before the columns
+            // are tidied, which would otherwise move it past the group's end.
+            TabGroupOps.settle(pane, in: panes.filter { $0.column == pane.column })
         }
         normalizeColumns()
         layoutChanged()
@@ -4444,8 +4447,6 @@ final class TerminalWindow {
                     let target = l.tabRange(column: over)
                     let at = target.first { l.tab($0).x + l.tab($0).width / 2 > x } ?? target.upperBound
                     moveToOtherColumn(pane, at: at > press.index ? at - 1 : at)
-                    // Let go among a group's tabs over there, it joins that group, as it would in its own column.
-                    TabGroupOps.settle(pane, in: panes.filter { $0.column == pane.column })
                 } else if leaves {
                     pane.group = nil
                 } else {
