@@ -65,6 +65,9 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
     shell's history and what's been run (⌃H: Enter puts one at the prompt, Ctrl+Enter runs it), Ctrl+= Ctrl+- and Ctrl+0
     size the text, and F11 is full screen. Snippets are in the palette (Enter to edit one, Ctrl+Enter to run it), with
     Save Command as Snippet and Edit Snippets, in the Mac's snippets.json; Refresh Tab has the program redraw.
+  - Keep Awake (Ctrl+Shift+A, the Mac's ⇧⌘A): Windows has no caffeinate, so Solanum asks Windows itself to keep the PC
+    and display awake for Settings' length (8 hours to start with). The status bar shows the time left; a click there,
+    or the shortcut again, ends it, as does quitting Solanum.
   - In a file, as the Mac's ⌘F and VS Code's: Ctrl+F finds and Ctrl+H replaces ("3 of 12", every match shaded), Enter
     or F3 steps on and Shift with them back, Alt+C, Alt+W and Alt+R match case, whole words and regular expressions
     ($1 and the like in the replacement), Tab moves to the Replace field, Ctrl+Enter there replaces all, and Esc closes

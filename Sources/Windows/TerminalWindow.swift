@@ -171,6 +171,7 @@ final class TerminalWindow {
         canvas.padding = scaledPadding()
         applyBackdrop()
         AppSettings.shared.onChange.append { [weak self] in self?.settingsChanged() }
+        KeepAwake.onChange.append { [weak self] in self?.invalidate() }
         // WSL's distributions, for the shell menus, once known.
         Shells.findWSL(post: { [weak self] work in self?.runOnWindowThread(work) }, done: {})
         Self.windows[created] = self
@@ -847,6 +848,8 @@ final class TerminalWindow {
             }
         }
         chrome.themeName = AppSettings.shared.themeName.uppercased()
+        chrome.keepAwakeLeft = KeepAwake.secondsLeft.map { "Awake \(KeepAwake.shortDuration($0))" }
+        chrome.keepAwakeHovered = keepAwakeHovered
         // As on the Mac: a planet theme's planet, Solanum Default's flower, and nothing for the rest. The Quantum Moon
         // may have wandered off (see QuantumMoon), leaving its name.
         let theme = AppSettings.shared.themeName, custom = AppSettings.shared.customThemes.contains { $0.name == theme }
@@ -1092,6 +1095,9 @@ final class TerminalWindow {
                     }
                 }
                 lookForChanges()
+                KeepAwake.tick()
+                let awake = KeepAwake.secondsLeft.map(KeepAwake.shortDuration)
+                if awake != keepAwakeShown { keepAwakeShown = awake; invalidate() }
                 updateBlink()
                 onTick?()
             }
@@ -3174,6 +3180,10 @@ final class TerminalWindow {
         AppSettings.shared.set("font-size", next == next.rounded() ? String(Int(next)) : String(next))
     }
 
+    private var keepAwakeHovered = false
+    /// The minute Keep Awake's time left was last drawn at, to draw it again as it counts down.
+    private var keepAwakeShown: String?
+
     /// Where the window was before full screen, to go back to.
     private var fullScreenRestore: WINDOWPLACEMENT?
 
@@ -3991,6 +4001,13 @@ final class TerminalWindow {
         let leftSpots = bar.crumbSpots(), spots = leftSpots + (isSplit ? bar.crumbSpots(column: 1) : [])
         let hit = spots.firstIndex { $0.hit.contains(x, y) }
         let onTheme = bar.themeSpot().contains(x, y)
+        let onAwake = bar.keepAwakeSpot().contains(x, y)
+        if onAwake != keepAwakeHovered { keepAwakeHovered = onAwake; invalidate() }
+        if onAwake && message == Win.WM_LBUTTONUP {
+            KeepAwake.stop()
+            return true
+        }
+        if onAwake { return message != Win.WM_MOUSEMOVE }
         var git: (column: Int, part: GitPart, rect: UIRect)?
         for column in isSplit ? [0, 1] : [0] {
             if let g = bar.gitSpots(column: column).first(where: { $0.rect.contains(x, y) }) { git = (column, g.part, g.rect) }
@@ -4133,6 +4150,7 @@ final class TerminalWindow {
     }
 
     var themeSpotRect: UIRect { chrome(on: canvas, layout: layout).themeSpot() }
+    var keepAwakeSpotRect: UIRect { chrome(on: canvas, layout: layout).keepAwakeSpot() }
 
     // MARK: - Dragging tabs
 
@@ -5023,6 +5041,9 @@ final class TerminalWindow {
                 self.showFile(SnippetStore.shared.fileURL.path, in: self.activePane)
             },
             PaletteItem(title: "Refresh Tab", category: "View") { [weak self] in self?.activePane.refreshDisplay() },
+            PaletteItem(title: KeepAwake.secondsLeft.map { "Stop Keeping Awake (\(KeepAwake.shortDuration($0)) left)" }
+                            ?? "Keep Awake (\(KeepAwake.shortDuration(AppSettings.shared.keepAwakeSeconds)))",
+                        category: "Solanum", shortcut: "Ctrl+Shift+A") { KeepAwake.toggle() },
             PaletteItem(title: "Bigger Text", category: "View", shortcut: "Ctrl+=") { [weak self] in self?.adjustTextSize(1) },
             PaletteItem(title: "Smaller Text", category: "View", shortcut: "Ctrl+-") { [weak self] in self?.adjustTextSize(-1) },
             PaletteItem(title: "Default Text Size", category: "View", shortcut: "Ctrl+0") { [weak self] in self?.adjustTextSize(0) },
@@ -5355,6 +5376,11 @@ final class TerminalWindow {
         if ctrl && shift && !alt && key == 0x45 && palette == nil && !panes.isEmpty && !activePane.editorFocused {
             if !activePane.toggleCollapse() { fileProblem() }
             invalidate()
+            return true
+        }
+        // Keep Awake: Ctrl+Shift+A, as the Mac's Shift-Command-A; again ends it.
+        if ctrl && shift && !alt && key == 0x41 && palette == nil {
+            KeepAwake.toggle()
             return true
         }
         // Clear Buffer (Ctrl+Shift+K, the Mac's Command-K) and Command History (Ctrl+Shift+H, its Control-H): programs keep

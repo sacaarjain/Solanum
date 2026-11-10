@@ -409,7 +409,7 @@ final class SettingsWindow {
                            detail: "Solanum asks for an ssh password itself, and keeps it while the session lasts so the sidebar can sign in too. Only in memory, encrypted, and never saved. ssh keys need none of this.",
                            control: toggle("remember-ssh-passwords") { s.rememberSSHPasswords })]),
                 .header("Keep Awake"),
-                .card([Row(glyph: 0xEC32, title: "Keep awake for (seconds)", detail: "How long Keep Awake lasts. The default, 28800, is 8 hours. " + later,
+                .card([Row(glyph: 0xEC32, title: "Keep awake for (seconds)", detail: "How long Ctrl+Shift+A keeps this PC and its display awake. The default, 28800, is 8 hours.",
                            control: number("keep-awake-seconds", { s.file["keep-awake-seconds"] ?? "28800" }, placeholder: "28800", width: 90))]),
                 .header("Sessions"),
                 .card([Row(glyph: 0xE8F1, title: "Reopen windows and tabs", detail: later, control: toggle("restore-session") { s.file.bool("restore-session", true) }),

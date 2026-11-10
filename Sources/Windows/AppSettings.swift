@@ -46,6 +46,8 @@ final class AppSettings {
     var fileIcons: String { file["file-icons"].flatMap { $0.isEmpty ? nil : $0 } ?? IconPackCatalog.solanumID }
     /// A command or an agent that runs at least this long in a tab you're not watching gets a card when it stops; 0 is off.
     var notifyAfterSeconds: Double { file.number("notify-after-seconds", 10, in: 0...86_400) }
+    /// How long Keep Awake lasts (Ctrl+Shift+A), as the Mac's caffeinate does: 8 hours to start with, at most a year.
+    var keepAwakeSeconds: Int { Int(file.number("keep-awake-seconds", 28_800, in: 1...31_536_000)) }
     /// How solid the window's background is, as on the Mac: below 1 the desktop shows through, blurred if `blur`.
     var opacity: Double { file.number("background-opacity", 0.95, in: 0.3...1) }
     var blur: Bool { file.bool("background-blur", true) }
@@ -176,7 +178,7 @@ final class AppSettings {
         ("Leave empty for PowerShell. A full command line works too, such as cmd.exe.", ["shell", "shell-integration"]),
         ("Keep an ssh session's password in memory, encrypted and never saved, so the sidebar can sign in with it too.", ["remember-ssh-passwords"]),
         ("Where Ctrl+T opens a new tab: current (the current tab's folder) | home", ["new-tab-folder"]),
-        ("Notify when a command in a background tab takes at least this long (0 = off). Keep Awake's length in seconds.", ["notify-after-seconds", "keep-awake-seconds"]),
+        ("Notify when a command in a background tab takes at least this long (0 = off). How long Keep Awake (Ctrl+Shift+A) keeps the PC awake, in seconds.", ["notify-after-seconds", "keep-awake-seconds"]),
         ("Reopen windows and tabs on launch, with recent output, continuing coding agents.", ["restore-session", "restore-scrollback", "continue-agents", "confirm-quit", "check-for-updates"]),
         ("A new window's size, in columns and rows.", ["window-columns", "window-rows"]),
         ("Lines the terminal and open files scroll per mouse-wheel notch (touchpads in proportion). Lower is slower; 0.25 to 20.", ["scroll-speed"]),

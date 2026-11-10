@@ -100,6 +100,9 @@ struct WindowChrome {
     var moonByFolders = false
     var moonHovered = false
     var themeHovered = false
+    /// Keep Awake's time left ("7h 59m"), shown before the theme while it's on; nil while off.
+    var keepAwakeLeft: String?
+    var keepAwakeHovered = false
     /// A tab being dragged, and where its left edge is.
     /// Each group's chip, by its first tab, and the run of tabs it spans.
     var chips: [Int: (label: String, color: UInt32, last: Int, collapsed: Bool)] = [:]
@@ -397,6 +400,15 @@ struct WindowChrome {
         }
     }
 
+    /// Keep Awake's cup and time left, before the theme's name; a click ends it. Nothing while it's off, or while split
+    /// (the right column's folder has that half then).
+    func keepAwakeSpot() -> UIRect {
+        guard let left = keepAwakeLeft, !layout.isSplit else { return UIRect(x: 0, y: 0, width: 0, height: 0) }
+        let w = (18 * scale).rounded() + width(of: left, pixels: 11 * scale, semibold: true) + 12 * scale
+        let right = themeSpot().x - 6 * scale
+        return UIRect(x: right - w, y: layout.statusBar.y, width: w, height: layout.statusBar.height)
+    }
+
     /// The theme's name and icon in the status bar, which open the theme menu.
     func themeSpot() -> UIRect {
         // Not while split, where the right column's folder goes, as on the Mac.
@@ -444,7 +456,9 @@ struct WindowChrome {
         func spot(_ x: Float, _ w: Float) -> UIRect { UIRect(x: x, y: bar.y + 3 * scale, width: w, height: bar.height - 6 * scale) }
         if column == 0 {
             var x = (layout.hasShellButton ? layout.shellButton : layout.hostsButton).maxX + 6 * scale
-            var h = Half(folderX: 0, limit: !layout.isSplit ? themeX - 34 * scale : layout.divider - 10 * scale)
+            // The folder stops short of the theme's name, and of Keep Awake's time before it.
+            let end = keepAwakeLeft != nil && !layout.isSplit ? keepAwakeSpot().x + 20 * scale : themeX
+            var h = Half(folderX: 0, limit: !layout.isSplit ? end - 34 * scale : layout.divider - 10 * scale)
             if host != nil { h.hostX = x + 4 * scale; x += 4 * scale + hostW }
             for (part, w) in parts { h.git.append((part, spot(x, w))); x += w + 2 * scale }
             if g != nil { h.dividerX = x + 3 * scale; x += 9 * scale }
@@ -584,6 +598,15 @@ struct WindowChrome {
                 let side = (16 * scale).rounded()
                 canvas.drawArt("flowerOutline", UIRect(x: themeX - side - 5 * scale, y: (bar.midY - side / 2).rounded(), width: side, height: side), scale: scale)
             }
+        }
+
+        // Keep Awake's cup and time left, in the accent color, as long as it's on.
+        if let left = keepAwakeLeft, !layout.isSplit {
+            let spot = keepAwakeSpot()
+            if keepAwakeHovered { sol_canvas_fill_rounded(canvas.raw, spot.x, spot.y + 3 * scale, spot.width, spot.height - 6 * scale, 4 * scale, fg, 0.10) }
+            icon(0xEC32, UIRect(x: spot.x + 4 * scale, y: spot.y, width: 16 * scale, height: spot.height), pixels: 11 * scale, color: TerminalPalette.accent, alpha: 1)
+            label(left, UIRect(x: spot.x + 22 * scale, y: spot.y, width: spot.width - 24 * scale, height: spot.height), pixels: 11 * scale, semibold: true,
+                  color: TerminalPalette.accent, alpha: keepAwakeHovered ? 1 : 0.9)
         }
 
         // The sidebars' switches, at either end.

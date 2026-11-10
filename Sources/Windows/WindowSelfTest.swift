@@ -179,6 +179,10 @@ enum WindowSelfTest {
             try? FileManager.default.removeItem(atPath: dir)
         }
 
+        // Keep Awake's time left, as the status bar shows it.
+        results.check("keep awake: time left to the minute", KeepAwake.shortDuration(28_800) == "8h" && KeepAwake.shortDuration(28_799) == "8h"
+                      && KeepAwake.shortDuration(28_740) == "7h 59m" && KeepAwake.shortDuration(2_700) == "45m" && KeepAwake.shortDuration(30) == "30s")
+
         // Find and replace in a file, as the Mac's ⌘F (Core's EditorFind).
         var findDisk = Data("Cat cat concat\ncat.dog (cat)\nline three\n".utf8)
         let found = FileEditorPanel(path: "C:\\find.txt", name: "find.txt", folder: "C:\\", isLocal: true, read: { _, done in done(findDisk, false) },
@@ -1309,6 +1313,12 @@ enum WindowSelfTest {
         steps.append(Step(name: "terminal find: typing doesn't reach the shell, and Esc closes it", action: {
             _ = window.keyDown(Win.VK_ESCAPE, shift: false, ctrl: false, alt: false)
         }, done: { pane.findBar == nil && !pane.cursorRowText.contains("example.com") }))
+        // Keep Awake, as the Mac's Shift-Command-A: on with the shortcut, its time left in the status bar, off with a click.
+        steps.append(Step(name: "keep awake: Ctrl+Shift+A keeps the PC awake, its time left in the status bar", action: {
+            _ = window.keyDown(0x41, shift: true, ctrl: true, alt: false)
+        }, done: { KeepAwake.isOn && window.keepAwakeSpotRect.width > 0 }))
+        steps.append(Step(name: "keep awake: a click on it ends it", action: { window.click(window.keepAwakeSpotRect) },
+                          done: { !KeepAwake.isOn && window.keepAwakeSpotRect.width == 0 }))
         // Collapsing a command's output, as the Mac's Shift-Command-E.
         steps.append(Step(name: "collapse: a command with some output", action: {
             pane.type("1..6 | ForEach-Object { 'collapse-line ' + $_ }")

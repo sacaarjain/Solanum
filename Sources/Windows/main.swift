@@ -80,6 +80,8 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-git-bar"), CommandLin
     info.changes = (0..<4).map { GitChange(code: "M", path: "f\($0)") }
     var chrome = WindowChrome(canvas: canvas, layout: WindowLayout(width: width, height: 120, scale: 2, tabCount: 1), tabs: ["~"], activeTab: 0)
     chrome.git = GitBadge(info, busy: nil)
+    chrome.folder = #"C:\Users\dev\Projects\Solanum"#
+    chrome.keepAwakeLeft = "Awake 7h 59m"
     chrome.draw()
     for (i, kind) in [GitIcons.Kind.branch, .sync, .publish, .changes].enumerated() {
         GitIcons.draw(kind, in: UIRect(x: 40 + Float(i) * 140, y: 130, width: 120, height: 120), on: canvas, scale: 7, color: TerminalPalette.foreground, alpha: 0.8)
