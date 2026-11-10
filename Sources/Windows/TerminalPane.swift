@@ -759,6 +759,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
         renderer.drawContents()
         if !hiddenInView { drawCopyButtons(top: screenTop) } else { copyButtons = [] }
         drawCollapsedChips()
+        drawBlockButtons()
         imageChips.draw(on: canvas, scale: dpiScale)
         // The link under the pointer, while Ctrl's held.
         if let h = hoveredLink {
@@ -769,6 +770,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
             }
         }
         drawSelectedStop()
+        drawSelectionBar()
         drawLostBar()
         drawQuestion()
         if let findBar, let area = canvas.terminalArea { findBar.bar.draw(on: canvas, in: area, scale: Float(GetDpiForWindow(hwnd)) / 96) }
@@ -1062,11 +1064,12 @@ final class TerminalPane: TerminalDelegate, Groupable {
             if key == Win.VK_UP { selectPreviousStop() } else { selectNextStop() }
             return true
         }
-        if ctrl && alt && !shift && key == 0x43 { copyStopWithOutput(); return true }
+        if ctrl && alt && !shift && key == 0x43 { if pickedBlocks.count > 1 { copyPicked() } else { copyStopWithOutput() }; return true }
         if ctrl && alt && !shift && key == 0x52 { rerunStop(); return true }
-        // Esc puts away a picked command first.
-        if key == Win.VK_ESCAPE && !ctrl && !alt && selectedStop != nil {
+        // Esc puts away a picked command (or several) first.
+        if key == Win.VK_ESCAPE && !ctrl && !alt && (selectedStop != nil || !pickedBlocks.isEmpty) {
             selectedStop = nil
+            pickedBlocks = []
             invalidate()
             return true
         }
@@ -1219,6 +1222,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
             return
         }
         let abs = line(atRow: row) ?? terminal.screenTopAbs - scrollOffset + row
+        // A command's "Copy output" and "Send to chat", and the bar over several picked ones.
+        if blockMouse(message, x: px, y: py, line: abs, col: col) { return }
         // "⋯ N lines hidden" after a collapsed command shows its output again.
         if message == Win.WM_LBUTTONDOWN, let chip = collapsedChips.first(where: { $0.rect.contains(px, py) }),
            let b = terminal.blocks.first(where: { $0.id == chip.block }) {
@@ -1572,6 +1577,20 @@ final class TerminalPane: TerminalDelegate, Groupable {
 
     /// The picked block or prompt, outlined in the accent color over its lines, as on the Mac.
     private func drawSelectedStop() {
+        // Several picked: each outlined.
+        if pickedBlocks.count > 1 {
+            let keep = selectedStop
+            for b in picked {
+                selectedStop = .block(id: b.id, line: b.promptLine)
+                drawOneStop()
+            }
+            selectedStop = keep
+            return
+        }
+        drawOneStop()
+    }
+
+    private func drawOneStop() {
         guard let stop = selectedStop, !terminal.usingAlt else { return }
         let first: Int, last: Int
         switch stop {
@@ -1656,6 +1675,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// finished command under it (outlined, as Ctrl+Up and Down pick them), or puts that one down again if it's picked
     /// already; anywhere else, nothing stays picked.
     private func clicked(line: Int, col: Int) {
+        if !pickedBlocks.isEmpty { pickedBlocks = [] }
         if placeCursor(line: line, col: col) {
             if selectedStop != nil { selectedStop = nil; invalidate() }
             return
@@ -1923,9 +1943,9 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// The picked command (or the last to finish) with what it printed, for a chat; nil for a prompt picked in an agent's
     /// session, or with no command to send.
     var chatTranscript: String? {
+        if pickedBlocks.count > 1 { return pickedTranscript }
         guard selectedTurn == nil, let b = targetBlock, !b.command.isEmpty else { return nil }
-        let out = outputText(b)
-        return AgentChats.transcript(["$ \(b.command)" + (out.isEmpty ? "" : "\n" + out)])
+        return BlockActions.transcript([entry(b)])
     }
 
     /// Text waiting for the agent starting here to be ready, and how long it may wait.
@@ -1965,6 +1985,138 @@ final class TerminalPane: TerminalDelegate, Groupable {
 
     /// Whether text is waiting to be pasted into a chat starting here: for tests.
     var isWaitingToPasteIntoChat: Bool { chatPaste != nil }
+
+    // MARK: - A command's buttons, and picking several, as on the Mac
+
+    /// Commands picked with Ctrl+click (the Mac's ⌘-click), by id, in the order picked; empty with one or none (the one
+    /// is `selectedStop`).
+    private(set) var pickedBlocks: [Int] = []
+    /// The finished command under the pointer, which shows its badge and buttons.
+    private var hoveredBlock: Int?
+    /// Where the buttons and the bar's parts were drawn this frame, and the one under the pointer.
+    private var blockButtons: [(rect: UIRect, part: String, block: Int)] = []
+    private var hoveredBlockButton: String?
+    /// The command whose output was just copied: its button says "Copied" a moment.
+    private var copiedBlock: Int?
+
+    private func entry(_ b: Block) -> String { BlockActions.entry(command: b.command, output: outputText(b)) }
+
+    private var picked: [Block] { BlockActions.chronological(terminal.blocks.filter { pickedBlocks.contains($0.id) }) }
+    private var pickedTranscript: String { BlockActions.transcript(picked.map(entry)) }
+
+    /// Copy All, from the bar or Ctrl+Alt+C: every picked command with its output, oldest first.
+    func copyPicked() {
+        guard !pickedBlocks.isEmpty else { return }
+        setClipboard(pickedTranscript)
+    }
+
+    /// Ctrl+click on a finished command: in or out of the picked ones. The one picked before (outlined) starts them off.
+    private func togglePicked(_ b: Block) {
+        var list = pickedBlocks
+        if list.isEmpty, case .block(let id, _)? = selectedStop { list = [id] }
+        list = BlockActions.toggle(b.id, in: list)
+        if list.count <= 1 {
+            pickedBlocks = []
+            selectedStop = list.first.flatMap { id in terminal.blocks.first { $0.id == id } }.map { .block(id: $0.id, line: $0.promptLine) }
+        } else {
+            pickedBlocks = list
+            selectedStop = .block(id: b.id, line: b.promptLine)
+        }
+        invalidate()
+    }
+
+    /// The buttons, the bar, Ctrl+click and the pointer over a command. True when it dealt with the mouse.
+    private func blockMouse(_ message: UINT, x: Float, y: Float, line: Int, col: Int) -> Bool {
+        let on = blockButtons.first { $0.rect.contains(x, y) }
+        let key = on.map { "\($0.block):\($0.part)" }
+        if message == Win.WM_MOUSEMOVE, !selecting {
+            let under = terminal.usingAlt ? nil : terminal.blockContaining(line).flatMap { $0.state == .finished ? $0.id : nil }
+            // Over its buttons the command stays the one hovered.
+            let hovered = on?.block ?? under
+            if hovered != hoveredBlock || key != hoveredBlockButton {
+                hoveredBlock = hovered
+                hoveredBlockButton = key
+                invalidate()
+            }
+        }
+        if let on, message == Win.WM_LBUTTONDOWN {
+            pressBlockButton(on.part, block: on.block, at: on.rect)
+            return true
+        }
+        if on != nil { return message != Win.WM_MOUSEMOVE }
+        // Ctrl+click on a finished command, not on a link: picks it as well, or puts it down.
+        if message == Win.WM_LBUTTONDOWN, isDown(Win.VK_CONTROL), !terminal.usingAlt, link(atLine: line, col: col) == nil,
+           let b = terminal.blockContaining(line), b.state == .finished, terminal.agentTurn(containing: line) == nil {
+            togglePicked(b)
+            return true
+        }
+        return false
+    }
+
+    private func pressBlockButton(_ part: String, block id: Int, at rect: UIRect) {
+        switch part {
+        case "copy":
+            guard let b = terminal.blocks.first(where: { $0.id == id }) else { return }
+            setClipboard(entry(b))
+            copiedBlock = id
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.host?.runOnWindowThreadPublic {
+                    guard let self, self.copiedBlock == id else { return }
+                    self.copiedBlock = nil
+                    self.invalidate()
+                }
+            }
+        case "send":
+            guard let b = terminal.blocks.first(where: { $0.id == id }) else { return }
+            host?.showSendToChat(text: BlockActions.transcript([entry(b)]), from: self, under: rect)
+        case "all-copy": copyPicked()
+        case "all-send": host?.showSendToChat(text: pickedTranscript, from: self, under: rect)
+        case "all-clear": pickedBlocks = []; selectedStop = nil
+        default: break
+        }
+        invalidate()
+    }
+
+    /// After a send: nothing stays picked, as on the Mac.
+    func sentToChat() {
+        pickedBlocks = []
+        invalidate()
+    }
+
+    /// Each command's badge and buttons (see BlockButtonsView).
+    private func drawBlockButtons() {
+        let s = Float(GetDpiForWindow(hwnd)) / 96
+        let stop: Int? = { if case .block(let id, _)? = selectedStop { return id }; return nil }()
+        let view = BlockButtonsView(canvas: canvas, terminal: terminal, scale: s, row: { [unowned self] in self.row(ofLine: $0) },
+                                    picked: Set(pickedBlocks), outlined: stop, hovered: hoveredBlock, hoveredButton: hoveredBlockButton, copied: copiedBlock)
+        blockButtons = blockButtons.filter { $0.part.hasPrefix("all-") } + view.draw()
+    }
+
+    /// Over several picked commands: the bar at the bottom right (see BlockButtonsView).
+    private func drawSelectionBar() {
+        blockButtons.removeAll { $0.part.hasPrefix("all-") }
+        // Picked ones that have since gone (out of what's kept) don't count.
+        let live = pickedBlocks.filter { id in terminal.blocks.contains { $0.id == id } }
+        if live.count != pickedBlocks.count { pickedBlocks = live.count > 1 ? live : [] }
+        guard pickedBlocks.count > 1, let area = canvas.terminalArea else { return }
+        blockButtons += BlockButtonsView.drawSelectionBar(count: pickedBlocks.count, hovered: hoveredBlockButton, canvas: canvas, area: area,
+                                                          scale: Float(GetDpiForWindow(hwnd)) / 96)
+    }
+
+    /// For tests: the buttons drawn last, by part ("copy", "send", "all-copy"…).
+    func blockButtonRect(_ part: String) -> UIRect? { blockButtons.first { $0.part == part }?.rect }
+    var pickedCount: Int { pickedBlocks.count }
+    /// For tests: a spot on the first line of the command that ran `command`, a few cells in.
+    func spot(onCommand command: String) -> UIRect? {
+        guard let b = terminal.blocks.last(where: { $0.command == command && $0.state == .finished }), let r = row(ofLine: b.promptLine),
+              r >= 0, r < terminal.rows else { return nil }
+        let m = canvas.metrics
+        return UIRect(x: canvas.contentX + 4 * m.cellWidth, y: canvas.contentY + Float(r) * m.cellHeight, width: m.cellWidth, height: m.cellHeight)
+    }
+    /// For tests: Ctrl+click on the command that ran `command`.
+    func togglePickedForTest(command: String) {
+        if let b = terminal.blocks.last(where: { $0.command == command && $0.state == .finished }) { togglePicked(b) }
+    }
 
     // MARK: - Collapsed output, as the Mac's Shift-Command-E
 

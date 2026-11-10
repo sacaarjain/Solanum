@@ -1366,6 +1366,28 @@ enum WindowSelfTest {
         }, done: { KeepAwake.isOn && window.keepAwakeSpotRect.width > 0 }))
         steps.append(Step(name: "keep awake: a click on it ends it", action: { window.click(window.keepAwakeSpotRect) },
                           done: { !KeepAwake.isOn && window.keepAwakeSpotRect.width == 0 }))
+        // A command's buttons, and picking several, as on the Mac.
+        steps.append(Step(name: "blocks: two commands", action: {
+            pane.type("echo pick-one")
+            pane.pressEnter()
+            pane.type("echo pick-two")
+            pane.pressEnter()
+        }, done: { hasLine("pick-two") && pane.atPrompt && pane.spot(onCommand: "echo pick-two") != nil }))
+        steps.append(Step(name: "blocks: the pointer over one shows Send to chat and Copy output", action: {
+            if let r = pane.spot(onCommand: "echo pick-two") { window.hover(r) }
+        }, done: { pane.blockButtonRect("copy") != nil && pane.blockButtonRect("send") != nil }))
+        steps.append(Step(name: "blocks: Copy output copies it with what it printed", action: {
+            if let r = pane.blockButtonRect("copy") { window.click(r) }
+        }, done: { pane.clipboardText() == "$ echo pick-two\npick-two" }))
+        steps.append(Step(name: "blocks: Ctrl+click picks several, and the bar says how many", action: {
+            pane.togglePickedForTest(command: "echo pick-one")
+            pane.togglePickedForTest(command: "echo pick-two")
+        }, done: { pane.pickedCount == 2 && pane.blockButtonRect("all-copy") != nil }))
+        steps.append(Step(name: "blocks: Copy All copies them oldest first", action: {
+            if let r = pane.blockButtonRect("all-copy") { window.click(r) }
+        }, done: { pane.clipboardText() == "$ echo pick-one\npick-one\n\n$ echo pick-two\npick-two" }))
+        steps.append(Step(name: "blocks: Esc puts them down", action: { pane.pressEscape() },
+                          done: { pane.pickedCount == 0 && pane.blockButtonRect("all-copy") == nil }))
         // Collapsing a command's output, as the Mac's Shift-Command-E.
         steps.append(Step(name: "collapse: a command with some output", action: {
             pane.type("1..6 | ForEach-Object { 'collapse-line ' + $_ }")

@@ -1924,8 +1924,7 @@ final class TerminalView: NSView, TerminalDelegate {
             }
 
             // "Copy output" beside the badge while the pointer is over a finished command that printed something.
-            if startsHere, b === hoverBlock || b === copiedBlock, b.state == .finished, !b.isAgentSession,
-               let o = b.outputLine, let e = b.endLine, e >= o {
+            if startsHere, b === hoverBlock || b === copiedBlock, BlockActions.offersButtons(b) {
                 let right = (badgeRect?.minX ?? bounds.width - padX) - 6
                 let rect = drawCopyPill(b === copiedBlock ? "Copied" : "Copy output", copied: b === copiedBlock, hover: hoverBlockCopy,
                                         rightX: right, top: { self.rowY(s.first) + (self.fonts.cellH - $0) / 2 }, ctx)
@@ -1963,18 +1962,15 @@ final class TerminalView: NSView, TerminalDelegate {
     }
 
     /// The status badge on a block's first line, if it shows one.
+    /// What it says is Core's (BlockActions.badge), shared with Windows; its color is the theme's.
     func blockBadge(_ b: Block) -> (text: String, color: NSColor)? {
-        guard let d = b.duration, isSelected(b) || b === hoverBlock || b.failed || b.state == .running else { return nil }
+        guard let badge = BlockActions.badge(b, shown: isSelected(b) || b === hoverBlock) else { return nil }
         let th = palette.theme
-        switch b.state {
-        case .running:
-            guard d > 1 && !b.isAgentSession else { return nil }
-            return ("● running  \(TerminalView.formatDuration(d))", th.accent)
-        default:
-            // How a command on an ssh host exited isn't known: just how long it took.
-            if b.onHost { return (TerminalView.formatDuration(d), th.dimText) }
-            if b.failed { return ("✕ exit \(b.exitCode ?? -1)  ·  \(TerminalView.formatDuration(d))", th.red) }
-            return ("✓ \(TerminalView.formatDuration(d))", th.green)
+        switch badge.kind {
+        case .running: return (badge.text, th.accent)
+        case .plain: return (badge.text, th.dimText)
+        case .failed: return (badge.text, th.red)
+        case .succeeded: return (badge.text, th.green)
         }
     }
 

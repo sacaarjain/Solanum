@@ -52,35 +52,53 @@ struct CodeBoxView {
     func drawButtons(hover hovered: Int?, copied copiedIndex: Int?) -> [(rect: UIRect, box: Int)] {
         var copyButtons: [(rect: UIRect, box: Int)] = []
         guard !boxes.isEmpty, !terminal.usingAlt else { return [] }
-        let m = canvas.metrics, s = scale, c = canvas.raw, fg = TerminalPalette.foreground
+        let m = canvas.metrics, s = scale
         let edge = panelRight
         for (i, b) in boxes.enumerated() {
             let r = b.first - top
             guard r >= 0, r < terminal.rows else { continue }
             let copied = copiedIndex == i, hover = hovered == i
             let roomAbove = b.kind != .table && r > 0 && (terminal.line(abs: b.first - 1).map(ImageTokens.isBlank) ?? false)
-            let text = copied ? "\u{2713} Copied" : b.kind == .table ? "Copy table" : "Copy"
-            let units = Array(text.utf16), px = max(10, Float(AppSettings.shared.fontSize) - 2.5) * s * 1.33
-            let tw = sol_canvas_measure_label(c, units, Int32(units.count), px, 1).rounded(.up)
-            let iconW: Float = copied ? 0 : px + 4 * s
-            let w = tw + 16 * s + iconW, h = (px * 1.25 + 4 * s).rounded()
+            let size = Self.pillSize(copied ? "Copied" : b.kind == .table ? "Copy table" : "Copy", copied: copied, canvas: canvas, scale: s)
             let rowY = canvas.contentY + Float(r) * m.cellHeight
             // Above the box, 6 px clear of its top border (which is a pixel above its first row), in the empty line there.
-            let y = roomAbove ? rowY - 1 - 6 * s - h : rowY + (m.cellHeight - h) / 2
+            let y = roomAbove ? rowY - 1 - 6 * s - size.height : rowY + (m.cellHeight - size.height) / 2
             // Flush with the panel's right edge above it; a little in from it on the box's first line.
-            let rect = UIRect(x: (edge - (roomAbove ? 0 : 6) * scale - w).rounded(), y: y.rounded(), width: w, height: h)
-            let ink = copied ? TerminalPalette.ansi[2] : fg
-            sol_canvas_fill_rounded(c, rect.x, rect.y, rect.width, rect.height, 5 * s, TerminalPalette.surface, 1)
-            if hover || copied { sol_canvas_fill_rounded(c, rect.x, rect.y, rect.width, rect.height, 5 * s, fg, 0.08) }
-            sol_canvas_stroke_rounded(c, rect.x + 0.5, rect.y + 0.5, rect.width - 1, rect.height - 1, 5 * s, fg, TerminalPalette.isDark ? 0.10 : 0.14, 1)
-            var tx = rect.x + 8 * s
-            if !copied {
-                sol_canvas_draw_icon(c, tx, rect.y, px, rect.height, 0xE8C8, px * 0.8, ink, hover ? 1 : 0.55)
-                tx += iconW
-            }
-            sol_canvas_draw_label(c, tx, rect.y, tw + 2, rect.height, units, Int32(units.count), px, 1, ink, copied || hover ? 1 : 0.55)
+            let rect = Self.drawPill(copied ? "Copied" : b.kind == .table ? "Copy table" : "Copy", copied: copied, hover: hover,
+                                     right: edge - (roomAbove ? 0 : 6) * scale, y: y, canvas: canvas, scale: s)
             copyButtons.append((rect, i))
         }
         return copyButtons
+    }
+
+    /// The text size of the Copy buttons: a little smaller than the terminal's.
+    private static func pillPixels(_ s: Float) -> Float { max(10, Float(AppSettings.shared.fontSize) - 2.5) * s * 1.33 }
+
+    static func pillSize(_ text: String, copied: Bool, canvas: Canvas, scale s: Float) -> (width: Float, height: Float) {
+        let label = copied ? "\u{2713} " + text : text, units = Array(label.utf16), px = pillPixels(s)
+        let tw = sol_canvas_measure_label(canvas.raw, units, Int32(units.count), px, 1).rounded(.up)
+        return (tw + 16 * s + (copied ? 0 : px + 4 * s), (px * 1.25 + 4 * s).rounded())
+    }
+
+    /// A Copy button's pill, as the Mac draws them: "⧉ Copy", "✓ Copied" in green a moment after, or with another `icon`
+    /// (Segoe Fluent Icons). Its right edge at `right`, its top at `y`. Returns where it went.
+    @discardableResult
+    static func drawPill(_ text: String, icon: UInt16 = 0xE8C8, copied: Bool, hover: Bool, right: Float, y: Float, canvas: Canvas, scale s: Float) -> UIRect {
+        let c = canvas.raw, fg = TerminalPalette.foreground, px = pillPixels(s)
+        let label = copied ? "\u{2713} " + text : text, units = Array(label.utf16)
+        let tw = sol_canvas_measure_label(c, units, Int32(units.count), px, 1).rounded(.up)
+        let size = pillSize(text, copied: copied, canvas: canvas, scale: s)
+        let rect = UIRect(x: (right - size.width).rounded(), y: y.rounded(), width: size.width, height: size.height)
+        let ink = copied ? TerminalPalette.ansi[2] : fg
+        sol_canvas_fill_rounded(c, rect.x, rect.y, rect.width, rect.height, 5 * s, TerminalPalette.surface, 1)
+        if hover || copied { sol_canvas_fill_rounded(c, rect.x, rect.y, rect.width, rect.height, 5 * s, fg, 0.08) }
+        sol_canvas_stroke_rounded(c, rect.x + 0.5, rect.y + 0.5, rect.width - 1, rect.height - 1, 5 * s, fg, TerminalPalette.isDark ? 0.10 : 0.14, 1)
+        var tx = rect.x + 8 * s
+        if !copied {
+            sol_canvas_draw_icon(c, tx, rect.y, px, rect.height, icon, px * 0.8, ink, hover ? 1 : 0.55)
+            tx += px + 4 * s
+        }
+        sol_canvas_draw_label(c, tx, rect.y, tw + 2, rect.height, units, Int32(units.count), px, 1, ink, copied || hover ? 1 : 0.55)
+        return rect
     }
 }

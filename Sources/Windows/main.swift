@@ -146,6 +146,35 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-graph"), CommandLine.
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }
 
+// A finished command's badge and buttons, and the bar over picked ones, at 200%: --draw-block-buttons <png>
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-block-buttons"), CommandLine.arguments.indices.contains(flag + 1) {
+    let width: Float = 1500, height: Float = 640, s: Float = 2
+    guard let canvas = Canvas(width: Int(width), height: Int(height), fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    canvas.terminalArea = UIRect(x: 0, y: 0, width: width, height: height)
+    canvas.padding = 16
+    let grid = TerminalRenderer.grid(width: Int(width), height: Int(height), canvas: canvas)
+    let terminal = Terminal(cols: grid.cols, rows: grid.rows, scrollbackLimit: 100)
+    let esc = "\u{1b}", st = "\u{07}"
+    func run(_ command: String, _ output: [String], exit code: Int) -> String {
+        "\(esc)]133;A\(st)PS C:\\demo> \(esc)]133;B\(st)\(command)\r\n\(esc)]133;C\(st)" + output.map { $0 + "\r\n" }.joined() + "\(esc)]133;D;\(code)\(st)"
+    }
+    let text = run("git status", ["On branch main", "nothing to commit, working tree clean"], exit: 0)
+        + run("npm test", ["> solanum@1.0.0 test", "1 failing"], exit: 1)
+        + run("Get-ChildItem", ["Mode   LastWriteTime   Name", "d----  11/9/2026     Sources"], exit: 0)
+        + "\(esc)]133;A\(st)PS C:\\demo> \(esc)]133;B\(st)"
+    Array(text.utf8).withUnsafeBufferPointer { terminal.feed($0) }
+    TerminalRenderer(canvas: canvas, terminal: terminal).drawContents()
+    let blocks = terminal.blocks.filter { $0.state == .finished }
+    let top = terminal.screenTopAbs
+    // The pointer over the last command; the first two picked.
+    let view = BlockButtonsView(canvas: canvas, terminal: terminal, scale: s, row: { $0 - top },
+                                picked: Set(blocks.prefix(2).map(\.id)), outlined: nil, hovered: blocks.last?.id, hoveredButton: nil, copied: nil)
+    _ = view.draw()
+    _ = BlockButtonsView.drawSelectionBar(count: 2, hovered: nil, canvas: canvas, area: canvas.terminalArea!, scale: s)
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
+}
+
 // A file changed on disk under unsaved edits, saved: its header, the conflict bar, and Compare when asked:
 // --draw-file-conflict <png> [compare]
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-file-conflict"), CommandLine.arguments.indices.contains(flag + 1) {

@@ -70,6 +70,23 @@ enum CoreSelfTest {
             results.check(name, cond, detail())
         }
         do {
+            // A finished command's buttons and badge, and what several picked ones copy or send.
+            let (t, _) = make(40, 8)
+            feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}ls\r\n\u{1b}]133;C\u{07}a.txt\r\n\u{1b}]133;D;0\u{07}")
+            feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}false\r\n\u{1b}]133;C\u{07}\u{1b}]133;D;1\u{07}")
+            let done = t.blocks.filter { $0.state == .finished }
+            check("blocks: a command that printed something gets the buttons; one that printed nothing doesn't",
+                  done.count == 2 && BlockActions.offersButtons(done[0]) && !BlockActions.offersButtons(done[1]))
+            check("blocks: a failed one always shows its badge, the rest when picked or pointed at",
+                  BlockActions.badge(done[1], shown: false)?.kind == .failed && BlockActions.badge(done[0], shown: false) == nil
+                  && BlockActions.badge(done[0], shown: true)?.kind == .succeeded)
+            check("blocks: picked in and out, in the order picked", BlockActions.toggle(3, in: BlockActions.toggle(5, in: [])) == [5, 3]
+                  && BlockActions.toggle(5, in: [5, 3]) == [3])
+            check("blocks: several, oldest first, as they're copied", BlockActions.transcript(BlockActions.chronological([done[1], done[0]]).map {
+                BlockActions.entry(command: $0.command, output: $0.command == "ls" ? "a.txt" : "")
+            }) == "$ ls\na.txt\n\n$ false" && BlockActions.selectionLabel(2) == "2 commands selected")
+        }
+        do {
             // Git Graph's filters: git does the filtering, from the whole history.
             var f = GraphFilter()
             check("graph filter: none is every branch", f.isEmpty && f.script().contains("--all") && !f.script().contains("--author"))

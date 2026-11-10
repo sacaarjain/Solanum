@@ -3182,7 +3182,11 @@ final class TerminalWindow {
     /// The menu has the chats running in any window, this one's first, then a new chat with each agent on this PC.
     func showSendToChat() {
         guard !panes.isEmpty, let text = activePane.chatTranscript else { return fileProblem() }
-        let from = activePane
+        showSendToChat(text: text, from: activePane, under: nil)
+    }
+
+    /// The menu of chats for `text`, under a button (a command's "Send to chat", the bar's Send to Chat) or mid-terminal.
+    func showSendToChat(text: String, from: TerminalPane, under anchor: UIRect?) {
         InstalledAgents.shared.refresh(post: { [weak self] work in self?.runOnWindowThread(work) })
         var items: [MenuItem] = []
         let others = Self.windows.values.filter { $0 !== self }
@@ -3195,8 +3199,9 @@ final class TerminalWindow {
             // A question on screen could take the paste as its answer.
             if info.status == .waiting { notes += " \u{00B7} waiting for you" }
             let title = pane.tabTitle.drop { !$0.isLetter && !$0.isNumber }
-            var item = MenuItem(title: (title.isEmpty ? info.kind.name : String(title)) + notes, isEnabled: info.status != .waiting) { [weak window, weak pane] in
+            var item = MenuItem(title: (title.isEmpty ? info.kind.name : String(title)) + notes, isEnabled: info.status != .waiting) { [weak window, weak pane, weak from] in
                 guard let window, let pane else { return }
+                from?.sentToChat()
                 pane.sendToChat(text)
                 window.goTo(pane)
             }
@@ -3208,14 +3213,21 @@ final class TerminalWindow {
         for kind in kinds {
             items.append(MenuItem(title: "New \(kind.name) Chat" + (from.sshArguments == nil ? "" : " on This PC")) { [weak self, weak from] in
                 guard let self, let from else { return }
+                from.sentToChat()
                 self.startChat(kind, text: text, from: from)
             })
         }
         if items.isEmpty {
             items.append(MenuItem(title: InstalledAgents.shared.scanned ? "No agents found" : "Looking for agents\u{2026}", isEnabled: false))
         }
-        let area = self.area(for: from)
-        openMenu(items, x: area.x + 16 * scale, y: area.y + area.height / 3, above: false)
+        if let anchor {
+            // Up from a button low on the screen, down from one higher up.
+            let below = anchor.maxY < Float(clientHeight) * 0.6
+            openMenu(items, x: anchor.x, y: below ? anchor.maxY + 4 * scale : anchor.y - 4 * scale, above: !below)
+        } else {
+            let area = self.area(for: from)
+            openMenu(items, x: area.x + 16 * scale, y: area.y + area.height / 3, above: false)
+        }
     }
 
     /// A new tab running the agent, in the sending tab's folder (when it's on this PC); the text follows once it's ready.
