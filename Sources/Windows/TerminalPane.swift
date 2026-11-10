@@ -176,7 +176,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
         let shorter = rows < terminal.rows
         terminal.resize(cols: cols, rows: rows)
         pty?.resize(cols: cols, rows: rows)
-        scrollOffset = min(scrollOffset, terminal.scrollback.count)
+        updateHidden()
+        scrollOffset = min(scrollOffset, maxScroll)
         if shorter || lastResize != nil { lastResize = Date() }
     }
 
@@ -733,25 +734,34 @@ final class TerminalPane: TerminalDelegate, Groupable {
         renderer.scrollOffset = scrollOffset
         renderer.selection = selection
         renderer.findMatches = findBar?.cells ?? [:]
+        updateHidden()
+        if !hiddenRanges.isEmpty {
+            renderer.lineAtRow = { [unowned self] in self.line(atRow: $0) }
+            renderer.cursorRow = row(ofLine: terminal.cursorAbs)
+            renderer.scrollRange = maxScroll
+        }
         renderer.focused = focused
         renderer.cursorShown = cursorShown
         renderer.cursorStyle = style
         let dpiScale = Float(GetDpiForWindow(hwnd)) / 96
         if agent != nil && !terminal.usingAlt {
-            imageChips.layout(terminal: terminal, top: terminal.screenTopAbs - scrollOffset, canvas: canvas, shell: shellProcessID, scale: dpiScale)
+            imageChips.layout(terminal: terminal, top: overlayTop, canvas: canvas, shell: shellProcessID, scale: dpiScale)
             renderer.hiddenText = imageChips.hidden
         } else {
             imageChips.clear()
         }
-        let screenTop = terminal.screenTopAbs - scrollOffset
-        drawCodeBoxes(top: screenTop)
+        // Claude's code boxes count rows up from the bottom of the screen, which holds below any output collapsed in view;
+        // with some in view they wait until it's expanded or scrolled away, rather than be drawn on the wrong rows.
+        let screenTop = overlayTop
+        if !hiddenInView { drawCodeBoxes(top: screenTop) }
         renderer.drawContents()
-        drawCopyButtons(top: screenTop)
+        if !hiddenInView { drawCopyButtons(top: screenTop) } else { copyButtons = [] }
+        drawCollapsedChips()
         imageChips.draw(on: canvas, scale: dpiScale)
         // The link under the pointer, while Ctrl's held.
         if let h = hoveredLink {
-            let row = h.line - (terminal.screenTopAbs - scrollOffset), m = canvas.metrics
-            if row >= 0 && row < terminal.rows {
+            let m = canvas.metrics
+            if let row = row(ofLine: h.line), row >= 0 && row < terminal.rows {
                 sol_canvas_fill_rect(canvas.raw, canvas.contentX + Float(h.start) * m.cellWidth, canvas.contentY + Float(row + 1) * m.cellHeight - max(m.lineThickness, 1),
                                      Float(h.end - h.start + 1) * m.cellWidth, max(m.lineThickness, 1), TerminalPalette.accent, 1)
             }
@@ -789,7 +799,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// Searches again, from the last match at or above the bottom of what's showing, and shows it.
     func runFind() {
         guard let findBar else { return }
-        findBar.search(terminal, bottomLine: terminal.screenTopAbs - scrollOffset + terminal.rows - 1)
+        findBar.search(terminal, bottomLine: line(atRow: terminal.rows - 1) ?? terminal.lastAbs)
         revealFindMatch()
         invalidate()
     }
@@ -797,7 +807,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
     func stepFind(_ d: Int) {
         guard let findBar else { return }
         if findBar.matches.isEmpty && !findBar.bar.field.text.isEmpty {
-            findBar.search(terminal, bottomLine: terminal.screenTopAbs - scrollOffset + terminal.rows - 1)
+            findBar.search(terminal, bottomLine: line(atRow: terminal.rows - 1) ?? terminal.lastAbs)
         } else {
             findBar.step(d)
         }
@@ -808,9 +818,12 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// The current match in view: scrolled so it's in the middle, when it isn't showing.
     private func revealFindMatch() {
         guard let line = findBar?.currentLine else { return }
-        let top = terminal.screenTopAbs - scrollOffset
-        guard line < top || line >= top + terminal.rows else { return }
-        scrollOffset = min(max(terminal.screenTopAbs - (line - terminal.rows / 2), 0), max(terminal.screenTopAbs - terminal.firstAbs, 0))
+        // A match in collapsed output: that output opens, as on the Mac.
+        if let b = terminal.blocks.first(where: { b in b.collapsed && b.outputLine.map { $0 <= line } == true && (b.endLine ?? -1) >= line }) {
+            b.collapsed = false
+            updateHidden()
+        }
+        reveal(line: line, context: terminal.rows / 2)
     }
 
     /// A key while the bar has the keyboard; nil for those that go on as usual (the app's Ctrl keys).
@@ -935,7 +948,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
         runPendingClick()
         if scrollOffset > 0 { scrollOffset += terminal.scrollbackPushes }
         terminal.scrollbackPushes = 0
-        scrollOffset = min(scrollOffset, terminal.scrollback.count)
+        updateHidden()
+        scrollOffset = min(scrollOffset, maxScroll)
         guard !terminal.syncOutput else { return }
         host?.paneChanged(self)
     }
@@ -1202,7 +1216,14 @@ final class TerminalPane: TerminalDelegate, Groupable {
             reportMouse(message, wParam, col: col, row: row)
             return
         }
-        let abs = terminal.screenTopAbs - scrollOffset + row
+        let abs = line(atRow: row) ?? terminal.screenTopAbs - scrollOffset + row
+        // "⋯ N lines hidden" after a collapsed command shows its output again.
+        if message == Win.WM_LBUTTONDOWN, let chip = collapsedChips.first(where: { $0.rect.contains(px, py) }),
+           let b = terminal.blocks.first(where: { $0.id == chip.block }) {
+            b.collapsed = false
+            invalidate()
+            return
+        }
         // Ctrl over a link underlines it, and Ctrl+click opens it.
         if message == Win.WM_MOUSEMOVE || message == Win.WM_LBUTTONDOWN {
             let found = isDown(Win.VK_CONTROL) && !selecting ? link(atLine: abs, col: col) : nil
@@ -1394,7 +1415,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
     private static let windowsPath = try? NSRegularExpression(pattern: #"((?:[A-Za-z]:\\|\.\\)?(?:[\w.~@+-]+\\)+[\w.~@+-]+|[A-Za-z]:\\[\w.~@+-]+)(?::\d+)?"#)
 
     func scrollToTop() {
-        scrollOffset = terminal.usingAlt ? 0 : terminal.scrollback.count
+        updateHidden()
+        scrollOffset = terminal.usingAlt ? 0 : maxScroll
         invalidate()
     }
 
@@ -1404,7 +1426,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
     }
 
     private func scroll(by lines: Int) {
-        scrollOffset = min(max(scrollOffset + lines, 0), terminal.scrollback.count)
+        updateHidden()
+        scrollOffset = min(max(scrollOffset + lines, 0), maxScroll)
         invalidate()
     }
 
@@ -1484,11 +1507,15 @@ final class TerminalPane: TerminalDelegate, Groupable {
         invalidate()
     }
 
-    /// Scrolls so a line shows, a row below the top, unless it's on screen already.
-    private func reveal(line a: Int) {
-        let top = terminal.screenTopAbs - scrollOffset
-        guard a < top || a >= top + terminal.rows else { return }
-        scrollOffset = min(max(terminal.screenTopAbs - a + 1, 0), terminal.scrollback.count)
+    /// Scrolls so a line shows, `context` rows below the top, unless it's on screen already.
+    private func reveal(line a: Int, context: Int = 1) {
+        updateHidden()
+        if let r = row(ofLine: a), r >= 0, r < terminal.rows { return }
+        // A line inside collapsed output: the command it's under.
+        var d = absToDisplay(a)
+        if d == nil, let h = hiddenRanges.first(where: { $0.contains(a) }) { d = absToDisplay(h.lowerBound - 1) }
+        guard let d else { return }
+        scrollOffset = min(max(totalDisplayLines - terminal.rows - (d - context), 0), maxScroll)
     }
 
     /// The picked command or prompt, or else the last command that finished.
@@ -1554,7 +1581,10 @@ final class TerminalPane: TerminalDelegate, Groupable {
             (first, last) = (t.promptLine, t.end)
         }
         let top = terminal.screenTopAbs - scrollOffset
-        let a = max(first - top, 0), z = min(last - top, terminal.rows - 1)
+        // The rows its lines show on (fewer, with output collapsed).
+        let shown = hiddenRanges.isEmpty ? nil : (first...min(last, first + 5000)).compactMap { row(ofLine: $0) }.filter { $0 >= 0 && $0 < terminal.rows }
+        let a = shown.map { $0.min() ?? terminal.rows } ?? max(first - top, 0)
+        let z = shown.map { $0.max() ?? -1 } ?? min(last - top, terminal.rows - 1)
         guard a <= z else { return }
         let m = canvas.metrics, s = Float(GetDpiForWindow(hwnd)) / 96
         let x = canvas.contentX - 4 * s, y = canvas.contentY + Float(a) * m.cellHeight - 2 * s
@@ -1562,7 +1592,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
         sol_canvas_fill_rounded(canvas.raw, x, y, w, h, 6 * s, TerminalPalette.accent, 0.09)
         sol_canvas_stroke_rounded(canvas.raw, x + 0.5, y + 0.5, w - 1, h - 1, 6 * s, TerminalPalette.accent, 0.85, max(1, s.rounded()))
         // A prompt's place among its session's, "Prompt 3 of 7", at the right of its first line, as on the Mac.
-        if case .turn = stop, let t = selectedTurn, first - top == a, let b = terminal.blockContaining(t.promptLine) {
+        if case .turn = stop, let t = selectedTurn, (row(ofLine: first) ?? first - top) == a, let b = terminal.blockContaining(t.promptLine) {
             let text = "Prompt \(t.index) of \(terminal.agentTurns(in: b).count)", units = Array(text.utf16)
             let pixels = max(10 * s, m.cellHeight * 0.62)
             let tw = sol_canvas_measure_label(canvas.raw, units, Int32(units.count), pixels, 1)
@@ -1886,6 +1916,126 @@ final class TerminalPane: TerminalDelegate, Groupable {
         input(Array((bracketed ? "\u{1b}[200~" + text + "\u{1b}[201~" : text).utf8), replacesSelection: true)
     }
 
+    // MARK: - Collapsed output, as the Mac's Shift-Command-E
+
+    /// Lines hidden under collapsed commands (finished ones), in order and merged.
+    private(set) var hiddenRanges: [ClosedRange<Int>] = []
+    /// Where "⋯ N lines hidden" was drawn this frame, for each collapsed command showing.
+    private var collapsedChips: [(rect: UIRect, block: Int)] = []
+
+    private func updateHidden() {
+        guard !terminal.usingAlt else { hiddenRanges = []; return }
+        let first = terminal.firstAbs
+        var ranges: [ClosedRange<Int>] = []
+        for b in terminal.blocks where b.collapsed && b.state == .finished {
+            guard let o = b.outputLine, let e = b.endLine, e >= o, e >= first else { continue }
+            ranges.append(max(o, first)...e)
+        }
+        ranges.sort { $0.lowerBound < $1.lowerBound }
+        var merged: [ClosedRange<Int>] = []
+        for r in ranges {
+            if let last = merged.last, r.lowerBound <= last.upperBound + 1 {
+                merged[merged.count - 1] = last.lowerBound...max(last.upperBound, r.upperBound)
+            } else {
+                merged.append(r)
+            }
+        }
+        hiddenRanges = merged
+    }
+
+    private var hiddenCount: Int { hiddenRanges.reduce(0) { $0 + $1.count } }
+    /// Every line that shows, scrollback and screen, less what's collapsed.
+    private var totalDisplayLines: Int { terminal.usingAlt ? terminal.rows : terminal.scrollback.count + terminal.rows - hiddenCount }
+    /// How far up it scrolls.
+    var maxScroll: Int { max(totalDisplayLines - terminal.rows, 0) }
+
+    private func displayToAbs(_ d: Int) -> Int {
+        var a = terminal.firstAbs + d
+        for h in hiddenRanges {
+            if h.lowerBound <= a { a += h.count } else { break }
+        }
+        return a
+    }
+
+    /// Nil for a line that's hidden.
+    private func absToDisplay(_ a: Int) -> Int? {
+        var hidden = 0
+        for h in hiddenRanges {
+            if h.upperBound < a { hidden += h.count } else if h.lowerBound <= a { return nil } else { break }
+        }
+        return a - terminal.firstAbs - hidden
+    }
+
+    /// The line on a screen row, nil past the end. With nothing collapsed, rows run on from the top as they always have.
+    func line(atRow r: Int) -> Int? {
+        guard !hiddenRanges.isEmpty else { return terminal.screenTopAbs - scrollOffset + r }
+        let d = max(totalDisplayLines - terminal.rows - scrollOffset, 0) + r
+        return d < totalDisplayLines ? displayToAbs(d) : nil
+    }
+
+    /// The row a line is on (off the screen above or below as it may be), nil when it's hidden.
+    func row(ofLine a: Int) -> Int? {
+        guard !hiddenRanges.isEmpty else { return a - (terminal.screenTopAbs - scrollOffset) }
+        guard let d = absToDisplay(a) else { return nil }
+        return d - max(totalDisplayLines - terminal.rows - scrollOffset, 0)
+    }
+
+    /// The line the overlays (pasted images, code boxes) count rows from: up from the bottom row, which runs on
+    /// unbroken below any collapsed output in view.
+    private var overlayTop: Int {
+        guard !hiddenRanges.isEmpty else { return terminal.screenTopAbs - scrollOffset }
+        return (line(atRow: terminal.rows - 1) ?? terminal.lastAbs) - (terminal.rows - 1)
+    }
+
+    /// Collapsed output between the top and bottom rows.
+    private var hiddenInView: Bool {
+        guard !hiddenRanges.isEmpty, let top = line(atRow: 0) else { return false }
+        let bottom = line(atRow: terminal.rows - 1) ?? terminal.lastAbs
+        return hiddenRanges.contains { $0.lowerBound > top && $0.lowerBound <= bottom + 1 }
+    }
+
+    /// Ctrl+Shift+E, as the Mac's Shift-Command-E: the picked command's output (or the last's) hidden or shown again.
+    @discardableResult
+    func toggleCollapse() -> Bool {
+        guard !terminal.usingAlt, let b = targetBlock, b.hasOutput else { return false }
+        b.collapsed.toggle()
+        selectedStop = .block(id: b.id, line: b.promptLine)
+        updateHidden()
+        reveal(line: b.promptLine)
+        invalidate()
+        return true
+    }
+
+    func setAllCollapsed(_ on: Bool) {
+        for b in terminal.blocks where b.state == .finished && (on ? b.hasOutput : true) { b.collapsed = on }
+        if !on { for b in terminal.blocks { b.collapsed = false } }
+        updateHidden()
+        scrollOffset = min(scrollOffset, maxScroll)
+        invalidate()
+    }
+
+    /// "⋯ N lines hidden" after each collapsed command on screen, as the Mac shows it; a click opens it again.
+    private func drawCollapsedChips() {
+        collapsedChips = []
+        guard !hiddenRanges.isEmpty else { return }
+        let m = canvas.metrics, s = Float(GetDpiForWindow(hwnd)) / 96
+        for b in terminal.blocks where b.collapsed && b.state == .finished {
+            guard let o = b.outputLine, let e = b.endLine, e >= o else { continue }
+            let at = b.commandLine ?? b.promptLine
+            guard let r = row(ofLine: max(o - 1, at)), r >= 0, r < terminal.rows, let line = terminal.line(abs: max(o - 1, at)) else { continue }
+            let text = "\u{22EF} \(e - o + 1) line\(e - o == 0 ? "" : "s") hidden", units = Array(text.utf16)
+            let pixels = max(10 * s, m.cellHeight * 0.62)
+            let tw = sol_canvas_measure_label(canvas.raw, units, Int32(units.count), pixels, 1)
+            let ph = (pixels * 1.45).rounded(), pw = (tw + 14 * s).rounded()
+            let used = line.text().trimmingCharacters(in: .whitespaces).isEmpty ? 0 : line.text().count
+            let px = min(canvas.contentX + Float(used + 2) * m.cellWidth, canvas.contentX + Float(terminal.cols) * m.cellWidth - pw).rounded()
+            let py = (canvas.contentY + Float(r) * m.cellHeight + (m.cellHeight - ph) / 2).rounded()
+            sol_canvas_fill_rounded(canvas.raw, px, py, pw, ph, ph / 2, TerminalPalette.accent, 0.16)
+            sol_canvas_draw_label(canvas.raw, px + 7 * s, py, tw + 2, ph, units, Int32(units.count), pixels, 1, TerminalPalette.accent, 1)
+            collapsedChips.append((UIRect(x: px, y: py, width: pw, height: ph), b.id))
+        }
+    }
+
     // MARK: - Clear Buffer, Refresh Tab, and commands put at the prompt
 
     /// PowerShell, Git Bash and WSL's bash redraw their prompt at the top for Ctrl+L.
@@ -2028,6 +2178,15 @@ final class TerminalPane: TerminalDelegate, Groupable {
         }
         return out
     }
+
+    /// The rows as they show, collapsed output left out: for tests.
+    var shownRowsText: String {
+        updateHidden()
+        return (0..<terminal.rows).compactMap { line(atRow: $0).flatMap { terminal.line(abs: $0)?.text() } }.joined(separator: "\n")
+    }
+
+    /// How many "⋯ N lines hidden" chips showed in the last frame: for tests.
+    var collapsedChipCount: Int { collapsedChips.count }
 
     var visibleText: String {
         (terminal.scrollback.toArray().map { $0.text() } + terminal.screen.map { $0.text() }).joined(separator: "\n")

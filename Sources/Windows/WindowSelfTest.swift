@@ -1309,6 +1309,24 @@ enum WindowSelfTest {
         steps.append(Step(name: "terminal find: typing doesn't reach the shell, and Esc closes it", action: {
             _ = window.keyDown(Win.VK_ESCAPE, shift: false, ctrl: false, alt: false)
         }, done: { pane.findBar == nil && !pane.cursorRowText.contains("example.com") }))
+        // Collapsing a command's output, as the Mac's Shift-Command-E.
+        steps.append(Step(name: "collapse: a command with some output", action: {
+            pane.type("1..6 | ForEach-Object { 'collapse-line ' + $_ }")
+            pane.pressEnter()
+        }, done: { hasLine("collapse-line 6") && pane.atPrompt }))
+        steps.append(Step(name: "collapse: Ctrl+Shift+E hides its output, and says how much", action: {
+            _ = window.keyDown(0x45, shift: true, ctrl: true, alt: false)
+        }, done: {
+            let shown = pane.shownRowsText
+            return !shown.contains("collapse-line 3") && shown.contains("collapse-line") && pane.collapsedChipCount == 1
+                && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\collapsed.png") } ?? true)
+        }))
+        steps.append(Step(name: "collapse: typing still goes to the prompt under it", action: {
+            pane.type("echo under-collapsed")
+            pane.pressEnter()
+        }, done: { pane.shownRowsText.contains("under-collapsed") && pane.atPrompt }))
+        steps.append(Step(name: "collapse: Expand All Outputs shows it again", action: { pane.setAllCollapsed(false) },
+                          done: { pane.shownRowsText.contains("collapse-line 3") && pane.collapsedChipCount == 0 }))
         // Command History, Clear Buffer, text size and full screen, as on the Mac.
         steps.append(Step(name: "history: a command to find again", action: {
             pane.type("echo solanum-history-check")

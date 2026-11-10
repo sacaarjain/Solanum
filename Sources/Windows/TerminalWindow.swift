@@ -5010,6 +5010,12 @@ final class TerminalWindow {
                 if !self.activePane.clearBuffer() { self.fileProblem() }
             },
             PaletteItem(title: "Command History\u{2026}", category: "Commands", shortcut: "Ctrl+Shift+H") { [weak self] in self?.showCommandHistory() },
+            PaletteItem(title: "Collapse / Expand Output", category: "Commands", shortcut: "Ctrl+Shift+E") { [weak self] in
+                guard let self, !self.panes.isEmpty else { return }
+                if !self.activePane.toggleCollapse() { self.fileProblem() }
+            },
+            PaletteItem(title: "Collapse All Outputs", category: "Commands") { [weak self] in self?.activePane.setAllCollapsed(true) },
+            PaletteItem(title: "Expand All Outputs", category: "Commands") { [weak self] in self?.activePane.setAllCollapsed(false) },
             PaletteItem(title: "Save Command as Snippet\u{2026}", category: "Commands") { [weak self] in self?.saveCommandAsSnippet() },
             PaletteItem(title: "Edit Snippets", category: "Snippets") { [weak self] in
                 guard let self, !self.panes.isEmpty else { return }
@@ -5345,6 +5351,12 @@ final class TerminalWindow {
         if ctrl && !alt && !shift && palette == nil && (key == 0x30 || key == 0x60) { adjustTextSize(0); return true }
         // F11: full screen, as Windows' own apps have it (the Mac's Control-Command-F).
         if key == 0x7A && !ctrl && !alt && !shift { toggleFullScreen(); return true }
+        // Collapse / Expand Output: Ctrl+Shift+E, as the Mac's Shift-Command-E.
+        if ctrl && shift && !alt && key == 0x45 && palette == nil && !panes.isEmpty && !activePane.editorFocused {
+            if !activePane.toggleCollapse() { fileProblem() }
+            invalidate()
+            return true
+        }
         // Clear Buffer (Ctrl+Shift+K, the Mac's Command-K) and Command History (Ctrl+Shift+H, its Control-H): programs keep
         // Ctrl+K and Ctrl+H themselves.
         if ctrl && shift && !alt && key == 0x4B && palette == nil && !panes.isEmpty {

@@ -203,6 +203,12 @@ struct TerminalRenderer {
     var selection: TerminalSelection?
     /// Find's matches by line (see TerminalFindBar): shaded yellow, the current one orange with black text, as on the Mac.
     var findMatches: [Int: [(start: Int, end: Int, current: Bool)]] = [:]
+    /// The line on each row, when output is collapsed (see TerminalPane's collapsed output); else rows run on from the top.
+    var lineAtRow: ((Int) -> Int?)?
+    /// The cursor's row then, nil when it isn't showing.
+    var cursorRow: Int?
+    /// How far it can scroll up, for the scroll position; the scrollback's length unless output is collapsed.
+    var scrollRange: Int?
     var focused = true
     /// Off for the dark half of a blink.
     var cursorShown = true
@@ -229,7 +235,8 @@ struct TerminalRenderer {
     func drawContents() {
         let top = terminal.screenTopAbs - scrollOffset
         for row in 0..<terminal.rows {
-            if let line = terminal.line(abs: top + row) { draw(line, abs: top + row, row: row) }
+            guard let a = lineAtRow.map({ $0(row) }) ?? top + row else { continue }
+            if let line = terminal.line(abs: a) { draw(line, abs: a, row: row) }
         }
         drawCursor(top: top)
         drawScrollPosition()
@@ -347,10 +354,12 @@ struct TerminalRenderer {
         guard terminal.cursorVisible, scrollOffset == 0, cursorShown || !focused else { return }
         let m = canvas.metrics
         let col = min(terminal.cursorX, terminal.cols - 1)
-        let line = terminal.line(abs: top + terminal.cursorY)
+        let row = lineAtRow == nil ? terminal.cursorY : cursorRow
+        guard let row, row >= 0, row < terminal.rows else { return }
+        let line = terminal.line(abs: terminal.cursorAbs)
         let cell = line?.cell(col) ?? Cell()
         let x = canvas.contentX + Float(col) * m.cellWidth
-        let y = canvas.contentY + Float(terminal.cursorY) * m.cellHeight
+        let y = canvas.contentY + Float(row) * m.cellHeight
         let width = m.cellWidth * Float(max(cell.width, 1))
         guard focused else {
             sol_canvas_stroke_rect(canvas.raw, x, y, width, m.cellHeight, TerminalPalette.cursor, m.lineThickness)
@@ -376,9 +385,10 @@ struct TerminalRenderer {
         guard scrollOffset > 0 else { return }
         let m = canvas.metrics
         let height = Float(terminal.rows) * m.cellHeight
-        let total = Float(terminal.scrollback.count + terminal.rows)
+        let range = scrollRange ?? terminal.scrollback.count
+        let total = Float(range + terminal.rows)
         let thumb = max(height * Float(terminal.rows) / total, 16)
-        let position = 1 - Float(scrollOffset) / Float(max(terminal.scrollback.count, 1))
+        let position = 1 - Float(scrollOffset) / Float(max(range, 1))
         let x = canvas.contentX + Float(terminal.cols) * m.cellWidth + 1
         sol_canvas_fill_rect(canvas.raw, x, canvas.contentY + (height - thumb) * position, 3, thumb, TerminalPalette.foreground, 0.4)
     }

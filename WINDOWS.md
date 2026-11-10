@@ -60,6 +60,11 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
     Claude Code session), Ctrl+J searches the prompts sent and commands run, Ctrl+Shift+C copies the command (a
     selection, when there is one), Ctrl+Alt+C copies it with its output, and Ctrl+Alt+R runs it again. Shift+Enter makes
     a new line in Claude Code and at a shell's prompt, sending the line feed Ctrl+J used to.
+  - More of the Mac's: Ctrl+Shift+E collapses the picked (or last) command's output to "⋯ N lines hidden" (a click shows it
+    again; the palette collapses or expands them all), Ctrl+Shift+K clears the buffer (⌘K), Ctrl+Shift+H searches the
+    shell's history and what's been run (⌃H: Enter puts one at the prompt, Ctrl+Enter runs it), Ctrl+= Ctrl+- and Ctrl+0
+    size the text, and F11 is full screen. Snippets are in the palette (Enter to edit one, Ctrl+Enter to run it), with
+    Save Command as Snippet and Edit Snippets, in the Mac's snippets.json; Refresh Tab has the program redraw.
   - In a file, as the Mac's ⌘F and VS Code's: Ctrl+F finds and Ctrl+H replaces ("3 of 12", every match shaded), Enter
     or F3 steps on and Shift with them back, Alt+C, Alt+W and Alt+R match case, whole words and regular expressions
     ($1 and the like in the replacement), Tab moves to the Replace field, Ctrl+Enter there replaces all, and Esc closes
