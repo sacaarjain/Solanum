@@ -297,7 +297,7 @@ enum WindowSelfTest {
                       "\(layout.newTab.midY) \(layout.tabClose(1).midY)")
         results.check("layout: and stays clear of the window's buttons", crowded.newTab.maxX <= crowded.minimize.x)
         results.check("layout: the flower is at the left end, before the tabs", layout.flower.x < 10 && layout.tab(0).x >= layout.flower.maxX
-                      && WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 2, leftWidth: 240).tab(0).x == 240)
+                      && WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 2, leftWidth: 240).tab(0).x == 239)
         results.check("layout: the terminal is between the bars", layout.terminal.y == layout.tabBarHeight && layout.terminal.maxY == layout.statusBar.y)
         results.check("layout: finds a tab", layout.part(atX: layout.tab(1).x + 20, y: 20) == .tab(1))
         results.check("layout: finds its close button", layout.part(atX: layout.tabClose(1).x + 5, y: layout.tabClose(1).y + 5) == .tabClose(1))
@@ -364,7 +364,11 @@ enum WindowSelfTest {
         results.check("tree: says when it can't read the root", tree.rootFailed)
         let sides = WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 2, leftWidth: 240, rightWidth: 200)
         results.check("sidebars: the terminal fits between them", sides.terminal.x == 240 && sides.terminal.maxX == 800)
-        results.check("sidebars: tabs start at the terminal", sides.tab(0).x == 240)
+        results.check("sidebars: tabs start at the terminal, the first one's outline on the sidebar's edge line", sides.tab(0).x == 239)
+        var splitSides = sides
+        splitSides.splitCount = 1
+        results.check("split: the right column's tabs start on the band's right-hand line",
+                      splitSides.tab(1).x == splitSides.rightColumnX - 1, "\(splitSides.tab(1).x) \(splitSides.rightColumnX)")
         results.check("sidebars: found by position", sides.part(atX: 100, y: 200) == .leftSidebar && sides.part(atX: 900, y: 200) == .rightSidebar && sides.part(atX: 500, y: 200) == .terminal)
         results.check("sidebars: their borders can be grabbed", sides.part(atX: 240, y: 200) == .leftEdge && sides.part(atX: 800, y: 200) == .rightEdge)
         results.check("sidebars: the left switch is always there", sides.part(atX: sides.toggleLeft.x + 2, y: sides.toggleLeft.midY) == .toggleLeft)

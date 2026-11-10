@@ -85,8 +85,9 @@ struct WindowLayout {
 
     private var newTabSide: Float { (28 * scale).rounded() }
     private var tabTop: Float { (5 * scale).rounded() }
-    /// Tabs start where the terminal does, so the active one opens onto it; past the flower when the sidebar's closed.
-    private var tabsStart: Float { max(flower.maxX + (4 * scale).rounded(), leftWidth) }
+    /// Tabs start where the terminal does, so the active one opens onto it, its outline on the sidebar's edge line (the
+    /// last pixel of the sidebar); past the flower when the sidebar's closed.
+    private var tabsStart: Float { max(flower.maxX + (4 * scale).rounded(), leftWidth - 1) }
     private var minTabWidth: Float { (120 * scale).rounded() }
     private var chipGap: Float { (6 * scale).rounded() }
     private var arrowWidth: Float { (22 * scale).rounded() }
@@ -105,7 +106,8 @@ struct WindowLayout {
         if column == 0 {
             return Strip(range: 0..<n, start: tabsStart, newTabLimit: divider - newTabSide - (6 * scale).rounded(), scroll: tabScroll)
         }
-        return Strip(range: n..<tabCount, start: rightColumnX + (6 * scale).rounded(), newTabLimit: closeSplit.x - newTabSide - (4 * scale).rounded(),
+        // On the band's right-hand line (its last pixel), as the left column's tabs are on the sidebar's edge.
+        return Strip(range: n..<tabCount, start: rightColumnX - 1, newTabLimit: closeSplit.x - newTabSide - (4 * scale).rounded(),
                      scroll: rightTabScroll)
     }
 
