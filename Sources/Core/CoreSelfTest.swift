@@ -70,6 +70,18 @@ enum CoreSelfTest {
             results.check(name, cond, detail())
         }
         do {
+            // Command History: PowerShell's file (a backtick ends each line of a command but its last), bash's, newest first.
+            let ps = HistoryFile.parsePowerShell("cd C:\\x\r\nGet-ChildItem |`\r\n  Select Name\r\ngit status\r\ncd C:\\x\r\n")
+            check("history: PowerShell's file, a command over two lines kept whole", ps == ["cd C:\\x", "Get-ChildItem |\n  Select Name", "git status", "cd C:\\x"], "\(ps)")
+            check("history: newest first, each once", HistoryFile.newestFirst(ps) == ["cd C:\\x", "git status", "Get-ChildItem |\n  Select Name"])
+            check("history: bash's, its times left out", HistoryFile.parse("#1700000000\nls -la\n: 1700000001:0;make\n") == ["ls -la", "make"])
+            // Clearing only the scrollback leaves the screen as it is.
+            let (t, _) = make(10, 3)
+            feed(t, "1\r\n2\r\n3\r\n4\r\n5")
+            t.clearScrollback()
+            check("clear: the scrollback alone goes, the screen stays", t.scrollback.count == 0 && row(t, 0) == "3" && row(t, 2) == "5" && t.cursorY == 2)
+        }
+        do {
             // A line that runs off the end of a row goes on onto the next; a row cleared and printed over isn't its rest.
             let (t, _) = make(10, 5)
             feed(t, "0123456789abcde")

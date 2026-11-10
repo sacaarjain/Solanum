@@ -1307,6 +1307,15 @@ final class Terminal {
     // MARK: - Clear buffer (⌘K)
 
     /// Clears scrollback and screen, keeping the current prompt (if idle) at the top.
+    /// Only what's scrolled off the top: the screen stays as it is (so a console that keeps its own copy of the screen,
+    /// as Windows' ConPTY does, still agrees with it).
+    func clearScrollback() {
+        guard !usingAlt else { return }
+        dropped += scrollback.count
+        scrollback.removeAll()
+        pruneBlocks()
+    }
+
     func clearBuffer() {
         guard !usingAlt else { return }
         var keepFrom = cursorY

@@ -39,43 +39,11 @@ final class CommandHistory {
         }
     }
 
-    /// Oldest-first lines → newest-first unique commands.
-    static func newestFirst(_ commands: [String]) -> [String] {
-        var seen = Set<String>()
-        var out: [String] = []
-        for c in commands.reversed() where !c.isEmpty && seen.insert(c).inserted {
-            out.append(c)
-            if out.count >= limit { break }
-        }
-        return out
-    }
+    /// Oldest-first lines → newest-first unique commands (Core's HistoryFile, shared with Windows).
+    static func newestFirst(_ commands: [String]) -> [String] { HistoryFile.newestFirst(commands) }
 
-    /// Handles plain bash history, bash `#<epoch>` timestamp lines, zsh extended history
-    /// (`: <epoch>:<secs>;cmd`) and zsh's backslash-continued multi-line commands.
-    static func parse(_ text: String) -> [String] {
-        var out: [String] = []
-        var pending: String?
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            var line = String(raw)
-            if let p = pending {
-                line = p + "\n" + line
-                pending = nil
-            } else {
-                if line.hasPrefix("#"), line.dropFirst().allSatisfy(\.isNumber), line.count > 1 { continue }
-                if line.hasPrefix(": "), let semi = line.firstIndex(of: ";"),
-                   line[line.index(line.startIndex, offsetBy: 2)..<semi].allSatisfy({ $0.isNumber || $0 == ":" }) {
-                    line = String(line[line.index(after: semi)...])
-                }
-            }
-            if line.hasSuffix("\\") && !line.hasSuffix("\\\\") {
-                pending = String(line.dropLast())
-                continue
-            }
-            let c = line.trimmingCharacters(in: .whitespaces)
-            if !c.isEmpty { out.append(c) }
-        }
-        return out
-    }
+    /// bash and zsh history files, as Core's HistoryFile reads them.
+    static func parse(_ text: String) -> [String] { HistoryFile.parse(text) }
 }
 
 extension TerminalView {

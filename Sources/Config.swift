@@ -427,44 +427,4 @@ final class FontSet {
     }
 }
 
-/// Saved command snippets, stored at ~/.config/solanum/snippets.json
-struct Snippet: Codable {
-    var name: String
-    var command: String
-}
-
-final class SnippetStore {
-    static let shared = SnippetStore()
-    private(set) var snippets: [Snippet] = []
-    var fileURL: URL { Config.shared.dir.appendingPathComponent("snippets.json") }
-
-    func load() {
-        if let data = try? Data(contentsOf: fileURL), let s = try? JSONDecoder().decode([Snippet].self, from: data) {
-            snippets = s
-        } else {
-            snippets = [
-                Snippet(name: "Git: pretty log graph", command: "git log --oneline --graph --decorate -20"),
-                Snippet(name: "Git: branches by recent commit", command: "git branch --sort=-committerdate | head -15"),
-                Snippet(name: "Disk usage of current folder", command: "du -sh * | sort -h"),
-                Snippet(name: "Listening ports", command: "lsof -iTCP -sTCP:LISTEN -n -P"),
-                Snippet(name: "Find large files (>100MB)", command: "find . -type f -size +100M 2>/dev/null"),
-                Snippet(name: "Top processes by CPU", command: "ps -Ao pid,pcpu,pmem,comm -r | head -15"),
-            ]
-            save()
-        }
-    }
-
-    func add(_ s: Snippet) {
-        snippets.append(s)
-        save()
-    }
-
-    func save() {
-        let enc = JSONEncoder()
-        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? enc.encode(snippets) {
-            try? FileManager.default.createDirectory(at: Config.shared.dir, withIntermediateDirectories: true)
-            try? data.write(to: fileURL)
-        }
-    }
-}
+// Snippet and SnippetStore are Core's (Snippets.swift), shared with Windows.

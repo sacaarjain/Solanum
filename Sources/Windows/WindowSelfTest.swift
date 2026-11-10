@@ -1309,6 +1309,46 @@ enum WindowSelfTest {
         steps.append(Step(name: "terminal find: typing doesn't reach the shell, and Esc closes it", action: {
             _ = window.keyDown(Win.VK_ESCAPE, shift: false, ctrl: false, alt: false)
         }, done: { pane.findBar == nil && !pane.cursorRowText.contains("example.com") }))
+        // Command History, Clear Buffer, text size and full screen, as on the Mac.
+        steps.append(Step(name: "history: a command to find again", action: {
+            pane.type("echo solanum-history-check")
+            pane.pressEnter()
+        }, done: { hasLine("solanum-history-check") && pane.atPrompt }))
+        steps.append(Step(name: "history: Ctrl+Shift+H lists it", action: {
+            _ = window.keyDown(0x48, shift: true, ctrl: true, alt: false)
+        }, done: { window.isPaletteOpen && window.paletteRows.contains { $0.title == "echo solanum-history-check" } }))
+        steps.append(Step(name: "history: Enter puts it at the prompt, not run", action: {
+            window.typeIntoWindow("history-check")
+        }, done: {
+            guard window.paletteSelection?.title == "echo solanum-history-check" else { return false }
+            window.pressPaletteEnterForTest()
+            return true
+        }))
+        steps.append(Step(name: "history: there to edit", action: {}, done: {
+            !window.isPaletteOpen && pane.cursorRowText.contains("echo solanum-history-check") && pane.atPrompt
+        }))
+        steps.append(Step(name: "clear: Esc empties the line", action: { pane.pressEscape() }, done: { !pane.cursorRowText.contains("solanum-history-check") }))
+        steps.append(Step(name: "clear: Ctrl+Shift+K clears what came before", action: {
+            _ = window.keyDown(0x4B, shift: true, ctrl: true, alt: false)
+        }, done: { !pane.logicalText.contains("solanum-history-check") && pane.terminal.scrollback.count == 0 && pane.atPrompt }))
+        steps.append(Step(name: "clear: typing still works after", action: {
+            pane.type("echo after-clear")
+            pane.pressEnter()
+        }, done: { hasLine("after-clear") }))
+        var sizeBefore = 0.0
+        steps.append(Step(name: "text size: Ctrl+= makes it bigger", action: {
+            sizeBefore = AppSettings.shared.fontSize
+            _ = window.keyDown(0xBB, shift: false, ctrl: true, alt: false)
+        }, done: { AppSettings.shared.fontSize == sizeBefore + 1 }))
+        steps.append(Step(name: "text size: Ctrl+0 goes back to the default", action: {
+            _ = window.keyDown(0x30, shift: false, ctrl: true, alt: false)
+        }, done: { AppSettings.shared.fontSize == 11 }))
+        steps.append(Step(name: "full screen: F11 fills the display", action: {
+            _ = window.keyDown(0x7A, shift: false, ctrl: false, alt: false)
+        }, done: { window.isFullScreen }))
+        steps.append(Step(name: "full screen: F11 again goes back", action: {
+            _ = window.keyDown(0x7A, shift: false, ctrl: false, alt: false)
+        }, done: { !window.isFullScreen }))
         steps.append(Step(name: "sidebar: the magnifying glass searches its folder", action: { window.click(window.leftButton(.search)) },
                           done: { window.isPaletteOpen }))
         steps.append(Step(name: "sidebar: and closes", action: { pane.pressEscape() }, done: { !window.isPaletteOpen }))

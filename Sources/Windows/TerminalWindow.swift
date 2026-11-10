@@ -1214,6 +1214,8 @@ final class TerminalWindow {
     /// window hangs off the screen by its frame, so there the top has to stay inside.
     private func calculateFrame(_ wParam: WPARAM, _ lParam: LPARAM) -> LRESULT {
         guard let params = UnsafeMutablePointer<NCCALCSIZE_PARAMS>(bitPattern: Int(lParam)) else { return 0 }
+        // Full screen: all of it is the window's, with no frame to resize by.
+        if fullScreenRestore != nil { return 0 }
         let top = params.pointee.rgrc.0.top
         let result = DefWindowProcW(hwnd, Win.WM_NCCALCSIZE, wParam, lParam)
         params.pointee.rgrc.0.top = top + (IsZoomed(hwnd) ? topFrame : 0)
@@ -1226,6 +1228,16 @@ final class TerminalWindow {
     }
 
     private func hitTest(_ wParam: WPARAM, _ lParam: LPARAM) -> LRESULT {
+        if fullScreenRestore != nil {
+            // Nothing to resize or drag by; the window's buttons still work.
+            let (x, y) = screenPoint(lParam)
+            switch layout.part(atX: x, y: y) {
+            case .minimize: return Win.HTMINBUTTON
+            case .maximize: return Win.HTMAXBUTTON
+            case .close: return Win.HTCLOSE
+            default: return Win.HTCLIENT
+            }
+        }
         let frame = DefWindowProcW(hwnd, Win.WM_NCHITTEST, wParam, lParam)
         guard frame == Win.HTCLIENT || frame == Win.HTCAPTION else { return frame }
         let (x, y) = screenPoint(lParam)
@@ -3152,6 +3164,89 @@ final class TerminalWindow {
         }
     }
 
+    // MARK: - Text size, full screen, Command History and snippets
+
+    /// Ctrl+= and Ctrl+- a point bigger or smaller, Ctrl+0 back to the default: kept in Settings, for every window.
+    func adjustTextSize(_ d: Int) {
+        let now = AppSettings.shared.fontSize
+        let next = d == 0 ? 11 : min(max((now + Double(d)).rounded(), 6), 40)
+        guard next != now else { return }
+        AppSettings.shared.set("font-size", next == next.rounded() ? String(Int(next)) : String(next))
+    }
+
+    /// Where the window was before full screen, to go back to.
+    private var fullScreenRestore: WINDOWPLACEMENT?
+
+    /// F11: the window over the whole display, the taskbar too; again, back as it was.
+    func toggleFullScreen() {
+        if var placement = fullScreenRestore {
+            fullScreenRestore = nil
+            SetWindowPlacement(hwnd, &placement)
+            SetWindowPos(hwnd, nil, 0, 0, 0, 0, UINT(SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED))
+            invalidate()
+            return
+        }
+        var placement = WINDOWPLACEMENT()
+        placement.length = UINT(MemoryLayout<WINDOWPLACEMENT>.size)
+        guard GetWindowPlacement(hwnd, &placement) else { return }
+        var info = MONITORINFO()
+        info.cbSize = DWORD(MemoryLayout<MONITORINFO>.size)
+        guard GetMonitorInfoW(MonitorFromWindow(hwnd, DWORD(MONITOR_DEFAULTTONEAREST)), &info) else { return }
+        fullScreenRestore = placement
+        // Not maximized: Windows' maximized state keeps the taskbar showing.
+        if IsZoomed(hwnd) { ShowWindow(hwnd, Win.SW_RESTORE) }
+        let r = info.rcMonitor
+        SetWindowPos(hwnd, nil, r.left, r.top, r.right - r.left, r.bottom - r.top, UINT(SWP_FRAMECHANGED | SWP_NOOWNERZORDER))
+        invalidate()
+    }
+
+    var isFullScreen: Bool { fullScreenRestore != nil }
+
+    /// The palette is showing Command History.
+    private var paletteIsHistory = false
+
+    /// Ctrl+Shift+H, as the Mac's Control-H: past commands, searched as typed. Enter puts one at the prompt to edit,
+    /// Ctrl+Enter runs it.
+    func showCommandHistory() {
+        guard !panes.isEmpty else { return }
+        let pane = activePane
+        guard pane.canTakeCommand else { return fileProblem() }
+        // What's been run in Solanum's tabs, oldest first, for shells whose history file isn't written as they go.
+        let session = panes.flatMap { $0.terminal.blocks.filter { $0.state == .finished || $0.state == .running }.map(\.command) }
+        pane.commandHistory(also: session) { [weak self, weak pane] entries in
+            guard let self, let pane, self.activePane === pane else { return }
+            let items = entries.map { command -> PaletteItem in
+                var item = PaletteItem(title: command.replacingOccurrences(of: "\n", with: " \u{23CE} ")) { [weak self] in
+                    self?.putCommand(command, run: false)
+                }
+                item.alternate = { [weak self] in self?.putCommand(command, run: true) }
+                return item
+            }
+            let place = pane.sshHost.map { "on \($0)" } ?? "history"
+            self.palette = PaletteModel(items: items, placeholder: "Search \(place): Enter to edit, Ctrl+Enter to run", icon: 0xE81C,
+                                        emptyMessage: entries.isEmpty ? "No history yet" : "No matching commands")
+            self.paletteIsHistory = true
+            self.activePane.setFocused(false)
+            self.invalidate()
+        }
+    }
+
+    private func putCommand(_ command: String, run: Bool) {
+        guard !panes.isEmpty else { return }
+        focusTerminal()
+        if !activePane.putCommand(command, run: run) { fileProblem() }
+        invalidate()
+    }
+
+    /// The picked (or last) command, saved under a name typed in the palette.
+    private func saveCommandAsSnippet() {
+        guard !panes.isEmpty, let command = activePane.commandForSnippet else { return fileProblem() }
+        askForText(placeholder: "A name for \u{201C}\(command.prefix(60))\u{201D}", action: "Save Snippet") { name in
+            SnippetStore.shared.load()
+            SnippetStore.shared.add(Snippet(name: name, command: command))
+        }
+    }
+
     // MARK: - A line of text, asked for in the palette
 
     /// The palette as a one-line question (a log marker's text): Enter takes what's typed.
@@ -4910,6 +5005,24 @@ final class TerminalWindow {
             PaletteItem(title: "Copy Command", category: "Commands", shortcut: "Ctrl+Shift+C") { [weak self] in self?.activePane.copyStopCommand() },
             PaletteItem(title: "Copy Command and Output", category: "Commands", shortcut: "Ctrl+Alt+C") { [weak self] in self?.activePane.copyStopWithOutput() },
             PaletteItem(title: "Run Command Again", category: "Commands", shortcut: "Ctrl+Alt+R") { [weak self] in self?.activePane.rerunStop() },
+            PaletteItem(title: "Clear Buffer", category: "Commands", shortcut: "Ctrl+Shift+K") { [weak self] in
+                guard let self, !self.panes.isEmpty else { return }
+                if !self.activePane.clearBuffer() { self.fileProblem() }
+            },
+            PaletteItem(title: "Command History\u{2026}", category: "Commands", shortcut: "Ctrl+Shift+H") { [weak self] in self?.showCommandHistory() },
+            PaletteItem(title: "Save Command as Snippet\u{2026}", category: "Commands") { [weak self] in self?.saveCommandAsSnippet() },
+            PaletteItem(title: "Edit Snippets", category: "Snippets") { [weak self] in
+                guard let self, !self.panes.isEmpty else { return }
+                SnippetStore.shared.load()
+                self.showFile(SnippetStore.shared.fileURL.path, in: self.activePane)
+            },
+            PaletteItem(title: "Refresh Tab", category: "View") { [weak self] in self?.activePane.refreshDisplay() },
+            PaletteItem(title: "Bigger Text", category: "View", shortcut: "Ctrl+=") { [weak self] in self?.adjustTextSize(1) },
+            PaletteItem(title: "Smaller Text", category: "View", shortcut: "Ctrl+-") { [weak self] in self?.adjustTextSize(-1) },
+            PaletteItem(title: "Default Text Size", category: "View", shortcut: "Ctrl+0") { [weak self] in self?.adjustTextSize(0) },
+            PaletteItem(title: fullScreenRestore == nil ? "Enter Full Screen" : "Exit Full Screen", category: "Window", shortcut: "F11") { [weak self] in
+                self?.toggleFullScreen()
+            },
             PaletteItem(title: "Scroll to Top", category: "View") { [weak self] in self?.activePane.scrollToTop() },
             PaletteItem(title: "Scroll to Bottom", category: "View") { [weak self] in self?.activePane.scrollToBottom() },
             PaletteItem(title: "Settings…", category: "Solanum", shortcut: "Ctrl+,") { SettingsWindow.shared.show() },
@@ -4928,6 +5041,13 @@ final class TerminalWindow {
             items.append(PaletteItem(title: "Close Split", category: "Shell", shortcut: "Ctrl+Alt+W") { [weak self] in self?.closeSplit() })
             items.append(PaletteItem(title: "Focus Other Split", category: "Window") { [weak self] in self?.focusOtherColumn() })
             items.append(PaletteItem(title: "Toggle Right Sidebar", category: "View", shortcut: "Ctrl+Alt+B") { [weak self] in self.map { $0.toggleSidebar($0.right) } })
+        }
+        // Snippets: each put at the prompt to edit, or with Ctrl+Enter run.
+        SnippetStore.shared.load()
+        for snippet in SnippetStore.shared.snippets {
+            var item = PaletteItem(title: snippet.name, category: "Snippets") { [weak self] in self?.putCommand(snippet.command, run: false) }
+            item.alternate = { [weak self] in self?.putCommand(snippet.command, run: true) }
+            items.append(item)
         }
         // Each shell here: a new tab with it, or this tab started again in it.
         let current = panes.isEmpty ? nil : activePane.shell
@@ -4961,6 +5081,7 @@ final class TerminalWindow {
 
     private func closePalette() {
         palette = nil
+        paletteIsHistory = false
         hoveredPaletteRow = nil
         activePane.setFocused(isFocused)
         invalidate()
@@ -5216,6 +5337,23 @@ final class TerminalWindow {
         }
         if ctrl && shift && !alt && key == 0x4F {
             if palette?.isLive == true { closePalette() } else { showGoToFolder() }
+            return true
+        }
+        // Text size, as Windows Terminal and the Mac's Command-plus, minus and zero: Ctrl+=, Ctrl+- and Ctrl+0.
+        if ctrl && !alt && palette == nil && (key == 0xBB || key == 0x6B) { adjustTextSize(1); return true }
+        if ctrl && !alt && palette == nil && (key == 0xBD || key == 0x6D) { adjustTextSize(-1); return true }
+        if ctrl && !alt && !shift && palette == nil && (key == 0x30 || key == 0x60) { adjustTextSize(0); return true }
+        // F11: full screen, as Windows' own apps have it (the Mac's Control-Command-F).
+        if key == 0x7A && !ctrl && !alt && !shift { toggleFullScreen(); return true }
+        // Clear Buffer (Ctrl+Shift+K, the Mac's Command-K) and Command History (Ctrl+Shift+H, its Control-H): programs keep
+        // Ctrl+K and Ctrl+H themselves.
+        if ctrl && shift && !alt && key == 0x4B && palette == nil && !panes.isEmpty {
+            if !activePane.clearBuffer() { fileProblem() }
+            invalidate()
+            return true
+        }
+        if ctrl && shift && !alt && key == 0x48 && !panes.isEmpty {
+            if palette?.isLive == false && paletteIsHistory { closePalette() } else { showCommandHistory() }
             return true
         }
         // Search in Project Folder, as the Mac's Shift-Command-F.

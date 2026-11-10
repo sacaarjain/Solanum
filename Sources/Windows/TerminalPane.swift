@@ -1886,6 +1886,95 @@ final class TerminalPane: TerminalDelegate, Groupable {
         input(Array((bracketed ? "\u{1b}[200~" + text + "\u{1b}[201~" : text).utf8), replacesSelection: true)
     }
 
+    // MARK: - Clear Buffer, Refresh Tab, and commands put at the prompt
+
+    /// PowerShell, Git Bash and WSL's bash redraw their prompt at the top for Ctrl+L.
+    private var shellClearsWithCtrlL: Bool {
+        guard sshArguments == nil, let shell else { return false }
+        return shell.isPowerShell || shell.id == "git-bash" || shell.id.hasPrefix("wsl:")
+    }
+
+    /// Ctrl+Shift+K, as the Mac's Command-K: everything above the prompt goes. At a shell that redraws its prompt for
+    /// Ctrl+L, the screen too, the prompt at the top (the shell's redraw keeps ConPTY's copy of the screen agreeing);
+    /// elsewhere, only what's scrolled off the top. Nothing in a full-screen program.
+    @discardableResult
+    func clearBuffer() -> Bool {
+        guard !terminal.usingAlt else { return false }
+        selection = nil
+        selectedStop = nil
+        scrollOffset = 0
+        if atPrompt && shellClearsWithCtrlL {
+            terminal.clearBuffer()
+            write([0x0C])
+        } else {
+            terminal.clearScrollback()
+        }
+        if findBar != nil { runFind() }
+        invalidate()
+        return true
+    }
+
+    /// Refresh Tab, as the Mac's Command-R: the program redraws, for a screen that got garbled. A resize a column narrower
+    /// and back has ConPTY and the program draw everything again; what's running carries on.
+    func refreshDisplay() {
+        invalidate()
+        guard let pty, terminal.cols > 2 else { return }
+        pty.resize(cols: terminal.cols - 1, rows: terminal.rows)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.host?.runOnWindowThreadPublic {
+                guard let self else { return }
+                self.pty?.resize(cols: self.terminal.cols, rows: self.terminal.rows)
+                self.invalidate()
+            }
+        }
+    }
+
+    /// At a prompt, or in an ssh session (whose prompt Solanum may not see), outside full-screen programs: where a
+    /// command can be put to edit or run.
+    var canTakeCommand: Bool { !terminal.usingAlt && (atPrompt || sshArguments != nil) }
+
+    /// Replaces what's typed at the prompt with `command`, and runs it with `run`: Esc clears the line in PowerShell and
+    /// Command Prompt, Ctrl+E Ctrl+U in bash and zsh (WSL, Git Bash, a host over ssh). False when it can't go there.
+    @discardableResult
+    func putCommand(_ command: String, run: Bool) -> Bool {
+        guard canTakeCommand else { return false }
+        let clears = sshArguments == nil && (shell?.isPowerShell == true || shell?.id == "cmd") ? "\u{1b}" : "\u{05}\u{15}"
+        input(Array(clears.utf8))
+        pasteText(command)
+        if run { input([0x0D]) }
+        scrollOffset = 0
+        invalidate()
+        return true
+    }
+
+    /// The picked command, or the last that finished: for saving as a snippet.
+    var commandForSnippet: String? {
+        guard let b = targetBlock, !b.command.isEmpty else { return nil }
+        return b.command
+    }
+
+    /// Commands for Command History, most recent first: the shell's own history file, and what was run in Solanum; on
+    /// an ssh host, its bash and zsh history.
+    func commandHistory(also session: [String], _ done: @escaping ([String]) -> Void) {
+        if let remote, sshArguments != nil {
+            let n = HistoryFile.limit
+            remote.run("tail -n \(n) ~/.bash_history 2>/dev/null; tail -n \(n) ~/.zsh_history 2>/dev/null", timeout: 10) { [weak self] text, _ in
+                let found = HistoryFile.newestFirst(HistoryFile.parse(text ?? ""))
+                self?.host?.runOnWindowThreadPublic { done(found) }
+            }
+            return
+        }
+        let env = ProcessInfo.processInfo.environment
+        var fromFile: [String] = []
+        if shell?.isPowerShell ?? true, let appData = env["APPDATA"] {
+            let path = appData + "\\Microsoft\\Windows\\PowerShell\\PSReadLine\\ConsoleHost_history.txt"
+            if let data = FileManager.default.contents(atPath: path) { fromFile = HistoryFile.parsePowerShell(String(decoding: data, as: UTF8.self)) }
+        } else if shell?.id == "git-bash", let home = env["USERPROFILE"] {
+            if let data = FileManager.default.contents(atPath: home + "\\.bash_history") { fromFile = HistoryFile.parse(String(decoding: data, as: UTF8.self)) }
+        }
+        done(HistoryFile.newestFirst(fromFile + session))
+    }
+
     // MARK: - For tests
 
     func type(_ text: String) {
