@@ -913,6 +913,24 @@ final class Terminal {
         savedCursors = [SavedCursor(), SavedCursor()]
     }
 
+    /// The ssh session's over, and whatever ran full-screen over it (tmux, vim, less) may not have put the screen
+    /// and modes back (the connection dropped under it): they're put back for the shell on this side, or it would
+    /// prompt on tmux's screen with clicks still going out as mouse reports and the keys still in application mode.
+    private func restoreAfterRemote() {
+        exitAlt()
+        softReset()
+        reverseVideo = false
+        bracketedPaste = false
+        focusEvents = false
+        mouseMode = .none
+        mouseSGR = false
+        cursorShape = nil
+        if syncOutput {
+            syncOutput = false
+            delegate?.terminalSyncEnded(self)
+        }
+    }
+
     private func fullReset() {
         exitAlt()
         softReset()
@@ -1077,7 +1095,10 @@ final class Terminal {
                 if let status = Int(rest.dropFirst("SolanumSSHExit=".count)) { delegate?.terminalSSHExited(self, status: status) }
             } else if rest.hasPrefix("SolanumSSH=") {
                 let path = String(rest.dropFirst("SolanumSSH=".count))
-                if path.isEmpty { endHostSession() }
+                if path.isEmpty {
+                    endHostSession()
+                    restoreAfterRemote()
+                }
                 sshControlPath = path.isEmpty ? nil : path
                 remoteCwd = nil
                 remoteUser = nil

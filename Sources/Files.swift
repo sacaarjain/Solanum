@@ -508,6 +508,12 @@ final class RemoteSession: FileSystem {
         self.controlPath = controlPath
         self.sshArgs = sshArgs
         awaitingLogin = false
+        // Dev aid, in snapshot runs: a shell that says its ssh socket is a "solanum-devssh-…" file in the temporary
+        // folder gets a session on this Mac (see `init(devLocal:latency:)`), so losing one can be tried without a server.
+        if Headless.active, (controlPath as NSString).lastPathComponent.hasPrefix("solanum-devssh-"),
+           controlPath.hasPrefix(NSTemporaryDirectory()) {
+            devLatency = 0
+        }
     }
 
     /// Dev aid: an "ssh host" that's this Mac, its commands run by a local sh after `latency` seconds (a slow link),
