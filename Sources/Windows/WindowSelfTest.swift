@@ -426,6 +426,12 @@ enum WindowSelfTest {
         results.check("sidebars: rows from the top of the list", shape.visibleRow(atY: shape.list.y + 1) == 0 && shape.visibleRow(atY: shape.list.y + shape.rowHeight + 1) == 1 && shape.visibleRow(atY: shape.list.y - 1) == nil)
 
         print("Themes and settings")
+        let fromTheme = ThemeColors(ThemeSpecs.solanumDefault), toTheme = ThemeColors(ThemeSpecs.vsCode[0])
+        let midTheme = ThemeColors.blend(fromTheme, toTheme, 0.5)
+        results.check("themes: a change eases through colors between the two",
+                      midTheme.background == ThemeColors.mix(toTheme.background, fromTheme.background, 0.5)
+                      && midTheme.ansi[1] == ThemeColors.mix(toTheme.ansi[1], fromTheme.ansi[1], 0.5)
+                      && ThemeColors.blend(fromTheme, toTheme, 1) == toTheme && ThemeColors.blend(fromTheme, toTheme, 0).background == fromTheme.background)
         results.check("themes: all fourteen", ([ThemeSpecs.solanumDefault] + ThemeSpecs.outerWilds + ThemeSpecs.vsCode).count == 14)
         results.check("hex: six digits", HexColor("#A584E8")?.rgb == 0xA584E8 && HexColor("#A584E8")?.alpha == 1)
         results.check("hex: with alpha", HexColor("#FFFFFF66")?.rgb == 0xFFFFFF && abs((HexColor("#FFFFFF66")?.alpha ?? 0) - 0.4) < 0.01)

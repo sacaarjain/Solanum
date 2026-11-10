@@ -336,7 +336,14 @@ final class TerminalWindow {
     /// Settings have changed, here or in the file: everything that depends on them follows.
     private func settingsChanged() {
         let settings = AppSettings.shared
-        TerminalPalette.current = ThemeColors(settings.theme)
+        // A new theme eases in over a moment rather than snapping, unless Windows has animations off. (A theme's picture,
+        // behind it, changes straight away.)
+        let colors = ThemeColors(settings.theme)
+        if animatesSidebars && !isTesting && TerminalPalette.fade(to: colors) {
+            _ = SetTimer(hwnd, Self.themeTimer, 15, nil)
+        } else if !isTesting || TerminalPalette.current != colors {
+            TerminalPalette.current = colors
+        }
         TerminalPalette.boldIsBright = settings.boldIsBright
         applyFont(to: canvas)
         canvas.padding = scaledPadding()
@@ -509,6 +516,8 @@ final class TerminalWindow {
     private static let slideTimer: UINT_PTR = 5
     /// While a group's tabs slide into or out of its chip.
     private static let groupTimer: UINT_PTR = 8
+    /// While a new theme's colors ease in.
+    private static let themeTimer: UINT_PTR = 9
 
     /// A group opening or closing, as on the Mac: its tabs slide out of its chip, or back into it, over a fifth of a second.
     private struct GroupMotion {
@@ -1162,6 +1171,10 @@ final class TerminalWindow {
                 slideStep()
             } else if wParam == WPARAM(Self.groupTimer) {
                 groupStep()
+            } else if wParam == WPARAM(Self.themeTimer) {
+                // Every window shows the same colors on the way; whichever ticks first moves them along.
+                if !TerminalPalette.stepFade() { KillTimer(hwnd, Self.themeTimer) }
+                invalidate()
             } else if wParam == WPARAM(Self.readingTimer) {
                 readingTick()
             } else if wParam == WPARAM(Self.steamTimer) {

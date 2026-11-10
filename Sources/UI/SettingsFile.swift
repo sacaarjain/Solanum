@@ -53,7 +53,7 @@ struct SettingsFile {
 }
 
 /// A theme's colors, worked out once: what to draw the terminal and the chrome around it with. Colors are 0xRRGGBB.
-struct ThemeColors {
+struct ThemeColors: Equatable {
     let name: String
     let background: UInt32
     let backgroundBottom: UInt32
@@ -90,6 +90,31 @@ struct ThemeColors {
             chrome = isDark ? Self.mix(0x17082B, bg.rgb, 0.32) : Self.mix(0x7B4FD9, bg.rgb, 0.07)
         }
         surface = Self.mix(isDark ? 0xFFFFFF : 0x000000, bg.rgb, isDark ? 0.08 : 0.05)
+    }
+
+    private init(name: String, background: UInt32, backgroundBottom: UInt32, foreground: UInt32, cursor: UInt32, selection: UInt32,
+                 accent: UInt32, ansi: [UInt32], isDark: Bool, chrome: UInt32, surface: UInt32) {
+        self.name = name
+        self.background = background
+        self.backgroundBottom = backgroundBottom
+        self.foreground = foreground
+        self.cursor = cursor
+        self.selection = selection
+        self.accent = accent
+        self.ansi = ansi
+        self.isDark = isDark
+        self.chrome = chrome
+        self.surface = surface
+    }
+
+    /// Part way from one theme's colors to another's (`t` from 0, all `a`, to 1, all `b`): every color mixed, for a theme
+    /// change that eases in rather than snapping. Light or dark goes over halfway.
+    static func blend(_ a: ThemeColors, _ b: ThemeColors, _ t: Float) -> ThemeColors {
+        func m(_ x: UInt32, _ y: UInt32) -> UInt32 { mix(y, x, t) }
+        return ThemeColors(name: b.name, background: m(a.background, b.background), backgroundBottom: m(a.backgroundBottom, b.backgroundBottom),
+                           foreground: m(a.foreground, b.foreground), cursor: m(a.cursor, b.cursor), selection: m(a.selection, b.selection),
+                           accent: m(a.accent, b.accent), ansi: zip(a.ansi, b.ansi).map(m), isDark: t < 0.5 ? a.isDark : b.isDark,
+                           chrome: m(a.chrome, b.chrome), surface: m(a.surface, b.surface))
     }
 
     /// `amount` of `a`, the rest `b`.

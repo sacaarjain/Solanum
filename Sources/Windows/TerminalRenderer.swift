@@ -6,6 +6,28 @@ enum TerminalPalette {
     static var current = ThemeColors(ThemeSpecs.solanumDefault)
     static var boldIsBright = false
 
+    /// A theme change easing in, from the colors showing when it began.
+    private static var fading: (from: ThemeColors, to: ThemeColors, start: Date)?
+    static let fadeDuration = 0.3
+
+    /// Starts easing to `colors` over `fadeDuration`. False when they're showing already (nothing to do); asking again
+    /// for the same ones while they're on their way changes nothing (each window asks).
+    static func fade(to colors: ThemeColors) -> Bool {
+        if let f = fading, f.to == colors { return true }
+        guard current != colors else { fading = nil; return false }
+        fading = (current, colors, Date())
+        return true
+    }
+
+    /// One frame of a theme change: `current` moves along, gently at both ends. True while it's still on its way.
+    static func stepFade() -> Bool {
+        guard let f = fading else { return false }
+        let t = min(Float(Date().timeIntervalSince(f.start) / fadeDuration), 1)
+        current = t >= 1 ? f.to : ThemeColors.blend(f.from, f.to, t * t * (3 - 2 * t))
+        if t >= 1 { fading = nil }
+        return fading != nil
+    }
+
     static var background: UInt32 { current.background }
     static var backgroundBottom: UInt32 { current.backgroundBottom }
     static var foreground: UInt32 { current.foreground }

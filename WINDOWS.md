@@ -92,6 +92,13 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
   the format (Automatic, the built-in one or an imported logging config) and the colors of each level and field, and
   adds markers: text picked out wherever it appears, such as `[FAIL]` (the selection is offered). They're kept in
   `%APPDATA%\Solanum\log-formats`, in the Mac's rules files. A custom color is a hex in the rules file for now.
+- **Motion**: a new theme's colors ease in over a third of a second; a group's tabs slide into its chip and back out;
+  a sideways swipe scrolls a tab's file sub-tabs as it does the tabs. All of it stays still when Windows' animation
+  effects are off.
+- **Prompts sent to Claude Code** show in a box in the theme's accent with a border, in place of the grey Claude Code
+  paints behind them (Core's `PromptBands` finds them).
+- **Window tests by section**: `Solanum-test --window-test groups,ssh` runs just those sections (each step is named
+  "section: what"), stopping at the first failure; with no list it runs them all.
 - **Dropdowns** are one component everywhere, drawn as the Mac's: frosted and rounded, with a search box, headings,
   a group's chip, an agent's mark, an icon, detail text or keys as each needs. How they filter, where the highlight
   starts and how the arrows move is Core's (`Dropdown`), shared with the Mac's ThemedDropdown.
