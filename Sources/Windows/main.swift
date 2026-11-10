@@ -198,8 +198,13 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-block-buttons"), Comm
 // The Send to Chat menu, as the Mac's: chats with their agents' marks and groups' chips, then new ones, at 200%:
 // --draw-send-menu <png>
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-send-menu"), CommandLine.arguments.indices.contains(flag + 1) {
-    let width: Float = 1000, height: Float = 900, s: Float = 2
+    let width: Float = 1000, height: Float = 1300, s: Float = 2
     guard let canvas = Canvas(width: Int(width), height: Int(height), fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    // Some text behind, for the frosted glass to blur.
+    for row in 0..<60 {
+        let units = Array("PS C:\\demo> git log --oneline --graph --all  # row \(row) of what's behind".utf16)
+        sol_canvas_draw_label(canvas.raw, 10, Float(row) * 22, width, 22, units, Int32(units.count), 26, 0, TerminalPalette.foreground, 0.8)
+    }
     func chat(_ title: String, _ kind: AgentKind, chip: (String, UInt32)? = nil, dot: UInt32? = nil, enabled: Bool = true) -> MenuItem {
         var item = MenuItem(title: title, isEnabled: enabled)
         item.agentMark = kind
@@ -217,6 +222,18 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-send-menu"), CommandL
                          window: UIRect(x: 0, y: 0, width: width, height: height), scale: s)
     menu.highlight(2)
     MenuView(canvas: canvas, menu: menu).draw()
+    // Git Graph's Branch dropdown, with its search box, "lo" typed.
+    var branches = [MenuItem(title: "All Branches"), MenuItem(title: "HEAD (main)"), .separator, .header("Local"),
+                    MenuItem(title: "main", isChecked: true), MenuItem(title: "feature/login", detail: "2 ahead"), MenuItem(title: "release/1.4")]
+    branches += [.separator, .header("Remote"), MenuItem(title: "origin/main"), MenuItem(title: "origin/feature/login")]
+    let picker = MenuModel(items: branches, anchorX: 40, anchorY: 560, above: false, width: MenuView.width(for: branches, canvas: canvas, scale: s, minWidth: 480),
+                           window: UIRect(x: 0, y: 0, width: width, height: height), scale: s, searchPlaceholder: "Branch or tag")
+    MenuView(canvas: canvas, menu: picker).draw()
+    let typed = MenuModel(items: branches, anchorX: 540, anchorY: 560, above: false, width: MenuView.width(for: branches, canvas: canvas, scale: s, minWidth: 420),
+                          window: UIRect(x: 0, y: 0, width: width, height: height), scale: s, searchPlaceholder: "Branch or tag")
+    typed.type("log")
+    MenuView(canvas: canvas, menu: typed).draw()
+    print("frost: \(MenuView.lastFrost)")
     guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }

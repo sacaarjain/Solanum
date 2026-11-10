@@ -1155,7 +1155,14 @@ final class TerminalWindow {
             }
             return 0
         case Win.WM_CHAR:
-            if menu != nil || dialog != nil {
+            if let menu, menu.search != nil {
+                // Typed into a dropdown's search box.
+                let unit = UInt16(truncatingIfNeeded: wParam)
+                if unit >= 0x20, unit != 0x7F, let scalar = Unicode.Scalar(unit) {
+                    menu.type(String(Character(scalar)))
+                    invalidate()
+                }
+            } else if menu != nil || dialog != nil {
                 // A menu or a question takes no text.
             } else if notices.hasFocusedField {
                 if notices.typed(UInt16(truncatingIfNeeded: wParam)) { invalidate() }
@@ -1329,7 +1336,7 @@ final class TerminalWindow {
         // What's on top decides, not what's under it: a menu shows the arrow; the palette, the I-beam over the field it's
         // typed in and the arrow over the rest; the Quantum Moon's reading, the arrow.
         if let menu, menu.frame.contains(px, py) {
-            SetCursor(LoadCursorW(nil, Win.arrowCursor))
+            SetCursor(LoadCursorW(nil, menu.search != nil && menu.searchBox.contains(px, py) ? Win.ibeamCursor : Win.arrowCursor))
             return 1
         }
         if palette != nil {
@@ -2479,11 +2486,11 @@ final class TerminalWindow {
         panel.copy = { [weak pane] text in pane?.setClipboard(text) }
         panel.close = { [weak self, weak panel] in if let self, let panel, let pane = self.owner(of: panel) { self.closeEditor(panel, in: pane) } }
         panel.openCommit = { [weak self, weak pane] hash, subject in pane.map { self?.showCommit(hash, subject: subject, place: place, in: $0) } }
-        panel.showMenu = { [weak self] items, r in
-            guard let self else { return }
-            self.openMenu(items, x: r.x, y: r.maxY + 4 * self.scale, above: false)
+        panel.showDropdown = { [weak self] items, r, search, minWidth, closed in
+            guard let self else { return closed() }
+            self.openMenu(items, x: r.x, y: r.maxY + 4 * self.scale, above: false, search: search, minWidth: max(minWidth * self.scale, r.width))
+            if let menu = self.menu { menu.onClose = closed } else { closed() }
         }
-        panel.pickFromList = { [weak self] placeholder, choices, done in self?.pickFromList(placeholder, choices, done) }
         panel.paste = { [weak pane] in pane?.clipboardText() }
         openEditor(EditorItem(key: key, title: "Git Graph", glyph: EditorItem.Glyph.graph, panel: panel), in: pane)
     }
@@ -3412,18 +3419,6 @@ final class TerminalWindow {
         }
     }
 
-    // MARK: - A long list to pick from, in the palette
-
-    /// The palette over `choices`, narrowed as you type (a choice starting "#" is a header); Enter picks one.
-    private func pickFromList(_ placeholder: String, _ choices: [String], _ done: @escaping (String) -> Void) {
-        let items = choices.map { c -> PaletteItem in
-            c.hasPrefix("#") ? .header(String(c.dropFirst())) : PaletteItem(title: c) { done(c) }
-        }
-        palette = PaletteModel(items: items, placeholder: placeholder, icon: 0xE71C, emptyMessage: "Nothing matches")
-        if !panes.isEmpty { activePane.setFocused(false) }
-        invalidate()
-    }
-
     // MARK: - A line of text, asked for in the palette
 
     /// The palette as a one-line question (a log marker's text): Enter takes what's typed.
@@ -4015,14 +4010,19 @@ final class TerminalWindow {
         return Dictionary(menu.items.indices.map { (menu.title($0), menu.items[$0].shortcut) }, uniquingKeysWith: { a, _ in a })
     }
 
+    /// For tests: what's typed in the open dropdown's search box; nil without one.
+    var menuSearchText: String? { menu?.search?.text }
+
     func menuRow(_ title: String) -> UIRect? {
         guard let menu, let i = menu.items.indices.first(where: { menu.title($0) == title }) else { return nil }
         return menu.rect(i)
     }
 
-    private func openMenu(_ items: [MenuItem], x: Float, y: Float, above: Bool) {
-        menu = MenuModel(items: items, anchorX: x, anchorY: y, above: above, width: MenuView.width(for: items, canvas: canvas, scale: scale),
-                         window: UIRect(x: 0, y: 0, width: Float(clientWidth), height: Float(clientHeight)), scale: scale)
+    /// Opens a dropdown at (x, y), down from there or up for `above`. `search`: a search box at the top saying that while
+    /// empty, typing into which narrows the list; nil for none. `minWidth`: at least this wide (a button it opens under).
+    private func openMenu(_ items: [MenuItem], x: Float, y: Float, above: Bool, search: String? = nil, minWidth: Float = 0) {
+        menu = MenuModel(items: items, anchorX: x, anchorY: y, above: above, width: MenuView.width(for: items, canvas: canvas, scale: scale, minWidth: minWidth),
+                         window: UIRect(x: 0, y: 0, width: Float(clientWidth), height: Float(clientHeight)), scale: scale, searchPlaceholder: search)
         menu?.showsAlternates = GetKeyState(Win.VK_MENU) < 0
         // A menu opened by a press keeps nothing held, so Windows asks what pointer to show over it: the arrow.
         if GetCapture() == hwnd { ReleaseCapture() }
@@ -4038,6 +4038,7 @@ final class TerminalWindow {
 
     private func closeMenu() {
         menu?.onHighlight?(nil)
+        menu?.onClose?()
         menu = nil
         invalidate()
     }
@@ -4048,7 +4049,7 @@ final class TerminalWindow {
         switch message {
         case Win.WM_MOUSEMOVE:
             // The arrow over it, whatever's under it, as a menu has.
-            if menu.frame.contains(x, y) { SetCursor(LoadCursorW(nil, Win.arrowCursor)) }
+            if menu.frame.contains(x, y) { SetCursor(LoadCursorW(nil, menu.search != nil && menu.searchBox.contains(x, y) ? Win.ibeamCursor : Win.arrowCursor)) }
             if row != menu.highlighted {
                 menu.highlight(row)
                 invalidate()
@@ -4078,6 +4079,10 @@ final class TerminalWindow {
                 closeMenu()
                 run()
             }
+        // The search box's own keys; what's typed comes as WM_CHAR.
+        case Win.VK_BACK where menu.search != nil: menu.deleteBackward(word: isDown(Win.VK_CONTROL))
+        case Win.VK_LEFT where menu.search != nil: menu.moveCaret(by: -1)
+        case Win.VK_RIGHT where menu.search != nil: menu.moveCaret(by: 1)
         case Win.VK_F4: return false
         default: break
         }

@@ -1305,6 +1305,16 @@ enum WindowSelfTest {
             if let r = graph()?.toolbarRect("date") { window.click(r) }
         }, done: { window.menuTitles.contains("Last 7 Days") && window.menuTitles.contains("Any Time") }))
         steps.append(Step(name: "graph filters: and closes", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
+        // The shared dropdown, with its search box (Core's Dropdown does the narrowing, on the Mac too).
+        steps.append(Step(name: "graph filters: Branch opens a dropdown under it, with a search box", action: {
+            if let r = graph()?.toolbarRect("branch") { window.click(r) }
+        }, done: { window.menuTitles.contains("All Branches") && window.menuSearchText == "" && window.menuTitles.contains { $0.hasPrefix("HEAD") } }))
+        steps.append(Step(name: "graph filters: typing narrows it", action: { window.typeIntoWindow("head") },
+                          done: { window.menuSearchText == "head" && window.menuTitles.count == 1 && window.menuTitles[0].hasPrefix("HEAD") }))
+        steps.append(Step(name: "graph filters: Enter picks what's highlighted", action: { pane.pressEnter() },
+                          done: { !window.isMenuOpen && graph()?.filter.branch == "HEAD" }))
+        steps.append(Step(name: "graph filters: back to every branch", action: { graph()?.setFilterForTesting { $0.branch = nil } },
+                          done: { graph()?.filter.isEmpty == true && graph()?.loaded == true }))
         steps.append(Step(name: "graph filters: a user with no commits leaves none", action: {
             graph()?.setFilterForTesting { $0.user = "nobody-at-all" }
         }, done: { graph()?.loaded == true && graph()?.rows.isEmpty == true && graph()?.toolbarRect("clear") != nil }))

@@ -28,11 +28,11 @@ final class GitGraphPanel: ColumnPanel {
     var post: (@escaping () -> Void) -> Void = { $0() }
     /// A commit clicked, or its card's View Changes: its hash and subject.
     var openCommit: (String, String) -> Void = { _, _ in }
-    /// A menu under a rectangle (User, Date).
-    var showMenu: (_ items: [MenuItem], _ under: UIRect) -> Void = { _, _ in }
-    /// A long list to pick from by typing (Branch, Paths): its placeholder, its rows (a header's title starts with "#"),
-    /// and what's picked.
-    var pickFromList: (_ placeholder: String, _ choices: [String], _ done: @escaping (String) -> Void) -> Void = { _, _, _ in }
+    /// A dropdown under a filter's button, as the Mac's: its rows, the button, the search box's placeholder (nil for
+    /// none), how wide at least (at 100%), and what to do when it closes.
+    var showDropdown: (_ items: [MenuItem], _ under: UIRect, _ search: String?, _ minWidth: Float, _ closed: @escaping () -> Void) -> Void = { _, _, _, _, closed in closed() }
+    /// The filter whose dropdown is open: its button shows pressed.
+    private var openFilter: String?
 
     // The filters, as the Mac's toolbar has them (Core's GraphFilter): git does the filtering.
     private(set) var filter = GraphFilter()
@@ -461,43 +461,58 @@ final class GitGraphPanel: ColumnPanel {
         case "search": searchFocused = true
         case "regex": change { $0.regex.toggle() }
         case "case": change { $0.matchCase.toggle() }
-        case "branch": showBranches()
+        case "branch": showBranches(under: r)
         case "user": showUsers(under: r)
         case "date":
             var items = [MenuItem(title: "Any Time", isChecked: filter.days == nil) { [weak self] in self?.change { $0.days = nil } }, .separator]
             for choice in GraphFilter.dayChoices {
                 items.append(MenuItem(title: choice.title, isChecked: filter.days == choice.days) { [weak self] in self?.change { $0.days = choice.days } })
             }
-            showMenu(items, r)
-        case "paths": showPaths()
+            dropdown("date", items, under: r)
+        case "paths": showPaths(under: r)
         case "clear": clearFilters()
         default: break
         }
         invalidate()
     }
 
+    /// A filter's dropdown under its button, with a search box, as the Mac's; the button shows pressed while it's open.
+    private func dropdown(_ id: String, _ items: [MenuItem], under r: UIRect, search: String = "Filter", minWidth: Float = 200) {
+        openFilter = id
+        invalidate()
+        showDropdown(items, r, search, minWidth) { [weak self] in
+            guard let self, self.openFilter == id else { return }
+            self.openFilter = nil
+            self.invalidate()
+        }
+    }
+
     /// Every branch and tag, typed to narrow: All Branches, HEAD, then local, remote and tags.
-    private func showBranches() {
+    private func showBranches(under r: UIRect) {
         guard let refs else {
             place.run(GraphRefs.script, timeout: 30) { [weak self] status, out, _ in
                 let parsed = GraphRefs.parse(out)
                 self?.post {
                     guard let self, status == 0 else { return }
                     self.refs = parsed
-                    self.showBranches()
+                    self.showBranches(under: r)
                 }
             }
             return
         }
-        let all = "All Branches", head = "HEAD" + (refs.current.map { " (\($0))" } ?? "")
-        var choices = [all, head]
-        func section(_ title: String, _ names: [String]) { if !names.isEmpty { choices.append("#" + title); choices += names } }
+        var items = [
+            MenuItem(title: "All Branches", isChecked: filter.branch == nil) { [weak self] in self?.change { $0.branch = nil } },
+            MenuItem(title: "HEAD" + (refs.current.map { " (\($0))" } ?? ""), isChecked: filter.branch == "HEAD") { [weak self] in self?.change { $0.branch = "HEAD" } },
+        ]
+        func section(_ title: String, _ names: [String]) {
+            guard !names.isEmpty else { return }
+            items += [.separator, .header(title)]
+            items += names.map { name in MenuItem(title: name, isChecked: filter.branch == name) { [weak self] in self?.change { $0.branch = name } } }
+        }
         section("Local", refs.locals)
         section("Remote", refs.remotes)
         section("Tags", refs.tags)
-        pickFromList("Branch or tag", choices) { [weak self] picked in
-            self?.change { $0.branch = picked == all ? nil : picked == head ? "HEAD" : picked }
-        }
+        dropdown("branch", items, under: r, search: "Branch or tag", minWidth: 240)
     }
 
     /// You, then the most frequent authors of the last 5000 commits.
@@ -526,11 +541,11 @@ final class GitGraphPanel: ColumnPanel {
         for name in authors where name != me {
             items.append(MenuItem(title: name, isChecked: filter.user == name) { [weak self] in self?.change { $0.user = name } })
         }
-        showMenu(items, r)
+        dropdown("user", items, under: r)
     }
 
     /// The repository's folders and files (as HEAD has them), folders first, typed to narrow.
-    private func showPaths() {
+    private func showPaths(under r: UIRect) {
         guard let paths else {
             place.run("git ls-tree -r -t --name-only HEAD | head -50000", timeout: 30) { [weak self] _, out, _ in
                 let all = String(decoding: out, as: UTF8.self).split(separator: "\n").map(String.init).sorted { a, b in
@@ -540,13 +555,14 @@ final class GitGraphPanel: ColumnPanel {
                 self?.post {
                     guard let self else { return }
                     self.paths = all
-                    self.showPaths()
+                    self.showPaths(under: r)
                 }
             }
             return
         }
-        let any = "All Paths"
-        pickFromList("Folder or file", [any] + paths) { [weak self] picked in self?.change { $0.path = picked == any ? nil : picked } }
+        var items = [MenuItem(title: "All Paths", isChecked: filter.path == nil) { [weak self] in self?.change { $0.path = nil } }, .separator]
+        items += paths.map { p in MenuItem(title: p, isChecked: filter.path == p) { [weak self] in self?.change { $0.path = p } } }
+        dropdown("paths", items, under: r, search: "Folder or file", minWidth: 360)
     }
 
     /// The search, its regex and case toggles, then Branch, User, Date and Paths, each in the accent color when set.
@@ -594,11 +610,12 @@ final class GitGraphPanel: ColumnPanel {
             let tw = p.width(title, pixels: 12, semibold: b.value != nil)
             let r = UIRect(x: x, y: y, width: tw + 30 * s, height: h)
             guard r.maxX < t.maxX - 70 * s else { break }
-            let hovered = hoveredPart == "bar:" + b.id
-            if hovered { p.fill(r, fg, 0.08, radius: 5) }
+            let hovered = hoveredPart == "bar:" + b.id, on = b.value != nil || openFilter == b.id
+            // As the Mac's: set or open, an accent box behind accent text; hovered, a lighter one.
+            if on || hovered { p.fill(r, accent, on ? 0.24 : 0.13, radius: 5) }
             p.label(title, UIRect(x: r.x + 8 * s, y: r.y, width: tw + 2, height: h), pixels: 12, semibold: b.value != nil,
-                    color: b.value != nil ? accent : nil, alpha: b.value != nil ? 1 : 0.75)
-            p.icon(0xE70D, UIRect(x: r.maxX - 18 * s, y: r.y, width: 12 * s, height: h), pixels: 8, color: b.value != nil ? accent : nil, alpha: 0.7)
+                    color: on || hovered ? accent : nil, alpha: on || hovered ? 1 : 0.75)
+            p.icon(0xE70D, UIRect(x: r.maxX - 18 * s, y: r.y, width: 12 * s, height: h), pixels: 8, color: on || hovered ? accent : nil, alpha: 0.7)
             toolbarParts.append((b.id, r))
             x = r.maxX + 4 * s
         }

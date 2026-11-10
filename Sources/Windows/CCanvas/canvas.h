@@ -68,6 +68,11 @@ void sol_canvas_set_opacity(SolCanvas *canvas, float opacity);
 /// more solid where it's drawn over another.
 void sol_canvas_backdrop_rect(SolCanvas *canvas, float x, float y, float width, float height, uint32_t color);
 void sol_canvas_backdrop_rounded(SolCanvas *canvas, float x, float y, float width, float height, float radius, uint32_t color);
+/// Frosted glass: what's drawn under the rounded rectangle so far, blurred by `blur` pixels, under a wash of `tint` at
+/// `tintAlpha` (solid where the system can't blur). For dropdowns, as the Mac's. 1 when it blurred; 0 or negative
+/// (how far it got) when it drew the wash solid instead.
+int32_t sol_canvas_frost_rounded(SolCanvas *canvas, float x, float y, float width, float height, float radius, float blur, uint32_t tint,
+                                 float tintAlpha);
 /// The desktop wallpaper drawn under the window's see-through backgrounds, so it shows through them rather than the
 /// windows behind: `path` (null for just `background`) placed on a monitor of `width` by `height` pixels as Windows
 /// places it (`position`, a DESKTOP_WALLPAPER_POSITION), blurred by `blur` pixels. A null path and a background of

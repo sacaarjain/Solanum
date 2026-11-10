@@ -4,6 +4,7 @@
 #include <d2d1.h>
 #include <d2d1_1.h>
 #include <d2d1_3.h>
+#include <d2d1effects.h>
 #include <shlwapi.h>
 #include <urlmon.h>
 #include <dwmapi.h>
@@ -24,6 +25,7 @@
 #include <vector>
 
 #pragma comment(lib, "d2d1.lib")
+#pragma comment(lib, "dxguid.lib")
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "ole32.lib")
@@ -526,6 +528,47 @@ void sol_canvas_backdrop_rounded(SolCanvas *canvas, float x, float y, float widt
             canvas->target->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x, y, x + width, y + height), radius, radius), b);
         });
     });
+}
+
+/// Frosted glass, as a Mac popover's: what's already drawn under the rounded rectangle, blurred, then a wash of `tint`
+/// over it. Where the system can't blur (or `blur` is 0) the wash is drawn solid instead.
+int32_t sol_canvas_frost_rounded(SolCanvas *canvas, float x, float y, float width, float height, float radius, float blur, uint32_t tint,
+                                 float tintAlpha) {
+    const auto shapeRect = D2D1::RoundedRect(D2D1::RectF(x, y, x + width, y + height), radius, radius);
+    int32_t step = 0;
+    ComPtr<ID2D1DeviceContext> dc;
+    if (blur > 0 && SUCCEEDED(canvas->target.As(&dc))) {
+        step = -1;
+        // What's under it, with a margin so the blur near its edges has something to take from.
+        const D2D1_SIZE_U size = canvas->target->GetPixelSize();
+        const float m = blur * 2;
+        const UINT32 l = static_cast<UINT32>((std::max)(0.0f, std::floor(x - m)));
+        const UINT32 t = static_cast<UINT32>((std::max)(0.0f, std::floor(y - m)));
+        const UINT32 r = (std::min)(size.width, static_cast<UINT32>((std::max)(0.0f, std::ceil(x + width + m))));
+        const UINT32 b = (std::min)(size.height, static_cast<UINT32>((std::max)(0.0f, std::ceil(y + height + m))));
+        ComPtr<ID2D1Bitmap1> under;
+        D2D1_BITMAP_PROPERTIES1 props = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_NONE, canvas->target->GetPixelFormat());
+        dc->GetDpi(&props.dpiX, &props.dpiY);
+        const D2D1_POINT_2U origin = {0, 0};
+        const D2D1_RECT_U source = {l, t, r, b};
+        ComPtr<ID2D1Effect> fx;
+        ComPtr<ID2D1RoundedRectangleGeometry> shape;
+        if (r > l && b > t && SUCCEEDED(dc->CreateBitmap(D2D1::SizeU(r - l, b - t), nullptr, 0, props, &under)) && (step = -2) &&
+            SUCCEEDED(under->CopyFromRenderTarget(&origin, canvas->target.Get(), &source)) && (step = -3) &&
+            SUCCEEDED(dc->CreateEffect(CLSID_D2D1GaussianBlur, &fx)) && (step = -4) &&
+            SUCCEEDED(canvas->d2d->CreateRoundedRectangleGeometry(shapeRect, &shape))) {
+            fx->SetInput(0, under.Get());
+            fx->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, blur / 2);
+            fx->SetValue(D2D1_GAUSSIANBLUR_PROP_BORDER_MODE, D2D1_BORDER_MODE_HARD);
+            dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), shape.Get(), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE), nullptr);
+            dc->DrawImage(fx.Get(), D2D1::Point2F(static_cast<float>(l), static_cast<float>(t)));
+            dc->PopLayer();
+            step = 1;
+        }
+    }
+    canvas->brush->SetColor(color(tint, step == 1 ? tintAlpha : 1));
+    canvas->smooth([&] { canvas->target->FillRoundedRectangle(shapeRect, canvas->brush.Get()); });
+    return step;
 }
 
 /// Three box blurs one way and three the other come close to a Gaussian.

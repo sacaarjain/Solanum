@@ -70,6 +70,26 @@ enum CoreSelfTest {
             results.check(name, cond, detail())
         }
         do {
+            // Dropdowns, on both platforms: what typing leaves, where the highlight starts, and the arrows.
+            struct Row: DropdownRow {
+                var dropdownKind = DropdownRowKind.item
+                var title = ""
+                var detail: String?
+                var isChecked = false
+                var isEnabled = true
+            }
+            let rows = [Row(title: "All Branches"), Row(dropdownKind: .separator), Row(dropdownKind: .header, title: "Local"),
+                        Row(title: "main", isChecked: true), Row(title: "feature/login", detail: "origin"), Row(title: "old", isEnabled: false)]
+            check("dropdown: typing keeps matching items only, by title or detail, ignoring case",
+                  Dropdown.filter(rows, query: "LOG").map(\.title) == ["feature/login"] && Dropdown.filter(rows, query: "orig").count == 1
+                  && Dropdown.filter(rows, query: " ").count == rows.count)
+            check("dropdown: opens on what's checked, else the first item",
+                  Dropdown.initialHighlight(rows) == 3 && Dropdown.initialHighlight(Array(rows.prefix(3))) == 0)
+            check("dropdown: arrows skip headers, lines and what's off, and stop at the ends",
+                  Dropdown.step(rows, from: 0, by: 1) == 3 && Dropdown.step(rows, from: 4, by: 1) == 4 && Dropdown.step(rows, from: 3, by: -1) == 0
+                  && Dropdown.step(rows, from: nil, by: -1) == 4)
+        }
+        do {
             // A finished command's buttons and badge, and what several picked ones copy or send.
             let (t, _) = make(40, 8)
             feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}ls\r\n\u{1b}]133;C\u{07}a.txt\r\n\u{1b}]133;D;0\u{07}")
