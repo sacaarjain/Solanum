@@ -14,6 +14,9 @@ final class Config {
     var lineHeight: CGFloat = 1.3
     var opacity: CGFloat = 0.95
     var blur = true
+    /// What a see-through background shows: "wallpaper" (the desktop's picture, drawn by Solanum, the same in front or
+    /// not) or "windows" (whatever's behind the window). See `Backdrop`.
+    var seeThrough = "windows"
     var cursorStyle = "bar"
     var cursorBlink = true
     var ligatures = true
@@ -119,6 +122,7 @@ final class Config {
         case "line-height": if let n = num() { lineHeight = min(max(n, 0.9), 2.0) }
         case "background-opacity": if let n = num() { opacity = min(max(n, 0.3), 1) }
         case "background-blur": blur = bool()
+        case "see-through": seeThrough = value.lowercased() == "wallpaper" ? "wallpaper" : "windows"
         case "cursor-style": cursorStyle = value.lowercased()
         case "cursor-blink": cursorBlink = bool()
         case "font-ligatures": ligatures = bool()
@@ -170,6 +174,8 @@ final class Config {
 
         background-opacity = \(fmt(opacity))
         background-blur = \(blur)
+        # What shows through: wallpaper (your desktop picture, always) | windows (whatever is behind the window).
+        see-through = \(seeThrough)
         padding = \(fmt(padding))
 
         # The theme's icon beside its name in the status bar (Outer Wilds themes: their planet).

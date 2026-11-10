@@ -113,6 +113,8 @@ enum ThemeEditor {
                           get: { model.theme.selection }, set: { model.theme.selection = $0 }))
         v.add(card: base, gap: 26)
 
+        pictureSection(v, ctl, model)
+
         v.add(sectionHeader("Terminal colors"), height: 16, gap: 10)
         let palette = PaletteEditorView(model.theme.ansi, saved: model.saved.ansi)
         model.palette = palette
@@ -131,6 +133,57 @@ enum ThemeEditor {
         ])
         actions.spacing = 20
         v.add(actions, height: 20, gap: 0)
+    }
+
+    /// A photo behind the theme (see `Backdrop`), blurred and tinted with its background color, as on Windows: kept in
+    /// the themes folder with the theme, so it goes where the theme goes.
+    private static func pictureSection(_ v: SettingsPageView, _ ctl: SettingsWindowController, _ model: Model) {
+        v.add(sectionHeader("Background picture"), height: 16, gap: 10)
+        let card = SettingsCard()
+        let image = model.theme.image
+        let choose = SettingsPages.linkButton(image == nil ? "Choose…" : "Change…") { [weak ctl] in choosePicture(model, ctl) }
+        card.add(SettingRow(icon: "photo", title: "Picture",
+                            detail: image.map { "\(($0.file as NSString).lastPathComponent) · the see-through setting doesn't apply while there's one" }
+                                ?? "A photo behind the terminal, softened so text reads over it.",
+                            accessory: choose, width: 90))
+        if image != nil {
+            let blur = ValueSlider(min: 0, max: 100, value: model.theme.image?.blur ?? 24) { "\(Int($0)) pt" }
+            blur.onChange = { val in model.theme.image?.blur = (val * 10).rounded() / 10; model.changed() }
+            card.add(SettingRow(icon: "drop", title: "Blur", detail: "Softens the picture so text reads over it.", accessory: blur))
+            let tint = ValueSlider(min: 0, max: 0.95, value: model.theme.image?.tint ?? 0.7) { "\(Int(($0 * 100).rounded()))%" }
+            tint.onChange = { val in model.theme.image?.tint = (val * 100).rounded() / 100; model.changed() }
+            card.add(SettingRow(icon: "circle.lefthalf.filled", title: "Tint", detail: "How much of the background color lies over the picture.", accessory: tint))
+            card.add(SettingRow(icon: "xmark.circle", title: "Remove picture", detail: nil,
+                                accessory: SettingsPages.linkButton("Remove") { [weak ctl] in
+                                    model.theme.image = nil
+                                    model.changed()
+                                    ctl?.rebuild()
+                                }, width: 90))
+        }
+        v.add(card: card, gap: 26)
+    }
+
+    /// Picks a photo (not in a headless run, which never shows a panel) and copies it into the themes folder.
+    private static func choosePicture(_ model: Model, _ ctl: SettingsWindowController?) {
+        guard !Headless.active else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.message = "A picture for \(model.theme.name)"
+        panel.begin { [weak ctl] response in
+            guard response == .OK, let url = panel.url else { return }
+            setPicture(url.path, model, ctl)
+        }
+    }
+
+    /// The picture at `path`, copied in, as the theme's (keeping its blur and tint if it had one).
+    static func setPicture(_ path: String, _ model: Model, _ ctl: SettingsWindowController?) {
+        guard let name = BackdropImages.importImage(path, for: model.theme.name) else { return }
+        var image = model.theme.image ?? ThemeImage(file: name)
+        image.file = name
+        model.theme.image = image
+        model.changed()
+        ctl?.rebuild()
     }
 
     private static func destructiveButton(_ title: String, _ action: @escaping () -> Void) -> NSButton {

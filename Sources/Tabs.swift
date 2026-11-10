@@ -671,11 +671,33 @@ final class TabSession: NSObject {
 
 /// Draws the themed window background (solid or gradient) at the configured opacity.
 final class BackgroundView: NSView {
+    /// A picture behind it all: the theme's, or the desktop's (see `Backdrop`).
+    var backdrop: Backdrop = .none { didSet { if backdrop != oldValue { needsDisplay = true } } }
+
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
         let cfg = Config.shared
         let th = cfg.theme
-        let alpha = cfg.opacity
+        var alpha = cfg.opacity
+        let scale = window?.backingScaleFactor ?? 2
+        func put(_ image: CGImage, in r: NSRect) {
+            NSImage(cgImage: image, size: r.size).draw(in: r, from: .zero, operation: .copy, fraction: 1, respectFlipped: true, hints: nil)
+        }
+        switch backdrop {
+        case .picture(let url, let image):
+            if let img = BackdropImages.image(url, size: bounds.size, scale: scale, blur: CGFloat(image.blur)) { put(img, in: bounds) }
+            alpha = CGFloat(image.tint)
+        case .wallpaper(let url, let options):
+            // Where the screen is, in here: the picture's laid over all of it, so it lines up with the desktop.
+            let screenFrame = window?.screen?.frame ?? window?.frame ?? bounds
+            let r = window.map { convert($0.convertFromScreen(screenFrame), from: nil) } ?? bounds
+            if let img = BackdropImages.image(url, size: screenFrame.size, scale: scale, blur: cfg.blur ? 48 : 0,
+                                              fit: options.fits, fill: options.fill) {
+                put(img, in: r)
+            }
+        case .none:
+            break
+        }
         if let b2 = th.background2 {
             let g = NSGradient(starting: th.background.withAlphaComponent(alpha), ending: b2.withAlphaComponent(alpha))
             g?.draw(in: bounds, angle: 90)
@@ -1559,6 +1581,36 @@ final class WindowRootView: NSView {
         needsLayout = true
     }
 
+    /// The theme's picture or the desktop's behind it all, or the window see-through to what's behind it (blurred by the
+    /// system, if Blur is on): see `Backdrop`.
+    func updateBackdrop() {
+        let cfg = Config.shared
+        background.backdrop = Backdrop.current(screen: window?.screen)
+        effect.isHidden = !(cfg.blur && cfg.opacity < 1 && background.backdrop == .none)
+        background.needsDisplay = true
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        let nc = NotificationCenter.default
+        backdropObservers.forEach { nc.removeObserver($0); NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        backdropObservers = []
+        guard let w = window else { return }
+        // The desktop's picture stays lined up with the screen as the window moves; another screen or Space may have
+        // another picture.
+        backdropObservers.append(nc.addObserver(forName: NSWindow.didMoveNotification, object: w, queue: .main) { [weak self] _ in
+            if case .wallpaper = self?.background.backdrop { self?.background.needsDisplay = true }
+        })
+        backdropObservers.append(nc.addObserver(forName: NSWindow.didChangeScreenNotification, object: w, queue: .main) { [weak self] _ in
+            self?.updateBackdrop()
+        })
+        backdropObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.updateBackdrop()
+        })
+        updateBackdrop()
+    }
+    private var backdropObservers: [NSObjectProtocol] = []
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         effect.blendingMode = .behindWindow
@@ -1706,7 +1758,7 @@ final class WindowRootView: NSView {
     func applyTheme() {
         let cfg = Config.shared
         let th = cfg.theme
-        effect.isHidden = !(cfg.blur && cfg.opacity < 1)
+        updateBackdrop()
         effect.appearance = NSAppearance(named: th.isDark ? .darkAqua : .aqua)
         window?.appearance = NSAppearance(named: th.isDark ? .darkAqua : .aqua)
         background.needsDisplay = true

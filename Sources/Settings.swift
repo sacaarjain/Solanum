@@ -1460,6 +1460,13 @@ enum SettingsPages {
             SettingRow(icon: "circle.lefthalf.filled", title: "Background opacity", detail: "How much of the desktop shows through.", accessory: opacity),
             SettingRow(icon: "drop", title: "Blur behind the window", detail: "Frosted glass when the background is see-through.",
                        accessory: toggle(c.blur) { [weak ctl] on in Config.shared.blur = on; ctl?.commit() }),
+            SettingRow(icon: "photo.on.rectangle", title: "What shows through",
+                       detail: "Your wallpaper looks the same whether Solanum is in front or not; windows behind shows whatever is there.",
+                       accessory: {
+                           let p = ChoicePopup(["Windows Behind", "Your Wallpaper"], selected: c.seeThrough == "wallpaper" ? "Your Wallpaper" : "Windows Behind")
+                           p.onChange = { [weak ctl] title in Config.shared.seeThrough = title == "Your Wallpaper" ? "wallpaper" : "windows"; ctl?.commit() }
+                           return p
+                       }()),
             SettingRow(icon: "circle.righthalf.filled", title: "Keep text readable on light themes",
                        detail: "Darkens text too faint to read, such as colors a program chose for dark backgrounds.",
                        accessory: toggle(c.minimumContrast) { [weak ctl] on in Config.shared.minimumContrast = on; ctl?.commit() }),

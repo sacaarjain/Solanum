@@ -58,6 +58,8 @@ struct Theme {
     var ansi: [NSColor]
     /// The JSON file a custom theme was loaded from; nil for built-in themes.
     var file: URL?
+    /// A picture behind everything (see `Backdrop`), as Windows has it.
+    var image: ThemeImage?
 
     var isCustom: Bool { file != nil }
 
@@ -68,6 +70,12 @@ struct Theme {
                                 "ansi": ansi.map(\.hexString)]
         if let b2 = background2 { j["background2"] = b2.hexString }
         if let c = chrome { j["chrome"] = c.hexString }
+        // As Windows writes it, so a theme moves between them whole.
+        if let image {
+            j["background-image"] = image.file
+            j["background-image-blur"] = (image.blur * 10).rounded() / 10
+            j["background-image-tint"] = (image.tint * 100).rounded() / 100
+        }
         return j
     }
 
@@ -107,6 +115,7 @@ struct Theme {
     init(spec: ThemeSpec) {
         self.init(name: spec.name, bg: spec.background, bg2: spec.background2, fg: spec.foreground, cursor: spec.cursor,
                   selection: spec.selection, accent: spec.accent, chrome: spec.chrome, ansi: spec.ansi)
+        image = spec.image
     }
 
     /// Color for an xterm 256-palette index.
@@ -172,9 +181,20 @@ enum ThemeLibrary {
                           cursor: j["cursor"] as? String, selection: j["selection"] as? String,
                           accent: (j["accent"] as? String) ?? (ansi.count > 4 ? ansi[4] : fg), chrome: j["chrome"] as? String, ansi: ansi)
             t.file = f
+            if let file = j["background-image"] as? String, !file.isEmpty {
+                var image = ThemeImage(file: file)
+                if let blur = (j["background-image-blur"] as? NSNumber)?.doubleValue { image.blur = min(max(blur, 0), 100) }
+                if let tint = (j["background-image-tint"] as? NSNumber)?.doubleValue { image.tint = min(max(tint, 0), 0.95) }
+                t.image = image
+            }
             custom.append(t)
         }
         custom.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// Where a theme's picture is: a name in the themes folder, or a full path.
+    static func imageURL(_ image: ThemeImage) -> URL? {
+        image.file.hasPrefix("/") ? URL(fileURLWithPath: image.file) : Config.shared.themesDir.appendingPathComponent(image.file)
     }
 
     // MARK: Editing custom themes (Settings › Appearance)
