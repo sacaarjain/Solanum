@@ -121,6 +121,64 @@ enum WindowSelfTest {
         panel.press(button: .tail)
         results.check("live files: Tail File", panel.tailing)
 
+        // Two editors on one real file, as when a file shown above the terminal is also opened in a tab: one saves, the
+        // other catches up. Through the window's own reading and writing, each panel's work on one queue as on its thread.
+        do {
+            let dir = NSTemporaryDirectory() + "solanum-two-editors-\(GetCurrentProcessId())"
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            let path = (dir + "/late.txt").replacingOccurrences(of: "/", with: "\\")
+            _ = FileManager.default.createFile(atPath: path, contents: Data("first line\nsecond line\n".utf8))
+            // What the panels post for the window's thread, run here in turn.
+            final class Pending: @unchecked Sendable {
+                let lock = NSLock()
+                var work: [() -> Void] = []
+                func add(_ w: @escaping () -> Void) { lock.lock(); work.append(w); lock.unlock() }
+                func drain() {
+                    while true {
+                        lock.lock()
+                        let next = work.isEmpty ? nil : work.removeFirst()
+                        lock.unlock()
+                        guard let next else { return }
+                        next()
+                    }
+                }
+            }
+            let pending = Pending()
+            func make() -> FileEditorPanel {
+                let p = FileEditorPanel(path: path, name: "late.txt", folder: dir, isLocal: true,
+                                        read: { limit, done in TerminalWindow.readLocal(path, limit: limit, done) },
+                                        write: { data, done in TerminalWindow.writeLocal(path, data, done) },
+                                        signature: { done in TerminalWindow.localSignature(path, done) },
+                                        readFrom: { offset, done in TerminalWindow.readLocal(path, from: offset, done) })
+                p.post = { work in pending.add(work) }
+                p.reload()
+                return p
+            }
+            func wait(_ seconds: Double = 8, _ cond: () -> Bool) -> Bool {
+                let end = Date().addingTimeInterval(seconds)
+                while Date() < end {
+                    pending.drain()
+                    if cond() { return true }
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+                pending.drain()
+                return cond()
+            }
+            let shown = make(), opened = make()
+            let read = wait { shown.textLines?.first == "first line" && opened.textLines?.first == "first line" }
+            opened.typeForTesting("hi ")
+            opened.save()
+            let saved = wait { opened.hasUnsavedChanges == false && ((try? String(contentsOfFile: path, encoding: .utf8)) ?? "").hasPrefix("hi first") }
+            // The other looks at the disk about once a second, from the window's timer.
+            let caughtUp = wait {
+                shown.syncNowForTesting()
+                return shown.textLines?.first == "hi first line"
+            }
+            results.check("live files: one real file in two editors, one saves and the other catches up", read && saved && caughtUp,
+                          "read=\(read) saved=\(saved) other=\(shown.textLines?.first ?? "nil")")
+            try? FileManager.default.removeItem(atPath: dir)
+        }
+
         // Find and replace in a file, as the Mac's ⌘F (Core's EditorFind).
         var findDisk = Data("Cat cat concat\ncat.dog (cat)\nline three\n".utf8)
         let found = FileEditorPanel(path: "C:\\find.txt", name: "find.txt", folder: "C:\\", isLocal: true, read: { _, done in done(findDisk, false) },
@@ -895,19 +953,31 @@ enum WindowSelfTest {
         }, done: { window.dialogTitle == "Save changes to late.txt?" && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\save-changes.png") } ?? true) }))
         steps.append(Step(name: "editor: Cancel keeps it open", action: { pane.pressEscape() },
                           done: { window.dialogTitle == nil && editor()?.path.hasSuffix("late.txt") == true }))
+        var savedPanel: FileEditorPanel?
         var saveCloseState = ""
         steps.append(Step(name: "editor: Save saves, then closes", action: {
+            savedPanel = editor()
             key(0x57, ctrl: true)
             pane.pressEnter()
         }, done: {
-            let ok = onDisk(late).hasPrefix("hi x") && !pane.editors.contains { ($0.panel as? FileEditorPanel)?.path.hasSuffix("late.txt") == true }
+            // The editor that was saved: the copy shown above the terminal by the click earlier stays, as it should.
+            let open = window.panes.contains { p in p.editors.contains { $0.panel === savedPanel } }
+            let ok = onDisk(late).hasPrefix("hi x") && savedPanel != nil && !open
             // What it's waiting on, each time that changes: for reading a failure in CI's log.
             if !ok {
-                let e = editor()
-                let state = "dialog=\(window.dialogTitle ?? "none") editor=\(e.map { WindowsPath.name($0.path) } ?? "none") unsaved=\(e?.hasUnsavedChanges ?? false) "
-                    + "conflict=\(e?.hasConflict ?? false) changedOnDisk=\(e?.changedOnDisk ?? false) disk=\(onDisk(late).prefix(16).debugDescription) "
-                    + "line1=\((e?.textLines?.first ?? "").debugDescription) panes=\(window.panes.count) editors=\(pane.editors.count)"
+                let e = savedPanel
+                let state = "dialog=\(window.dialogTitle ?? "none") stillOpen=\(open) unsaved=\(e?.hasUnsavedChanges ?? false) "
+                    + "conflict=\(e?.hasConflict ?? false) changedOnDisk=\(e?.changedOnDisk ?? false) disk=\(onDisk(late).prefix(16).debugDescription)"
                 if state != saveCloseState { saveCloseState = state; print("    waiting: " + state); CoreSelfTest.Results.annotate("notice", "Save saves, then closes: waiting: " + state) }
+            }
+            return ok
+        }))
+        steps.append(Step(name: "editor: the copy shown above the terminal catches up with the save", action: {}, done: {
+            let copies = window.panes.flatMap { p in p.editors.compactMap { $0.panel as? FileEditorPanel } }.filter { $0.path.hasSuffix("late.txt") }
+            let ok = copies.allSatisfy { $0.textLines?.first == "hi xfirst line" }
+            if !ok {
+                let state = copies.map { "\(($0.textLines?.first ?? "nil").debugDescription) unsaved=\($0.hasUnsavedChanges) changedOnDisk=\($0.changedOnDisk)" }.joined(separator: "; ")
+                if state != saveCloseState { saveCloseState = state; print("    copies: " + state); CoreSelfTest.Results.annotate("notice", "copy catches up: " + state) }
             }
             return ok
         }))

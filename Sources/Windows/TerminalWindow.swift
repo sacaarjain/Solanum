@@ -1902,7 +1902,7 @@ final class TerminalWindow {
     }
 
     /// Up to `limit` bytes of a file on this PC, off the window's thread; and whether there was more.
-    private static func readLocal(_ path: String, limit: Int, _ done: @escaping (Data?, Bool) -> Void) {
+    static func readLocal(_ path: String, limit: Int, _ done: @escaping (Data?, Bool) -> Void) {
         Thread.detachNewThread {
             guard let handle = FileHandle(forReadingAtPath: path) else { return done(nil, false) }
             defer { try? handle.close() }
@@ -1913,7 +1913,7 @@ final class TerminalWindow {
 
     /// A file on this PC as Core's FileSync knows it: its modified time and size, off the window's thread (a network drive
     /// can be slow to answer). Nil when it isn't there.
-    private static func localSignature(_ path: String, _ done: @escaping (Bool, String?) -> Void) {
+    static func localSignature(_ path: String, _ done: @escaping (Bool, String?) -> Void) {
         Thread.detachNewThread {
             var data = WIN32_FILE_ATTRIBUTE_DATA()
             let found = wide(path).withUnsafeBufferPointer { GetFileAttributesExW($0.baseAddress, GetFileExInfoStandard, &data) }
@@ -1935,7 +1935,7 @@ final class TerminalWindow {
     }
 
     /// The bytes of a file on this PC from `offset` to its end, and its size: for following one that grows.
-    private static func readLocal(_ path: String, from offset: Int, _ done: @escaping (Data?, Int) -> Void) {
+    static func readLocal(_ path: String, from offset: Int, _ done: @escaping (Data?, Int) -> Void) {
         Thread.detachNewThread {
             guard let handle = FileHandle(forReadingAtPath: path) else { return done(nil, 0) }
             defer { try? handle.close() }
@@ -1946,7 +1946,7 @@ final class TerminalWindow {
     }
 
     /// Writes a file on this PC, in place (so it keeps its permissions and links), off the window's thread.
-    private static func writeLocal(_ path: String, _ data: Data, _ done: @escaping (String?) -> Void) {
+    static func writeLocal(_ path: String, _ data: Data, _ done: @escaping (String?) -> Void) {
         Thread.detachNewThread {
             do {
                 try data.write(to: URL(fileURLWithPath: path))
