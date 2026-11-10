@@ -10,7 +10,21 @@ enum CoreSelfTest {
 
         func check(_ name: String, _ cond: Bool, _ detail: @autoclosure () -> String = "") {
             count += 1
-            if cond { print("  ✓ \(name)") } else { failures += 1; print("  ✗ \(name) \(detail())") }
+            if cond { print("  ✓ \(name)") } else {
+                failures += 1
+                let d = detail()
+                print("  ✗ \(name) \(d)")
+                Self.annotate("error", name + (d.isEmpty ? "" : ": " + d))
+            }
+        }
+
+        /// On GitHub's machines, a line its log turns into an annotation: those can be read without signing in, where the
+        /// log itself can't. Nothing elsewhere.
+        static func annotate(_ level: String, _ text: String) {
+            guard ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true" else { return }
+            let clipped = String(text.suffix(900))
+            let escaped = clipped.replacingOccurrences(of: "%", with: "%25").replacingOccurrences(of: "\r", with: "%0D").replacingOccurrences(of: "\n", with: "%0A")
+            print("::\(level)::\(escaped)")
         }
 
         /// Prints the total; true when everything passed.

@@ -907,7 +907,7 @@ enum WindowSelfTest {
                 let state = "dialog=\(window.dialogTitle ?? "none") editor=\(e.map { WindowsPath.name($0.path) } ?? "none") unsaved=\(e?.hasUnsavedChanges ?? false) "
                     + "conflict=\(e?.hasConflict ?? false) changedOnDisk=\(e?.changedOnDisk ?? false) disk=\(onDisk(late).prefix(16).debugDescription) "
                     + "line1=\((e?.textLines?.first ?? "").debugDescription) panes=\(window.panes.count) editors=\(pane.editors.count)"
-                if state != saveCloseState { saveCloseState = state; print("    waiting: " + state) }
+                if state != saveCloseState { saveCloseState = state; print("    waiting: " + state); CoreSelfTest.Results.annotate("notice", "Save saves, then closes: waiting: " + state) }
             }
             return ok
         }))
