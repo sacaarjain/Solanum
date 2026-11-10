@@ -730,6 +730,7 @@ final class TerminalView: NSView, TerminalDelegate {
 
     /// Re-reads which agent is in the foreground and its state (called every second with the title).
     func updateAgent() {
+        if devPretendingClaude { return }
         var next: AgentInfo?
         // Over ssh the foreground process is ssh itself; Claude Code still shows through its window title.
         let kind = pty?.foregroundAgent ?? (pty?.foregroundProcessName == "ssh" ? AgentKind.fromTitle(terminal.title) : nil)
@@ -1344,6 +1345,7 @@ final class TerminalView: NSView, TerminalDelegate {
         drawBlockBackgrounds(ctx, spans)
         drawTurnBackground(ctx)
         drawCodeBoxes(ctx)
+        drawPromptBands(ctx)
         layoutImageChips()
         drawCells(ctx)
         drawImageChips(ctx)
@@ -1449,6 +1451,43 @@ final class TerminalView: NSView, TerminalDelegate {
             ctx.addPath(path)
             ctx.strokePath()
             drawBoxSelection(b, in: rect, rows: r0...r1, ctx)
+        }
+    }
+
+    /// Dev aid (DevTools pretend-claude): as if Claude Code were running here, for drawing what's drawn only then.
+    func devPretendClaude() {
+        devPretendingClaude = true
+        agent = AgentInfo(kind: .claude, status: .waiting)
+        needsDisplay = true
+    }
+    private var devPretendingClaude = false
+
+    /// Lines (absolute) whose background of this color (packed) isn't painted: a prompt sent to Claude Code (see
+    /// `drawPromptBands`).
+    private var promptPlain: [Int: UInt32] = [:]
+
+    /// Prompts sent to Claude Code, in place of the fixed grey it paints behind them: a box in the theme's accent with a
+    /// border, as the code boxes have (as on Windows; Core's PromptBands finds them).
+    private func drawPromptBands(_ ctx: CGContext) {
+        promptPlain = [:]
+        guard agent != nil, !terminal.usingAlt, let top = rowMap.first(where: { $0 >= 0 }), let bottom = rowMap.last(where: { $0 >= 0 }) else { return }
+        // From a little above the screen, so a prompt that starts above it is still known as one.
+        let bands = PromptBands.find({ self.terminal.line(abs: $0) }, from: max(top - 40, terminal.firstAbs), through: bottom)
+        let th = palette.theme
+        for b in bands {
+            for a in b.first...b.last { promptPlain[a] = b.bg }
+            guard let r0 = rowMap.firstIndex(where: { $0 >= b.first && $0 <= b.last }),
+                  let r1 = rowMap.lastIndex(where: { $0 >= b.first && $0 <= b.last }) else { continue }
+            let x = max(2, padX - 6), right = min(padX + CGFloat(terminal.cols) * fonts.cellW + 4, bounds.width - 4)
+            let rect = CGRect(x: x, y: rowY(r0) - 2, width: right - x, height: CGFloat(r1 - r0 + 1) * fonts.cellH + 4)
+            let path = CGPath(roundedRect: rect, cornerWidth: 8, cornerHeight: 8, transform: nil)
+            ctx.setFillColor(th.accent.withAlphaComponent(th.isDark ? 0.10 : 0.08).cgColor)
+            ctx.addPath(path)
+            ctx.fillPath()
+            ctx.setStrokeColor(th.accent.withAlphaComponent(0.45).cgColor)
+            ctx.setLineWidth(1)
+            ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 7.5, cornerHeight: 7.5, transform: nil))
+            ctx.strokePath()
         }
     }
 
@@ -1669,7 +1708,7 @@ final class TerminalView: NSView, TerminalDelegate {
                 let c = line.cell(x)
                 let bold = c.flags.contains(.bold)
                 var fg = c.fg == 0 ? palette.fg : palette.color(c.fg, bold: bold)
-                var bg: CGColor? = c.bg == 0 ? nil : palette.color(c.bg)
+                var bg: CGColor? = c.bg == 0 || promptPlain[a] == c.bg ? nil : palette.color(c.bg)
                 if c.flags.contains(.inverse) != reverse {
                     let f = fg
                     fg = bg ?? palette.bg
