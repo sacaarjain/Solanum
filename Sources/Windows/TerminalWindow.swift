@@ -1335,6 +1335,11 @@ final class TerminalWindow {
             SetCursor(LoadCursorW(nil, Win.resizeUpDownCursor))
             return 1
         }
+        // The arrow over a command's buttons and the picked commands' bar, as over any button.
+        if palette == nil, menu == nil, part == .terminal, !panes.isEmpty, pane(atX: px).isOverBlockButton(x: px, y: py) {
+            SetCursor(LoadCursorW(nil, Win.arrowCursor))
+            return 1
+        }
         // A pointing hand over a pasted image's thumbnail, or its larger look, as on the Mac.
         let onImage = palette == nil && menu == nil && part == .terminal && !panes.isEmpty
             && (pane(atX: px).imageChips.isOver(x: px, y: py) || pane(atX: px).isOverCopyButton(x: px, y: py))

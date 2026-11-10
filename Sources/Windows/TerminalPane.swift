@@ -2103,6 +2103,9 @@ final class TerminalPane: TerminalDelegate, Groupable {
                                                           scale: Float(GetDpiForWindow(hwnd)) / 96)
     }
 
+    /// Over a command's Copy output or Send to chat, or the picked commands' bar: the arrow shows there, not the I-beam.
+    func isOverBlockButton(x: Float, y: Float) -> Bool { blockButtons.contains { $0.rect.contains(x, y) } }
+
     /// For tests: the buttons drawn last, by part ("copy", "send", "all-copy"…).
     func blockButtonRect(_ part: String) -> UIRect? { blockButtons.first { $0.part == part }?.rect }
     var pickedCount: Int { pickedBlocks.count }
