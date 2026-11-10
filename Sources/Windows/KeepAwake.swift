@@ -3,8 +3,9 @@ import WinSDK
 
 /// Keep Awake (Ctrl+Shift+A), as the Mac's ⇧⌘A runs `caffeinate`: the PC and its display don't sleep for as long as
 /// Settings says (`keep-awake-seconds`, 8 hours to start with). Windows has no caffeinate, so Solanum asks Windows itself
-/// (SetThreadExecutionState), from the window's thread, which lasts as long as Solanum does. The status bar shows the time
-/// left; a click there, or the shortcut again, ends it. Quitting Solanum ends it too.
+/// (SetThreadExecutionState), from the window's thread, which lasts as long as Solanum does. The status bar's cup shows
+/// whether it's on and, under the pointer, the time left; its menu starts it, adds or takes off an hour, or ends it.
+/// Quitting Solanum ends it too.
 enum KeepAwake {
     /// When it ends; nil while off.
     private(set) static var until: Date?
@@ -23,6 +24,15 @@ enum KeepAwake {
         guard until != nil else { return }
         until = nil
         _ = SetThreadExecutionState(EXECUTION_STATE(ES_CONTINUOUS))
+        onChange.forEach { $0() }
+    }
+
+    /// More time (or less, for negative `seconds`); ending it if that leaves none.
+    static func extend(by seconds: Int) {
+        guard let current = until, isOn else { return }
+        let next = current.addingTimeInterval(TimeInterval(seconds))
+        guard next > Date() else { return stop() }
+        until = next
         onChange.forEach { $0() }
     }
 

@@ -78,11 +78,16 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-git-bar"), CommandLin
     guard let canvas = Canvas(width: Int(width), height: Int(height), fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
     var info = GitInfo(root: "C:\\repo", branch: "EZ-578-vsi-support", upstream: "origin/EZ-578-vsi-support")
     info.changes = (0..<4).map { GitChange(code: "M", path: "f\($0)") }
-    var chrome = WindowChrome(canvas: canvas, layout: WindowLayout(width: width, height: 120, scale: 2, tabCount: 1), tabs: ["~"], activeTab: 0)
+    var barLayout = WindowLayout(width: width, height: 120, scale: 2, tabCount: 1)
+    barLayout.hasShellButton = true
+    var chrome = WindowChrome(canvas: canvas, layout: barLayout, tabs: ["~"], activeTab: 0)
+    // Keep Awake on, with the pointer on its cup.
+    chrome.hovered = .keepAwake
     chrome.git = GitBadge(info, busy: nil)
     chrome.folder = #"C:\Users\dev\Projects\Solanum"#
-    chrome.keepAwakeLeft = "Awake 7h 59m"
+    chrome.keepAwakeLeft = "7h 59m"
     chrome.draw()
+    chrome.drawKeepAwakeTip()
     for (i, kind) in [GitIcons.Kind.branch, .sync, .publish, .changes].enumerated() {
         GitIcons.draw(kind, in: UIRect(x: 40 + Float(i) * 140, y: 130, width: 120, height: 120), on: canvas, scale: 7, color: TerminalPalette.foreground, alpha: 0.8)
     }

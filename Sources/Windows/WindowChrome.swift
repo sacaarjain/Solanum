@@ -100,9 +100,8 @@ struct WindowChrome {
     var moonByFolders = false
     var moonHovered = false
     var themeHovered = false
-    /// Keep Awake's time left ("7h 59m"), shown before the theme while it's on; nil while off.
+    /// Keep Awake's time left ("7h 59m"), shown over its cup; nil while off.
     var keepAwakeLeft: String?
-    var keepAwakeHovered = false
     /// A tab being dragged, and where its left edge is.
     /// Each group's chip, by its first tab, and the run of tabs it spans.
     var chips: [Int: (label: String, color: UInt32, last: Int, collapsed: Bool)] = [:]
@@ -411,13 +410,21 @@ struct WindowChrome {
         }
     }
 
-    /// Keep Awake's cup and time left, before the theme's name; a click ends it. Nothing while it's off, or while split
-    /// (the right column's folder has that half then).
-    func keepAwakeSpot() -> UIRect {
-        guard let left = keepAwakeLeft, !layout.isSplit else { return UIRect(x: 0, y: 0, width: 0, height: 0) }
-        let w = (18 * scale).rounded() + width(of: left, pixels: 11 * scale, semibold: true) + 12 * scale
-        let right = themeSpot().x - 6 * scale
-        return UIRect(x: right - w, y: layout.statusBar.y, width: w, height: layout.statusBar.height)
+    /// What the pointer over Keep Awake's cup shows: whether it's on, and for how much longer.
+    var keepAwakeTip: String {
+        keepAwakeLeft.map { "Keeping this PC awake \u{00B7} \($0) left" } ?? "Caffeinate is off \u{00B7} click to start it"
+    }
+
+    /// The tip over Keep Awake's cup, above the status bar, while the pointer's on it. Drawn over everything else.
+    func drawKeepAwakeTip() {
+        guard hovered == .keepAwake else { return }
+        let r = layout.keepAwakeButton, text = keepAwakeTip, px = 12 * scale
+        let w = width(of: text, pixels: px, semibold: false) + 18 * scale, h = (24 * scale).rounded()
+        let box = UIRect(x: max(r.x + r.width / 2 - w / 2, 6 * scale).rounded(), y: (layout.statusBar.y - h - 6 * scale).rounded(), width: w, height: h)
+        sol_canvas_fill_rounded(canvas.raw, box.x, box.y + 2 * scale, box.width, box.height, 6 * scale, 0x000000, 0.25)
+        sol_canvas_fill_rounded(canvas.raw, box.x, box.y, box.width, box.height, 6 * scale, TerminalPalette.mix(fg, TerminalPalette.chrome, 0.12), 1)
+        sol_canvas_stroke_rounded(canvas.raw, box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1, 6 * scale, fg, 0.18, 1)
+        label(text, UIRect(x: box.x + 9 * scale, y: box.y, width: box.width - 18 * scale + 1, height: box.height), pixels: px)
     }
 
     /// The theme's name and icon in the status bar, which open the theme menu.
@@ -466,10 +473,8 @@ struct WindowChrome {
         let parts = gitWidths(g)
         func spot(_ x: Float, _ w: Float) -> UIRect { UIRect(x: x, y: bar.y + 3 * scale, width: w, height: bar.height - 6 * scale) }
         if column == 0 {
-            var x = (layout.hasShellButton ? layout.shellButton : layout.hostsButton).maxX + 6 * scale
-            // The folder stops short of the theme's name, and of Keep Awake's time before it.
-            let end = keepAwakeLeft != nil && !layout.isSplit ? keepAwakeSpot().x + 20 * scale : themeX
-            var h = Half(folderX: 0, limit: !layout.isSplit ? end - 34 * scale : layout.divider - 10 * scale)
+            var x = layout.keepAwakeButton.maxX + 6 * scale
+            var h = Half(folderX: 0, limit: !layout.isSplit ? themeX - 34 * scale : layout.divider - 10 * scale)
             if host != nil { h.hostX = x + 4 * scale; x += 4 * scale + hostW }
             for (part, w) in parts { h.git.append((part, spot(x, w))); x += w + 2 * scale }
             if g != nil { h.dividerX = x + 3 * scale; x += 9 * scale }
@@ -611,15 +616,6 @@ struct WindowChrome {
             }
         }
 
-        // Keep Awake's cup and time left, in the accent color, as long as it's on.
-        if let left = keepAwakeLeft, !layout.isSplit {
-            let spot = keepAwakeSpot()
-            if keepAwakeHovered { sol_canvas_fill_rounded(canvas.raw, spot.x, spot.y + 3 * scale, spot.width, spot.height - 6 * scale, 4 * scale, fg, 0.10) }
-            icon(0xEC32, UIRect(x: spot.x + 4 * scale, y: spot.y, width: 16 * scale, height: spot.height), pixels: 11 * scale, color: TerminalPalette.accent, alpha: 1)
-            label(left, UIRect(x: spot.x + 22 * scale, y: spot.y, width: spot.width - 24 * scale, height: spot.height), pixels: 11 * scale, semibold: true,
-                  color: TerminalPalette.accent, alpha: keepAwakeHovered ? 1 : 0.9)
-        }
-
         // The sidebars' switches, at either end.
         var switches = [(WindowPart.toggleLeft, layout.toggleLeft, Icon.dockLeft, layout.leftWidth > 0)]
         if layout.showsRightToggle { switches.append((.toggleRight, layout.toggleRight, Icon.dockRight, layout.rightWidth > 0)) }
@@ -638,6 +634,11 @@ struct WindowChrome {
             if hovered == .shell { sol_canvas_fill_rounded(canvas.raw, b.x, b.y, b.width, b.height, 4 * scale, fg, 0.10) }
             EditorStrip.drawTerminalSymbol(on: canvas, centerX: b.x + b.width / 2, centerY: b.midY, scale: scale, color: fg, alpha: 0.75, thin: true)
         }
+        // Keep Awake's cup: in the accent color while it's on, grey while it's off.
+        let cup = layout.keepAwakeButton
+        if hovered == .keepAwake { sol_canvas_fill_rounded(canvas.raw, cup.x, cup.y, cup.width, cup.height, 4 * scale, fg, 0.10) }
+        icon(0xEC32, cup, pixels: 12 * scale, color: keepAwakeLeft != nil ? TerminalPalette.accent : nil,
+             alpha: keepAwakeLeft != nil ? 1 : hovered == .keepAwake ? 0.7 : 0.45)
 
         // Each column's half: over ssh the host, git, then the folder's parts, each of which opens a menu of what's in it.
         // `hoveredCrumb` counts the left half's parts first, then the right's.

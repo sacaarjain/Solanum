@@ -19,7 +19,7 @@ enum WindowPart: Equatable {
     /// The empty part of the tab bar, which drags the window.
     case titleBar
     case statusBar, terminal
-    case leftSidebar, rightSidebar, leftEdge, rightEdge, toggleLeft, toggleRight, hosts, shell
+    case leftSidebar, rightSidebar, leftEdge, rightEdge, toggleLeft, toggleRight, hosts, shell, keepAwake
     /// The band between the two columns, which drags to resize them.
     case columnDivider
     /// While split: the right column's new tab button and scroll arrows, and the button that closes the split.
@@ -223,6 +223,11 @@ struct WindowLayout {
     var shellButton: UIRect {
         UIRect(x: hostsButton.maxX + (2 * scale).rounded(), y: toggleLeft.y, width: hasShellButton ? toggleSide : 0, height: toggleLeft.height)
     }
+    /// Windows only: Keep Awake's cup, after the shell's button (the hosts button's, where there's none).
+    var keepAwakeButton: UIRect {
+        let b = hasShellButton ? shellButton : hostsButton
+        return UIRect(x: b.maxX + (2 * scale).rounded(), y: toggleLeft.y, width: toggleSide, height: toggleLeft.height)
+    }
     var toggleRight: UIRect { UIRect(x: width - toggleSide - (8 * scale).rounded(), y: statusBar.y + 2 * scale, width: toggleSide, height: statusBarHeight - 4 * scale) }
 
     func part(atX x: Float, y: Float) -> WindowPart {
@@ -230,6 +235,7 @@ struct WindowLayout {
             if toggleLeft.contains(x, y) { return .toggleLeft }
             if hostsButton.contains(x, y) { return .hosts }
             if hasShellButton && shellButton.contains(x, y) { return .shell }
+            if keepAwakeButton.contains(x, y) { return .keepAwake }
             if showsRightToggle && toggleRight.contains(x, y) { return .toggleRight }
             return .statusBar
         }

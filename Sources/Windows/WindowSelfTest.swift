@@ -1360,12 +1360,28 @@ enum WindowSelfTest {
         steps.append(Step(name: "terminal find: typing doesn't reach the shell, and Esc closes it", action: {
             _ = window.keyDown(Win.VK_ESCAPE, shift: false, ctrl: false, alt: false)
         }, done: { pane.findBar == nil && !pane.cursorRowText.contains("example.com") }))
-        // Keep Awake, as the Mac's Shift-Command-A: on with the shortcut, its time left in the status bar, off with a click.
-        steps.append(Step(name: "keep awake: Ctrl+Shift+A keeps the PC awake, its time left in the status bar", action: {
+        // Keep Awake, as the Mac's Shift-Command-A, and its cup in the status bar.
+        steps.append(Step(name: "keep awake: the cup, while it's off, offers to start it", action: { window.click(window.keepAwakeButtonRect) },
+                          done: { window.menuTitles.contains { $0.hasPrefix("Start Caffeinate for ") } }))
+        steps.append(Step(name: "keep awake: which starts it", action: {
+            if let t = window.menuTitles.first(where: { $0.hasPrefix("Start Caffeinate for ") }), let r = window.menuRow(t) { window.click(r) }
+        }, done: { KeepAwake.isOn && !window.isMenuOpen }))
+        steps.append(Step(name: "keep awake: while on, an hour more", action: {
+            window.click(window.keepAwakeButtonRect)
+            if let r = window.menuRow("Add 1 Hour") { window.click(r) }
+        }, done: { (KeepAwake.secondsLeft ?? 0) > AppSettings.shared.keepAwakeSeconds + 3000 }))
+        steps.append(Step(name: "keep awake: and an hour less", action: {
+            window.click(window.keepAwakeButtonRect)
+            if let r = window.menuRow("Subtract 1 Hour") { window.click(r) }
+        }, done: { (KeepAwake.secondsLeft ?? .max) <= AppSettings.shared.keepAwakeSeconds + 5 }))
+        steps.append(Step(name: "keep awake: End Caffeinate ends it", action: {
+            window.click(window.keepAwakeButtonRect)
+            if let r = window.menuRow("End Caffeinate") { window.click(r) }
+        }, done: { !KeepAwake.isOn && !window.isMenuOpen }))
+        steps.append(Step(name: "keep awake: Ctrl+Shift+A still turns it on and off", action: {
             _ = window.keyDown(0x41, shift: true, ctrl: true, alt: false)
-        }, done: { KeepAwake.isOn && window.keepAwakeSpotRect.width > 0 }))
-        steps.append(Step(name: "keep awake: a click on it ends it", action: { window.click(window.keepAwakeSpotRect) },
-                          done: { !KeepAwake.isOn && window.keepAwakeSpotRect.width == 0 }))
+            _ = window.keyDown(0x41, shift: true, ctrl: true, alt: false)
+        }, done: { !KeepAwake.isOn }))
         // A command's buttons, and picking several, as on the Mac.
         steps.append(Step(name: "blocks: two commands", action: {
             pane.type("echo pick-one")

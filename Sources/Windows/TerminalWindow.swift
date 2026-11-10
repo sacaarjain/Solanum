@@ -622,6 +622,27 @@ final class TerminalWindow {
     }
 
     /// The status bar's shell button: what this tab runs, switching it to another, a new tab with one, and the default.
+    /// A click on Keep Awake's cup: while it's on, an hour more or less, or end it; while it's off, start it for as long
+    /// as Settings says.
+    private func showKeepAwakeMenu() {
+        var items: [MenuItem]
+        if let left = KeepAwake.secondsLeft {
+            var header = MenuItem(title: "Caffeinated \u{00B7} \(KeepAwake.shortDuration(left)) left", isEnabled: false)
+            header.isHeader = true
+            items = [header,
+                     MenuItem(title: "Add 1 Hour") { KeepAwake.extend(by: 3600) },
+                     MenuItem(title: "Subtract 1 Hour", isEnabled: left > 3600) { KeepAwake.extend(by: -3600) },
+                     .separator,
+                     MenuItem(title: "End Caffeinate", shortcut: "Ctrl+Shift+A") { KeepAwake.stop() }]
+        } else {
+            items = [MenuItem(title: "Start Caffeinate for \(KeepAwake.shortDuration(AppSettings.shared.keepAwakeSeconds))", shortcut: "Ctrl+Shift+A") {
+                KeepAwake.start(seconds: AppSettings.shared.keepAwakeSeconds)
+            }]
+        }
+        let b = layout.keepAwakeButton
+        openMenu(items, x: b.x, y: b.y - 4 * scale, above: true)
+    }
+
     private func showShellMenu() {
         guard !panes.isEmpty else { return }
         let pane = activePane, current = pane.shell
@@ -848,8 +869,7 @@ final class TerminalWindow {
             }
         }
         chrome.themeName = AppSettings.shared.themeName.uppercased()
-        chrome.keepAwakeLeft = KeepAwake.secondsLeft.map { "Awake \(KeepAwake.shortDuration($0))" }
-        chrome.keepAwakeHovered = keepAwakeHovered
+        chrome.keepAwakeLeft = KeepAwake.secondsLeft.map(KeepAwake.shortDuration)
         // As on the Mac: a planet theme's planet, Solanum Default's flower, and nothing for the rest. The Quantum Moon
         // may have wandered off (see QuantumMoon), leaving its name.
         let theme = AppSettings.shared.themeName, custom = AppSettings.shared.customThemes.contains { $0.name == theme }
@@ -924,6 +944,7 @@ final class TerminalWindow {
         drawPalette(on: canvas)
         drawReading(on: canvas)
         drawDragGhost(on: canvas)
+        if menu == nil { chrome(on: canvas, layout: layout).drawKeepAwakeTip() }
         if let menu { MenuView(canvas: canvas, menu: menu).draw() }
         if let dialog { DialogView(canvas: canvas, dialog: dialog, width: Float(clientWidth), height: Float(clientHeight), scale: scale).draw() }
         _ = sol_canvas_end(canvas.raw)
@@ -1679,6 +1700,7 @@ final class TerminalWindow {
                 case .toggleLeft: toggleSidebar(left)
                 case .hosts: showHostsMenu()
                 case .shell: showShellMenu()
+                case .keepAwake: showKeepAwakeMenu()
                 case .toggleRight: toggleSidebar(right)
                 default: break
                 }
@@ -3279,7 +3301,6 @@ final class TerminalWindow {
         AppSettings.shared.set("font-size", next == next.rounded() ? String(Int(next)) : String(next))
     }
 
-    private var keepAwakeHovered = false
     /// The minute Keep Awake's time left was last drawn at, to draw it again as it counts down.
     private var keepAwakeShown: String?
 
@@ -4117,13 +4138,6 @@ final class TerminalWindow {
         let leftSpots = bar.crumbSpots(), spots = leftSpots + (isSplit ? bar.crumbSpots(column: 1) : [])
         let hit = spots.firstIndex { $0.hit.contains(x, y) }
         let onTheme = bar.themeSpot().contains(x, y)
-        let onAwake = bar.keepAwakeSpot().contains(x, y)
-        if onAwake != keepAwakeHovered { keepAwakeHovered = onAwake; invalidate() }
-        if onAwake && message == Win.WM_LBUTTONUP {
-            KeepAwake.stop()
-            return true
-        }
-        if onAwake { return message != Win.WM_MOUSEMOVE }
         var git: (column: Int, part: GitPart, rect: UIRect)?
         for column in isSplit ? [0, 1] : [0] {
             if let g = bar.gitSpots(column: column).first(where: { $0.rect.contains(x, y) }) { git = (column, g.part, g.rect) }
@@ -4266,7 +4280,7 @@ final class TerminalWindow {
     }
 
     var themeSpotRect: UIRect { chrome(on: canvas, layout: layout).themeSpot() }
-    var keepAwakeSpotRect: UIRect { chrome(on: canvas, layout: layout).keepAwakeSpot() }
+    var keepAwakeButtonRect: UIRect { layout.keepAwakeButton }
 
     // MARK: - Dragging tabs
 
