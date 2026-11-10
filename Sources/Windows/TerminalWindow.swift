@@ -4011,24 +4011,19 @@ final class TerminalWindow {
     }
 
     /// For tests: types into the window as the keyboard would (key downs, which Windows makes into characters), so it
-    /// goes the way real typing does. Letters, digits, space and a few marks.
+    /// goes the way real typing does. Lowercase letters, digits, space, "." and "-" (posted keys can't hold Shift).
     func typeKeys(_ text: String) {
         for ch in text {
-            let shifted = ch.isUppercase || "@_".contains(ch)
             let vk: Int32
             switch ch {
-            case "@": vk = 0x32
             case " ": vk = 0x20
             case ".": vk = 0xBE
             case "-": vk = 0xBD
-            case "_": vk = 0xBD
             default: vk = Int32(String(ch).uppercased().unicodeScalars.first!.value)
             }
             let scan = LPARAM(MapVirtualKeyW(UINT(vk), 0)) << 16
-            if shifted { PostMessageW(hwnd, Win.WM_KEYDOWN, WPARAM(Win.VK_SHIFT), LPARAM(MapVirtualKeyW(UINT(Win.VK_SHIFT), 0)) << 16 | 1) }
             PostMessageW(hwnd, Win.WM_KEYDOWN, WPARAM(vk), scan | 1)
             PostMessageW(hwnd, Win.WM_KEYUP, WPARAM(vk), scan | 1 | (LPARAM(3) << 30))
-            if shifted { PostMessageW(hwnd, Win.WM_KEYUP, WPARAM(Win.VK_SHIFT), LPARAM(MapVirtualKeyW(UINT(Win.VK_SHIFT), 0)) << 16 | 1 | (LPARAM(3) << 30)) }
         }
     }
 

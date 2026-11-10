@@ -1808,8 +1808,8 @@ enum WindowSelfTest {
         steps.append(Step(name: "ssh: New Connection… types ssh in the search box and stays open", action: {
             if let r = window.menuRow("New Connection…") { window.click(r) }
         }, done: { window.isMenuOpen && window.menuSearchText == "ssh " && !window.menuTitles.contains("New Connection…") }))
-        steps.append(Step(name: "ssh: a host that isn't listed, typed, becomes a row to connect to it", action: { window.typeKeys("me@box.test") },
-                          done: { window.menuSearchText == "ssh me@box.test" && window.menuTitles.contains("ssh me@box.test") }))
+        steps.append(Step(name: "ssh: a host that isn't listed, typed, becomes a row to connect to it", action: { window.typeKeys("box.test") },
+                          done: { window.menuSearchText == "ssh box.test" && window.menuTitles.contains("ssh box.test") }))
         steps.append(Step(name: "ssh: closes", action: { pane.pressEscape() }, done: { !window.isMenuOpen }))
         let env = ProcessInfo.processInfo.environment
         if let user = env["SOLANUM_TEST_SSH_USER"], let password = env["SOLANUM_TEST_SSH_PASSWORD"] {
