@@ -895,10 +895,22 @@ enum WindowSelfTest {
         }, done: { window.dialogTitle == "Save changes to late.txt?" && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\save-changes.png") } ?? true) }))
         steps.append(Step(name: "editor: Cancel keeps it open", action: { pane.pressEscape() },
                           done: { window.dialogTitle == nil && editor()?.path.hasSuffix("late.txt") == true }))
+        var saveCloseState = ""
         steps.append(Step(name: "editor: Save saves, then closes", action: {
             key(0x57, ctrl: true)
             pane.pressEnter()
-        }, done: { onDisk(late).hasPrefix("hi x") && !pane.editors.contains { ($0.panel as? FileEditorPanel)?.path.hasSuffix("late.txt") == true } }))
+        }, done: {
+            let ok = onDisk(late).hasPrefix("hi x") && !pane.editors.contains { ($0.panel as? FileEditorPanel)?.path.hasSuffix("late.txt") == true }
+            // What it's waiting on, each time that changes: for reading a failure in CI's log.
+            if !ok {
+                let e = editor()
+                let state = "dialog=\(window.dialogTitle ?? "none") editor=\(e.map { WindowsPath.name($0.path) } ?? "none") unsaved=\(e?.hasUnsavedChanges ?? false) "
+                    + "conflict=\(e?.hasConflict ?? false) changedOnDisk=\(e?.changedOnDisk ?? false) disk=\(onDisk(late).prefix(16).debugDescription) "
+                    + "line1=\((e?.textLines?.first ?? "").debugDescription) panes=\(window.panes.count) editors=\(pane.editors.count)"
+                if state != saveCloseState { saveCloseState = state; print("    waiting: " + state) }
+            }
+            return ok
+        }))
         let json = windowsFolder + "\\data.json"
         // Made when it's needed, so the sidebar's listing earlier has only the sample's own files.
         steps.append(Step(name: "editor: Beautify re-indents JSON", action: {
