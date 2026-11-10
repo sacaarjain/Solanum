@@ -370,8 +370,17 @@ extension TerminalView: NSMenuItemValidation {
         searchQuery = query
         clearSearchMatches()
         guard !query.isEmpty else { needsDisplay = true; return }
-        // Which cells match is Core's (TerminalSearch), shared with Windows.
-        for m in TerminalSearch.matches(query, in: terminal, scope: searchScope) {
+        // Which cells match is Core's (TerminalSearch), shared with Windows, with the bar's Aa / ab / .* (shared with
+        // the file editor's).
+        let found: [SearchMatch]
+        do {
+            found = try TerminalSearch.matches(query, in: terminal, scope: searchScope, options: EditorFindBar.lastOptions)
+        } catch {
+            searchBar?.showInvalid()
+            needsDisplay = true
+            return
+        }
+        for m in found {
             matchesByLine[m.line, default: []].append(searchMatches.count)
             searchMatches.append(m)
         }
@@ -410,10 +419,14 @@ final class SearchBar: NSView, NSTextFieldDelegate {
     private let scopeButton = NSPopUpButton(frame: .zero, pullsDown: false)
     private let countLabel = NSTextField(labelWithString: "")
     private weak var terminal: TerminalView?
+    /// VS Code's toggles, as in the file editor's bar, whose settings they share (`EditorFindBar.lastOptions`).
+    private let caseToggle = FindToggle("Aa", tip: "Match Case (⌥⌘C)")
+    private let wordToggle = FindToggle("ab", tip: "Match Whole Word (⌥⌘W)", underlined: true)
+    private let regexToggle = FindToggle(".*", tip: "Use Regular Expression (⌥⌘R)", centersInk: true)
 
     init(terminal: TerminalView) {
         self.terminal = terminal
-        super.init(frame: NSRect(x: 0, y: 0, width: 432, height: 36))
+        super.init(frame: NSRect(x: 0, y: 0, width: 512, height: 36))
         wantsLayer = true
         let th = Config.shared.theme
         layer?.backgroundColor = th.surface.cgColor
@@ -446,7 +459,7 @@ final class SearchBar: NSView, NSTextFieldDelegate {
         divider.layer?.backgroundColor = th.border.cgColor
         addSubview(divider)
 
-        field.frame = NSRect(x: 142, y: 8, width: 160, height: 20)
+        field.frame = NSRect(x: 142, y: 8, width: 154, height: 20)
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
@@ -458,7 +471,14 @@ final class SearchBar: NSView, NSTextFieldDelegate {
 
         updatePlaceholder()
 
-        countLabel.frame = NSRect(x: 304, y: 10, width: 50, height: 16)
+        for (i, (t, key)) in [(caseToggle, \EditorFindOptions.matchCase), (wordToggle, \.wholeWord), (regexToggle, \.regex)].enumerated() {
+            t.frame = NSRect(x: 300 + CGFloat(i) * 26, y: 7, width: 24, height: 22)
+            t.onToggle = { [weak self] in self?.flip(key) }
+            addSubview(t)
+        }
+        syncToggles()
+
+        countLabel.frame = NSRect(x: 378, y: 10, width: 56, height: 16)
         countLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         countLabel.textColor = th.dimText
         countLabel.alignment = .right
@@ -469,7 +489,7 @@ final class SearchBar: NSView, NSTextFieldDelegate {
             let b = NSButton(image: NSImage(systemSymbolName: sym, accessibilityDescription: nil) ?? NSImage(), target: self, action: sel)
             b.isBordered = false
             b.contentTintColor = th.foreground.withAlphaComponent(0.75)
-            b.frame = NSRect(x: 358 + CGFloat(i) * 23, y: 7, width: 22, height: 22)
+            b.frame = NSRect(x: 438 + CGFloat(i) * 23, y: 7, width: 22, height: 22)
             addSubview(b)
         }
     }
@@ -486,6 +506,41 @@ final class SearchBar: NSView, NSTextFieldDelegate {
     func updateCount(_ i: Int, _ n: Int) {
         countLabel.stringValue = field.stringValue.isEmpty ? "" : (n == 0 ? "0/0" : "\(i)/\(n)")
         countLabel.textColor = (n == 0 && !field.stringValue.isEmpty) ? Config.shared.theme.red : Config.shared.theme.dimText
+    }
+
+    var devCount: String { countLabel.stringValue }
+
+    /// A regular expression that doesn't parse.
+    func showInvalid() {
+        countLabel.stringValue = "Invalid"
+        countLabel.textColor = Config.shared.theme.red
+    }
+
+    private func syncToggles() {
+        let o = EditorFindBar.lastOptions
+        caseToggle.isOn = o.matchCase
+        wordToggle.isOn = o.wholeWord
+        regexToggle.isOn = o.regex
+    }
+
+    func flip(_ key: WritableKeyPath<EditorFindOptions, Bool>) {
+        EditorFindBar.lastOptions[keyPath: key].toggle()
+        syncToggles()
+        terminal?.performSearch(field.stringValue)
+    }
+
+    /// While the bar has the focus: VS Code's keys for the toggles, as in the file editor (ahead of the menu's: ⌥⌘W
+    /// closes a tab).
+    override func performKeyEquivalent(with e: NSEvent) -> Bool {
+        guard let editor = window?.firstResponder as? NSText, editor.delegate === field,
+              e.modifierFlags.intersection([.command, .option, .control, .shift]) == [.command, .option] else { return super.performKeyEquivalent(with: e) }
+        switch e.keyCode {
+        case 8: flip(\.matchCase)
+        case 13: flip(\.wholeWord)
+        case 15: flip(\.regex)
+        default: return super.performKeyEquivalent(with: e)
+        }
+        return true
     }
 
     func controlTextDidChange(_ obj: Notification) {

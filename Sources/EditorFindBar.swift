@@ -131,8 +131,8 @@ final class EditorFindBar: NSView, NSTextFieldDelegate {
     /// A read-only file has nothing to replace.
     var canReplace = true { didSet { if !canReplace { showsReplace = false }; chevron.isHidden = !canReplace; updateVisibility(); needsLayout = true } }
 
-    /// Kept from one file to the next, as in VS Code.
-    private static var lastOptions = EditorFindOptions()
+    /// Kept from one file to the next, as in VS Code, and shared with the terminal's find bar (as on Windows).
+    static var lastOptions = EditorFindOptions()
     var options: EditorFindOptions {
         get { Self.lastOptions }
         set {

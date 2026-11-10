@@ -331,12 +331,20 @@ final class TabColumn: NSObject, TabOwner {
         select(index: next)
     }
 
-    /// Takes in a tab from the other column, at the end of the strip (outside any group), and shows it.
-    func adopt(_ tab: TabSession, keepGroup: Bool = false) {
+    /// Takes in a tab from the other column and shows it: at the end of the strip (outside any group), or at `index`,
+    /// where it joins a group whose tabs are either side of it, as a tab moved there in its own strip would.
+    func adopt(_ tab: TabSession, keepGroup: Bool = false, at index: Int? = nil) {
         tab.owner = self
         if !keepGroup { tab.group = nil }
-        tabs.append(tab)
-        select(index: tabs.count - 1)
+        let at = min(max(index ?? tabs.count, 0), tabs.count)
+        tabs.insert(tab, at: at)
+        if !keepGroup, index != nil {
+            let left = at > 0 ? tabs[at - 1].group : nil
+            let right = at + 1 < tabs.count ? tabs[at + 1].group : nil
+            if let l = left, l === right { tab.group = l }
+        }
+        if activeIndex >= at { activeIndex += 1 }
+        select(index: at)
     }
 
     /// Rebuilds this column's tabs and groups from a saved session. Returns false if nothing usable was saved.

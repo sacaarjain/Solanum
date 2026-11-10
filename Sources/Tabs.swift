@@ -1290,19 +1290,64 @@ final class SidebarResizeHandle: NSView {
 /// Shades where a dragged tab would land (half the terminals, or the other column). Clicks pass through.
 final class DropPreviewView: NSView {
     var target: NSRect? { didSet { needsDisplay = true } }
+    /// A tab lifted out of its strip as it's dragged (off it, over the terminals or the other column's strip), following
+    /// the pointer: its title in a chip edged in the accent color, or its group's.
+    struct TabGhost: Equatable {
+        var title: String
+        var color: NSColor
+        /// The pointer, in this view.
+        var point: NSPoint
+        /// Where along the tab the pointer had it.
+        var grabX: CGFloat
+        /// Over a strip, where it would land among the tabs: drawn under the pointer, clear of the tabs and the bar
+        /// showing the spot, rather than held over them.
+        var belowPointer = false
+    }
+    var ghost: TabGhost? { didSet { if ghost != oldValue { needsDisplay = true } } }
 
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard let r = target?.insetBy(dx: 6, dy: 6) else { return }
         let th = Config.shared.theme
-        let path = NSBezierPath(roundedRect: r, xRadius: 10, yRadius: 10)
-        th.accent.withAlphaComponent(0.16).setFill()
-        path.fill()
-        th.accent.withAlphaComponent(0.8).setStroke()
-        path.lineWidth = 2
-        path.stroke()
+        if let r = target?.insetBy(dx: 6, dy: 6) {
+            let path = NSBezierPath(roundedRect: r, xRadius: 10, yRadius: 10)
+            th.accent.withAlphaComponent(0.16).setFill()
+            path.fill()
+            th.accent.withAlphaComponent(0.8).setStroke()
+            path.lineWidth = 2
+            path.stroke()
+        }
+        if let g = ghost { drawGhost(g, th) }
+    }
+
+    /// As Windows draws it: 28 points tall, as wide as its title (90 to 280), shadowed, held where it was grabbed.
+    private func drawGhost(_ g: TabGhost, _ th: Theme) {
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: th.foreground]
+        let text = g.title as NSString
+        let w = min(max(ceil(text.size(withAttributes: attrs).width) + 28, 90), 280), h: CGFloat = 28
+        let r = NSRect(x: round(g.point.x - min(max(g.grabX, 10), w - 10)), y: round(g.belowPointer ? g.point.y + 18 : g.point.y - 14), width: w, height: h)
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
+        shadow.shadowBlurRadius = 10
+        shadow.shadowOffset = NSSize(width: 0, height: -4)
+        shadow.set()
+        th.surface.withAlphaComponent(1).setFill()
+        NSBezierPath(roundedRect: r, xRadius: 7, yRadius: 7).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        g.color.withAlphaComponent(0.10).setFill()
+        NSBezierPath(roundedRect: r, xRadius: 7, yRadius: 7).fill()
+        g.color.withAlphaComponent(0.9).setStroke()
+        let edge = NSBezierPath(roundedRect: r.insetBy(dx: 0.75, dy: 0.75), xRadius: 6.5, yRadius: 6.5)
+        edge.lineWidth = 1.5
+        edge.stroke()
+        let para = NSMutableParagraphStyle()
+        para.lineBreakMode = .byTruncatingMiddle
+        var a = attrs
+        a[.paragraphStyle] = para
+        let th2 = text.size(withAttributes: attrs).height
+        text.draw(in: NSRect(x: r.minX + 12, y: r.midY - th2 / 2, width: r.width - 22, height: th2 + 1), withAttributes: a)
     }
 }
 
@@ -1432,6 +1477,13 @@ final class WindowRootView: NSView {
     let content = NSView()
     /// Where a tab dragged off its strip would land, shaded over the terminals.
     var dropPreview: NSRect? { didSet { if dropPreview != oldValue { dropOverlay.target = dropPreview; needsLayout = true } } }
+    var devGhostShown: Bool { dropOverlay.ghost != nil }
+    /// A dragged tab lifted out of its strip (see `DropPreviewView.TabGhost`), drawn over everything.
+    func showTabGhost(title: String, color: NSColor, at windowPoint: NSPoint, grabX: CGFloat, belowPointer: Bool) {
+        dropOverlay.ghost = DropPreviewView.TabGhost(title: title, color: color, point: dropOverlay.convert(windowPoint, from: nil), grabX: grabX,
+                                                     belowPointer: belowPointer)
+    }
+    func hideTabGhost() { dropOverlay.ghost = nil }
     private let dropOverlay = DropPreviewView()
     /// Cards in the top-right corner (see `CornerNoticeView`), newest first.
     private var notices: [CornerNoticeView] = []
@@ -2257,13 +2309,16 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
 
     // MARK: Dragging a tab into the terminals
 
-    private enum TabDrop { case newColumn(left: Bool), into(TabColumn) }
+    /// `strip`: into the other column's strip at `index` (joining `group` when let go on its chip).
+    private enum TabDrop { case newColumn(left: Bool), into(TabColumn), strip(TabColumn, index: Int, group: TabGroup?) }
     private var pendingTabDrop: (tab: TabSession, from: TabColumn, target: TabDrop)?
     var hasPendingTabDrop: Bool { pendingTabDrop != nil }
 
     /// A tab dragged off its strip, now over `windowPoint`. With one column, the half of the terminals under the
-    /// pointer lights up: dropping there splits the window with the tab on that side. With two, the other column
-    /// lights up (its terminals or its strip) and takes the tab. Returns whether there's somewhere to drop.
+    /// pointer lights up: dropping there splits the window with the tab on that side. With two: over the other column's
+    /// terminals, they light up (the whole window when it's its column's last tab, as the split would close) and take it
+    /// at the end; over its strip, a bar shows where among its tabs it would go (in a group's color, inside a group,
+    /// which it would join), or a group's chip lights up for it to join. Returns whether there's somewhere to drop.
     @discardableResult
     func tabDragOver(_ tab: TabSession, from source: TabColumn, at windowPoint: NSPoint) -> Bool {
         let p = rootView.convert(windowPoint, from: nil)
@@ -2275,30 +2330,54 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
                 target = .newColumn(left: left)
                 preview = NSRect(x: left ? a.minX : a.midX, y: a.minY, width: a.width / 2, height: a.height)
             }
-        } else if let other = columns.first(where: { $0 !== source }), other.content.frame.union(other.tabBar.frame).contains(p) {
-            target = .into(other)
-            preview = other.content.frame
+        } else if let other = columns.first(where: { $0 !== source }) {
+            if other.tabBar.frame.contains(p) {
+                let spot = other.tabBar.incomingSpot(at: windowPoint)
+                target = .strip(other, index: spot.index, group: spot.chip)
+            } else if other.content.frame.contains(p) {
+                target = .into(other)
+                preview = source.tabs.count == 1 ? rootView.columnArea : other.content.frame
+            }
+        }
+        for c in columns {
+            if case .strip(let into, let index, let chip) = target, into === c { c.tabBar.setIncoming(index: chip == nil ? index : nil, chip: chip) }
+            else { c.tabBar.setIncoming(index: nil, chip: nil) }
         }
         pendingTabDrop = target.map { (tab, source, $0) }
         rootView.dropPreview = preview
         return target != nil
     }
 
+    /// Also puts away the lifted tab: here, not by its strip, which a drop that closes the split takes away first.
     func clearTabDrop() {
         pendingTabDrop = nil
         rootView.dropPreview = nil
+        rootView.hideTabGhost()
+        columns.forEach { $0.tabBar.setIncoming(index: nil, chip: nil) }
+    }
+
+    /// A dragged tab lifted out of its strip, following the pointer; nil to put it away.
+    func showTabGhost(_ tab: TabSession?, at windowPoint: NSPoint, grabX: CGFloat) {
+        guard let tab else { return rootView.hideTabGhost() }
+        var overStrip = false
+        if case .strip = pendingTabDrop?.target { overStrip = true }
+        rootView.showTabGhost(title: tab.title, color: tab.group?.color.color ?? Config.shared.theme.accent, at: windowPoint, grabX: grabX,
+                              belowPointer: overStrip)
     }
 
     func performTabDrop() {
         guard let d = pendingTabDrop else { return }
         clearTabDrop()
         let target: TabColumn
+        var index: Int?, group: TabGroup?
         switch d.target {
         case .into(let c): target = c
         case .newColumn(let left): target = addColumn(at: left ? 0 : 1)
+        case .strip(let c, let i, let g): target = c; index = i; group = g
         }
         d.from.detach(d.tab)
-        target.adopt(d.tab)
+        target.adopt(d.tab, at: index)
+        if let group { target.addTab(d.tab, to: group) }
         focus(target)
         updateFileChrome()
     }
@@ -2619,6 +2698,11 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     private var groupInsertBefore: Int?
     /// Tabs picked with ⌘-click / ⇧-click; right-clicking one of them acts on all (e.g. group them).
     private(set) var selectedTabs: [TabSession] = []
+    /// A tab from the other column dragged over this strip: the gap it would go into (a bar shows it).
+    private var incomingIndex: Int? { didSet { if incomingIndex != oldValue { needsDisplay = true } } }
+    /// This strip's dragged tab has been lifted out of it (off it, or over the other column's strip): it follows the
+    /// pointer over the window (`showTabGhost`), its place left empty, and doesn't push the tabs here around.
+    private var tabLifted = false
     private var dropTab: Int?                    // tab under a dragged tab that it would group with
     private var dropChip: TabGroup?              // group chip under a dragged tab that it would join
     /// The tab the send menu's highlighted chat is in: marked as a drop target is (its chip, in a collapsed group) and
@@ -3069,7 +3153,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
 
         if let g = liftedGroup { drawLiftedGroup(g, in: c, keyWindow: keyWindow) }
 
-        if dragging, let di = dragIndex, c.tabs.indices.contains(di), !tabRects[di].isNull {
+        if dragging, !tabLifted, let di = dragIndex, c.tabs.indices.contains(di), !tabRects[di].isNull {
             // The dragged tab, lifted and slightly see-through, under the pointer.
             let r = floatingRect(di)
             let ctx = NSGraphicsContext.current?.cgContext
@@ -3162,14 +3246,52 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     /// Dev aid (DevTools drop-hover): the drop line as a drag at `x` would show it.
     func devDropHover(x: CGFloat?) { fileDropIndex = x.map { dropIndex(at: NSPoint(x: $0, y: bounds.midY)) } }
 
+    /// Where a tab from the other column, dragged over here, would land (`index`, a gap), or the group whose chip it's
+    /// over (it would join that group, at its end).
+    /// Held near either end of a strip that scrolls (a third of a second: passing over it on the way in doesn't count),
+    /// it scrolls along, as it does for its own tab dragged there; and a part of it scrolled out of view is no place to
+    /// land (the nearest one showing is).
+    func incomingSpot(at windowPoint: NSPoint) -> (index: Int, chip: TabGroup?) {
+        var p = convert(windowPoint, from: nil)
+        let step: CGFloat = maxScrollX <= 0 ? 0 : p.x < viewport.minX + 28 ? -14 : p.x > viewport.maxX - 28 ? 14 : 0
+        if step == 0 {
+            incomingAtEdgeSince = nil
+        } else if let since = incomingAtEdgeSince {
+            if Date().timeIntervalSince(since) > 0.33 { scrollTabs(by: step) }
+        } else {
+            incomingAtEdgeSince = Date()
+        }
+        p.x = min(max(p.x, viewport.minX + 1), viewport.maxX - 1)
+        if let ci = chipIndex(at: NSPoint(x: p.x, y: bounds.midY)), let c = controller {
+            let g = chips[ci].group
+            return ((c.tabs.lastIndex { $0.group === g } ?? c.tabs.count - 1) + 1, g)
+        }
+        return (dropIndex(at: p), nil)
+    }
+
+    /// Shows where a tab from the other column would land: a bar at `index`, or `chip` lit up.
+    private var incomingAtEdgeSince: Date?
+
+    func setIncoming(index: Int?, chip: TabGroup?) {
+        if index == nil, chip == nil { incomingAtEdgeSince = nil }
+        incomingIndex = index
+        guard !dragging, dropChip !== chip else { return }
+        dropChip = chip
+        needsDisplay = true
+    }
+
     private func drawFileDropLine() {
-        guard let i = fileDropIndex, let c = controller else { return }
+        guard let i = fileDropIndex ?? incomingIndex, let c = controller else { return }
         let shown = c.tabs.indices.filter { tabRects.indices.contains($0) && !tabRects[$0].isNull }
         let x: CGFloat
         if let r = shown.first(where: { $0 >= i }).map({ tabRects[$0] }) { x = r.minX - 1 }
         else if let last = shown.last { x = tabRects[last].maxX + 1 } else { x = viewport.minX + 4 }
         guard x >= viewport.minX - 2, x <= viewport.maxX + 2 else { return }
-        Config.shared.theme.accent.setFill()
+        // A tab let go between two of a group's tabs joins the group: the bar's in its color then.
+        let left = i > 0 && i - 1 < c.tabs.count ? c.tabs[i - 1].group : nil
+        let right = i < c.tabs.count ? c.tabs[i].group : nil
+        let group = fileDropIndex == nil && left != nil && left === right ? left : nil
+        (group?.color.color ?? Config.shared.theme.accent).setFill()
         NSBezierPath(roundedRect: CGRect(x: x - 1.5, y: viewport.minY + 6, width: 3, height: max(viewport.height - 12, 8)), xRadius: 1.5, yRadius: 1.5).fill()
     }
 
@@ -3974,13 +4096,21 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         if dragging { autoScrollWhileDragging(p) }
         if !dragging { NSCursor.closedHand.push() }
         dragging = true
-        // Off the strip, over the terminals or the other column: the window shows where a drop would split.
-        if !bounds.contains(p), c.tabs.indices.contains(di), let w = c.owner, w.tabDragOver(c.tabs[di], from: c, at: e.locationInWindow) {
+        // Off the strip (down over the terminals, or across over the other column's): the tab lifts out and follows the
+        // pointer, and the window shows where a drop would go (a split, the other column, a place in its strip).
+        if !bounds.insetBy(dx: 0, dy: -4).contains(p), c.tabs.indices.contains(di), let w = c.owner {
+            w.tabDragOver(c.tabs[di], from: c, at: e.locationInWindow)
+            w.showTabGhost(c.tabs[di], at: e.locationInWindow, grabX: grabOffset)
+            tabLifted = true
             dragX = p.x
             dropTab = nil
             dropChip = nil
             needsDisplay = true
             return
+        }
+        if tabLifted {
+            tabLifted = false
+            c.owner?.showTabGhost(nil, at: .zero, grabX: 0)
         }
         c.owner?.clearTabDrop()
         dragTab(di, to: p, in: c, grouping: e.modifierFlags.contains(.option))
@@ -4053,6 +4183,8 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             }
         }
         controller?.owner?.clearTabDrop()
+        if tabLifted { controller?.owner?.showTabGhost(nil, at: .zero, grabX: 0) }
+        tabLifted = false
         if dragging { NSCursor.pop() }
         needsDisplay = true
         dragging = false
