@@ -175,6 +175,32 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-block-buttons"), Comm
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }
 
+// The Send to Chat menu, as the Mac's: chats with their agents' marks and groups' chips, then new ones, at 200%:
+// --draw-send-menu <png>
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-send-menu"), CommandLine.arguments.indices.contains(flag + 1) {
+    let width: Float = 1000, height: Float = 900, s: Float = 2
+    guard let canvas = Canvas(width: Int(width), height: Int(height), fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    func chat(_ title: String, _ kind: AgentKind, chip: (String, UInt32)? = nil, dot: UInt32? = nil, enabled: Bool = true) -> MenuItem {
+        var item = MenuItem(title: title, isEnabled: enabled)
+        item.agentMark = kind
+        item.chip = chip
+        item.swatch = dot
+        return item
+    }
+    var header = MenuItem(title: "Active Chats", isEnabled: false)
+    header.isHeader = true
+    let items = [header, chat("Load Balancer", .claude), chat("Germline samples HID runbook", .claude, chip: ("Support", 0xE8853D)),
+                 chat("Viewer", .claude, chip: ("Viewer", 0xE7C04B)), chat("Eziopath system health (this tab)", .codex, dot: 0x4D8CF7),
+                 chat("Uploader branch SVS · waiting for you", .claude, chip: ("Uploader", 0xD9578C), enabled: false), .separator,
+                 chat("New Claude Code Chat", .claude), chat("New Codex Chat", .codex), chat("New Antigravity Chat", .antigravity)]
+    let menu = MenuModel(items: items, anchorX: 40, anchorY: 40, above: false, width: MenuView.width(for: items, canvas: canvas, scale: s),
+                         window: UIRect(x: 0, y: 0, width: width, height: height), scale: s)
+    menu.highlight(2)
+    MenuView(canvas: canvas, menu: menu).draw()
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
+}
+
 // A file changed on disk under unsaved edits, saved: its header, the conflict bar, and Compare when asked:
 // --draw-file-conflict <png> [compare]
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-file-conflict"), CommandLine.arguments.indices.contains(flag + 1) {

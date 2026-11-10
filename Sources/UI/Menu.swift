@@ -10,6 +10,12 @@ struct MenuItem {
     var swatch: UInt32?
     /// A glyph (Segoe Fluent Icons) before the title, where a check would go.
     var icon: UInt16?
+    /// A coding agent's mark there instead, as the Mac's Send to Chat menu shows.
+    var agentMark: AgentKind?
+    /// A tab group's chip before the title: its name on its color, as in the tab strip.
+    var chip: (label: String, color: UInt32)?
+    /// A small dim heading over the items after it ("Active Chats"), as the Mac's section headers.
+    var isHeader = false
     /// The keys that do the same, dim at the right, as the Mac's menus show them.
     var shortcut = ""
     var run: () -> Void = {}
@@ -28,6 +34,9 @@ final class MenuModel {
     private(set) var scroll: Float = 0
     let frame: UIRect
     let scale: Float
+    /// Told which item is highlighted (nil for none), whenever that changes and when the menu closes: the Send to Chat
+    /// menu marks the tab the highlighted chat is in.
+    var onHighlight: ((Int?) -> Void)?
 
     var rowHeight: Float { (28 * scale).rounded() }
     var separatorHeight: Float { (9 * scale).rounded() }
@@ -66,7 +75,12 @@ final class MenuModel {
     func title(_ i: Int) -> String { showsAlternates ? items[i].alternate?.title ?? items[i].title : items[i].title }
     func action(_ i: Int) -> () -> Void { showsAlternates ? items[i].alternate?.run ?? items[i].run : items[i].run }
 
-    func highlight(_ i: Int?) { highlighted = i.flatMap { items.indices.contains($0) && items[$0].isEnabled ? $0 : nil } }
+    func highlight(_ i: Int?) {
+        let next = i.flatMap { items.indices.contains($0) && items[$0].isEnabled ? $0 : nil }
+        guard next != highlighted else { return }
+        highlighted = next
+        onHighlight?(next)
+    }
 
     /// Steps over separators and what's disabled, and stays put past either end.
     func moveHighlight(by delta: Int) {
@@ -78,7 +92,10 @@ final class MenuModel {
             guard let wrapped = order.first(where: { items[$0].isEnabled }) else { return }
             next = wrapped
         }
-        highlighted = next
+        if next != highlighted {
+            highlighted = next
+            onHighlight?(next)
+        }
         let r = rect(next)
         if r.y < frame.y { scrollBy(r.y - frame.y - padding) }
         if r.maxY > frame.maxY { scrollBy(r.maxY - frame.maxY + padding) }

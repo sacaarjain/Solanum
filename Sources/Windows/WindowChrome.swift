@@ -122,6 +122,9 @@ struct WindowChrome {
     var draggedTabLifted = false
     /// A group's chip a dragged tab is over, which it would join (by the chip's first tab).
     var dropChip: Int?
+    /// The tab the Send to Chat menu's highlighted chat is in, marked as a drop target is, as on the Mac: tinted and
+    /// outlined in its group's color (the accent outside one), or its chip ringed while its group is collapsed.
+    var sendTarget: Int?
     /// A group dragged by its chip: its tabs, and how far it's been moved.
     var liftedGroup: (first: Int, last: Int, dx: Float)?
     var hoveredCrumb: Int?
@@ -234,16 +237,17 @@ struct WindowChrome {
                 sol_canvas_fill_rect(canvas.raw, caretX.rounded(), r.y + 4 * scale, max(scale.rounded(), 1), r.height - 8 * scale, ink, 1)
                 continue
             }
+            let ringed = dropChip == first || (group.collapsed && sendTarget.map { first <= $0 && $0 <= group.last } == true)
             if group.label.isEmpty {
                 sol_canvas_fill_ellipse(canvas.raw, r.x + r.width / 2, r.midY, 6 * scale, 6 * scale, group.color, 1)
-                if dropChip == first {
+                if ringed {
                     sol_canvas_stroke_rounded(canvas.raw, r.x, r.y, r.width, r.height, 6 * scale, fg, 0.9, 1.5 * scale)
                 }
                 if hover { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 6 * scale, fg, 0.12) }
                 continue
             }
-            sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 6 * scale, group.color, hover || dropChip == first ? 1 : 0.88)
-            if dropChip == first {
+            sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 6 * scale, group.color, hover || ringed ? 1 : 0.88)
+            if ringed {
                 // A dragged tab over it would join it.
                 sol_canvas_stroke_rounded(canvas.raw, r.x - 1.5 * scale, r.y - 1.5 * scale, r.width + 3 * scale, r.height + 3 * scale, 7 * scale, fg, 0.9, 1.5 * scale)
             }
@@ -310,6 +314,13 @@ struct WindowChrome {
             let inset = 2 * scale
             sol_canvas_fill_rounded(canvas.raw, r.x + inset, r.y + inset, r.width - inset * 2, r.height - inset * 3, radius - 2,
                                     TerminalPalette.surface, 0.55)
+        }
+
+        if i == sendTarget, r.width > 2 * scale {
+            let color = chips.first { $0.key <= i && i <= $0.value.last }?.value.color ?? TerminalPalette.accent
+            let inset = 2 * scale
+            sol_canvas_fill_rounded(canvas.raw, r.x + inset, r.y + inset, r.width - inset * 2, r.height - inset * 3, radius - 2, color, 0.18)
+            sol_canvas_stroke_rounded(canvas.raw, r.x + inset, r.y + inset, r.width - inset * 2, r.height - inset * 3, radius - 2, color, 1, 1.5 * scale)
         }
 
         let textAlpha: Float = active ? 1 : 0.55

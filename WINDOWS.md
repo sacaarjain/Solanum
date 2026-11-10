@@ -69,7 +69,9 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
     and display awake for Settings' length (8 hours to start with). The status bar shows the time left; a click there,
     or the shortcut again, ends it, as does quitting Solanum.
   - Send to Chat (Ctrl+Alt+S, the Mac's ⌥⌘S): the picked (or last) command and its output go to a coding agent's chat,
-    one running in any tab or a new one with an agent found on the PATH, as a paste that waits in its input box. When
+    one running in any tab or a new one with an agent found on the PATH, as a paste that waits in its input box. Its
+    menu shows each chat's agent mark and its tab group's chip, and the tab of the chat under the pointer is marked in
+    the tab strip (its chip, in a collapsed group), as on the Mac. When
     it can't be pasted safely it goes on the clipboard, with a card saying so. Settings › Preferences › Continue Agents
     has the command that continues each agent on restore (continue-command-<agent>, as on the Mac).
   - The pointer over a finished command shows its badge (✓ 1.2s, ✕ exit 1 · 3s) with Send to chat and Copy output, as

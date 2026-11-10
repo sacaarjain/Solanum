@@ -1587,11 +1587,16 @@ enum WindowSelfTest {
             window.selectTab(sendingIndex)
             _ = window.keyDown(0x53, shift: false, ctrl: true, alt: true)
         }, done: { window.menuTitles.contains("Active Chats") && window.menuTitles.count >= 2 }))
+        steps.append(Step(name: "chat: the pointer over it marks its tab", action: {
+            if let title = window.menuTitles.first(where: { $0 != "Active Chats" && !$0.hasPrefix("New ") && !$0.isEmpty }), let r = window.menuRow(title) {
+                window.hover(r)
+            }
+        }, done: { window.sendTargetPane != nil && window.sendTargetPane == chatPane?.id }))
         steps.append(Step(name: "chat: choosing it goes there", action: {
             if let title = window.menuTitles.first(where: { $0 != "Active Chats" && !$0.hasPrefix("New ") && !$0.isEmpty }), let r = window.menuRow(title) {
                 window.click(r)
             }
-        }, done: { !window.isMenuOpen && window.activePane === chatPane }))
+        }, done: { !window.isMenuOpen && window.activePane === chatPane && window.sendTargetPane == nil }))
         steps.append(Step(name: "chat: and closes", action: {
             chatPane?.type("\u{03}")
             if let i = window.panes.firstIndex(where: { $0 === chatPane }) { window.closeTab(i) }

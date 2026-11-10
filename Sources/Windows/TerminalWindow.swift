@@ -876,6 +876,7 @@ final class TerminalWindow {
         // A tab lifted out of its strip, following the pointer, leaves its place empty.
         chrome.draggedTabLifted = tabPress?.dragging == true && dragGhost != nil
         if let g = tabDropChip { chrome.dropChip = panes.firstIndex { $0.group === g } }
+        if let id = sendTargetPane { chrome.sendTarget = panes.firstIndex { $0.id == id } }
         if let shape = chipDragShape {
             chrome.liftedGroup = shape.lifted
             chrome.dropMarker = shape.marker
@@ -3192,7 +3193,13 @@ final class TerminalWindow {
         let others = Self.windows.values.filter { $0 !== self }
         let chats = ([self] + others).flatMap { window in window.panes.compactMap { p in p.agent.map { (window, p, $0) } } }
             .filter { $0.2.status != .failed }
-        if !chats.isEmpty { items.append(MenuItem(title: "Active Chats", isEnabled: false)) }
+        if !chats.isEmpty {
+            var header = MenuItem(title: "Active Chats", isEnabled: false)
+            header.isHeader = true
+            items.append(header)
+        }
+        // Each item's chat, to mark its tab while it's highlighted.
+        var targets: [Int: (window: TerminalWindow, pane: UInt)] = [:]
         for (window, pane, info) in chats {
             var notes = ""
             if pane === from { notes += " (this tab)" }
@@ -3205,17 +3212,24 @@ final class TerminalWindow {
                 pane.sendToChat(text)
                 window.goTo(pane)
             }
-            item.swatch = pane.group.map { $0.color.rgb }
+            item.agentMark = info.kind
+            // The group's chip, as in the tab strip; a dot of its color when it has no name.
+            if let g = pane.group {
+                if g.name.isEmpty { item.swatch = g.color.rgb } else { item.chip = (g.name, g.color.rgb) }
+            }
+            targets[items.count] = (window, pane.id)
             items.append(item)
         }
         let kinds = InstalledAgents.shared.kinds
         if !items.isEmpty && !kinds.isEmpty { items.append(.separator) }
         for kind in kinds {
-            items.append(MenuItem(title: "New \(kind.name) Chat" + (from.sshArguments == nil ? "" : " on This PC")) { [weak self, weak from] in
+            var item = MenuItem(title: "New \(kind.name) Chat" + (from.sshArguments == nil ? "" : " on This PC")) { [weak self, weak from] in
                 guard let self, let from else { return }
                 from.sentToChat()
                 self.startChat(kind, text: text, from: from)
-            })
+            }
+            item.agentMark = kind
+            items.append(item)
         }
         if items.isEmpty {
             items.append(MenuItem(title: InstalledAgents.shared.scanned ? "No agents found" : "Looking for agents\u{2026}", isEnabled: false))
@@ -3228,7 +3242,22 @@ final class TerminalWindow {
             let area = self.area(for: from)
             openMenu(items, x: area.x + 16 * scale, y: area.y + area.height / 3, above: false)
         }
+        // While a chat is highlighted, its tab is marked, in whichever window it's in, as on the Mac.
+        var marked: TerminalWindow?
+        menu?.onHighlight = { i in
+            let target = i.flatMap { targets[$0] }
+            if let was = marked, was !== target?.window {
+                was.sendTargetPane = nil
+                was.invalidate()
+            }
+            marked = target?.window
+            target?.window.sendTargetPane = target?.pane
+            target?.window.invalidate()
+        }
     }
+
+    /// The tab (by its pane's id) the Send to Chat menu's highlighted chat is in, marked in the tab strip.
+    var sendTargetPane: UInt?
 
     /// A new tab running the agent, in the sending tab's folder (when it's on this PC); the text follows once it's ready.
     private func startChat(_ kind: AgentKind, text: String, from pane: TerminalPane) {
@@ -3939,6 +3968,8 @@ final class TerminalWindow {
         menu = MenuModel(items: items, anchorX: x, anchorY: y, above: above, width: MenuView.width(for: items, canvas: canvas, scale: scale),
                          window: UIRect(x: 0, y: 0, width: Float(clientWidth), height: Float(clientHeight)), scale: scale)
         menu?.showsAlternates = GetKeyState(Win.VK_MENU) < 0
+        // A menu opened by a press keeps nothing held, so Windows asks what pointer to show over it: the arrow.
+        if GetCapture() == hwnd { ReleaseCapture() }
         invalidate()
     }
 
@@ -3950,6 +3981,7 @@ final class TerminalWindow {
     }
 
     private func closeMenu() {
+        menu?.onHighlight?(nil)
         menu = nil
         invalidate()
     }
@@ -3959,6 +3991,8 @@ final class TerminalWindow {
         let row = menu.item(atX: x, y: y)
         switch message {
         case Win.WM_MOUSEMOVE:
+            // The arrow over it, whatever's under it, as a menu has.
+            if menu.frame.contains(x, y) { SetCursor(LoadCursorW(nil, Win.arrowCursor)) }
             if row != menu.highlighted {
                 menu.highlight(row)
                 invalidate()
