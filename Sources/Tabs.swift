@@ -250,6 +250,14 @@ final class TabSession: NSObject {
 
     /// Runs `command` in `dir` in this tab's terminal (showing it), where it can ask for a password: at the focused
     /// pane's prompt when it's free and in the same place (this Mac, or that ssh host); else in a new tab there.
+    /// Brings back the terminal of a tab showing only files (an extension page asking Claude something, say).
+    func showTerminal() {
+        guard !showsTerminal else { return }
+        showsTerminal = true
+        arrange()
+        owner?.tabDidUpdate(self)
+    }
+
     func runInTerminal(_ command: String, in dir: String, remote: RemoteSession?) {
         if !showsTerminal {
             showsTerminal = true
@@ -2055,6 +2063,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     /// The focused column's repository status, as a page above its terminal.
     @objc func showGitStatus(_ sender: Any?) {
         guard let controller = focusedIndex == 0 ? git : rightGit, controller.showStatus() else { return NSSound.beep() }
+    }
+
+    /// ⇧⌘X: the extensions marketplace, above the focused tab's terminal.
+    @objc func showExtensions(_ sender: Any?) { Extensions.showMarketplace(in: self) }
+
+    /// An installed extension's page (the menu item's represented object is its id).
+    @objc func showExtensionPage(_ sender: Any?) {
+        guard let id = (sender as? NSMenuItem)?.representedObject as? String, Extensions.showPage(id, in: activeTab) != nil else { return NSSound.beep() }
     }
 
     // MARK: Reopening closed tabs

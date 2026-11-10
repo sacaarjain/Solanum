@@ -47,6 +47,26 @@ enum SelfTest {
             check("over a dark cell it lightens", RenderPalette.contrast(onDark, dark) >= 4.5)
         }
         do {
+            // Sleeper: points under a league's own scoring, with projections' kicking buckets matched to the league's.
+            let scoring: [String: Double] = ["rec": 0.5, "rec_yd": 0.1, "rush_att": 0.2, "fgm_50_59": 5, "fgmiss": -1]
+            check("sleeper scoring", Sleeper.points(["rec": 4, "rec_yd": 50, "rush_att": 10, "pass_yd": 300], scoring) == 9)
+            check("sleeper kicking buckets", Sleeper.points(["fgm_50p": 1, "fgmiss_40_49": 0.5, "fgmiss_50p": 0.5], scoring) == 4)
+            check("sleeper number format", Sleeper.format(12) == "12" && Sleeper.format(12.5) == "12.5" && Sleeper.format(19.489999) == "19.49")
+            let r = SleeperRoster(["roster_id": 3, "players": ["a", "b", "c", "d"], "starters": ["a"], "reserve": ["d"],
+                                   "settings": ["wins": 5, "losses": 3, "fpts": 900, "fpts_decimal": 45]])
+            check("sleeper roster", r?.bench == ["b", "c"] && r?.pointsFor == 900.45 && r?.recordText == "5-3")
+            check("sleeper slot names", SleeperLeagueSnapshot.slotName("SUPER_FLEX") == "SF" && SleeperLeagueSnapshot.slotName("WRRB_FLEX") == "W/R")
+            // The MCP server: handshake, tool list, and an unknown tool refused (all offline).
+            let tools = SleeperTools()
+            let ini = MCPServer.handle(["jsonrpc": "2.0", "id": 1, "method": "initialize", "params": ["protocolVersion": "2025-06-18"]], tools)
+            check("mcp initialize", (ini?["result"] as? [String: Any])?["protocolVersion"] as? String == "2025-06-18")
+            check("mcp notification unanswered", MCPServer.handle(["jsonrpc": "2.0", "method": "notifications/initialized"], tools) == nil)
+            let list = (MCPServer.handle(["jsonrpc": "2.0", "id": 2, "method": "tools/list"], tools)?["result"] as? [String: Any])?["tools"] as? [[String: Any]]
+            check("mcp tools listed", (list?.count ?? 0) >= 15 && list?.allSatisfy { $0["inputSchema"] != nil } == true)
+            let bad = MCPServer.handle(["jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": ["name": "nope"]], tools)
+            check("mcp unknown tool refused", (bad?["error"] as? [String: Any])?["code"] as? Int == -32602)
+        }
+        do {
             // Git Status: a file both staged and changed again is in both groups, renames keep their old name.
             let out = "/repo\n# branch.oid abcdef1234\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +2 -1\0"
                 + "1 MM N... 100644 100644 100644 a b both.txt\0"

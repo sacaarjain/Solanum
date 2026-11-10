@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private var hotKey: HotKey?
     /// Its title says how long, which Settings can change.
     private weak var keepAwakeItem: NSMenuItem?
+    private weak var extensionsMenu: NSMenu?
     private let themeMenu = NSMenu(title: "Theme")
     private let snippetsMenu = NSMenu(title: "Snippets")
     private var quickTerminalItem: NSMenuItem?
@@ -40,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             self?.keepAwakeItem?.title = Config.shared.keepAwakeTitle
             self?.rebuildThemeMenu()
         }
+        Extensions.start()
         reopenWorkspace()
         Updater.shared.start()
         QuantumMoon.start()
@@ -333,6 +335,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
     }
 
+    /// Extensions › Marketplace…, then a line per installed extension (the command palette lists them too).
+    private func rebuildExtensionsMenu() {
+        guard let menu = extensionsMenu else { return }
+        menu.removeAllItems()
+        let market = NSMenuItem(title: "Extensions Marketplace…", action: #selector(TerminalWindowController.showExtensions(_:)), keyEquivalent: "x")
+        market.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(market)
+        let installed = Extensions.installed.compactMap(Extensions.find)
+        if !installed.isEmpty { menu.addItem(.separator()) }
+        for ext in installed {
+            let item = NSMenuItem(title: "Open \(ext.name)", action: #selector(TerminalWindowController.showExtensionPage(_:)), keyEquivalent: "")
+            item.representedObject = ext.id
+            menu.addItem(item)
+        }
+    }
+
     private func rebuildThemeMenu() {
         themeMenu.removeAllItems()
         let current = Config.shared.theme.name
@@ -437,6 +455,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         keepAwakeItem = add(shell, Config.shared.keepAwakeTitle, #selector(TerminalView.keepAwake(_:)), "a", [.command, .shift])
         _ = add(shell, "Show Git Graph", #selector(TerminalWindowController.showGitGraph(_:)), "g", [.command, .control])
         _ = add(shell, "Show Git Changes", #selector(TerminalWindowController.showGitStatus(_:)), "s", [.command, .control])
+
+        // Extensions: the marketplace, then each installed extension's page (kept current by rebuildExtensionsMenu).
+        let ext = top("Extensions")
+        extensionsMenu = ext
+        rebuildExtensionsMenu()
+        NotificationCenter.default.addObserver(forName: .solanumExtensionsChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.rebuildExtensionsMenu()
+        }
 
         // Edit
         let edit = top("Edit")

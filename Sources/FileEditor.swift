@@ -20,6 +20,8 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         case .commitDiff(let hash): return (path as NSString).lastPathComponent + " (\(hash.prefix(8)))"
         case .graph: return "Git Graph"
         case .preview: return "Preview " + (path as NSString).lastPathComponent
+        case .extensions: return "Extensions"
+        case .extensionPage(let id): return Extensions.find(id)?.pageTitle ?? id
         }
     }
     var onClose: (() -> Void)?
@@ -109,6 +111,8 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private var statusView: GitStatusView?
     private var statusLoading = false
     private var previewView: MarkdownPreviewView?
+    /// The marketplace, or an extension's page.
+    private(set) var pageView: (NSView & ExtensionPage)?
     /// A remote file's local copy for the preview; removed with the editor.
     private var mediaCopy: URL?
 
@@ -320,6 +324,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         diffView?.frame = scroll.frame
         graphView?.frame = scroll.frame
         statusView?.frame = scroll.frame
+        pageView?.frame = scroll.frame
         if let bar = findBar {
             let w = min(420, bounds.width - 24)
             bar.frame = NSRect(x: bounds.width - w - 12, y: scroll.frame.minY + 6, width: w, height: bar.preferredHeight)
@@ -437,7 +442,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
 
     func focus() {
         if !loaded { focusWhenLoaded = true }
-        window?.makeFirstResponder(media?.focusView ?? diffView ?? graphView ?? statusView ?? previewView ?? textView)
+        window?.makeFirstResponder(media?.focusView ?? diffView ?? graphView ?? statusView ?? previewView ?? pageView?.focusView ?? textView)
     }
 
     private func applyTheme() {
@@ -469,6 +474,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         diffView?.applyTheme()
         graphView?.applyTheme()
         statusView?.applyTheme()
+        pageView?.applyTheme()
         if mode == .preview, previewView != nil { loadPreview() }
         header.needsDisplay = true
         needsDisplay = true
@@ -494,6 +500,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         case .commit: return loadStatus()
         default: break
         }
+        if mode.isExtensionPage { return loadExtensionPage() }
         if mode == .graph { return loadGraph() }
         if mode == .status { return loadStatus() }
         if mode == .preview { return loadPreview() }
@@ -971,6 +978,32 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
             if self?.header.status == shown { self?.header.status = nil }
         }
+    }
+
+    /// The marketplace or an extension's page: made once, and kept (it loads and refreshes its own data).
+    private func loadExtensionPage() {
+        header.editable = false
+        header.textTools = false
+        if pageView != nil { return }
+        let page: (NSView & ExtensionPage)?
+        switch mode {
+        case .extensions: page = ExtensionsPageView()
+        case .extensionPage(let id): page = Extensions.find(id)?.makePage()
+        default: page = nil
+        }
+        guard let page else { return showMessage("This extension isn't available.") }
+        pageView = page
+        page.onSubtitleChanged = { [weak self, weak page] in
+            guard let self, let page else { return }
+            self.header.subtitle = page.subtitle
+        }
+        header.subtitle = page.subtitle
+        message.isHidden = true
+        scroll.isHidden = true
+        addSubview(page)
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+        if window?.firstResponder === window { focus() }
     }
 
     /// Dev aid (DevTools hover-graph): the graph's card for `row`.
@@ -1698,6 +1731,15 @@ final class FileEditorView: NSView, NSTextViewDelegate {
 enum EditorMode: Equatable { case file, diff, stagedDiff, graph, status, preview
     /// One commit's files (GitStatusView.swift), and one of its files side by side.
     case commit(String), commitDiff(String)
+    /// The extensions marketplace, and an installed extension's page (Extensions.swift).
+    case extensions, extensionPage(String)
+
+    var isExtensionPage: Bool {
+        switch self {
+        case .extensions, .extensionPage: return true
+        default: return false
+        }
+    }
 }
 
 /// ⌥Z toggles wrapping, as in VS Code.
