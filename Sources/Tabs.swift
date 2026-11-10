@@ -1371,6 +1371,11 @@ final class SidebarResizeHandle: NSView {
 }
 
 /// Shades where a dragged tab would land (half the terminals, or the other column). Clicks pass through.
+/// A picture over the window that clicks pass through (see `WindowRootView.beginThemeFade`).
+final class ClickThroughImageView: NSImageView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 final class DropPreviewView: NSView {
     var target: NSRect? { didSet { needsDisplay = true } }
     /// A tab lifted out of its strip as it's dragged (off it, over the terminals or the other column's strip), following
@@ -1581,6 +1586,40 @@ final class WindowRootView: NSView {
         needsLayout = true
     }
 
+    private var fadeView: NSImageView?
+
+    /// A new theme eases in over a third of a second rather than snapping (as on Windows): the window as it looks now,
+    /// laid over it while the new colors go in underneath, fading out. One picture of the window, not every view
+    /// redrawn each frame. Not with Reduce Motion, or a window that isn't showing.
+    func beginThemeFade() {
+        guard let w = window, w.isVisible, w.occlusionState.contains(.visible) || Headless.active,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, bounds.width > 1, bounds.height > 1,
+              let rep = bitmapImageRepForCachingDisplay(in: bounds) else { return }
+        cacheDisplay(in: bounds, to: rep)
+        let image = NSImage(size: bounds.size)
+        image.addRepresentation(rep)
+        fadeView?.removeFromSuperview()
+        let v = ClickThroughImageView(frame: bounds)
+        v.image = image
+        v.imageScaling = .scaleAxesIndependently
+        v.autoresizingMask = [.width, .height]
+        v.wantsLayer = true
+        addSubview(v)
+        fadeView = v
+        // Once the new theme's in (it's set right after this), fade the old one away.
+        DispatchQueue.main.async { [weak self] in
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.3
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                v.animator().alphaValue = 0
+            }, completionHandler: { [weak self] in
+                v.removeFromSuperview()
+                if self?.fadeView === v { self?.fadeView = nil }
+            })
+        }
+    }
+    var devFading: Bool { fadeView != nil }
+
     /// The theme's picture or the desktop's behind it all, or the window see-through to what's behind it (blurred by the
     /// system, if Blur is on): see `Backdrop`.
     func updateBackdrop() {
@@ -1786,6 +1825,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     var onClose: ((TerminalWindowController) -> Void)?
     var onWillClose: ((TerminalWindowController) -> Void)?
     private var configObserver: NSObjectProtocol?
+    private var themeFadeObserver: NSObjectProtocol?
     /// The tab each sidebar last showed (see `updateSidebar`).
     private var sidebarTabs: [ObjectIdentifier: ObjectIdentifier] = [:]
     private(set) var git: GitController?
@@ -1842,6 +1882,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             columns[0].addTab(cwd: cwd)
         }
         rootView.applyTheme()
+        themeFadeObserver = NotificationCenter.default.addObserver(forName: .solanumThemeWillChange, object: nil, queue: nil) { [weak self] _ in
+            MainActor.assumeIsolated { self?.rootView.beginThemeFade() }
+        }
         configObserver = NotificationCenter.default.addObserver(forName: .solanumConfigChanged, object: nil, queue: .main) { [weak self] _ in
             self?.rootView.applyTheme()
             self?.rootView.needsLayout = true

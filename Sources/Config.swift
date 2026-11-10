@@ -2,13 +2,20 @@ import AppKit
 
 extension Notification.Name {
     static let solanumConfigChanged = Notification.Name("SolanumConfigChanged")
+    static let solanumThemeWillChange = Notification.Name("SolanumThemeWillChange")
 }
 
 /// User preferences, persisted as `key = value` lines in ~/.config/solanum/config.
 final class Config {
     static let shared = Config()
 
-    var themeName = ThemeLibrary.defaultName
+    /// A new theme is announced just before it's set (`.solanumThemeWillChange`), so windows can ease into it (see
+    /// `WindowRootView.beginThemeFade`).
+    var themeName = ThemeLibrary.defaultName {
+        willSet {
+            if newValue.caseInsensitiveCompare(themeName) != .orderedSame { NotificationCenter.default.post(name: .solanumThemeWillChange, object: nil) }
+        }
+    }
     var fontFamily = "System Mono"
     var fontSize: CGFloat = 13
     var lineHeight: CGFloat = 1.3
