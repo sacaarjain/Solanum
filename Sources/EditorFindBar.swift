@@ -112,6 +112,8 @@ final class EditorFindBar: NSView, NSTextFieldDelegate {
     let field = NSTextField()
     let replaceField = NSTextField()
     private var count = ""
+    /// What the count says ("3 of 12"), for a find that steps on its own (a Markdown preview's).
+    var countText: String { count }
     private var countIsProblem = false
     private var countRect = NSRect.zero
     private static let countFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)

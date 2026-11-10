@@ -1754,6 +1754,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     /// ⌘F: the bar, with what's selected to search for, as in VS Code. Again: back to its field.
     @objc func showFind(_ sender: Any?) {
         if mode == .graph, let graphView { return graphView.focusSearch() }
+        if mode == .preview, let previewView { return showPreviewFind(previewView) }
         guard mode == .file, media == nil, loaded else { return }
         let selection = textView.selectedRange()
         findAnchor = selection.location
@@ -1782,8 +1783,48 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     @objc func findNext(_ sender: Any?) { stepFromMenu(1) }
     @objc func findPrevious(_ sender: Any?) { stepFromMenu(-1) }
 
+    /// A Markdown preview's find, with the same bar (and Aa / ab / .*) as the file's: matches marked in the page.
+    private func showPreviewFind(_ preview: MarkdownPreviewView) {
+        if findBar == nil {
+            let bar = EditorFindBar()
+            bar.canReplace = false
+            bar.onQueryChange = { [weak self, weak preview] in
+                guard let self, let preview, let bar = self.findBar else { return }
+                let q = bar.field.stringValue
+                preview.find(q, EditorFindBar.lastOptions) { [weak bar] n in
+                    guard let bar else { return }
+                    if q.isEmpty { return bar.setCount(nil) }
+                    if n < 0 { return bar.setCount("Invalid", problem: true) }
+                    if n == 0 { return bar.setCount("No results", problem: true) }
+                    bar.setCount("1 of \(n)\(n >= 10000 ? "+" : "")")
+                }
+            }
+            bar.onStep = { [weak self, weak preview] d in
+                guard let preview, let bar = self?.findBar, !bar.field.stringValue.isEmpty else { return }
+                let total = bar.countText.split(separator: " ").last.map(String.init) ?? ""
+                preview.findStep(d) { i in if i > 0 { bar.setCount("\(i) of \(total)") } }
+            }
+            bar.onClose = { [weak self, weak preview] in
+                preview?.clearFind()
+                self?.findBar?.removeFromSuperview()
+                self?.findBar = nil
+                self?.window?.makeFirstResponder(preview)
+            }
+            addSubview(bar)
+            findBar = bar
+            needsLayout = true
+            layoutSubtreeIfNeeded()
+        }
+        findBar?.focus()
+        findBar?.onQueryChange?()
+    }
+
     /// ⌘G with the bar closed opens it first.
     private func stepFromMenu(_ d: Int) {
+        if mode == .preview {
+            if findBar == nil { return showFind(nil) }
+            return findBar?.onStep?(d) ?? ()
+        }
         guard mode == .file, media == nil else { return }
         if findBar == nil { return showFind(nil) }
         stepFind(d)

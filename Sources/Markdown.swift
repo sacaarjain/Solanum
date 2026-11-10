@@ -356,6 +356,95 @@ final class MarkdownPreviewView: NSView, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if scrollY > 0 { webView.evaluateJavaScript("window.scrollTo(0, \(scrollY))") }
+        // Shown again (the file changed) while find's open: its matches again.
+        if let f = lastFind { find(f.query, f.options, f.done) }
+    }
+
+    // MARK: Find (⌘F), as in the file editor and the terminal
+
+    /// What's being looked for, to find again when the page is shown again; nil with find closed.
+    private var lastFind: (query: String, options: EditorFindOptions, done: (Int) -> Void)?
+
+    /// The page's own scripts are off; these are Solanum's (which still run). Marks each match in the page's text, the
+    /// current one brighter, scrolled to the middle.
+    private static let findScript = #"""
+    if (!window.solanumFind) {
+      window.solanumMarks = []; window.solanumCurrent = -1;
+      window.solanumClearFind = function () {
+        document.querySelectorAll('mark.solanum-find').forEach(function (m) {
+          var p = m.parentNode; p.replaceChild(document.createTextNode(m.textContent), m); p.normalize();
+        });
+        window.solanumMarks = []; window.solanumCurrent = -1;
+      };
+      window.solanumFind = function (q, matchCase, wholeWord, regex) {
+        window.solanumClearFind();
+        if (!document.getElementById('solanum-find-style')) {
+          var s = document.createElement('style'); s.id = 'solanum-find-style';
+          s.textContent = 'mark.solanum-find{background:rgba(255,214,0,.35);color:inherit;border-radius:2px}' +
+                          'mark.solanum-find.current{background:#ff9632;color:#000}';
+          document.head.appendChild(s);
+        }
+        if (!q) return 0;
+        var pattern = regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (wholeWord) pattern = '\\b(?:' + pattern + ')\\b';
+        var re; try { re = new RegExp(pattern, matchCase ? 'g' : 'gi'); } catch (e) { return -1; }
+        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, { acceptNode: function (n) {
+          return /^(SCRIPT|STYLE)$/.test(n.parentNode.nodeName) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT; } });
+        var nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
+        for (var i = 0; i < nodes.length && window.solanumMarks.length < 10000; i++) {
+          var node = nodes[i], text = node.nodeValue, last = 0, frag = null, m;
+          re.lastIndex = 0;
+          while ((m = re.exec(text)) !== null) {
+            if (m[0].length === 0) { re.lastIndex++; continue; }
+            if (!frag) frag = document.createDocumentFragment();
+            frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+            var mark = document.createElement('mark'); mark.className = 'solanum-find'; mark.textContent = m[0];
+            frag.appendChild(mark); window.solanumMarks.push(mark);
+            last = m.index + m[0].length;
+          }
+          if (frag) { frag.appendChild(document.createTextNode(text.slice(last))); node.parentNode.replaceChild(frag, node); }
+        }
+        return window.solanumMarks.length;
+      };
+      window.solanumFindStep = function (d) {
+        var n = window.solanumMarks.length; if (!n) return 0;
+        if (window.solanumCurrent >= 0) window.solanumMarks[window.solanumCurrent].classList.remove('current');
+        window.solanumCurrent = (window.solanumCurrent + d + n) % n;
+        var m = window.solanumMarks[window.solanumCurrent]; m.classList.add('current'); m.scrollIntoView({ block: 'center' });
+        return window.solanumCurrent + 1;
+      };
+    }
+    """#
+
+    private static func jsString(_ s: String) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: [s])) ?? Data("[\"\"]".utf8)
+        return String(String(decoding: data, as: UTF8.self).dropFirst().dropLast())
+    }
+
+    /// Bumped by each find, so an answer for one that's been overtaken (typing) is dropped.
+    private var findGeneration = 0
+
+    /// Marks `query`'s matches and goes to the first, in one call (two would let a later find land between them);
+    /// `done` gets how many (-1: a regular expression that doesn't parse).
+    func find(_ query: String, _ o: EditorFindOptions, _ done: @escaping (Int) -> Void) {
+        lastFind = (query, o, done)
+        findGeneration += 1
+        let generation = findGeneration
+        let call = "(function(){ var n = solanumFind(\(Self.jsString(query)), \(o.matchCase), \(o.wholeWord), \(o.regex)); if (n > 0) solanumFindStep(1); return n; })()"
+        web.evaluateJavaScript(Self.findScript + call) { [weak self] result, _ in
+            guard self?.findGeneration == generation else { return }
+            done((result as? NSNumber)?.intValue ?? 0)
+        }
+    }
+
+    /// The next match (`d` 1) or the one before (-1); `done` gets which (from 1).
+    func findStep(_ d: Int, _ done: @escaping (Int) -> Void) {
+        web.evaluateJavaScript("window.solanumFindStep ? solanumFindStep(\(d)) : 0") { result, _ in done((result as? NSNumber)?.intValue ?? 0) }
+    }
+
+    func clearFind() {
+        lastFind = nil
+        web.evaluateJavaScript("window.solanumClearFind && solanumClearFind()")
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
