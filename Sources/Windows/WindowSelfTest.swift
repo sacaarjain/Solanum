@@ -1707,6 +1707,18 @@ enum WindowSelfTest {
             return !window.isSplit && window.chipRect(1) != nil && members == [1, 2, 3]
                 && (0..<window.panes.count).filter { window.chipRect($0) != nil } == [1]
         }))
+        steps.append(Step(name: "groups: a tab put into split view again", action: {
+            let l = window.currentLayout
+            window.dragTab(4, toX: l.width * 0.75, y: l.height / 2) { shown = window.dragShows }
+        }, done: { window.isSplit && window.panes.last?.column == 1 && window.panes.last?.group == nil }))
+        steps.append(Step(name: "groups: dragged from the right column onto the group's chip on the left, it joins", action: {
+            let chip = window.chipRect(1)!
+            window.dragTab(window.panes.count - 1, toX: chip.x + chip.width / 2, y: chip.midY) { shown = window.dragShows }
+        }, done: {
+            let g = window.panes[1].group
+            return shown.chip && g != nil && window.panes.filter { $0.group === g }.count == 4 && window.panes.allSatisfy { $0.column == 0 }
+                && (0..<window.panes.count).filter { window.chipRect($0) != nil } == [1]
+        }))
         steps.append(Step(name: "groups: the chip's menu", action: { window.rightClick(window.chipRect(1)!) },
                           done: { window.menuTitles.contains("Ungroup") && window.menuTitles.contains("Purple") }))
         steps.append(Step(name: "groups: ungroups", action: { window.click(window.menuRow("Ungroup")!) },

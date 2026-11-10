@@ -4361,6 +4361,11 @@ final class TerminalWindow {
                 } else if panes.count > 1 {
                     tabSplitTarget = x < terminalArea.x + terminalArea.width / 2 ? 0 : 1
                 }
+            } else if l.isSplit && y <= l.tabBarHeight && overColumn != pane.column,
+                      case .chip(let first) = l.part(atX: x, y: min(y, l.tabBarHeight - 2)), let g = panes[first].group,
+                      l.column(ofTab: first) == overColumn {
+                // Over a group's chip in the other column: it would go over there and join that group.
+                tabDropChip = g
             } else if l.isSplit && y <= l.tabBarHeight && overColumn != pane.column {
                 // Over the other column's strip: it would go in there, where the bar shows.
                 let target = l.tabRange(column: overColumn)
@@ -4439,6 +4444,8 @@ final class TerminalWindow {
                     let target = l.tabRange(column: over)
                     let at = target.first { l.tab($0).x + l.tab($0).width / 2 > x } ?? target.upperBound
                     moveToOtherColumn(pane, at: at > press.index ? at - 1 : at)
+                    // Let go among a group's tabs over there, it joins that group, as it would in its own column.
+                    TabGroupOps.settle(pane, in: panes.filter { $0.column == pane.column })
                 } else if leaves {
                     pane.group = nil
                 } else {
