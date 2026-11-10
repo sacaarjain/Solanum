@@ -68,6 +68,10 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
   - Keep Awake (Ctrl+Shift+A, the Mac's ⇧⌘A): Windows has no caffeinate, so Solanum asks Windows itself to keep the PC
     and display awake for Settings' length (8 hours to start with). The status bar shows the time left; a click there,
     or the shortcut again, ends it, as does quitting Solanum.
+  - Send to Chat (Ctrl+Alt+S, the Mac's ⌥⌘S): the picked (or last) command and its output go to a coding agent's chat,
+    one running in any tab or a new one with an agent found on the PATH, as a paste that waits in its input box. When
+    it can't be pasted safely it goes on the clipboard, with a card saying so. Settings › Preferences › Continue Agents
+    has the command that continues each agent on restore (continue-command-<agent>, as on the Mac).
   - In a file, as the Mac's ⌘F and VS Code's: Ctrl+F finds and Ctrl+H replaces ("3 of 12", every match shaded), Enter
     or F3 steps on and Shift with them back, Alt+C, Alt+W and Alt+R match case, whole words and regular expressions
     ($1 and the like in the replacement), Tab moves to the Replace field, Ctrl+Enter there replaces all, and Esc closes

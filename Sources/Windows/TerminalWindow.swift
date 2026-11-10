@@ -3170,6 +3170,58 @@ final class TerminalWindow {
         }
     }
 
+    // MARK: - Send to Chat
+
+    /// Ctrl+Alt+S, as the Mac's Option-Command-S: the picked (or last) command and what it printed, to an agent's chat.
+    /// The menu has the chats running in any window, this one's first, then a new chat with each agent on this PC.
+    func showSendToChat() {
+        guard !panes.isEmpty, let text = activePane.chatTranscript else { return fileProblem() }
+        let from = activePane
+        InstalledAgents.shared.refresh(post: { [weak self] work in self?.runOnWindowThread(work) })
+        var items: [MenuItem] = []
+        let others = Self.windows.values.filter { $0 !== self }
+        let chats = ([self] + others).flatMap { window in window.panes.compactMap { p in p.agent.map { (window, p, $0) } } }
+            .filter { $0.2.status != .failed }
+        if !chats.isEmpty { items.append(MenuItem(title: "Active Chats", isEnabled: false)) }
+        for (window, pane, info) in chats {
+            var notes = ""
+            if pane === from { notes += " (this tab)" }
+            // A question on screen could take the paste as its answer.
+            if info.status == .waiting { notes += " \u{00B7} waiting for you" }
+            let title = pane.tabTitle.drop { !$0.isLetter && !$0.isNumber }
+            var item = MenuItem(title: (title.isEmpty ? info.kind.name : String(title)) + notes, isEnabled: info.status != .waiting) { [weak window, weak pane] in
+                guard let window, let pane else { return }
+                pane.sendToChat(text)
+                window.goTo(pane)
+            }
+            item.swatch = pane.group.map { $0.color.rgb }
+            items.append(item)
+        }
+        let kinds = InstalledAgents.shared.kinds
+        if !items.isEmpty && !kinds.isEmpty { items.append(.separator) }
+        for kind in kinds {
+            items.append(MenuItem(title: "New \(kind.name) Chat" + (from.sshArguments == nil ? "" : " on This PC")) { [weak self, weak from] in
+                guard let self, let from else { return }
+                self.startChat(kind, text: text, from: from)
+            })
+        }
+        if items.isEmpty {
+            items.append(MenuItem(title: InstalledAgents.shared.scanned ? "No agents found" : "Looking for agents\u{2026}", isEnabled: false))
+        }
+        let area = self.area(for: from)
+        openMenu(items, x: area.x + 16 * scale, y: area.y + area.height / 3, above: false)
+    }
+
+    /// A new tab running the agent, in the sending tab's folder (when it's on this PC); the text follows once it's ready.
+    private func startChat(_ kind: AgentKind, text: String, from pane: TerminalPane) {
+        let cwd = pane.sshArguments == nil ? pane.terminal.cwd : nil
+        guard addPane(cwd: cwd, column: pane.column) else { return fileProblem() }
+        let chat = activePane
+        chat.pendingCommand = kind.command
+        chat.pasteWhenAgentReady(text)
+        invalidate()
+    }
+
     // MARK: - Text size, full screen, Command History and snippets
 
     /// Ctrl+= and Ctrl+- a point bigger or smaller, Ctrl+0 back to the default: kept in Settings, for every window.
@@ -5028,6 +5080,7 @@ final class TerminalWindow {
                 if !self.activePane.clearBuffer() { self.fileProblem() }
             },
             PaletteItem(title: "Command History\u{2026}", category: "Commands", shortcut: "Ctrl+Shift+H") { [weak self] in self?.showCommandHistory() },
+            PaletteItem(title: "Send to Chat\u{2026}", category: "Commands", shortcut: "Ctrl+Alt+S") { [weak self] in self?.showSendToChat() },
             PaletteItem(title: "Collapse / Expand Output", category: "Commands", shortcut: "Ctrl+Shift+E") { [weak self] in
                 guard let self, !self.panes.isEmpty else { return }
                 if !self.activePane.toggleCollapse() { self.fileProblem() }
@@ -5376,6 +5429,11 @@ final class TerminalWindow {
         if ctrl && shift && !alt && key == 0x45 && palette == nil && !panes.isEmpty && !activePane.editorFocused {
             if !activePane.toggleCollapse() { fileProblem() }
             invalidate()
+            return true
+        }
+        // Send to Chat: Ctrl+Alt+S, as the Mac's Option-Command-S.
+        if ctrl && alt && !shift && key == 0x53 && palette == nil && !panes.isEmpty {
+            showSendToChat()
             return true
         }
         // Keep Awake: Ctrl+Shift+A, as the Mac's Shift-Command-A; again ends it.

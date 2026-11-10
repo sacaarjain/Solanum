@@ -71,9 +71,10 @@ final class TerminalPane: TerminalDelegate, Groupable {
             return "ssh " + target.map(Self.powerShellWord).joined(separator: " ")
         }
         guard let b = terminal.currentBlock, b.state == .running else { return nil }
-        // What was typed (claude, npx codex, …), or else the agent's program running under the shell (an alias for it).
-        if let command = AgentResume.command(continuing: b.command) { return command }
-        return ProcessTree.descendantNames(of: shellProcessID).lazy.compactMap { AgentResume.commands[$0] }.first
+        // What was typed (claude, npx codex, …), or else the agent's program running under the shell (an alias for it);
+        // continued with what Settings has for it, as on the Mac.
+        let agent = AgentResume.agent(typed: b.command) ?? ProcessTree.descendantNames(of: shellProcessID).first { AgentResume.commands[$0] != nil }
+        return agent.flatMap { AppSettings.shared.continueCommand(forAgent: $0) }
     }
 
     var group: TabGroup?
@@ -726,6 +727,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
         }
         // Should the cursor never get there (the box closed, say), what's waiting still goes.
         if let deadline = selectionDeleteDeadline, Date() > deadline { endDeletingSelection() }
+        checkChatPaste()
         reanchorIfSettled()
     }
 
@@ -1915,6 +1917,54 @@ final class TerminalPane: TerminalDelegate, Groupable {
         let bracketed = terminal.bracketedPaste || agent != nil
         input(Array((bracketed ? "\u{1b}[200~" + text + "\u{1b}[201~" : text).utf8), replacesSelection: true)
     }
+
+    // MARK: - Send to Chat, as the Mac's Option-Command-S
+
+    /// The picked command (or the last to finish) with what it printed, for a chat; nil for a prompt picked in an agent's
+    /// session, or with no command to send.
+    var chatTranscript: String? {
+        guard selectedTurn == nil, let b = targetBlock, !b.command.isEmpty else { return nil }
+        let out = outputText(b)
+        return AgentChats.transcript(["$ \(b.command)" + (out.isEmpty ? "" : "\n" + out)])
+    }
+
+    /// Text waiting for the agent starting here to be ready, and how long it may wait.
+    private var chatPaste: (text: String, deadline: Date)?
+
+    /// Pastes `text` once the agent starting in this tab is ready for it. A question it asks first (trusting the folder,
+    /// say) can take as long as it takes.
+    func pasteWhenAgentReady(_ text: String) {
+        chatPaste = (text, Date().addingTimeInterval(45))
+    }
+
+    private func checkChatPaste() {
+        guard let waiting = chatPaste else { return }
+        _ = updateAgent()
+        if agent?.status == .waiting { chatPaste?.deadline = Date().addingTimeInterval(45) }
+        let ready = agent != nil && AgentChats.readyForPaste(status: agent?.status, quietFor: Date().timeIntervalSince(lastOutputAt))
+        guard ready || Date() > waiting.deadline else { return }
+        chatPaste = nil
+        if ready { pasteText(waiting.text) } else { chatPasteFailed(waiting.text) }
+    }
+
+    /// Into this tab's chat, unless it's asking a question (which could take the paste as its answer).
+    func sendToChat(_ text: String) {
+        if agent?.status == .waiting { return chatPasteFailed(text) }
+        pasteText(text)
+        scrollOffset = 0
+        invalidate()
+    }
+
+    /// The text would have been lost: it goes on the clipboard, and a card says so.
+    func chatPasteFailed(_ text: String) {
+        setClipboard(text)
+        _ = MessageBeep(UINT(0x30))
+        TerminalWindow.postNotice(NoticeRules.Card(title: "Couldn't paste into the chat", mark: .failed,
+                                                   lines: [tabTitle, "It's on the clipboard, ready for Ctrl+V."]), about: self)
+    }
+
+    /// Whether text is waiting to be pasted into a chat starting here: for tests.
+    var isWaitingToPasteIntoChat: Bool { chatPaste != nil }
 
     // MARK: - Collapsed output, as the Mac's Shift-Command-E
 

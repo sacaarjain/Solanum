@@ -46,6 +46,17 @@ final class AppSettings {
     var fileIcons: String { file["file-icons"].flatMap { $0.isEmpty ? nil : $0 } ?? IconPackCatalog.solanumID }
     /// A command or an agent that runs at least this long in a tab you're not watching gets a card when it stops; 0 is off.
     var notifyAfterSeconds: Double { file.number("notify-after-seconds", 10, in: 0...86_400) }
+    /// Restoring a session continues the agents that were running in it, each with its continue command.
+    var continueAgents: Bool { file.bool("continue-agents", true) }
+
+    /// What continues an agent (by its command, "claude") on restore: `continue-command-<agent>` in the config, as on the
+    /// Mac, else its default; nil when agents aren't continued, or that one's left empty.
+    func continueCommand(forAgent agent: String) -> String? {
+        guard continueAgents else { return nil }
+        let command = (file["continue-command-" + agent] ?? AgentResume.commands[agent] ?? "").trimmingCharacters(in: .whitespaces)
+        return command.isEmpty ? nil : command
+    }
+
     /// How long Keep Awake lasts (Ctrl+Shift+A), as the Mac's caffeinate does: 8 hours to start with, at most a year.
     var keepAwakeSeconds: Int { Int(file.number("keep-awake-seconds", 28_800, in: 1...31_536_000)) }
     /// How solid the window's background is, as on the Mac: below 1 the desktop shows through, blurred if `blur`.
@@ -106,8 +117,17 @@ final class AppSettings {
 
     func set(_ key: String, _ value: Bool) { set(key, value ? "true" : "false") }
 
+    /// Back to the default: the key out of the file.
+    func remove(_ key: String) {
+        guard file[key] != nil else { return }
+        file[key] = nil
+        save()
+        onChange.forEach { $0() }
+    }
+
     /// For off-screen drawing: a value for now, not written to the config file.
     func setForTesting(_ key: String, _ value: String) { file[key] = value }
+    func forgetForTesting(_ key: String) { file[key] = nil }
 
     // MARK: The file
 

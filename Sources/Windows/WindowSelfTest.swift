@@ -179,6 +179,30 @@ enum WindowSelfTest {
             try? FileManager.default.removeItem(atPath: dir)
         }
 
+        // Agents on the PATH (an .exe, or npm's .cmd shim), for Send to Chat's new chats; and what continues one on restore.
+        do {
+            let dir = NSTemporaryDirectory() + "solanum-agents-\(GetCurrentProcessId())"
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            _ = FileManager.default.createFile(atPath: dir + "\\claude.cmd", contents: Data())
+            _ = FileManager.default.createFile(atPath: dir + "\\codex.exe", contents: Data())
+            let found = InstalledAgents.scan(path: dir + ";C:\\nowhere")
+            results.check("chat: agents on the PATH, by their .exe or npm's .cmd", found == [.claude, .codex], "\(found.map(\.command))")
+            try? FileManager.default.removeItem(atPath: dir)
+            let s = AppSettings.shared
+            let was = (s.file["continue-agents"], s.file["continue-command-claude"])
+            s.setForTesting("continue-command-claude", "claude --resume")
+            let custom = s.continueCommand(forAgent: "claude"), codex = s.continueCommand(forAgent: "codex")
+            s.setForTesting("continue-command-claude", "")
+            let skipped = s.continueCommand(forAgent: "claude")
+            s.setForTesting("continue-agents", "false")
+            let off = s.continueCommand(forAgent: "codex")
+            s.setForTesting("continue-agents", was.0 ?? "true")
+            s.setForTesting("continue-command-claude", was.1 ?? "")
+            if was.1 == nil { s.forgetForTesting("continue-command-claude") }
+            results.check("continue: an agent's own command, its default, left out when empty, none when off",
+                          custom == "claude --resume" && codex == "codex resume --last" && skipped == nil && off == nil)
+        }
+
         // Keep Awake's time left, as the status bar shows it.
         results.check("keep awake: time left to the minute", KeepAwake.shortDuration(28_800) == "8h" && KeepAwake.shortDuration(28_799) == "8h"
                       && KeepAwake.shortDuration(28_740) == "7h 59m" && KeepAwake.shortDuration(2_700) == "45m" && KeepAwake.shortDuration(30) == "30s")
@@ -1492,6 +1516,36 @@ enum WindowSelfTest {
         }, done: { pane.resumeCommand == "claude -c" }))
         steps.append(Step(name: "resume: and stopped, nothing would", action: { pane.type("\u{03}") },
                           done: { pane.atPrompt && pane.resumeCommand == nil }))
+
+        // Send to Chat, as the Mac's Option-Command-S: a command and its output, to a chat running in another tab.
+        var chatPane: TerminalPane?
+        var sendingIndex = 0
+        steps.append(Step(name: "chat: a command to send", action: {
+            pane.type("echo chat-me")
+            pane.pressEnter()
+        }, done: { hasLine("chat-me") && pane.atPrompt }))
+        steps.append(Step(name: "chat: a stand-in chat in a tab of its own", action: {
+            sendingIndex = window.activeIndex
+            window.newTab()
+        }, done: { pane.atPrompt && window.activeIndex != sendingIndex }))
+        steps.append(Step(name: "chat: running there", action: {
+            chatPane = window.activePane
+            pane.type("function claude { Start-Sleep -Seconds 60 }; claude")
+            pane.pressEnter()
+        }, done: { chatPane?.agent?.kind == .claude }))
+        steps.append(Step(name: "chat: Ctrl+Alt+S, back in the first tab, lists it", action: {
+            window.selectTab(sendingIndex)
+            _ = window.keyDown(0x53, shift: false, ctrl: true, alt: true)
+        }, done: { window.menuTitles.contains("Active Chats") && window.menuTitles.count >= 2 }))
+        steps.append(Step(name: "chat: choosing it goes there", action: {
+            if let title = window.menuTitles.first(where: { $0 != "Active Chats" && !$0.hasPrefix("New ") && !$0.isEmpty }), let r = window.menuRow(title) {
+                window.click(r)
+            }
+        }, done: { !window.isMenuOpen && window.activePane === chatPane }))
+        steps.append(Step(name: "chat: and closes", action: {
+            chatPane?.type("\u{03}")
+            if let i = window.panes.firstIndex(where: { $0 === chatPane }) { window.closeTab(i) }
+        }, done: { !window.panes.contains { $0 === chatPane } && pane.atPrompt }))
 
         // Tab groups.
         steps.append(Step(name: "groups: tabs to group", action: { window.newTab(); window.newTab() },

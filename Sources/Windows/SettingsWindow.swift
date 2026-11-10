@@ -414,8 +414,20 @@ final class SettingsWindow {
                 .header("Sessions"),
                 .card([Row(glyph: 0xE8F1, title: "Reopen windows and tabs", detail: later, control: toggle("restore-session") { s.file.bool("restore-session", true) }),
                        Row(glyph: 0xE81C, title: "Include recent output", detail: later, control: toggle("restore-scrollback") { s.file.bool("restore-scrollback", true) }),
-                       Row(glyph: 0xE72C, title: "Continue coding agents", detail: later, control: toggle("continue-agents") { s.file.bool("continue-agents", true) }),
+                       Row(glyph: 0xE72C, title: "Continue coding agents",
+                           detail: "Agents running when Solanum closed pick up their last session in their tab, with the command below.",
+                           control: toggle("continue-agents") { s.file.bool("continue-agents", true) }),
                        Row(glyph: 0xE711, title: "Ask before closing with something running", detail: later, control: toggle("confirm-quit") { s.file.bool("confirm-quit", true) })]),
+                .header("Continue Agents"),
+                // The best-known agents, as on the Mac; the rest are continue-command-<agent> lines in the config file.
+                .card(AgentKind.known.prefix(4).map { kind in
+                    let key = "continue-command-" + kind.command, fallback = AgentResume.commands[kind.command] ?? ""
+                    return Row(glyph: 0xE99A, title: kind.name, detail: kind == AgentKind.known.first ? "Left empty, that agent isn't continued." : nil,
+                               control: .field(id: key, get: { s.file[key] ?? fallback }, placeholder: "Not continued", width: 240, commit: { text in
+                                   let typed = text.trimmingCharacters(in: .whitespaces)
+                                   if typed == fallback { AppSettings.shared.remove(key) } else { AppSettings.shared.set(key, typed) }
+                               }))
+                }),
             ]
         case .appearance where draft != nil:
             return editorBlocks()

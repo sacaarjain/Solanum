@@ -70,6 +70,12 @@ enum CoreSelfTest {
             results.check(name, cond, detail())
         }
         do {
+            // Which agent a command started, for continuing it with the command Settings has for it.
+            check("agents: a command's agent, through npx or a full path", AgentResume.agent(typed: "claude --model x") == "claude"
+                  && AgentResume.agent(typed: "npx codex") == "codex" && AgentResume.agent(typed: #"& 'C:\tools\agy.exe' -c"#) == "agy"
+                  && AgentResume.agent(typed: "git status") == nil && AgentResume.command(continuing: "npx codex") == "codex resume --last")
+        }
+        do {
             // Command History: PowerShell's file (a backtick ends each line of a command but its last), bash's, newest first.
             let ps = HistoryFile.parsePowerShell("cd C:\\x\r\nGet-ChildItem |`\r\n  Select Name\r\ngit status\r\ncd C:\\x\r\n")
             check("history: PowerShell's file, a command over two lines kept whole", ps == ["cd C:\\x", "Get-ChildItem |\n  Select Name", "git status", "cd C:\\x"], "\(ps)")
