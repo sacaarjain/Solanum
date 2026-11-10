@@ -1711,14 +1711,21 @@ enum WindowSelfTest {
             let l = window.currentLayout
             window.dragTab(4, toX: l.width * 0.75, y: l.height / 2) { shown = window.dragShows }
         }, done: { window.isSplit && window.panes.last?.column == 1 && window.panes.last?.group == nil }))
+        // Collapsed, the group is just its chip, in view however narrow the left column's strip is.
+        steps.append(Step(name: "groups: its chip collapses it, while split", action: { window.click(window.chipRect(1)!) },
+                          done: { window.currentLayout.tab(2).width == 0 }))
         steps.append(Step(name: "groups: dragged from the right column onto the group's chip on the left, it joins", action: {
             let chip = window.chipRect(1)!
             window.dragTab(window.panes.count - 1, toX: chip.x + chip.width / 2, y: chip.midY) { shown = window.dragShows }
+            // What happened, for the log if the check below fails.
+            print("    (chip lit \(shown.chip), columns \(window.panes.map(\.column)), grouped \(window.panes.map { $0.group != nil }))")
         }, done: {
             let g = window.panes[1].group
             return shown.chip && g != nil && window.panes.filter { $0.group === g }.count == 4 && window.panes.allSatisfy { $0.column == 0 }
                 && (0..<window.panes.count).filter { window.chipRect($0) != nil } == [1]
         }))
+        steps.append(Step(name: "groups: and expands again", action: { window.click(window.chipRect(1)!) },
+                          done: { window.currentLayout.tab(4).width > 0 }))
         steps.append(Step(name: "groups: the chip's menu", action: { window.rightClick(window.chipRect(1)!) },
                           done: { window.menuTitles.contains("Ungroup") && window.menuTitles.contains("Purple") }))
         steps.append(Step(name: "groups: ungroups", action: { window.click(window.menuRow("Ungroup")!) },
