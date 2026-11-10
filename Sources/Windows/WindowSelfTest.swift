@@ -855,7 +855,7 @@ enum WindowSelfTest {
         steps.append(Step(name: "sidebar: the terminal makes room", action: {}, done: { pane.terminal.cols < colsWithoutSidebar }))
         steps.append(Step(name: "sidebar: lists folders first", action: {},
                           done: { window.leftTree.rows.map(\.entry.name) == ["alpha", "zeta.txt"] }))
-        steps.append(Step(name: "sidebar: clicking a folder opens it", action: { window.click(window.leftRow(named: "alpha")!) },
+        steps.append(Step(name: "sidebar: clicking a folder opens it", action: { if let row = window.leftRow(named: "alpha") { window.click(row) } },
                           done: { window.leftRow(named: "inner.txt") != nil && window.leftHasFocus }))
         steps.append(Step(name: "sidebar: arrow keys move through it", action: { _ = window.keyDown(Int32(0x28), shift: false, ctrl: false, alt: false) },
                           done: { window.leftTree.selection?.hasSuffix("inner.txt") == true }))
@@ -869,7 +869,7 @@ enum WindowSelfTest {
             _ = FileManager.default.createFile(atPath: windowsFolder + "\\late.txt", contents: Data("first line\nsecond line\n".utf8))
         }, done: { window.leftRow(named: "late.txt") != nil }))
         steps.append(Step(name: "sidebar: clicking a file shows it, the keyboard staying in the sidebar", action: {
-            window.click(window.leftRow(named: "late.txt")!)
+            if let row = window.leftRow(named: "late.txt") { window.click(row) }
         }, done: {
             guard let preview = window.activePanel as? FileEditorPanel else { return false }
             return preview.textLines == ["first line", "second line", ""] && pane.editors.count == 2 && window.leftHasFocus && !pane.editorFocused
@@ -880,7 +880,7 @@ enum WindowSelfTest {
         func editor() -> FileEditorPanel? { window.activePanel as? FileEditorPanel }
         func onDisk(_ path: String) -> String { (try? String(contentsOfFile: path, encoding: .utf8)) ?? "" }
         func key(_ k: Int32, ctrl: Bool = false, shift: Bool = false, alt: Bool = false) { _ = window.keyDown(k, shift: shift, ctrl: ctrl, alt: alt) }
-        steps.append(Step(name: "editor: double-clicking a file opens it, with the keyboard", action: { window.doubleClick(window.leftRow(named: "late.txt")!) },
+        steps.append(Step(name: "editor: double-clicking a file opens it, with the keyboard", action: { if let row = window.leftRow(named: "late.txt") { window.doubleClick(row) } },
                           done: { editor()?.path.hasSuffix("late.txt") == true && pane.editorFocused && !window.leftHasFocus && openedFile == nil }))
         steps.append(Step(name: "editor: typing edits it", action: {
             key(Win.VK_HOME, ctrl: true)
@@ -889,7 +889,8 @@ enum WindowSelfTest {
         steps.append(Step(name: "editor: Ctrl+S saves it", action: { key(0x53, ctrl: true) },
                           done: { onDisk(late) == "hi first line\nsecond line\n" && editor()?.hasUnsavedChanges == false }))
         steps.append(Step(name: "editor: an edit not saved asks before closing, Windows' way", action: {
-            window.typeIntoWindow("x")
+            // Typed straight in: a posted character would only arrive after Ctrl+W had closed the file.
+            editor()?.typeForTesting("x")
             key(0x57, ctrl: true)
         }, done: { window.dialogTitle == "Save changes to late.txt?" && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\save-changes.png") } ?? true) }))
         steps.append(Step(name: "editor: Cancel keeps it open", action: { pane.pressEscape() },
@@ -899,8 +900,9 @@ enum WindowSelfTest {
             pane.pressEnter()
         }, done: { onDisk(late).hasPrefix("hi x") && !pane.editors.contains { ($0.panel as? FileEditorPanel)?.path.hasSuffix("late.txt") == true } }))
         let json = windowsFolder + "\\data.json"
-        _ = FileManager.default.createFile(atPath: json, contents: Data(##"{"a":1,"b":[1,2]}"##.utf8))
+        // Made when it's needed, so the sidebar's listing earlier has only the sample's own files.
         steps.append(Step(name: "editor: Beautify re-indents JSON", action: {
+            _ = FileManager.default.createFile(atPath: json, contents: Data(##"{"a":1,"b":[1,2]}"##.utf8))
             window.showFile(json, in: pane)
         }, done: {
             guard let e = editor(), e.textLines != nil else { return false }
@@ -912,8 +914,10 @@ enum WindowSelfTest {
         }))
         steps.append(Step(name: "editor: and saves", action: { key(0x53, ctrl: true) }, done: { onDisk(json).hasPrefix("{\n  \"a\": 1,") }))
         let readme = windowsFolder + "\\readme.md"
-        _ = FileManager.default.createFile(atPath: readme, contents: Data("# Title\n\nSome **bold** and *italic* text, `code`, a [link](https://example.com).\n\n- one\n- [x] done\n".utf8))
-        steps.append(Step(name: "preview: a Markdown file renders", action: { window.showPreview(readme, in: pane) }, done: {
+        steps.append(Step(name: "preview: a Markdown file renders", action: {
+            _ = FileManager.default.createFile(atPath: readme, contents: Data("# Title\n\nSome **bold** and *italic* text, `code`, a [link](https://example.com).\n\n- one\n- [x] done\n".utf8))
+            window.showPreview(readme, in: pane)
+        }, done: {
             guard let preview = window.activePanel as? MarkdownPreviewPanel, let blocks = preview.blocks else { return false }
             return blocks.count == 4 && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\markdown.png") } ?? true)
         }))
@@ -928,7 +932,7 @@ enum WindowSelfTest {
             window.dragLeftEdge(to: sidebarWidthBefore + 60)
         }, done: { abs(window.leftWidthNow - sidebarWidthBefore - 60) <= 2 }))
         steps.append(Step(name: "sidebar: double-clicking a folder sends the terminal there", action: {
-            window.doubleClick(window.leftRow(named: "alpha")!)
+            if let row = window.leftRow(named: "alpha") { window.doubleClick(row) }
         }, done: { pane.terminal.cwd?.hasSuffix("alpha") == true && pane.atPrompt }))
         steps.append(Step(name: "sidebar: and it follows", action: {}, done: { window.leftTree.root?.hasSuffix("alpha") == true && window.leftRow(named: "inner.txt") != nil }))
         func inSample(_ root: String?) -> Bool { root?.hasSuffix(WindowsPath.name(windowsFolder)) == true }
@@ -1034,7 +1038,7 @@ enum WindowSelfTest {
         steps.append(Step(name: "files: the sidebar shows the folder", action: {}, done: {
             window.leftTree.root?.hasSuffix("alpha") == true && window.leftRow(named: "inner.txt") != nil
         }))
-        steps.append(Step(name: "files: a file's menu", action: { window.rightClick(window.leftRow(named: "inner.txt")!) }, done: {
+        steps.append(Step(name: "files: a file's menu", action: { if let row = window.leftRow(named: "inner.txt") { window.rightClick(row) } }, done: {
             ["New File…", "New Folder…", "Cut", "Copy", "Paste", "Duplicate", "Copy Path", "Rename…", "Delete", "Show in Explorer"].allSatisfy(window.menuTitles.contains)
                 && window.menuShortcuts["Rename…"] == "F2"
         }))
@@ -1055,13 +1059,13 @@ enum WindowSelfTest {
         steps.append(Step(name: "files: Esc leaves it as it was", action: { pane.pressEscape() },
                           done: { window.leftEditingText == nil && exists("renamed.txt") }))
         steps.append(Step(name: "files: Enter renames, as Return does on the Mac", action: {
-            window.click(window.leftRow(named: "renamed.txt")!)
+            if let row = window.leftRow(named: "renamed.txt") { window.click(row) }
             _ = window.keyDown(Win.VK_RETURN, shift: false, ctrl: false, alt: false)
         }, done: { window.leftEditingText == "renamed.txt" }))
         steps.append(Step(name: "files: and Esc again leaves it", action: { pane.pressEscape() },
                           done: { window.leftEditingText == nil && exists("renamed.txt") }))
         steps.append(Step(name: "files: Duplicate copies beside it", action: {
-            window.rightClick(window.leftRow(named: "renamed.txt")!)
+            if let row = window.leftRow(named: "renamed.txt") { window.rightClick(row) }
             window.click(window.menuRow("Duplicate")!)
         }, done: { exists("renamed - Copy.txt") }))
         steps.append(Step(name: "files: Ctrl+Shift+N makes a folder", action: {
@@ -1070,17 +1074,17 @@ enum WindowSelfTest {
         }, done: { var d: ObjCBool = false; return FileManager.default.fileExists(atPath: WindowsPath.join(alphaFolder, "box"), isDirectory: &d) && d.boolValue
                     && window.leftRow(named: "box") != nil }))
         steps.append(Step(name: "files: Ctrl+C puts it on the clipboard, for Explorer too", action: {
-            window.click(window.leftRow(named: "renamed.txt")!)
+            if let row = window.leftRow(named: "renamed.txt") { window.click(row) }
             _ = window.keyDown(0x43, shift: false, ctrl: true, alt: false)
         }, done: { FileOps.clipboardFiles(owner: nil)?.paths.map { $0.lowercased() } == [WindowsPath.join(alphaFolder, "renamed.txt").lowercased()] }))
         steps.append(Step(name: "files: Ctrl+V into a folder copies it there", action: {
-            window.click(window.leftRow(named: "box")!)
+            if let row = window.leftRow(named: "box") { window.click(row) }
             _ = window.keyDown(0x56, shift: false, ctrl: true, alt: false)
         }, done: { exists("box\\renamed.txt") && exists("renamed.txt") }))
         steps.append(Step(name: "files: cut and paste moves it", action: {
-            window.click(window.leftRow(named: "renamed - Copy.txt")!)
+            if let row = window.leftRow(named: "renamed - Copy.txt") { window.click(row) }
             _ = window.keyDown(0x58, shift: false, ctrl: true, alt: false)
-            window.click(window.leftRow(named: "box")!)
+            if let row = window.leftRow(named: "box") { window.click(row) }
             _ = window.keyDown(0x56, shift: false, ctrl: true, alt: false)
         }, done: { exists("box\\renamed - Copy.txt") && !exists("renamed - Copy.txt") }))
         steps.append(Step(name: "files: dragging a file onto a folder moves it", action: {
@@ -1098,7 +1102,7 @@ enum WindowSelfTest {
         }, done: { pane.logicalText.contains("'\(outside)'") }))
         steps.append(Step(name: "files: and cleared again", action: { pane.pressEscape() }, done: { !pane.cursorRowText.contains("outside") }))
         steps.append(Step(name: "files: Delete sends to the Recycle Bin", action: {
-            window.click(window.leftRow(named: "box")!)
+            if let row = window.leftRow(named: "box") { window.click(row) }
             _ = window.keyDown(Win.VK_DELETE, shift: false, ctrl: false, alt: false)
         }, done: { !exists("box") && window.leftRow(named: "box") == nil }))
         steps.append(Step(name: "files: the folder's own menu below the rows", action: { window.rightClick(window.leftListEmptySpot) }, done: {
@@ -1557,7 +1561,7 @@ enum WindowSelfTest {
                 hostTyped("made-on-host")
             }, done: { window.leftRow(named: "made-on-host") != nil }))
             steps.append(Step(name: "ssh files: renamed there", action: {
-                window.click(window.leftRow(named: "made-on-host")!)
+                if let row = window.leftRow(named: "made-on-host") { window.click(row) }
                 _ = window.keyDown(Win.VK_F2, shift: false, ctrl: false, alt: false)
                 hostTyped("renamed-on-host")
             }, done: { window.leftRow(named: "renamed-on-host") != nil && window.leftRow(named: "made-on-host") == nil }))
