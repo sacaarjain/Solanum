@@ -1365,11 +1365,8 @@ enum WindowSelfTest {
             _ = window.keyDown(Win.VK_ESCAPE, shift: false, ctrl: false, alt: false)
         }, done: { pane.findBar == nil && !pane.cursorRowText.contains("example.com") }))
         // Keep Awake, as the Mac's Shift-Command-A, and its cup in the status bar.
-        steps.append(Step(name: "keep awake: the cup, while it's off, offers to start it", action: { window.click(window.keepAwakeButtonRect) },
-                          done: { window.menuTitles.contains { $0.hasPrefix("Start Caffeinate for ") } }))
-        steps.append(Step(name: "keep awake: which starts it", action: {
-            if let t = window.menuTitles.first(where: { $0.hasPrefix("Start Caffeinate for ") }), let r = window.menuRow(t) { window.click(r) }
-        }, done: { KeepAwake.isOn && !window.isMenuOpen }))
+        steps.append(Step(name: "keep awake: a click on the cup, while it's off, starts it", action: { window.click(window.keepAwakeButtonRect) },
+                          done: { KeepAwake.isOn && !window.isMenuOpen }))
         steps.append(Step(name: "keep awake: while on, an hour more", action: {
             window.click(window.keepAwakeButtonRect)
             if let r = window.menuRow("Add 1 Hour") { window.click(r) }

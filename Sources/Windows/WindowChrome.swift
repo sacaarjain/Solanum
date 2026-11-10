@@ -446,7 +446,7 @@ struct WindowChrome {
 
     /// What the pointer over Keep Awake's cup shows: whether it's on, and for how much longer.
     var keepAwakeTip: String {
-        keepAwakeLeft.map { "Keeping this PC awake \u{00B7} \($0) left" } ?? "Caffeinate is off \u{00B7} click to start it"
+        keepAwakeLeft.map { "Keeping this PC awake \u{00B7} \($0) left" } ?? "Caffeinate is off \u{00B7} click to start it for \(KeepAwake.shortDuration(AppSettings.shared.keepAwakeSeconds))"
     }
 
     /// The tip over Keep Awake's cup, above the status bar, while the pointer's on it. Drawn over everything else.

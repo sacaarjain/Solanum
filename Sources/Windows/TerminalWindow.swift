@@ -647,8 +647,8 @@ final class TerminalWindow {
     }
 
     /// The status bar's shell button: what this tab runs, switching it to another, a new tab with one, and the default.
-    /// A click on Keep Awake's cup: while it's on, an hour more or less, or end it; while it's off, start it for as long
-    /// as Settings says.
+    /// A click on Keep Awake's cup: while it's on, a menu to add or take off an hour, or end it; while it's off, it starts,
+    /// for as long as Settings says.
     private func showKeepAwakeMenu() {
         var items: [MenuItem]
         if let left = KeepAwake.secondsLeft {
@@ -660,9 +660,9 @@ final class TerminalWindow {
                      .separator,
                      MenuItem(title: "End Caffeinate", shortcut: "Ctrl+Shift+A") { KeepAwake.stop() }]
         } else {
-            items = [MenuItem(title: "Start Caffeinate for \(KeepAwake.shortDuration(AppSettings.shared.keepAwakeSeconds))", shortcut: "Ctrl+Shift+A") {
-                KeepAwake.start(seconds: AppSettings.shared.keepAwakeSeconds)
-            }]
+            // Off, there's only one thing to do: a click starts it, for as long as Settings says.
+            KeepAwake.start(seconds: AppSettings.shared.keepAwakeSeconds)
+            return
         }
         let b = layout.keepAwakeButton
         openMenu(items, x: b.x, y: b.y - 4 * scale, above: true)
