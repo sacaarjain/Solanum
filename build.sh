@@ -15,8 +15,18 @@ INSTALL_DIR="$HOME/Applications"
 
 # Release skips Swift's runtime exclusivity checks: in the emulator's per-byte loops they took more time than the
 # parsing itself (a 20 MB cat ran 39% faster without them). Debug builds keep them, to catch a violation.
-OPT="-O -enforce-exclusivity=unchecked"; MODE="release"
-[[ "${1:-}" == "--debug" ]] && { OPT="-Onone -g"; MODE="debug"; }
+#
+# Optimizing is most of the compile time, and only some code needs it. So a release build optimizes:
+#   - Sources/Core (the emulator, parsers, syntax), built as its own module, SolanumCore. Unoptimized, a 20 MB cat
+#     takes over 20s instead of 1s. The app imports it @testable, so its internal names stay visible and no
+#     source file needs an import (the Windows build still compiles Core into one module with the rest).
+#   - HOT: the app files on the path from the pty to the screen. With them unoptimized, the same cat takes 2.5-7s.
+# The rest of the app (windows, settings, sidebars, editors, git, extensions) is built unoptimized: measured, it
+# draws, scrolls and finds just as fast, and it compiles about 4x faster, so an edit that ripples through many
+# files (a new property on TabGroup or TerminalView) takes about 6s instead of about 25s.
+HOT="TerminalView PTY Redraw"
+CORE_OPT="-O -enforce-exclusivity=unchecked"; APP_OPT="-Onone -enforce-exclusivity=unchecked"; MODE="release"
+[[ "${1:-}" == "--debug" ]] && { CORE_OPT="-Onone -g"; APP_OPT="-Onone -g"; HOT=""; MODE="debug"; }
 
 fail() { echo "✗ $*" >&2; exit 1; }
 
@@ -43,28 +53,65 @@ mkdir -p "$BUILD_DIR"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-# Incremental and parallel: objects are kept per mode and architecture in build/obj-<mode>-<arch>, so a rebuild only
-# recompiles the files that changed (and those depending on what changed), across all cores. Not whole-module: that's
-# one job on one core.
+# Incremental and parallel: objects are kept per mode and architecture in build/obj-<mode>-<arch>/{core,app,hot}, so
+# a rebuild only recompiles the files that changed (and those depending on what changed), across all cores. Not
+# whole-module: that's one job on one core.
 OBJ="$BUILD_DIR/obj-$MODE-$ARCH"
-mkdir -p "$OBJ"
-{
-  printf '{"": {"swift-dependencies": "%s/master.swiftdeps"}' "$OBJ"
-  for f in Sources/*.swift Sources/Core/*.swift; do
-    b="$(basename "$f" .swift)"
-    printf ',\n"%s": {"object": "%s/%s.o", "swift-dependencies": "%s/%s.swiftdeps"}' "$f" "$OBJ" "$b" "$OBJ" "$b"
-  done
-  echo '}'
-} > "$OBJ/output-file-map.json"
+# (Builds before the split kept their objects at the top of this folder.)
+[[ -d "$OBJ" ]] && find "$OBJ" -maxdepth 1 -type f -delete
+mkdir -p "$OBJ/core" "$OBJ/app" "$OBJ/hot"
+filemap() {  # filemap <dir> <sources…>: where swiftc puts each file's object and dependencies
+  local dir="$1"; shift
+  {
+    printf '{"": {"swift-dependencies": "%s/master.swiftdeps"}' "$dir"
+    for f in "$@"; do
+      b="$(basename "$f" .swift)"
+      printf ',\n"%s": {"object": "%s/%s.o", "swift-dependencies": "%s/%s.swiftdeps"}' "$f" "$dir" "$b" "$dir" "$b"
+    done
+    echo '}'
+  } > "$dir/output-file-map.json"
+}
+filemap "$OBJ/core" Sources/Core/*.swift
+filemap "$OBJ/app" Sources/*.swift
+TARGET="$ARCH-apple-macosx14.0"
+JOBS="$(sysctl -n hw.ncpu)"
+quiet() { grep -v -E "^(.*warning:|\s*[0-9]*\s*\||\s*$|.*note:)" || true; }
+FAILED=""
 
 echo "› Compiling…"
-swiftc $OPT -swift-version 5 \
-  -incremental -enable-batch-mode -j"$(sysctl -n hw.ncpu)" -output-file-map "$OBJ/output-file-map.json" \
-  -target "$ARCH-apple-macosx14.0" \
-  -import-objc-header Support/Bridging.h \
+if ! swiftc $CORE_OPT -swift-version 5 -target "$TARGET" -module-name SolanumCore -parse-as-library -enable-testing -c \
+  -incremental -enable-batch-mode -j"$JOBS" -output-file-map "$OBJ/core/output-file-map.json" \
+  -emit-module -emit-module-path "$OBJ/core/SolanumCore.swiftmodule" \
+  Sources/Core/*.swift 2>&1 | quiet; then fail "Build failed (the compiler's errors are above)."; fi
+
+APP_FLAGS=(-swift-version 5 -module-name "$APP_NAME" -I "$OBJ/core" -import-objc-header Support/Bridging.h)
+if ! swiftc $APP_OPT -target "$TARGET" "${APP_FLAGS[@]}" -Xfrontend -testable-import-module -Xfrontend SolanumCore -c \
+  -incremental -enable-batch-mode -j"$JOBS" -output-file-map "$OBJ/app/output-file-map.json" \
+  Sources/*.swift 2>&1 | quiet; then fail "Build failed (the compiler's errors are above)."; fi
+
+# The hot files again, optimized, whenever swiftc just recompiled them (it knows when a change elsewhere affects
+# them). One frontend job each, all at once, with the rest of the app as context.
+OBJECTS=(); PIDS=(); SDK_PATH="$(xcrun --show-sdk-path)"
+for f in Sources/*.swift; do
+  b="$(basename "$f" .swift)"
+  if [[ " $HOT " == *" $b "* ]]; then
+    OBJECTS+=("$OBJ/hot/$b.o")
+    [[ -f "$OBJ/hot/$b.o" && ! "$OBJ/app/$b.o" -nt "$OBJ/hot/$b.o" ]] && continue
+    others=(); for g in Sources/*.swift; do [[ "$g" == "$f" ]] || others+=("$g"); done
+    ( swiftc -frontend -c -primary-file "$f" "${others[@]}" $CORE_OPT -target "$TARGET" "${APP_FLAGS[@]}" \
+        -testable-import-module SolanumCore -sdk "$SDK_PATH" -target-sdk-version "$SDK" \
+        -enable-objc-interop -o "$OBJ/hot/$b.o" 2>&1 | quiet || { rm -f "$OBJ/hot/$b.o"; exit 1; } ) &
+    PIDS+=($!)
+  else
+    OBJECTS+=("$OBJ/app/$b.o")
+  fi
+done
+for p in ${PIDS[@]+"${PIDS[@]}"}; do wait "$p" || FAILED=1; done
+[[ -z "$FAILED" ]] || fail "Build failed (the compiler's errors are above)."
+
+swiftc -target "$TARGET" "${OBJECTS[@]}" "$OBJ"/core/*.o \
   -framework AppKit -framework Carbon -framework UserNotifications -framework AVKit -framework PDFKit -framework WebKit \
-  Sources/*.swift Sources/Core/*.swift \
-  -o "$APP/Contents/MacOS/$APP_NAME" 2>&1 | grep -v -E "^(.*warning:|\s*[0-9]*\s*\||\s*$|.*note:)" || true
+  -o "$APP/Contents/MacOS/$APP_NAME" 2>&1 | quiet
 [[ -x "$APP/Contents/MacOS/$APP_NAME" ]] || fail "Build failed (the compiler's errors are above)."
 
 # The icon is drawn by a small tool. Without it Solanum still works, with the generic app icon, so a problem here
