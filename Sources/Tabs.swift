@@ -3398,7 +3398,13 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         let docked = dockedRect(c)
         // The strip's tint and bottom edge leave the active tab out, so it shows the terminal's own background. A tab
         // scrolled partly out of view keeps its shape, cut off where the tabs stop (at the arrows).
-        let dockClip = leftArrowRect.isNull ? viewport.insetBy(dx: -(Self.dockFlare + 1), dy: 0) : viewport
+        // Its feet curve out past its sides, so on a side that's in view (not gone under an arrow) there's room for them.
+        let foot = Self.dockFlare + 1
+        let dockClip: CGRect = docked.map { d in
+            let l = leftArrowRect.isNull || d.minX >= viewport.minX - 0.5 ? foot : 0
+            let r = leftArrowRect.isNull || d.maxX <= viewport.maxX + 0.5 ? foot : 0
+            return CGRect(x: viewport.minX - l, y: viewport.minY, width: viewport.width + l + r, height: viewport.height)
+        } ?? viewport
         th.tabBarTint.setFill()
         if let d = docked {
             let outside = NSBezierPath(rect: bounds)
