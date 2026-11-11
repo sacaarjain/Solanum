@@ -508,6 +508,15 @@ enum CoreSelfTest {
                   && t.sshControlPath == nil, "\(String(describing: e))")
         }
         do {
+            // A connection that drops under tmux (or vim, less…) leaves the screen and modes as the remote set them;
+            // the session ending puts them back for the shell here, so it isn't stuck on tmux's screen.
+            let (t, _) = make()
+            feed(t, "main\u{1b}]1337;SolanumSSH=/tmp/sock\u{07}\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1006h\u{1b}[?1h\u{1b}[?25l\u{1b}[2;3rtmux"
+                 + "\u{1b}]1337;SolanumSSHExit=255\u{07}\u{1b}]1337;SolanumSSH=\u{07}")
+            check("ssh end restores the screen and modes", !t.usingAlt && t.mouseMode == .none && !t.mouseSGR && !t.appCursorKeys
+                  && t.cursorVisible && t.screen[0].text().hasPrefix("main"), "alt=\(t.usingAlt) mouse=\(t.mouseMode)")
+        }
+        do {
             let (t, _) = make(30, 6)
             feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}ls -la\r\n\u{1b}]133;C\u{07}file1\r\nfile2\r\n\u{1b}]133;D;0\u{07}\u{1b}]133;A\u{07}$ ")
             let b = t.blocks.first

@@ -141,6 +141,7 @@ final class CornerNoticeView: NSView {
         submitSecret(nil)
     }
     func devPressButton() { actionButton?.performClick(nil) }
+    var devHasButton: Bool { actionButton != nil }
 
     /// Wide enough for the title and every line (the same insets as `layout`), between `width` and `maxWidth`.
     var preferredWidth: CGFloat {
