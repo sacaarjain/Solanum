@@ -330,7 +330,7 @@ final class GitController {
 
     // MARK: Sync
 
-    func showSyncMenu(at point: NSPoint, in view: NSView) {
+    func showSyncMenu(at rect: NSRect, in view: NSView) {
         guard let info = bar?.git else { return }
         let menu = NSMenu()
         if let upstream = info.upstream {
@@ -353,7 +353,7 @@ final class GitController {
         }
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem("Fetch") { [weak self] in self?.fetch() })
-        menu.popUpAbove(point, in: view)
+        menu.popUpAbove(rect, in: view)
     }
 
     private func pull() { perform("Pulling…", "git pull", typed: "git pull") }
@@ -362,7 +362,7 @@ final class GitController {
 
     // MARK: Changes
 
-    func showChangesMenu(at point: NSPoint, in view: NSView) {
+    func showChangesMenu(at rect: NSRect, in view: NSView) {
         guard let info = bar?.git, let runner else { return }
         let menu = NSMenu()
         let names: [Character: String] = ["M": "Modified", "A": "Added", "D": "Deleted", "R": "Renamed", "C": "Copied",
@@ -395,7 +395,7 @@ final class GitController {
         show.keyEquivalentModifierMask = [.command, .control]
         menu.addItem(show)
         menu.autoenablesItems = false
-        menu.popUpAbove(point, in: view)
+        menu.popUpAbove(rect, in: view)
     }
 
     static func color(for code: Character, _ th: Theme) -> NSColor {

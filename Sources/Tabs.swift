@@ -730,7 +730,7 @@ final class StatusBarView: NSView {
     /// The theme's name, in capitals at the right end (not while split, where the right column's folder goes);
     /// clicking it lists the themes.
     var showsThemeName = false { didSet { needsDisplay = true } }
-    var onThemeMenu: ((NSPoint) -> Void)?
+    var onThemeMenu: ((NSRect) -> Void)?
     /// The right sidebar's toggle, at the far right while the window is split.
     var showsRightSidebarToggle = false { didSet { needsDisplay = true } }
     var rightSidebarVisible = false { didSet { needsDisplay = true } }
@@ -794,8 +794,8 @@ final class StatusBarView: NSView {
         needsDisplay = true
     }
     var onBranch: (() -> Void)?
-    var onSync: ((NSPoint) -> Void)?
-    var onChanges: ((NSPoint) -> Void)?
+    var onSync: ((NSRect) -> Void)?
+    var onChanges: ((NSRect) -> Void)?
 
     private enum Button { case sidebar, hosts, keepAwake, branch, sync, changes, rightSidebar, theme, moon }
 
@@ -1215,12 +1215,12 @@ final class StatusBarView: NSView {
             switch b.kind {
             case .sidebar: onToggleFileSidebar?()
             case .rightSidebar: onToggleRightSidebar?()
-            case .theme: onThemeMenu?(at)
+            case .theme: onThemeMenu?(b.rect)
             case .hosts: onShowHosts?(at)
             case .keepAwake: onKeepAwake?(b.rect)
             case .branch: onBranch?()
-            case .sync: if gitBusy == nil { onSync?(at) }
-            case .changes: onChanges?(at)
+            case .sync: if gitBusy == nil { onSync?(b.rect) }
+            case .changes: onChanges?(b.rect)
             case .moon: QuantumMoon.toggleReading(from: self, moon: b.rect)
             }
             return
@@ -1232,7 +1232,7 @@ final class StatusBarView: NSView {
         listFolders?(crumb.path) { [weak self] names in
             guard let self, self.window != nil else { return }
             self.folderMenu(crumb.path, label: crumb.label, names: names)
-                .popUpAbove(NSPoint(x: crumb.rect.minX, y: crumb.rect.minY - 2), in: self)
+                .popUpAbove(crumb.rect, in: self)
         }
     }
 
@@ -1628,6 +1628,9 @@ final class WindowRootView: NSView {
         background.backdrop = Backdrop.current(screen: window?.screen)
         effect.isHidden = !(cfg.blur && cfg.opacity < 1 && background.backdrop == .none)
         background.needsDisplay = true
+        // Editors stand apart from the terminals over a picture (see `EditorAreaView.draw`).
+        func mark(_ v: NSView) { if v is EditorAreaView { v.needsDisplay = true } else { v.subviews.forEach(mark) } }
+        mark(self)
     }
 
     override func viewDidMoveToWindow() {
@@ -1950,7 +1953,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         bar.showsKeepAwake = true
         bar.onKeepAwake = { [weak self] rect in self?.keepAwakeClicked(rect) }
         bar.showsThemeName = true
-        bar.onThemeMenu = { [weak bar] at in
+        bar.onThemeMenu = { [weak bar] rect in
             guard let bar else { return }
             let menu = NSMenu()
             let current = Config.shared.theme.name
@@ -1968,7 +1971,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             }
             menu.addItem(.separator())
             menu.addItem(ActionMenuItem("Theme Settings…") { SettingsWindowController.shared.present(.appearance) })
-            menu.popUpAbove(at, in: bar)
+            menu.popUpAbove(rect, in: bar)
         }
         rootView.rightStatusBar.onToggleRightSidebar = { [weak self] in self?.toggleRightSidebar(nil) }
         // Each half of the bar (the whole bar, unless split) follows its column: breadcrumbs and git.
@@ -2727,32 +2730,10 @@ final class CenteredTextFieldCell: NSTextFieldCell {
 
 /// Menu item that runs a closure (for context menus built on the fly).
 extension NSMenu {
-    /// Pops up with its bottom-left corner at `point` (menus from the status bar, at the window's bottom edge),
-    /// where `popUp(positioning:at:in:)` would hang it down from there and squeeze it against the screen's edge.
-    /// It's hung from its last row: then a menu taller than the room above (a long ssh host list) fills that
-    /// room and scrolls, its bottom still at `point`, instead of being pushed down over it.
-    /// Shown as Solanum's own dropdown (see `ThemedDropdown.show(_:at:in:)`), which opens upward where there's no
-    /// room below, as from the status bar.
-    func popUpAbove(_ point: NSPoint, in view: NSView) {
-        ThemedDropdown.show(self, at: point, in: view)
-    }
-
-    /// How far the menu reaches below the top of `item`'s row when it's the last one: its height plus the menu's
-    /// bottom padding, measured on menus of one and two copies of it.
-    private func rowAndPadding(below item: NSMenuItem) -> CGFloat {
-        func height(_ n: Int) -> CGFloat {
-            let m = NSMenu()
-            m.font = font
-            for _ in 0..<n {
-                let copy = item.isSeparatorItem ? NSMenuItem.separator() : NSMenuItem(title: item.title, action: nil, keyEquivalent: "")
-                copy.image = item.image
-                if let t = item.attributedTitle { copy.attributedTitle = t }
-                m.addItem(copy)
-            }
-            return m.size.height
-        }
-        let one = height(1), row = height(2) - one
-        return row + (one - row) / 2
+    /// Shown as Solanum's own dropdown from `rect` (a status bar button, at the window's bottom edge): it opens
+    /// just above it, lined up with its left edge, or with its right edge where there's no room to the right.
+    func popUpAbove(_ rect: NSRect, in view: NSView) {
+        ThemedDropdown.show(self, under: view, rect: rect)
     }
 }
 
@@ -3517,7 +3498,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             path.fill()
         }
 
-        // An agent's mark and status, a bell rung in the background, a dot for a running (accent) / failed (red) command,
+        // An agent's mark and status, a bell rung in the background, a dot for a running (green) / failed (red) command,
         // or else what the tab holds (its file's icon, or the petal prompt for a terminal), at the tab's left edge with
         // the title right after it. The title stays clear of the close button's room and is laid out the same whether
         // the tab is active, hovered or neither.
@@ -3546,7 +3527,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
                                     width: img.size.width, height: img.size.height), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
             }
         } else if dot {
-            (tab.isRunningCommand ? th.accent : th.red).setFill()
+            (tab.isRunningCommand ? th.green : th.red).setFill()
             // In the prompt's place, so the title doesn't move when a command starts or ends.
             NSBezierPath(ovalIn: NSRect(x: r.minX + pad + (SolanumArt.promptSize.width - 6) / 2, y: r.midY - 3, width: 6, height: 6)).fill()
         } else if tab.showsTerminal == false, let ed = tab.editor {

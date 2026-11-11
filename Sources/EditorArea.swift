@@ -21,6 +21,23 @@ final class EditorAreaView: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// Over a picture (the theme's or the desktop's), the file is on the theme's background made half again as solid
+    /// as the window's, so it stands apart from the terminal below it rather than running into it, as on Windows. With
+    /// no picture the window's own background shows through as before.
+    override func draw(_ dirtyRect: NSRect) {
+        var root = superview
+        while let v = root, !(v is WindowRootView) { root = v.superview }
+        guard let backdrop = (root as? WindowRootView)?.background.backdrop else { return }
+        let cfg = Config.shared, base: CGFloat
+        switch backdrop {
+        case .none: return
+        case .picture(_, let image): base = CGFloat(image.tint)
+        case .wallpaper: base = cfg.opacity
+        }
+        cfg.theme.background.withAlphaComponent(base + (1 - base) * 0.5).setFill()
+        NSRect(x: 0, y: FileTabStrip.height, width: bounds.width, height: max(0, bounds.height - FileTabStrip.height)).fill()
+    }
+
     func show(_ ed: FileEditorView) {
         if shown !== ed {
             shown?.removeFromSuperview()

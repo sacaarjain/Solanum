@@ -626,8 +626,10 @@ extension ThemedDropdown {
             }
             guard target != nil else { continue }
             if let v = target as? NSMenuItemValidation, !v.validateMenuItem(item) { continue }
-            let run = { [weak item, weak target] in
-                guard let item, let action = item.action else { return }
+            // Held strongly: the menu is thrown away once it's converted, and its items (an ActionMenuItem is its own
+            // target, holding what it does) with it, so a weak hold had nothing left to run by the time of a click.
+            let run = { [item, target] in
+                guard let action = item.action else { return }
                 NSApp.sendAction(action, to: target, from: item)
             }
             // ⌥'s version of the row before it.

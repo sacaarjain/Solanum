@@ -1620,16 +1620,21 @@ final class TerminalPane: TerminalDelegate, Groupable {
         let w = Float(terminal.cols) * m.cellWidth + 8 * s, h = Float(z - a + 1) * m.cellHeight + 4 * s
         sol_canvas_fill_rounded(canvas.raw, x, y, w, h, 6 * s, TerminalPalette.accent, 0.09)
         sol_canvas_stroke_rounded(canvas.raw, x + 0.5, y + 0.5, w - 1, h - 1, 6 * s, TerminalPalette.accent, 0.85, max(1, s.rounded()))
-        // A prompt's place among its session's, "Prompt 3 of 7", at the right of its first line, as on the Mac.
+        // A prompt's place among its session's, "Prompt 3 of 7": plain text just above the outline at its right, as on the
+        // Mac (there set into the divider above the prompt); on its first line, in a pill, when there's no room above.
         if case .turn = stop, let t = selectedTurn, (row(ofLine: first) ?? first - top) == a, let b = terminal.blockContaining(t.promptLine) {
             let text = "Prompt \(t.index) of \(terminal.agentTurns(in: b).count)", units = Array(text.utf16)
             let pixels = max(10 * s, m.cellHeight * 0.62)
             let tw = sol_canvas_measure_label(canvas.raw, units, Int32(units.count), pixels, 1)
             let ph = (pixels * 1.45).rounded(), pw = (tw + 14 * s).rounded()
-            let px = (x + w - 6 * s - pw).rounded(), py = (canvas.contentY + Float(a) * m.cellHeight + (m.cellHeight - ph) / 2).rounded()
-            sol_canvas_fill_rounded(canvas.raw, px, py, pw, ph, ph / 2, TerminalPalette.background, 0.85)
-            sol_canvas_fill_rounded(canvas.raw, px, py, pw, ph, ph / 2, TerminalPalette.accent, 0.14)
-            sol_canvas_draw_label(canvas.raw, px + 7 * s, py, tw + 2, ph, units, Int32(units.count), pixels, 1, TerminalPalette.accent, 1)
+            let above = (y - 2 * s - ph).rounded(), px = (x + w - (above >= 0 ? 0 : 6 * s) - pw).rounded()
+            let py = above >= 0 ? above : (canvas.contentY + Float(a) * m.cellHeight + (m.cellHeight - ph) / 2).rounded()
+            if above < 0 {
+                sol_canvas_fill_rounded(canvas.raw, px, py, pw, ph, ph / 2, TerminalPalette.background, 0.85)
+                sol_canvas_fill_rounded(canvas.raw, px, py, pw, ph, ph / 2, TerminalPalette.accent, 0.14)
+            }
+            sol_canvas_draw_label(canvas.raw, above < 0 ? px + 7 * s : x + w - tw - 2, py, tw + 2, ph, units, Int32(units.count), pixels, 1,
+                                  TerminalPalette.accent, 1)
         }
     }
 

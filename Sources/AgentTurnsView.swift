@@ -88,12 +88,30 @@ extension TerminalView {
     func drawTurnChrome(_ ctx: CGContext) {
         guard !terminal.usingAlt else { return }
         let th = palette.theme
+        // The selected prompt's place among its session's, "Prompt 3 of 7", set into the divider above it at the right,
+        // the divider stopping short of it. A prompt on the top row has no divider: it goes at the right of its first line.
+        var place: (text: NSAttributedString, row: Int)?
+        if let t = selectedTurn, let (first, _) = visibleRows(t), rowMap[first] == t.promptLine, let b = terminal.blockContaining(t.promptLine) {
+            let text = "Prompt \(t.index) of \(terminal.agentTurns(in: b).count)"
+            if first > 0 {
+                let font = NSFont.systemFont(ofSize: max(10, fonts.size - 2.5), weight: .medium)
+                place = (NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: th.accent]), first)
+            } else {
+                drawBadge(text, color: th.accent, rightX: bounds.width - padX, centerY: rowY(first) + fonts.cellH / 2, ctx)
+            }
+        }
         for r in 0..<rowMap.count where r > 0 {
             let a = rowMap[r]
             guard a >= 0, terminal.isAgentPromptLine(a) else { continue }
             let y = rowY(r) - fonts.cellH * 0.5
+            var right = bounds.width - padX
+            if let place, place.row == r {
+                let size = place.text.size()
+                right -= size.width + 8
+                drawLabel(place.text, at: CGPoint(x: bounds.width - padX - size.width, y: y - size.height / 2), ctx)
+            }
             ctx.setFillColor(th.border.cgColor)
-            ctx.fill(CGRect(x: padX, y: y - 0.5, width: bounds.width - padX * 2, height: 1))
+            ctx.fill(CGRect(x: padX, y: y - 0.5, width: right - padX, height: 1))
         }
         if let t = selectedTurn, let (first, last) = visibleRows(t) {
             let top = rowY(first) - 2
@@ -102,11 +120,6 @@ extension TerminalView {
             ctx.setLineWidth(1.5)
             ctx.addPath(selectionOutline(top: top, height: height))
             ctx.strokePath()
-            if rowMap[first] == t.promptLine, let b = terminal.blockContaining(t.promptLine) {
-                let total = terminal.agentTurns(in: b).count
-                drawBadge("Prompt \(t.index) of \(total)", color: th.accent, rightX: bounds.width - padX,
-                                centerY: rowY(first) + fonts.cellH / 2, ctx)
-            }
         }
         for p in collapsedTurns {
             guard let t = terminal.agentTurn(at: p), t.hasResponse,
