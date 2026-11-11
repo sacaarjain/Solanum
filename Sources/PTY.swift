@@ -435,9 +435,11 @@ enum ShellIntegration {
             return $ret
         }
 
-        # This pane's own history ($SOLANUM_HISTFILE, kept across restarts), so ↑ in a restored tab starts with what
-        # was run in it rather than in whichever tab ran something last. Read in at the first prompt, after the shared
-        # file (bash reads $HISTFILE only once this init file is done); each command then goes into both.
+        # This pane's own history ($SOLANUM_HISTFILE, kept across restarts): ↑ goes through what was run in this tab,
+        # newest first, and nothing else. At the first prompt the shared file's lines (bash reads $HISTFILE only once
+        # this init file is done) make way for it; ⌃H still searches them all. Each command goes into both files as it
+        # starts, so one still running when the tab closes (a dev server, at a restart) is kept. histappend (above)
+        # means bash only ever adds to the shared file, never rewrites it with this tab's lines.
         __solanum_histcmd=
         # The newest history entry, as "<number> <command>" ($HISTCMD and `fc -ln -1` don't give it from PROMPT_COMMAND
         # in macOS's bash 3.2: the first is 1, the second the entry before).
@@ -453,6 +455,7 @@ enum ShellIntegration {
             [ -n "$SOLANUM_HISTFILE" ] || return 0
             __solanum_lasthist
             if [ -z "$__solanum_histcmd" ]; then
+                builtin history -c
                 if [ -r "$SOLANUM_HISTFILE" ]; then
                     local n
                     n=$(wc -l < "$SOLANUM_HISTFILE" 2>/dev/null)
@@ -460,8 +463,9 @@ enum ShellIntegration {
                         tail -n 1000 "$SOLANUM_HISTFILE" > "$SOLANUM_HISTFILE.tmp" 2>/dev/null && mv -f "$SOLANUM_HISTFILE.tmp" "$SOLANUM_HISTFILE"
                     fi
                     builtin history -r "$SOLANUM_HISTFILE"
-                    __solanum_lasthist
                 fi
+                # Numbered afresh after the clear: what's newest now, so this tab's first command counts as new.
+                __solanum_lasthist
                 __solanum_histcmd=${__solanum_lastnum:-0}
                 return 0
             fi
@@ -485,6 +489,9 @@ enum ShellIntegration {
                 __solanum_ready=0
                 __solanum_running=1
                 printf '\033]133;C\007'
+                # Into the history files now, not at the next prompt, which a long-running command may never reach.
+                builtin history -a 2>/dev/null
+                __solanum_pane_history
             fi
         }
 
@@ -557,6 +564,8 @@ enum ShellIntegration {
     _solanum_preexec() {
         _solanum_running=1
         print -n "\e]133;C\a"
+        # Into this pane's file now, not at the next prompt, which a long-running command may never reach.
+        _solanum_pane_history
     }
     autoload -Uz add-zsh-hook
     add-zsh-hook precmd _solanum_precmd

@@ -79,6 +79,14 @@ enum CoreSelfTest {
                   && bands[1].first == 4 && bands[1].last == 4, "\(bands)")
         }
         do {
+            // A pasted line starting ">" inside a prompt (npm's "> client@0.1.0 dev") is part of it, not a prompt of its own.
+            let (t, _) = make(30, 8)
+            feed(t, "\u{1b}[48;2;55;55;55m\u{276F} this seems off:\u{1b}[K\r\n  npm run dev\u{1b}[K\r\n  > client@0.1.0 dev\u{1b}[K\r\n  > vite\u{1b}[K\r\n  done\u{1b}[K\u{1b}[0m\r\n")
+            let bands = PromptBands.find({ t.line(abs: $0) }, from: 0, through: 7)
+            check("prompt bands: an indented \">\" line stays in its prompt", bands == [PromptBands.Band(first: 0, last: 4, bg: bands.first?.bg ?? 0)],
+                  "\(bands)")
+        }
+        do {
             // Dropdowns, on both platforms: what typing leaves, where the highlight starts, and the arrows.
             struct Row: DropdownRow {
                 var dropdownKind = DropdownRowKind.item
