@@ -1,17 +1,31 @@
 import Foundation
 
-// Syntax for the hand-edited config formats, JSON, YAML and XML, without drawing: which parts of a text are comments,
+// Syntax for the hand-edited config formats, JSON, YAML and XML (source files and scripts are in CodeSyntax.swift), without drawing: which parts of a text are comments,
 // keys, strings and so on. Shared by the Mac (SyntaxHighlighter colors them in AppKit) and Windows (the editor draws
 // them). Each language is one regex whose alternatives are tried left to right, so a token is claimed by whatever starts
 // first: a `//` inside a JSON string stays part of the string, a `#` inside a quoted YAML value isn't a comment.
 
-enum SyntaxLanguage {
+enum SyntaxLanguage: Equatable {
     case json, yaml, xml
     /// Logs: colored by LogFormat (time, level, logger, stack traces…), their own ANSI colors shown, not printed.
     case log
+    /// Source files, scripts, markdown and diffs (CodeSyntax.swift).
+    case code(CodeLanguage)
 
-    /// JSON, YAML and XML can be beautified; logs can't.
-    var canFormat: Bool { self != .log }
+    /// JSON, YAML and XML can be beautified; the rest can't.
+    var canFormat: Bool {
+        switch self {
+        case .json, .yaml, .xml: return true
+        case .log, .code: return false
+        }
+    }
+
+    /// A script with no extension that says what it is, from its `#!` line (or an XML file from its `<?xml`).
+    init?(firstLine line: Substring) {
+        if line.hasPrefix("<?xml") { self = .xml; return }
+        guard let code = CodeLanguage(shebang: line) else { return nil }
+        self = .code(code)
+    }
 
     init?(path: String) {
         let name = path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? ""
@@ -25,13 +39,24 @@ enum SyntaxLanguage {
         case "xml", "plist", "svg", "xsd", "xsl", "xslt", "pom", "csproj", "fsproj", "vbproj", "props", "targets", "xaml", "storyboard", "xib",
              "config", "resx", "vcxproj", "nuspec", "manifest":
             self = .xml
-        default: return nil
+        default:
+            // Everything else by VS Code's language for the name (Dockerfile, .bashrc, x.d.ts…).
+            guard let id = VSCodeLanguages.id(forFileName: name) else { return nil }
+            switch id {
+            case "json", "jsonc", "jsonl", "snippets": self = .json
+            case "yaml": self = .yaml
+            case "xml", "xsl", "html", "vue", "svelte", "astro", "razor", "handlebars": self = .xml
+            case "log": self = .log
+            default:
+                guard let code = CodeLanguage(vscodeId: id) else { return nil }
+                self = .code(code)
+            }
         }
     }
 }
 
 /// What a piece of text is, for its color.
-enum SyntaxToken { case comment, key, string, number, literal, tag, attribute, punctuation, entity }
+enum SyntaxToken { case comment, key, string, number, literal, tag, attribute, punctuation, entity, keyword, type, function, variable, removed }
 
 enum SyntaxScanner {
     /// Larger texts stay plain: scanning runs on every edit.
@@ -83,6 +108,8 @@ enum SyntaxScanner {
         case .log:
             // Painted by LogFormat instead.
             break
+        case .code(let code):
+            code.grammar.tokens(in: text, range: whole, into: &out)
         case .json:
             let kinds: [SyntaxToken] = [.comment, .key, .string, .number, .literal]
             json.enumerateMatches(in: text, range: whole) { m, _, _ in

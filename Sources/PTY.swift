@@ -222,14 +222,29 @@ final class PTYProcess {
         return pg > 0 && pg != pid
     }
 
-    /// The coding agent (Claude Code, Codex, Antigravity, …) running in the foreground, if any.
+    /// The coding agent (Claude Code, Codex, Antigravity, …) running in the foreground, if any. Asked every second for
+    /// every pane (and on keys), so what a foreground process is gets remembered: looked up again when another one's
+    /// in front, or after a few seconds (it may have exec'd something else).
     var foregroundAgent: AgentKind? {
         let pg = tcgetpgrp(fd)
         guard pg > 0, pg != pid else { return nil }
+        let now = ProcessInfo.processInfo.systemUptime
+        agentLock.lock()
+        let known = agentSeen
+        agentLock.unlock()
+        if let known, known.pg == pg, now - known.at < 5 { return known.kind }
         var path = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
         let exe = proc_pidpath(pg, &path, UInt32(path.count)) > 0 ? String(cString: path) : ""
-        return AgentKind.detect(name: foregroundProcessName ?? "", path: exe, args: PTYProcess.arguments(of: pg))
+        var name = [CChar](repeating: 0, count: 1024)
+        let named = proc_name(pg, &name, UInt32(name.count)) > 0 ? String(cString: name) : ""
+        let kind = AgentKind.detect(name: named, path: exe, args: PTYProcess.arguments(of: pg))
+        agentLock.lock()
+        agentSeen = (pg, kind, now)
+        agentLock.unlock()
+        return kind
     }
+    private var agentSeen: (pg: pid_t, kind: AgentKind?, at: TimeInterval)?
+    private let agentLock = NSLock()
 
     var foregroundIsClaudeCode: Bool { foregroundAgent == .claude }
 

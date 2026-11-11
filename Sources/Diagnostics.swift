@@ -247,3 +247,15 @@ enum Diagnostics {
         try? p.run()
     }
 }
+
+/// `SOLANUM_TRACE_STARTUP=1`: how long each launch step took, to stderr.
+enum StartupTrace {
+    private static let on = ProcessInfo.processInfo.environment["SOLANUM_TRACE_STARTUP"] != nil
+    private static var last = ProcessInfo.processInfo.systemUptime
+    static func mark(_ step: String) {
+        guard on else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        FileHandle.standardError.write(String(format: "startup %6.1f ms  %@\n", (now - last) * 1000, step).data(using: .utf8)!)
+        last = now
+    }
+}

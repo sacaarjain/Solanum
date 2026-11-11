@@ -622,6 +622,33 @@ enum CoreSelfTest {
             let xmlTokens = SyntaxScanner.tokens(in: #"<a x="1">&amp;</a>"#, as: .xml).map(\.token)
             check("syntax: XML", xmlTokens == [.punctuation, .tag, .punctuation, .attribute, .punctuation, .string, .entity, .punctuation, .tag, .punctuation],
                   String(describing: xmlTokens))
+            let jsonl = [
+                #"{"type":"user","message":{"content":"first question"}}"#,
+                #"{"type":"assistant","message":{"content":[{"type":"text","text":"First answer"}]}}"#,
+                #"{"type":"user","message":{"content":[{"type":"image"},{"type":"text","text":"[Image #2] latest question"}]}}"#,
+                #"{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"[Image: source: /tmp/x.png]"}]}}"#,
+                #"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#,
+                #"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#,
+                #"{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"a subagent"}]}}"#,
+                ###"{"type":"assistant","message":{"content":[{"type":"text","text":"## Done\n- **Fixed** the `card`."}]}}"###,
+            ].joined(separator: "\n")
+            let exchange = ClaudeTranscript.lastExchange(Data(jsonl.utf8))
+            check("agent card: the latest prompt and Claude's answer, from its transcript",
+                  exchange.prompt == "[Image #2] latest question" && exchange.reply.map { ClaudeTranscript.summary($0) } == "Done",
+                  String(describing: exchange))
+            check("syntax: every code grammar compiles", CodeLanguage.allCases.allSatisfy { $0.grammar.regex.pattern != "(?!)" && $0.grammar.kinds.count == $0.grammar.regex.numberOfCaptureGroups })
+            check("syntax: languages by name, extension and #! line",
+                  SyntaxLanguage(path: "/a/run.sh") == .code(.shell) && SyntaxLanguage(path: ".zshrc") == .code(.shell)
+                  && SyntaxLanguage(path: "Dockerfile") == .code(.dockerfile) && SyntaxLanguage(path: "x.d.ts") == .code(.javascript)
+                  && SyntaxLanguage(path: "a.py") == .code(.python) && SyntaxLanguage(path: "README.md") == .code(.markdown)
+                  && SyntaxLanguage(path: "tsconfig.json") == .json && SyntaxLanguage(firstLine: "#!/usr/bin/env python3") == .code(.python)
+                  && SyntaxLanguage(firstLine: "#!/bin/bash -e") == .code(.shell) && SyntaxLanguage(firstLine: "hello") == nil
+                  && SyntaxLanguage(path: "a.py")?.canFormat == false)
+            let pyTokens = SyntaxScanner.tokens(in: "def f(self, x=1):  # c\n    return 'a#b' if obj.default else None\n", as: .code(.python)).map(\.token)
+            check("syntax: Python", pyTokens == [.keyword, .function, .variable, .number, .comment, .keyword, .string, .keyword, .keyword, .literal],
+                  String(describing: pyTokens))
+            let shTokens = SyntaxScanner.tokens(in: "echo \"$HOME\" ${x} -n # c\nformat=1\n", as: .code(.shell)).map(\.token)
+            check("syntax: shell", shTokens == [.function, .string, .variable, .attribute, .comment, .number], String(describing: shTokens))
             check("file kinds", FileKind(name: "a.PNG") == .image && FileKind(name: #"C:\x\run.ps1"#) == .code && FileKind(name: ".bashrc") == .other
                   && VSCodeLanguages.id(forFileName: "Dockerfile") == "dockerfile" && VSCodeLanguages.id(forFileName: "x.d.ts") == "typescript")
             check("markdown: snake_case isn't italic", MarkdownDoc.inline("a snake_case_name").count == 1)

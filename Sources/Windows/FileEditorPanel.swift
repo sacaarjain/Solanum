@@ -108,7 +108,7 @@ final class FileEditorPanel: ColumnPanel {
     /// Said for a moment in the header: "Saved", or what went wrong.
     private var note: (text: String, problem: Bool, at: Date)?
     private var images: [OpaquePointer: (id: Int32, width: Int32, height: Int32)] = [:]
-    /// Syntax colors for JSON, YAML and XML (SyntaxScanner, shared with the Mac): for each line, a color for each cell
+    /// Syntax colors for JSON, YAML, XML and source files (SyntaxScanner, shared with the Mac): for each line, a color for each cell
     /// as drawn (a tab's four), or none for plain text; worked out again after each edit.
     private var lineColors: [[UInt32]] = []
     private var colorsBuilt = -1
@@ -928,11 +928,12 @@ final class FileEditorPanel: ColumnPanel {
         let fg = TerminalPalette.foreground, bg = TerminalPalette.background, ansi = TerminalPalette.ansi
         switch t {
         case .comment: return TerminalPalette.mix(fg, bg, 0.42)
-        case .key, .tag: return ansi[4]
+        case .key, .tag, .function: return ansi[4]
         case .string: return ansi[2]
-        case .number, .entity: return ansi[5]
-        case .literal: return ansi[6]
-        case .attribute: return ansi[3]
+        case .number, .literal, .attribute: return ansi[3]
+        case .keyword, .entity: return ansi[5]
+        case .type: return ansi[6]
+        case .variable, .removed: return ansi[1]
         case .punctuation: return TerminalPalette.mix(fg, bg, 0.5)
         }
     }

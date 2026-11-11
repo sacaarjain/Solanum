@@ -711,11 +711,13 @@ enum Cards {
     }
 
     /// A card's shape, top left first and round to the top right (in flipped coordinates, where minY is the top).
-    /// `openTop` stops there, leaving out the top edge between the corners.
+    /// `openTop` stops there, leaving out the top edge between the corners. Open, a square top left starts half a
+    /// point down, at the card's own top (`r` being its outline): the active tab's edge above covers the strip's
+    /// bottom row there, and the 10% border drawn twice over shows as a bright dot.
     static func path(_ r: NSRect, radius: CGFloat, squareTopLeft: Bool, openTop: Bool) -> NSBezierPath {
         let p = NSBezierPath()
         if squareTopLeft {
-            p.move(to: NSPoint(x: r.minX, y: r.minY))
+            p.move(to: NSPoint(x: r.minX, y: openTop ? r.minY + 0.5 : r.minY))
         } else {
             p.move(to: NSPoint(x: r.minX + radius, y: r.minY))
             p.appendArc(from: NSPoint(x: r.minX, y: r.minY), to: NSPoint(x: r.minX, y: r.maxY), radius: radius)
@@ -765,8 +767,13 @@ final class CardGutterView: NSView {
         tint.windingRule = .evenOdd
         th.tabBarTint.setFill()
         tint.fill()
+        // Only below the tab bars: the top cards' corners curve up into a strip's bottom row, which the strip draws
+        // (over its tint, as it does the straight edge between them), or its tint would dim them there.
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: NSRect(x: 0, y: band.minY, width: bounds.width, height: bounds.height - band.minY)).addClip()
         th.border.setStroke()
         for c in cards { Cards.outline(c).stroke() }
+        NSGraphicsContext.restoreGraphicsState()
     }
 }
 
@@ -780,12 +787,18 @@ final class BackgroundView: NSView {
         let th = cfg.theme
         var alpha = cfg.opacity
         let scale = window?.backingScaleFactor ?? 2
+        // Filling `r`, cropped to keep its shape: one made for another size (mid-resize) isn't stretched.
         func put(_ image: CGImage, in r: NSRect) {
-            NSImage(cgImage: image, size: r.size).draw(in: r, from: .zero, operation: .copy, fraction: 1, respectFlipped: true, hints: nil)
+            let w = CGFloat(image.width), h = CGFloat(image.height)
+            let zoom = max(r.width / w, r.height / h)
+            let shown = NSSize(width: w * zoom, height: h * zoom)
+            let at = NSRect(x: r.midX - shown.width / 2, y: r.midY - shown.height / 2, width: shown.width, height: shown.height)
+            NSImage(cgImage: image, size: shown).draw(in: at, from: .zero, operation: .copy, fraction: 1, respectFlipped: true, hints: nil)
         }
+        let resizing = inLiveResize
         switch backdrop {
         case .picture(let url, let image):
-            if let img = BackdropImages.image(url, size: bounds.size, scale: scale, blur: CGFloat(image.blur)) { put(img, in: bounds) }
+            if let img = BackdropImages.image(url, size: bounds.size, scale: scale, blur: CGFloat(image.blur), reuse: resizing) { put(img, in: bounds) }
             alpha = CGFloat(image.tint)
         case .wallpaper(let url, let options):
             // Where the screen is, in here: the picture's laid over all of it, so it lines up with the desktop.
@@ -807,6 +820,12 @@ final class BackgroundView: NSView {
         }
     }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    /// Made for the size it ended at (it was reusing one made for another size while it was dragged).
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        needsDisplay = true
+    }
 }
 
 /// Bottom strip: sidebar toggle and ssh hosts buttons, the git branch / sync / changes of the active pane's
@@ -1511,13 +1530,14 @@ final class DropPreviewView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let th = Config.shared.theme
-        if let r = target?.insetBy(dx: 6, dy: 6) {
-            let path = NSBezierPath(roundedRect: r, xRadius: 10, yRadius: 10)
+        // On the cards' own edges and corners (`target` is a column's cards, or half of them), the 2pt edge inside.
+        if let r = target {
             th.accent.withAlphaComponent(0.16).setFill()
-            path.fill()
+            NSBezierPath(roundedRect: r, xRadius: Cards.radius, yRadius: Cards.radius).fill()
             th.accent.withAlphaComponent(0.8).setStroke()
-            path.lineWidth = 2
-            path.stroke()
+            let edge = NSBezierPath(roundedRect: r.insetBy(dx: 1, dy: 1), xRadius: Cards.radius - 1, yRadius: Cards.radius - 1)
+            edge.lineWidth = 2
+            edge.stroke()
         }
         if let g = ghost { drawGhost(g, th) }
     }
@@ -2604,44 +2624,68 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
 
     // MARK: Dragging a file's sub-tab onto a tab strip
 
-    private enum EditorDrop { case ownTab(TabColumn), into(TabSession, TabColumn) }
+    private enum EditorDrop { case ownTab(TabColumn, index: Int, group: TabGroup?), into(TabSession, TabColumn) }
     private var pendingEditorDrop: (editor: FileEditorView, from: TabSession, target: EditorDrop)?
 
-    /// A file sub-tab dragged to `windowPoint`. Over a column's tab strip, the strip lights up and dropping gives
-    /// the file a tab of its own there. Over the other column's terminal, that column lights up and dropping opens
-    /// the file above its terminal (not if that terminal is in an ssh session).
-    func editorDragOver(_ ed: FileEditorView, from tab: TabSession, at windowPoint: NSPoint) {
+    /// A file sub-tab dragged off its strip to `windowPoint`, lifted out as a tab following the pointer (held where
+    /// it was grabbed, `grabX` along it). Over a column's tab strip, a bar shows where among its tabs it would go (a
+    /// group's chip lights up for it to join that group), and dropping gives the file a tab of its own there. Over the
+    /// other column's terminal, that column lights up and dropping opens the file above its terminal (not if that
+    /// terminal is in an ssh session).
+    func editorDragOver(_ ed: FileEditorView, from tab: TabSession, at windowPoint: NSPoint, grabX: CGFloat = 20) {
         let p = rootView.convert(windowPoint, from: nil)
         let source = tab.owner as? TabColumn
         var target: EditorDrop?, preview: NSRect?
         if let c = columns.first(where: { $0.tabBar.frame.contains(p) }) {
             // A file tab's only file is already in a tab of its own.
             if tab.showsTerminal || tab.editors.count > 1 || c !== source {
-                target = .ownTab(c)
-                preview = c.tabBar.frame
+                let spot = c.tabBar.incomingSpot(at: windowPoint)
+                target = .ownTab(c, index: spot.index, group: spot.chip)
             }
         } else if let c = columns.first(where: { $0 !== source && $0.content.frame.contains(p) }),
                   let dest = c.activeTab, dest.focusedPane.remote == nil {
             target = .into(dest, c)
             preview = c.content.frame
         }
+        for c in columns {
+            if case .ownTab(let into, let index, let chip) = target, into === c {
+                c.tabBar.setIncoming(index: chip == nil ? index : nil, chip: chip, what: .editor(ed))
+            }
+            else { c.tabBar.setIncoming(index: nil, chip: nil) }
+        }
         pendingEditorDrop = target.map { (ed, tab, $0) }
         rootView.dropPreview = preview
+        // Over a strip it's docked in the gap there instead (see TabBarView.drawIncoming).
+        var overChip = false
+        if case .ownTab(_, _, let chip) = target {
+            guard chip != nil else { return rootView.hideTabGhost() }
+            overChip = true
+        }
+        rootView.showTabGhost(title: ed.displayName, color: Config.shared.theme.accent, at: windowPoint, grabX: grabX, belowPointer: overChip)
     }
 
+    /// Back on its own strip, or let go: nowhere to drop, and the lifted sub-tab put away.
     func clearEditorDrop() {
         pendingEditorDrop = nil
         rootView.dropPreview = nil
+        rootView.hideTabGhost()
+        columns.forEach { $0.tabBar.setIncoming(index: nil, chip: nil) }
     }
 
     func performEditorDrop() {
-        rootView.dropPreview = nil
-        guard let d = pendingEditorDrop else { return }
-        pendingEditorDrop = nil
+        let pending = pendingEditorDrop
+        clearEditorDrop()
+        guard let d = pending else { return }
         d.from.closeEditor(d.editor)
         switch d.target {
-        case .ownTab(let c):
-            c.addFileTab(d.editor)
+        case .ownTab(let c, let index, let chip):
+            // Let go between two of a group's tabs, it joins the group, as files dropped there do.
+            let at = min(index, c.tabs.count)
+            let inside = at > 0 && at < c.tabs.count && c.tabs[at - 1].group != nil && c.tabs[at - 1].group === c.tabs[at].group
+            c.addFileTab(d.editor, at: at)
+            if let group = chip ?? (inside ? c.tabs[at + 1].group : nil), c.tabs.indices.contains(at) {
+                if chip != nil { c.addTab(c.tabs[at], to: group) } else { c.tabs[at].group = group; c.refreshTabBar() }
+            }
             focus(c)
         case .into(let dest, let c):
             dest.adoptEditor(d.editor)
@@ -2689,7 +2733,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             }
         }
         for c in columns {
-            if case .strip(let into, let index, let chip) = target, into === c { c.tabBar.setIncoming(index: chip == nil ? index : nil, chip: chip) }
+            if case .strip(let into, let index, let chip) = target, into === c {
+                c.tabBar.setIncoming(index: chip == nil ? index : nil, chip: chip, what: .tab(tab))
+            }
             else { c.tabBar.setIncoming(index: nil, chip: nil) }
         }
         pendingTabDrop = target.map { (tab, source, $0) }
@@ -2709,7 +2755,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     func showTabGhost(_ tab: TabSession?, at windowPoint: NSPoint, grabX: CGFloat) {
         guard let tab else { return rootView.hideTabGhost() }
         var overStrip = false
-        if case .strip = pendingTabDrop?.target { overStrip = true }
+        if case .strip(_, _, let chip) = pendingTabDrop?.target {
+            // In a gap the tabs opened for it, it's docked there instead (see TabBarView.drawIncoming).
+            if chip == nil { return rootView.hideTabGhost() }
+            overStrip = true
+        }
         rootView.showTabGhost(title: tab.title, color: tab.group?.color.color ?? Config.shared.theme.accent, at: windowPoint, grabX: grabX,
                               belowPointer: overStrip)
     }
@@ -3040,8 +3090,15 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     private var groupInsertBefore: Int?
     /// Tabs picked with ⌘-click / ⇧-click; right-clicking one of them acts on all (e.g. group them).
     private(set) var selectedTabs: [TabSession] = []
-    /// A tab from the other column dragged over this strip: the gap it would go into (a bar shows it).
+    /// A tab from the other column, or a file's sub-tab, dragged over this strip: the gap it would go into. The tabs
+    /// slide apart there and `incoming` shows in the gap, as the tab it will be.
     private var incomingIndex: Int? { didSet { if incomingIndex != oldValue { needsDisplay = true } } }
+    /// What's dragged in: a tab (from the other column) or a file's sub-tab (from a tab's file strip).
+    enum Incoming { case tab(TabSession), editor(FileEditorView) }
+    private var incoming: Incoming?
+    /// Where the gap for `incoming` is (in view coordinates, before any slide), and its key among the slid rects.
+    private var incomingRect: CGRect = .null
+    private static let incomingKey: AnyHashable = "incoming"
     /// This strip's dragged tab has been lifted out of it (off it, or over the other column's strip): it follows the
     /// pointer over the window (`showTabGhost`), its place left empty, and doesn't push the tabs here around.
     private var tabLifted = false
@@ -3203,6 +3260,8 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         let plusW: CGFloat = 30
         // Each group gets a chip where it starts; tabs in collapsed groups take no space.
         var chipSpace: CGFloat = 0, visible = 0
+        let gapAt = incoming == nil ? nil : incomingIndex.map { min($0, c.tabs.count) }
+        if gapAt != nil { visible += 1 }
         var prev: TabGroup?
         for t in c.tabs {
             if let g = t.group, g !== prev { chipSpace += chipWidth(g) + 6 }
@@ -3243,9 +3302,14 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         var x = viewport.minX - scrollX
         tabRects = []
         chips = []
+        incomingRect = .null
         foldWidth = w
         prev = nil
-        for t in c.tabs {
+        for (i, t) in c.tabs.enumerated() {
+            if i == gapAt {
+                incomingRect = CGRect(x: x, y: y, width: w, height: h)
+                x += w + 4
+            }
             if let g = t.group, g !== prev {
                 let cw = chipWidth(g)
                 chips.append((g, CGRect(x: x, y: bounds.height / 2 - 10, width: cw, height: 20)))
@@ -3258,6 +3322,10 @@ final class TabBarView: NSView, NSTextFieldDelegate {
                 tabRects.append(CGRect(x: x, y: y, width: w, height: h))
                 x += w + 4
             }
+        }
+        if gapAt == c.tabs.count {
+            incomingRect = CGRect(x: x, y: y, width: w, height: h)
+            x += w + 4
         }
         closeRects = tabRects.map { $0.isNull ? .null : CGRect(x: $0.maxX - 24, y: $0.midY - 9, width: 18, height: 18) }
         if !overflow { plusRect = CGRect(x: x + 2, y: (bounds.height - 26) / 2, width: 26, height: 26) }
@@ -3330,6 +3398,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         }
         for ch in chips { next[ObjectIdentifier(ch.group)] = ch.rect.offsetBy(dx: scrollX, dy: 0) }
         if !overflow { next[Self.plusKey] = plusRect.offsetBy(dx: scrollX, dy: 0) }
+        if !incomingRect.isNull { next[Self.incomingKey] = incomingRect.offsetBy(dx: scrollX, dy: 0) }
 
         let changed = next.count != targets.count || next.contains { k, r in
             guard let old = targets[k] else { return true }
@@ -3437,6 +3506,18 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             for (x0, x1) in [(a, min(b, gap.0)), (max(a, gap.1), b)] where x1 > x0 {
                 NSRect(x: x0, y: bounds.height - 1, width: x1 - x0, height: 1).fill()
             }
+        }
+        // And the cards' top corners where they curve up into that row (the gutter under the strip draws only below
+        // it), so they meet the straight edge at its own brightness.
+        if let root = superview as? WindowRootView {
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: bounds).addClip()
+            th.border.setStroke()
+            for var card in root.cardFrames where card.top {
+                card.rect = convert(card.rect, from: root)
+                Cards.outline(card).stroke()
+            }
+            NSGraphicsContext.restoreGraphicsState()
         }
         if let d = docked {
             NSGraphicsContext.saveGraphicsState()
@@ -3574,7 +3655,58 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             ctx?.endTransparencyLayer()
             ctx?.setAlpha(1)
         }
+        drawIncoming(c)
         drawFileDropLine()
+    }
+
+    /// What's dragged in, docked in the gap the tabs slid apart for: a tab as it will be, its icon and title, on a
+    /// tint of the accent (or of the group it would join), edged in it. It opens out from nothing as the gap does.
+    private func drawIncoming(_ c: TabColumn) {
+        guard let what = incoming, let i = incomingIndex, let r = shownRect(Self.incomingKey), r.width > 8 else { return }
+        let th = Config.shared.theme
+        let at = min(i, c.tabs.count)
+        let left = at > 0 ? c.tabs[at - 1].group : nil, right = at < c.tabs.count ? c.tabs[at].group : nil
+        let color = (left != nil && left === right ? left?.color.color : nil) ?? th.accent
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: viewport).addClip()
+        let shape = NSBezierPath(roundedRect: r, xRadius: 7, yRadius: 7)
+        NSGraphicsContext.saveGraphicsState()
+        let lift = NSShadow()
+        lift.shadowColor = NSColor.black.withAlphaComponent(0.3)
+        lift.shadowBlurRadius = 6
+        lift.shadowOffset = NSSize(width: 0, height: -1)
+        lift.set()
+        th.surface.withAlphaComponent(1).setFill()
+        shape.fill()
+        NSGraphicsContext.restoreGraphicsState()
+        color.withAlphaComponent(0.14).setFill()
+        shape.fill()
+        color.withAlphaComponent(0.85).setStroke()
+        let edge = NSBezierPath(roundedRect: r.insetBy(dx: 0.75, dy: 0.75), xRadius: 6.25, yRadius: 6.25)
+        edge.lineWidth = 1.5
+        edge.stroke()
+        // Its contents only once there's room for them, so they don't squeeze as it opens.
+        if r.width >= foldWidth - 1 {
+            NSBezierPath(rect: r.insetBy(dx: 2, dy: 2)).addClip()
+            let title: String
+            switch what {
+            case .tab(let t):
+                title = t.title
+                let size = SolanumArt.promptSize
+                Self.tabPrompt(th.foreground, active: true).draw(in: NSRect(x: r.minX + Self.tabPad, y: r.midY - size.height / 2, width: size.width, height: size.height),
+                                                                 from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            case .editor(let ed):
+                title = ed.displayName
+                drawEditorIcon(ed, r, color: th.foreground, fraction: 1)
+            }
+            let para = NSMutableParagraphStyle()
+            para.lineBreakMode = .byTruncatingMiddle
+            let x = r.minX + Self.tabPad + SolanumArt.promptSize.width + 7
+            (title as NSString).draw(in: NSRect(x: x, y: r.midY - 8, width: max(0, r.maxX - 12 - x), height: 16),
+                                     withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: th.foreground,
+                                                      .paragraphStyle: para])
+        }
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     // MARK: Files dropped on the strip
@@ -3671,19 +3803,23 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         return (dropIndex(at: p), nil)
     }
 
-    /// Shows where a tab from the other column would land: a bar at `index`, or `chip` lit up.
+    /// Shows where a dragged-in tab or sub-tab (`what`) would land: the tabs part at `index` for it, or `chip` lights up.
     private var incomingAtEdgeSince: Date?
 
-    func setIncoming(index: Int?, chip: TabGroup?) {
+    func setIncoming(index: Int?, chip: TabGroup?, what: Incoming? = nil) {
         if index == nil, chip == nil { incomingAtEdgeSince = nil }
+        let next = index == nil ? nil : what
+        let changed = index != incomingIndex || (next == nil) != (incoming == nil)
+        incoming = next
         incomingIndex = index
+        if changed { needsDisplay = true }
         guard !dragging, dropChip !== chip else { return }
         dropChip = chip
         needsDisplay = true
     }
 
     private func drawFileDropLine() {
-        guard let i = fileDropIndex ?? incomingIndex, let c = controller else { return }
+        guard let i = fileDropIndex ?? (incoming == nil ? incomingIndex : nil), let c = controller else { return }
         let shown = c.tabs.indices.filter { tabRects.indices.contains($0) && !tabRects[$0].isNull }
         let x: CGFloat
         if let r = shown.first(where: { $0 >= i }).map({ tabRects[$0] }) { x = r.minX - 1 }
@@ -4262,13 +4398,13 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             m.addItem(item)
         }
         if tab.group != nil { m.addItem(ActionMenuItem("Remove from Group") { [weak c] in c?.removeFromGroup(tab) }) }
-        m.addItem(.separator())
+        // Where the tab goes, with its group.
         if let w = c.owner, w.columns.count > 1 || c.tabs.count > 1 {
             m.addItem(ActionMenuItem(w.columns.count > 1 ? "Move to Other Split" : "Move to New Split") { [weak w, weak c] in
                 if let c { w?.move(tab, from: c) }
             })
-            m.addItem(.separator())
         }
+        m.addItem(.separator())
         m.addItem(ActionMenuItem("Close Tab") { [weak c] in c?.closeTabs([tab]) })
         if c.tabs.count > 1 {
             m.addItem(ActionMenuItem("Close Other Tabs") { [weak c] in c?.closeTabs(c?.tabs.filter { $0 !== tab } ?? []) })

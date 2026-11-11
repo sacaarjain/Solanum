@@ -86,6 +86,7 @@ final class Updater {
             if soon { self.check(manual: false, force: true) } else { self.checkIfDue() }
         }
         timer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.checkIfDue() }
+        timer?.tolerance = 300
     }
 
     private func checkIfDue() {

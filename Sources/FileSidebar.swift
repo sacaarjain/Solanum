@@ -633,6 +633,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
                 guard let self, NSApp.isActive, self.isOnScreen else { return }
                 if self.fs.isRemote { self.refreshVisible() } else { self.refreshGit() }
             }
+            pollTimer?.tolerance = 2
         }
     }
 
