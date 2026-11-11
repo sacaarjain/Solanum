@@ -15,6 +15,9 @@ final class EditorAreaView: NSView {
         super.init(frame: .zero)
         strip.tab = tab
         addSubview(strip)
+        // A card (see `Cards`) from the start: becoming layer-backed later, mid-draw, can leave the file's scroll view
+        // laid out without room for its line numbers.
+        wantsLayer = true
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -194,12 +197,9 @@ final class FileTabStrip: NSView {
     var devScrollState: String { "scroll=\(Int(scrollX)) of \(Int(maxScrollX)) arrows=\(!leftArrowRect.isNull)" }
 
     override func draw(_ dirtyRect: NSRect) {
+        // On the card's own background (see `Cards`), with no band or line of its own: the active file is its pill.
         let th = Config.shared.theme
         layoutRects()
-        th.tabBarTint.setFill()
-        bounds.fill()
-        th.border.setFill()
-        NSRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1).fill()
         guard let tab else { return }
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: viewport).addClip()
@@ -212,10 +212,6 @@ final class FileTabStrip: NSView {
             if active || hover == i {
                 (active ? th.surface : th.surface.withAlphaComponent(0.5)).setFill()
                 NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5).fill()
-            }
-            if active {
-                th.accent.setFill()
-                NSBezierPath(roundedRect: NSRect(x: r.minX + 8, y: r.maxY - 2, width: r.width - 16, height: 2), xRadius: 1, yRadius: 1).fill()
             }
             let name = ed.displayName
             if ed.mode == .file, let img = IconPacks.current?.icon(forName: name, directory: false, light: !th.isDark) {

@@ -133,6 +133,9 @@ extension TerminalView {
         }
     }
 
+    /// The selected turn's first and last rows on screen, if it shows.
+    var selectedTurnRows: (first: Int, last: Int)? { selectedTurn.flatMap(visibleRows) }
+
     /// First/last screen rows of a turn currently on screen.
     private func visibleRows(_ t: AgentTurn) -> (Int, Int)? {
         var first: Int?, last: Int?

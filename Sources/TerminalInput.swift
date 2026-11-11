@@ -850,11 +850,17 @@ extension TerminalView {
         // A hand over an open popup (clicking it opens the image).
         if !imageChipState.popupRect.isNull { updateCursor() }
         let copyHover = codeCopyButtons.first { $0.0.contains(p) }?.1
-        // Over a box (or its Copy button, which may sit just above it): that box's button shows.
+        // Over a box, or on the way to its Copy button: that box's button shows. The button sits in the empty line just
+        // above the box, a few points clear of it, so that line counts as the box's, and so does a margin around the
+        // button while it shows (or it would go as the pointer left the box to reach it).
         var boxHover = copyHover
+        if boxHover == nil, let h = hoverBox, codeCopyButtons.contains(where: { $0.1 == h && $0.0.insetBy(dx: -12, dy: -8).contains(p) }) {
+            boxHover = h
+        }
         if boxHover == nil, !terminal.usingAlt, bounds.contains(p) {
             let line = gridPos(at: p).line
             boxHover = codeBoxes.firstIndex { $0.contains(line: line) }
+                ?? codeBoxes.firstIndex { $0.kind != .table && line == $0.first - 1 && terminal.line(abs: line)?.isBlank == true }
         }
         if boxHover != hoverBox {
             hoverBox = boxHover

@@ -581,12 +581,6 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         needsDisplay = true
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        let th = Config.shared.theme
-        th.border.setFill()
-        NSRect(x: 0, y: 0, width: 1, height: bounds.height).fill()
-    }
-
     // MARK: Loading and saving
 
     private func showMessage(_ text: String) {
@@ -2342,11 +2336,13 @@ final class EditorHeaderView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        // On the card's own background (see `Cards`), set off from the file by one hairline, inset from the card's
+        // rounded edges.
         let th = Config.shared.theme
-        th.tabBarTint.setFill()
-        bounds.fill()
         th.border.setFill()
-        NSRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1).fill()
+        let inset: CGFloat = 12
+        NSBezierPath(roundedRect: NSRect(x: inset, y: bounds.height - 1, width: max(0, bounds.width - 2 * inset), height: 1),
+                     xRadius: 0.5, yRadius: 0.5).fill()
 
         buttonRects = []
         var right = bounds.width - 8

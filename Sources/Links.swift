@@ -11,14 +11,23 @@ import AppKit
 /// The link under the pointer, and what it opens with.
 struct LinkHover {
     var url: URL
-    /// The screen line and columns of the underlined part (the hovered row's part of a link that wraps).
+    /// The hovered row's part of the link: the screen line and columns (where its card goes).
     var line: Int
     var start: Int
     var end: Int
+    /// Every row's part, for a link that wraps onto more lines (underlined on all of them); empty: just `line`'s.
+    var rows: [LinkRow] = []
     var opener: String
     var icon: NSImage?
     /// Set when this is a file named in the text rather than a URL.
     var file: FileLink?
+}
+
+/// One row's part of a link: an absolute line and the columns from `start` through `end`.
+struct LinkRow: Hashable {
+    var line: Int
+    var start: Int
+    var end: Int
 }
 
 /// A file named in the terminal's text: where it may be (nearest folder first; just one on this Mac, where it was
@@ -88,30 +97,94 @@ extension TerminalView {
         return (text, map)
     }
 
-    /// The part to underline of a link from `first` to `last`: for one that wraps, the hovered row's portion.
-    private func underlined(_ pos: GridPos, _ first: GridPos, _ last: GridPos) -> (line: Int, start: Int, end: Int) {
-        if first.line == last.line { return (first.line, first.col, last.col) }
-        return (pos.line, pos.line == first.line ? first.col : 0, pos.line == last.line ? last.col : terminal.cols - 1)
+    /// The columns of a line's first and last characters that aren't blank (nil: all blank).
+    private func textSpan(_ a: Int) -> (first: Int, last: Int)? {
+        guard let l = terminal.line(abs: a) else { return nil }
+        let filled = l.cells.indices.filter { l.cells[$0].width != 0 && l.cells[$0].ch != 0 && l.cells[$0].ch != 0x20 }
+        return filled.first.map { ($0, filled.last!) }
+    }
+
+    /// Whether the logical line ending at line `a` runs on into the next as a link would: Claude Code wraps its replies
+    /// itself, so a link longer than the room left breaks at the right edge, with the rest on the next line after an
+    /// indent. A line ending in text right up to (nearly) the edge, with the next line starting with text, is one.
+    private func continuesLink(after a: Int) -> Bool {
+        guard let end = textSpan(a), end.last >= terminal.cols - 3, let next = textSpan(a + 1),
+              let l = terminal.line(abs: a + 1), let c = Unicode.Scalar(l.cells[next.first].ch) else { return false }
+        return !CharacterSet.whitespaces.contains(c) && c != "●" && c != "⎿" && c != "│"
+    }
+
+    /// The text a link under `pos` could be in: its wrapped logical line, joined to the lines before and after it that
+    /// Claude Code broke it onto (see continuesLink), without their indents or the edge's blanks; and the cell each
+    /// UTF-16 unit came from.
+    private func linkLine(at pos: GridPos) -> (text: String, map: [GridPos]) {
+        var (a, b) = lineRange(at: pos)
+        for _ in 0..<12 where continuesLink(after: a.line - 1) { a = lineRange(at: GridPos(line: a.line - 1, col: 0)).0 }
+        for _ in 0..<12 where continuesLink(after: b.line) { b = lineRange(at: GridPos(line: b.line + 1, col: 0)).1 }
+        var text = ""
+        var map: [GridPos] = []
+        var ln = a.line
+        while ln <= b.line {
+            let (s, e) = lineRange(at: GridPos(line: ln, col: 0))
+            var (t, m) = logicalLine(at: s)
+            // A continuation starts at its text, and every part but the last stops at its own.
+            if ln > a.line, let span = textSpan(s.line) {
+                let k = m.firstIndex { $0.col >= span.first } ?? 0
+                t = String(t.utf16.dropFirst(k)) ?? t; m.removeFirst(k)
+            }
+            if e.line < b.line, let span = textSpan(e.line) {
+                let k = m.lastIndex { $0.line < e.line || $0.col <= span.last }.map { $0 + 1 } ?? m.count
+                t = String(t.utf16.prefix(k)) ?? t; m = Array(m.prefix(k))
+            }
+            text += t; map += m
+            ln = e.line + 1
+        }
+        return (text, map)
+    }
+
+    /// Each row's part of the text from `range` in `map` (a link that wraps covers several rows).
+    private func rows(_ range: NSRange, _ map: [GridPos]) -> [LinkRow] {
+        var out: [LinkRow] = []
+        for p in map[range.location..<(range.location + range.length)] {
+            if let i = out.indices.last, out[i].line == p.line {
+                out[i].start = min(out[i].start, p.col); out[i].end = max(out[i].end, p.col)
+            } else {
+                out.append(LinkRow(line: p.line, start: p.col, end: p.col))
+            }
+        }
+        return out
     }
 
     /// Finds a link under the given point: one a program printed (OSC 8), or a URL in the text, searching the whole
-    /// wrapped logical line.
-    func urlAt(_ p: NSPoint) -> (url: URL, line: Int, start: Int, end: Int)? {
+    /// wrapped logical line and the lines Claude Code broke it onto. Gives the hovered row's part and every row's.
+    func urlAt(_ p: NSPoint) -> (url: URL, line: Int, start: Int, end: Int, rows: [LinkRow])? {
         let pos = gridPos(at: p)
         if let l = terminal.line(abs: pos.line), let target = l.links?[pos.col] {
             guard let url = Self.hyperlinkURL(target) else { return nil }
-            // The hovered row's run of cells linking there.
-            var s = pos.col, e = pos.col
-            while s > 0, l.links?[s - 1] == target { s -= 1 }
-            while l.links?[e + 1] == target { e += 1 }
-            return (url, pos.line, s, e)
+            // The hovered row's run of cells linking there, and the runs above and below it that carry on to there.
+            func run(_ a: Int, around col: Int) -> LinkRow? {
+                guard let l = terminal.line(abs: a), l.links?[col] == target else { return nil }
+                var s = col, e = col
+                while s > 0, l.links?[s - 1] == target { s -= 1 }
+                while e + 1 < l.cells.count, l.links?[e + 1] == target { e += 1 }
+                return LinkRow(line: a, start: s, end: e)
+            }
+            guard let here = run(pos.line, around: pos.col) else { return nil }
+            var rows = [here]
+            while rows.count < 12, let top = rows.first, top.start <= 8,
+                  let up = terminal.line(abs: top.line - 1), let col = (0..<up.cells.count).last(where: { up.links?[$0] == target }),
+                  col >= terminal.cols - 3, let r = run(top.line - 1, around: col) { rows.insert(r, at: 0) }
+            while rows.count < 12, let bottom = rows.last, bottom.end >= terminal.cols - 3,
+                  let down = terminal.line(abs: bottom.line + 1), let col = (0..<down.cells.count).first(where: { down.links?[$0] == target }),
+                  col <= 8, let r = run(bottom.line + 1, around: col) { rows.append(r) }
+            return (url, here.line, here.start, here.end, rows)
         }
-        let (text, map) = logicalLine(at: pos)
+        let (text, map) = linkLine(at: pos)
         for (r, url) in Self.links(in: text) {
             let first = map[r.location], last = map[r.location + r.length - 1]
             guard pos >= first && pos <= last else { continue }
-            let u = underlined(pos, first, last)
-            return (url, u.line, u.start, u.end)
+            let rows = rows(r, map)
+            let here = rows.first { $0.line == pos.line } ?? rows[0]
+            return (url, here.line, here.start, here.end, rows)
         }
         return nil
     }
@@ -125,14 +198,15 @@ extension TerminalView {
     }
 
     /// The file named under the given point: on this Mac one that exists, on an ssh host one that may (checked on click).
-    func fileLinkAt(_ p: NSPoint) -> (link: FileLink, line: Int, start: Int, end: Int)? {
+    func fileLinkAt(_ p: NSPoint) -> (link: FileLink, line: Int, start: Int, end: Int, rows: [LinkRow])? {
         let pos = gridPos(at: p)
         let (text, map) = logicalLine(at: pos)
         let fs = fileSystem, folders = fileLinkFolders
         let here = FileLinks.mentions(in: text).filter { pos >= map[$0.range.location] && pos <= map[NSMaxRange($0.range) - 1] }
-        func link(_ paths: [String], _ line: Int?, _ range: NSRange) -> (link: FileLink, line: Int, start: Int, end: Int) {
-            let u = underlined(pos, map[range.location], map[NSMaxRange(range) - 1])
-            return (FileLink(paths: paths, line: line), u.line, u.start, u.end)
+        func link(_ paths: [String], _ line: Int?, _ range: NSRange) -> (link: FileLink, line: Int, start: Int, end: Int, rows: [LinkRow]) {
+            let rows = rows(range, map)
+            let u = rows.first { $0.line == pos.line } ?? rows[0]
+            return (FileLink(paths: paths, line: line), u.line, u.start, u.end, rows)
         }
         guard fs.isRemote else {
             for m in here {
@@ -198,7 +272,7 @@ extension TerminalView {
                 newHover = h
             } else {
                 let opener = Self.opener(for: u.url)
-                newHover = LinkHover(url: u.url, line: u.line, start: u.start, end: u.end, opener: opener.name, icon: opener.icon)
+                newHover = LinkHover(url: u.url, line: u.line, start: u.start, end: u.end, rows: u.rows, opener: opener.name, icon: opener.icon)
             }
         } else if cmd, bounds.contains(p), let f = fileLinkAt(p) {
             let url = URL(fileURLWithPath: f.link.paths[0])
@@ -206,7 +280,7 @@ extension TerminalView {
                 newHover = h
             } else {
                 let above = (tab?.owner as? TabColumn) == nil || fileLinkFolders.contains { FileLinks.isInside(f.link.paths[0], $0) }
-                newHover = LinkHover(url: url, line: f.line, start: f.start, end: f.end, opener: above ? "Open in Editor" : "Open in New Tab",
+                newHover = LinkHover(url: url, line: f.line, start: f.start, end: f.end, rows: f.rows, opener: above ? "Open in Editor" : "Open in New Tab",
                                      icon: NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil), file: f.link)
             }
         }

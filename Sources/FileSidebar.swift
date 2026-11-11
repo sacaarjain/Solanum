@@ -115,6 +115,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
 
     override init(frame: NSRect) {
         super.init(frame: frame)
+        wantsLayer = true  // a card (see `Cards`) from the start, not becoming one mid-draw
         titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.toolTip = "Click to rename this tab"
@@ -203,7 +204,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
             x += 24
         }
         subtitleLabel.frame = NSRect(x: 12, y: 57, width: bounds.width - 24, height: 14)
-        scroll.frame = NSRect(x: 0, y: Self.headerHeight, width: bounds.width - 1, height: bounds.height - Self.headerHeight)
+        scroll.frame = NSRect(x: 0, y: Self.headerHeight, width: bounds.width, height: bounds.height - Self.headerHeight)
         fitColumn()
         placeholder.frame = NSRect(x: 14, y: Self.headerHeight + 20, width: bounds.width - 28, height: 80)
     }
@@ -224,10 +225,9 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
 
     override func draw(_ dirtyRect: NSRect) {
         let th = Config.shared.theme
+        // A card on the window's chrome (see `Cards`): the outline around it is the gutter's.
         th.tabBarTint.setFill()
         bounds.fill()
-        th.border.setFill()
-        NSRect(x: bounds.width - 1, y: 0, width: 1, height: bounds.height).fill()
         // Hovering the tab's name outlines it like a text field: clicking edits it, in the same box stretched to
         // the full width and outlined in the accent.
         let renaming = !titleEditor.isHidden
@@ -267,6 +267,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
             hoverTitle = h
             needsDisplay = true
         }
+        buttons.forEach { $0.syncHover(e) }
     }
 
     override func mouseExited(with e: NSEvent) {
@@ -274,6 +275,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
             hoverTitle = false
             needsDisplay = true
         }
+        buttons.forEach { $0.syncHover(e) }
     }
 
     override func resetCursorRects() {
@@ -1776,6 +1778,13 @@ final class SidebarHeaderButton: NSButton {
 
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }
+
+    /// Lit only while the pointer is over it, whatever events it got: a missed mouse-exit would leave it lit until next
+    /// hovered. The header calls this as the pointer moves over it or leaves.
+    func syncHover(_ e: NSEvent) {
+        let over = !isHidden && window != nil && bounds.contains(convert(e.locationInWindow, from: nil))
+        if over != hovering { hovering = over }
+    }
 
     override func mouseDown(with event: NSEvent) {
         super.mouseDown(with: event)

@@ -1469,6 +1469,13 @@ final class TerminalView: NSView, TerminalDelegate {
         return (r0, r1)
     }
 
+    /// How far a code block's panel reaches above its first row and below its last: into the empty lines Claude leaves
+    /// around it, so the code has room inside its border, or just clear of the text where there's no empty line.
+    func codeBoxPadding(_ b: CodeBox, rows r0: Int, _ r1: Int) -> (top: CGFloat, bottom: CGFloat) {
+        func blank(_ r: Int, _ a: Int) -> Bool { rowMap.indices.contains(r) && rowMap[r] == a && (terminal.line(abs: a)?.isBlank ?? false) }
+        return (blank(r0 - 1, b.first - 1) ? 5 : 1, blank(r1 + 1, b.last + 1) ? 5 : 1)
+    }
+
     /// A tinted, outlined panel behind each code block (tables already have their own border).
     private func drawCodeBoxes(_ ctx: CGContext) {
         let th = palette.theme
@@ -1483,7 +1490,9 @@ final class TerminalView: NSView, TerminalDelegate {
                 where l.cells[c].ch != 0 && l.cells[c].ch != 0x20 { left = c; break }
             }
             if left >= 0 { x = max(x, min(padX + CGFloat(left + 1) * fonts.cellW + 3, padX + CGFloat(b.indent) * fonts.cellW - 3)) }
-            let rect = CGRect(x: x, y: rowY(r0) - 1, width: bounds.width - padX + 6 - x, height: CGFloat(r1 - r0 + 1) * fonts.cellH + 2)
+            let pad = codeBoxPadding(b, rows: r0, r1)
+            let rect = CGRect(x: x, y: rowY(r0) - pad.top, width: bounds.width - padX + 6 - x,
+                              height: CGFloat(r1 - r0 + 1) * fonts.cellH + pad.top + pad.bottom)
             let path = CGPath(roundedRect: rect, cornerWidth: 6, cornerHeight: 6, transform: nil)
             ctx.setFillColor(th.foreground.withAlphaComponent(0.045).cgColor)
             ctx.addPath(path)
@@ -1516,10 +1525,14 @@ final class TerminalView: NSView, TerminalDelegate {
         // From a little above the screen, so a prompt that starts above it is still known as one.
         let bands = PromptBands.find({ self.terminal.line(abs: $0) }, from: max(top - 40, terminal.firstAbs), through: bottom)
         let th = palette.theme
+        let selected = selectedTurnRows
         for b in bands {
             for a in b.first...b.last { promptPlain[a] = b.bg }
             guard let r0 = rowMap.firstIndex(where: { $0 >= b.first && $0 <= b.last }),
                   let r1 = rowMap.lastIndex(where: { $0 >= b.first && $0 <= b.last }) else { continue }
+            // The prompt of the selected turn: nothing of its own inside the selection's outline and fill, which already
+            // set the whole turn apart (a box of its own was a second accent border a point from the outline's).
+            if let sel = selected, sel.first >= r0, sel.first <= r1 { continue }
             let x = max(2, padX - 6), right = min(padX + CGFloat(terminal.cols) * fonts.cellW + 4, bounds.width - 4)
             let rect = CGRect(x: x, y: rowY(r0) - 2, width: right - x, height: CGFloat(r1 - r0 + 1) * fonts.cellH + 4)
             let path = CGPath(roundedRect: rect, cornerWidth: 8, cornerHeight: 8, transform: nil)
@@ -1602,6 +1615,9 @@ final class TerminalView: NSView, TerminalDelegate {
         return path
     }
 
+    /// Dev aid (DevTools move-to): where the Copy buttons showing are.
+    var devCopyButtons: String { codeCopyButtons.map { "\(Int($0.0.minX)),\(Int($0.0.minY)) \(Int($0.0.width))x\(Int($0.0.height))" }.joined(separator: " ") }
+
     /// "Copy" at the top right of the box under the mouse (and one just copied, saying so), when its first line is on
     /// screen.
     private func drawCopyButtons(_ ctx: CGContext) {
@@ -1613,9 +1629,19 @@ final class TerminalView: NSView, TerminalDelegate {
             // Above the box when the line there is empty (Claude leaves one), so it never covers a long first line:
             // flush with the box's right edge and a few points clear of its top border, within that empty line.
             let roomAbove = b.kind != .table && r > 0 && rowMap[r - 1] == b.first - 1 && (terminal.line(abs: b.first - 1)?.isBlank ?? false)
+            // The panel reaches up into that line (see codeBoxPadding), so the button, a few points clear of it, rises into
+            // the line above that when nothing's written there under it (Claude's line before a block is usually short);
+            // otherwise it keeps within the empty line.
+            let boxTop = rowY(r) - (b.kind == .code ? codeBoxPadding(b, rows: r, r).top : 1)
+            let rightX = bounds.width - padX + (roomAbove ? 6 : 2)
+            let clearAbove: Bool = {
+                guard r > 1, rowMap[r - 2] >= 0, let l = terminal.line(abs: rowMap[r - 2]) else { return r <= 1 }
+                let lastText = l.cells.lastIndex { $0.ch != 0 && $0.ch != 0x20 } ?? -1
+                return padX + CGFloat(lastText + 1) * fonts.cellW < rightX - 110
+            }()
             let rect = drawCopyPill(copied ? "Copied" : b.kind == .table ? "Copy table" : "Copy", copied: copied, hover: hoverCopyButton == i,
-                                    rightX: bounds.width - padX + (roomAbove ? 6 : 2),
-                                    top: { roomAbove ? max(self.rowY(r) - self.fonts.cellH, self.rowY(r) - $0 - 4)
+                                    rightX: rightX,
+                                    top: { roomAbove ? (clearAbove ? boxTop - $0 - 3 : max(self.rowY(r) - self.fonts.cellH - 1, boxTop - $0 - 3))
                                                      : self.rowY(r) + (self.fonts.cellH - $0) / 2 }, ctx)
             codeCopyButtons.append((rect, i))
         }
@@ -1863,11 +1889,13 @@ final class TerminalView: NSView, TerminalDelegate {
                 }
             }
 
-            // Hovered link underline
-            if let hu = hoverURL, hu.line == a {
-                ctx.setFillColor(palette.accent)
-                ctx.fill(CGRect(x: padX + CGFloat(hu.start) * cw, y: baseY + fonts.underlineOffset,
-                                width: CGFloat(hu.end - hu.start + 1) * cw, height: fonts.lineWidth))
+            // Hovered link underline, on every row of one that wraps
+            if let hu = hoverURL {
+                for part in hu.rows.isEmpty ? [LinkRow(line: hu.line, start: hu.start, end: hu.end)] : hu.rows where part.line == a {
+                    ctx.setFillColor(palette.accent)
+                    ctx.fill(CGRect(x: padX + CGFloat(part.start) * cw, y: baseY + fonts.underlineOffset,
+                                    width: CGFloat(part.end - part.start + 1) * cw, height: fonts.lineWidth))
+                }
             }
         }
     }

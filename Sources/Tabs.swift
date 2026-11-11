@@ -44,10 +44,10 @@ final class TabGroup {
     var displayName: String { name.isEmpty ? "\(color.title) group" : name }
 }
 
-/// Thin themed divider between split panes.
+/// Split panes, each its own rounded card (see `Cards`), with the window's gutter between them for a divider.
 final class PaneSplitView: NSSplitView {
-    override var dividerThickness: CGFloat { 1 }
-    override var dividerColor: NSColor { Config.shared.theme.border.withAlphaComponent(0.6) }
+    override var dividerThickness: CGFloat { Cards.gap }
+    override func drawDivider(in rect: NSRect) {}
 
     /// Divider positions as fractions of the split's length, applied once it has a real size (after restoring).
     var pendingFractions: [CGFloat]?
@@ -116,7 +116,7 @@ final class TabContentView: NSSplitView {
     override var dividerThickness: CGFloat { DividerBand.thickness }
 
     override func drawDivider(in rect: NSRect) {
-        DividerBand.draw(in: rect, vertical: false)
+        DividerBand.drawGrip(in: rect, vertical: false)
     }
 
     override func layout() {
@@ -137,24 +137,14 @@ final class TabContentView: NSSplitView {
     }
 }
 
-/// A band (not a hairline) between the files and the terminal, and between the columns of a split window,
-/// with a grip to show it can be dragged.
+/// The gap between the files and the terminal, and between the columns of a split window: the window's gutter
+/// (see `Cards`), with a grip to show it can be dragged.
 enum DividerBand {
-    static let thickness: CGFloat = 6
+    static var thickness: CGFloat { Cards.gap }
 
     /// `vertical`: the band runs top to bottom (between columns); otherwise across (files over terminal).
-    static func draw(in rect: NSRect, vertical: Bool) {
+    static func drawGrip(in rect: NSRect, vertical: Bool) {
         let th = Config.shared.theme
-        th.tabBarTint.withAlphaComponent(1).setFill()
-        rect.fill()
-        th.border.setFill()
-        if vertical {
-            NSRect(x: rect.minX, y: rect.minY, width: 1, height: rect.height).fill()
-            NSRect(x: rect.maxX - 1, y: rect.minY, width: 1, height: rect.height).fill()
-        } else {
-            NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: 1).fill()
-            NSRect(x: rect.minX, y: rect.maxY - 1, width: rect.width, height: 1).fill()
-        }
         th.foreground.withAlphaComponent(0.35).setFill()
         for i in -1...1 {
             let d = CGFloat(i) * 7
@@ -670,6 +660,116 @@ final class TabSession: NSObject {
 }
 
 /// Draws the themed window background (solid or gradient) at the configured opacity.
+/// Panes as rounded cards: the file sidebars, the open files and each terminal pane float on the window's chrome
+/// (the tab bar's tint), `gap` apart, each clipped to rounded corners and outlined. The cards along the top open
+/// onto the tab bar, so the active tab still runs down into its terminal.
+enum Cards {
+    static let radius: CGFloat = 8
+    static let gap: CGFloat = 6
+
+    /// The views shown as cards under `v`: the leaves of a tab's splits (its files, each terminal pane).
+    static func leaves(_ v: NSView) -> [NSView] {
+        guard !v.isHidden, v.frame.width > 0, v.frame.height > 0 else { return [] }
+        if let s = v as? NSSplitView { return s.arrangedSubviews.flatMap(leaves) }
+        if v is PaneRootView { return v.subviews.flatMap(leaves) }
+        return [v]
+    }
+
+    /// Clips a card's view to its rounded corners (`radius` 0 puts it back square). `squareTopLeft`: the active tab
+    /// runs straight down into the card's left edge there (see `TabBarView.dockFlush`). That takes a mask (a layer's
+    /// own corner rounding can leave a corner out, but pictures of the window drawn from the views ignore that), which
+    /// `refreshMask` keeps the card's size.
+    static func style(_ v: NSView, radius: CGFloat = Cards.radius, squareTopLeft: Bool = false) {
+        v.wantsLayer = true
+        guard let layer = v.layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        if squareTopLeft && radius > 0 {
+            layer.cornerRadius = 0
+            layer.masksToBounds = false
+            refreshMask(v)
+        } else {
+            layer.mask = nil
+            guard layer.cornerRadius != radius else { return }
+            layer.cornerRadius = radius
+            layer.masksToBounds = radius > 0
+        }
+    }
+
+    /// A square-cornered card's mask, fitted to how big it is now.
+    static func refreshMask(_ v: NSView) {
+        guard let layer = v.layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let mask = layer.mask as? CAShapeLayer ?? CAShapeLayer()
+        mask.frame = v.bounds
+        // The view's layer is flipped (as the view is), so the mask's top left is its origin.
+        mask.path = path(v.bounds, radius: radius, squareTopLeft: true, openTop: false).cgPath
+        layer.mask = mask
+        CATransaction.commit()
+    }
+
+    /// A card's shape, top left first and round to the top right (in flipped coordinates, where minY is the top).
+    /// `openTop` stops there, leaving out the top edge between the corners.
+    static func path(_ r: NSRect, radius: CGFloat, squareTopLeft: Bool, openTop: Bool) -> NSBezierPath {
+        let p = NSBezierPath()
+        if squareTopLeft {
+            p.move(to: NSPoint(x: r.minX, y: r.minY))
+        } else {
+            p.move(to: NSPoint(x: r.minX + radius, y: r.minY))
+            p.appendArc(from: NSPoint(x: r.minX, y: r.minY), to: NSPoint(x: r.minX, y: r.maxY), radius: radius)
+        }
+        p.appendArc(from: NSPoint(x: r.minX, y: r.maxY), to: NSPoint(x: r.maxX, y: r.maxY), radius: radius)
+        p.appendArc(from: NSPoint(x: r.maxX, y: r.maxY), to: NSPoint(x: r.maxX, y: r.minY), radius: radius)
+        p.appendArc(from: NSPoint(x: r.maxX, y: r.minY), to: NSPoint(x: r.minX, y: r.minY), radius: radius)
+        if !openTop { p.close() }
+        return p
+    }
+
+    /// A card's outline, just outside it (concentric with its corners). A card along the top leaves out its top edge
+    /// between the corners, which the tab bar draws as its bottom line (gapped where the active tab opens onto it).
+    static func outline(_ card: Card) -> NSBezierPath {
+        let p = path(card.rect.insetBy(dx: -0.5, dy: -0.5), radius: radius + 0.5, squareTopLeft: card.squareTopLeft,
+                     openTop: card.top)
+        p.lineWidth = 1
+        return p
+    }
+
+    /// Where a card is, in the window's root view.
+    struct Card: Equatable {
+        var rect: NSRect
+        /// Along the top, opening onto the tab bar.
+        var top: Bool
+        /// The active tab runs straight down into its left edge (see `style`).
+        var squareTopLeft = false
+    }
+}
+
+/// The window's chrome between the cards (see `Cards`): the tab bar's tint, with each card's outline. Under the
+/// cards, over the background; clicks pass through.
+final class CardGutterView: NSView {
+    /// The cards, in this view's coordinates.
+    var cards: [Cards.Card] = [] { didSet { if cards != oldValue { needsDisplay = true } } }
+    /// The rows between the bars, which the tint covers (the bars draw their own).
+    var band: NSRect = .zero { didSet { if band != oldValue { needsDisplay = true } } }
+
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard !cards.isEmpty else { return }
+        let th = Config.shared.theme
+        let tint = NSBezierPath(rect: band)
+        for c in cards { tint.append(Cards.path(c.rect, radius: Cards.radius, squareTopLeft: c.squareTopLeft, openTop: false)) }
+        tint.windingRule = .evenOdd
+        th.tabBarTint.setFill()
+        tint.fill()
+        th.border.setStroke()
+        for c in cards { Cards.outline(c).stroke() }
+    }
+}
+
 final class BackgroundView: NSView {
     /// A picture behind it all: the theme's, or the desktop's (see `Backdrop`).
     var backdrop: Backdrop = .none { didSet { if backdrop != oldValue { needsDisplay = true } } }
@@ -723,8 +823,6 @@ final class StatusBarView: NSView {
     var showsSidebarToggle = false { didSet { needsDisplay = true } }
     var sidebarVisible = false { didSet { needsDisplay = true } }
     var onToggleFileSidebar: (() -> Void)?
-    /// The right half of a split window's bar (the right column's own), drawn with a line on its left edge.
-    var leadingEdge = false { didSet { needsDisplay = true } }
     /// The theme name at the right end, which the breadcrumbs stop short of.
     private var themeRect: CGRect = .null
     /// The theme's name, in capitals at the right end (not while split, where the right column's folder goes);
@@ -922,17 +1020,16 @@ final class StatusBarView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let th = Config.shared.theme
+        // No line along the top: the bar is the window's chrome, which the cards float on (see `Cards`).
         th.tabBarTint.setFill()
         bounds.fill()
         th.border.setFill()
-        NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill()
         crumbs = []
         buttons = []
 
         if showsRightSidebarToggle {
             _ = drawButton(.rightSidebar, at: bounds.width - 30, icon: "sidebar.right", color: rightSidebarVisible ? th.accent : dimIcon)
         }
-        if leadingEdge { NSRect(x: 0, y: 0, width: 1, height: bounds.height).fill() }
         themeRect = .null
         if showsThemeName {
             let font = NSFont.systemFont(ofSize: 10.5, weight: .semibold)
@@ -1447,7 +1544,7 @@ final class ColumnDivider: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        DividerBand.draw(in: bounds, vertical: true)
+        DividerBand.drawGrip(in: bounds, vertical: true)
     }
 
     override func mouseDragged(with e: NSEvent) {
@@ -1488,6 +1585,8 @@ extension NSView {
 final class WindowRootView: NSView {
     let effect = NSVisualEffectView()
     let background = BackgroundView()
+    /// The chrome between the panes' cards (see `Cards`).
+    private let gutter = CardGutterView()
     private(set) var columns: [TabColumn] = []
     let sidebar = FileSidebarView()
     private let sidebarHandle = SidebarResizeHandle()
@@ -1661,6 +1760,7 @@ final class WindowRootView: NSView {
         effect.state = .active
         addSubview(effect)
         addSubview(background)
+        addSubview(gutter)
         addSubview(content)
         addSubview(sidebar)
         addSubview(sidebarHandle)
@@ -1669,14 +1769,20 @@ final class WindowRootView: NSView {
         addSubview(rightSidebarHandle)
         addSubview(divider)
         addSubview(statusBar)
-        rightStatusBar.leadingEdge = true
         rightStatusBar.mirrored = true
         rightStatusBar.showsRightSidebarToggle = true
         addSubview(rightStatusBar)
         addSubview(dropOverlay)
         let d = UserDefaults.standard
         if d.double(forKey: "solanum.sidebar.right.width") > 0 { rightSidebarWidth = CGFloat(d.double(forKey: "solanum.sidebar.right.width")) }
+        // Panes move without the window laying out again when a divider in a tab is dragged, or a pane is split or closed.
+        splitObserver = NotificationCenter.default.addObserver(forName: NSSplitView.didResizeSubviewsNotification, object: nil,
+                                                               queue: .main) { [weak self] n in
+            guard let self, let v = n.object as? NSView, v.isDescendant(of: self) else { return }
+            self.updateCards()
+        }
     }
+    private var splitObserver: NSObjectProtocol?
 
     required init?(coder: NSCoder) { fatalError() }
 
@@ -1715,7 +1821,10 @@ final class WindowRootView: NSView {
         background.frame = bounds
         let barH = columns.isEmpty ? 0 : tabBarHeight
         let statusH = StatusBarView.height
-        let h = bounds.height - barH - statusH
+        // The panes float on the chrome as cards, a gap from the window's sides, the status bar and each other (not
+        // the Quick Terminal's lone pane, which has no chrome to float on).
+        let g: CGFloat = columns.isEmpty ? 0 : Cards.gap
+        let h = bounds.height - barH - statusH - g
         let split = columns.count > 1
         // Leave the terminals at least ~300pt however wide the sidebars were dragged.
         // Full widths, then how much of each is on screen (sliding) and how much the terminals give up.
@@ -1728,16 +1837,17 @@ final class WindowRootView: NSView {
         let settled = slideLink == nil
         sidebar.isHidden = sw == 0
         sidebarHandle.isHidden = sw == 0 || !settled
-        sidebar.frame = NSRect(x: sw - fullW, y: barH, width: fullW, height: h)
-        // Resize strips: 12pt wide, mostly over the sidebar's own edge, so a press near the line resizes
+        // Each sidebar's width takes in the gap on its outer side.
+        sidebar.frame = NSRect(x: sw - fullW + g, y: barH, width: fullW - g, height: h)
+        // Resize strips: the gap beside the sidebar and a little either side of it, so a press near the edge resizes
         // rather than picking up a file row.
-        sidebarHandle.frame = NSRect(x: sw - 7, y: barH, width: 12, height: h)
+        sidebarHandle.frame = NSRect(x: sw - 4, y: barH, width: g + 8, height: h)
         rightSidebar.isHidden = rsw == 0
         rightSidebarHandle.isHidden = rsw == 0 || !settled
-        rightSidebar.frame = NSRect(x: bounds.width - rsw, y: barH, width: fullRW, height: h)
-        rightSidebarHandle.frame = NSRect(x: bounds.width - rsw - 5, y: barH, width: 12, height: h)
+        rightSidebar.frame = NSRect(x: bounds.width - rsw, y: barH, width: fullRW - g, height: h)
+        rightSidebarHandle.frame = NSRect(x: bounds.width - rsw - g - 4, y: barH, width: g + 8, height: h)
         // The terminals keep their settled width while the left sidebar slides, and ride along with its edge.
-        columnArea = NSRect(x: sw, y: barH, width: bounds.width - contentSW - contentRSW, height: h)
+        columnArea = NSRect(x: sw + g, y: barH, width: bounds.width - contentSW - contentRSW - 2 * g, height: h)
         divider.isHidden = !split
         var barSplitX = bounds.width
         if split {
@@ -1789,6 +1899,55 @@ final class WindowRootView: NSView {
         // And whatever floats over the window stays above all of it, strips and overlay included.
         for v in floating where subviews.last !== v { addSubview(v) }
         overlaysChanged()
+        gutter.frame = bounds
+        gutter.band = NSRect(x: 0, y: barH, width: bounds.width, height: bounds.height - barH - statusH)
+        updateCards()
+    }
+
+    /// The cards in this view, for the tab bars' bottom line (see `Cards`).
+    private(set) var cardFrames: [Cards.Card] = []
+
+    /// The card whose top left corner is square, and what keeps its mask its size.
+    private var squared: (view: NSView, observer: NSObjectProtocol)?
+
+    /// Finds the cards (the sidebars showing, and each column's files and terminal panes), rounds their corners,
+    /// and has the gutter and tab bars drawn around where they are now.
+    func updateCards() {
+        let carded = !columns.isEmpty
+        var views: [NSView] = []
+        for s in [sidebar, rightSidebar] where !s.isHidden { views.append(s) }
+        for c in columns { views += c.content.subviews.flatMap(Cards.leaves) }
+        if !carded { views = content.subviews.flatMap(Cards.leaves) }
+        let top = carded ? tabBarHeight : -1
+        // The left edges of the columns whose active tab runs straight down into the card there, asked of the strips
+        // now (not as they last drew), so the corner stays square while the columns move, as a sidebar is dragged wider.
+        let flushEdges = carded ? columns.filter { $0.tabBar.activeTabIsFlush }.map(\.content.frame.minX) : []
+        var square: NSView?
+        let cards = views.map { v -> Cards.Card in
+            let r = convert(v.bounds, from: v)
+            let atTop = abs(r.minY - top) < 1
+            let sq = atTop && flushEdges.contains { abs($0 - r.minX) < 1 }
+            if sq { square = v }
+            return Cards.Card(rect: r, top: atTop, squareTopLeft: sq)
+        }
+        for v in views { Cards.style(v, radius: carded ? Cards.radius : 0, squareTopLeft: v === square) }
+        if squared?.view !== square {
+            if let old = squared {
+                NotificationCenter.default.removeObserver(old.observer)
+                if !views.contains(old.view) { Cards.style(old.view, radius: carded ? Cards.radius : 0) }
+            }
+            squared = square.map { v in
+                v.postsFrameChangedNotifications = true
+                return (v, NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: v, queue: nil) { _ in
+                    Cards.refreshMask(v)
+                })
+            }
+        }
+        let frames = carded ? cards : []
+        let moved = frames.map(\.rect) != cardFrames.map(\.rect) || frames.map(\.top) != cardFrames.map(\.top)
+        cardFrames = frames
+        gutter.cards = frames
+        if moved { columns.forEach { $0.tabBar.needsDisplay = true } }
     }
 
     /// Something floating over the window opened, closed or moved: the resize strips' cursors leave it out.
@@ -2825,6 +2984,9 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     private var ghosts: [(tab: TabSession, rect: CGRect)] = []
     private var knownTabs: [ObjectIdentifier: TabSession] = [:]
     private var lastLayoutWidth: CGFloat = 0
+    /// Where the tabs had room last time: when that moves (a sidebar or the columns' divider dragged, which moves the card
+    /// the tabs start on), they go straight there, in step with the card, rather than sliding after it.
+    private var lastViewport: CGRect = .null
     private static let animDuration: CFTimeInterval = 0.2
     private static let plusKey: AnyHashable = "plus"
     /// The Solanum flower in the top-right corner; clicking it opens Settings.
@@ -3000,11 +3162,14 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     private func computeRects() {
         guard let c = controller else { return }
         // Tabs stay over the column's own content, not the sidebars beside it, so the active tab opens onto
-        // its terminal. Beside the file sidebar they start right on its border line, which carries on up as the
-        // first tab's edge.
+        // its terminal. They start right on the left edge of the card below (see `Cards`), which carries on up as the
+        // first tab's edge; or, where the window's buttons are in the way, clear of the card's rounded corner, so the
+        // active tab's flared foot lands on its straight top edge.
         let content = c.content.frame.offsetBy(dx: -frame.minX, dy: 0)
-        sidebarEdge = content.isEmpty || content.minX < 1 ? nil : content.minX - 1
-        let left = max(c.trafficLightInset, sidebarEdge ?? 0)
+        let cardInset = Cards.radius + Self.dockFlare + 1
+        let edge = content.minX - 1
+        cardEdge = !content.isEmpty && (!c.isLeading || c.trafficLightInset <= edge) ? edge : nil
+        let left = cardEdge ?? max(c.trafficLightInset, content.isEmpty ? 0 : content.minX + cardInset)
         let plusW: CGFloat = 30
         // Each group gets a chip where it starts; tabs in collapsed groups take no space.
         var chipSpace: CGFloat = 0, visible = 0
@@ -3016,7 +3181,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         }
         flowerRect = showsFlower ? CGRect(x: bounds.width - 38, y: (bounds.height - 26) / 2, width: 26, height: 26) : .null
         var rightLimit = showsFlower ? flowerRect.minX - 6 : bounds.width - 6
-        if !content.isEmpty { rightLimit = min(rightLimit, content.maxX - 6) }
+        if !content.isEmpty { rightLimit = min(rightLimit, content.maxX - cardInset) }
         if c.isLeading {
             closeSplitRect = .null
         } else {
@@ -3127,7 +3292,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             guard let old = targets[k] else { return true }
             return abs(old.minX - r.minX) > 0.5 || abs(old.width - r.width) > 0.5
         }
-        let animate = changed && !targets.isEmpty && bounds.width == lastLayoutWidth
+        let animate = changed && !targets.isEmpty && bounds.width == lastLayoutWidth && viewport == lastViewport
             && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if animate {
             var from: [AnyHashable: CGRect] = [:]
@@ -3167,10 +3332,15 @@ final class TabBarView: NSView, NSTextFieldDelegate {
                 RunLoop.main.add(timer, forMode: .common)
                 animTimer = timer
             }
+        } else if viewport != lastViewport {
+            // A slide under way would carry on from where the tabs were before they moved.
+            animFrom = [:]
+            ghosts = []
         }
         targets = next
         knownTabs = tabsNow
         lastLayoutWidth = bounds.width
+        lastViewport = viewport
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -3178,14 +3348,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         computeRects()
         let th = Config.shared.theme
         let liftedGroup = dragGroupMoved ? dragGroup : nil
-        // The active tab, where it sits (not while it's dragged), cut to the part scrolled into view.
-        var docked: CGRect?
-        if c.tabs.indices.contains(c.activeIndex), !(dragging && dragIndex == c.activeIndex),
-           liftedGroup == nil || c.tabs[c.activeIndex].group !== liftedGroup,
-           let r = shownRect(ObjectIdentifier(c.tabs[c.activeIndex])) ?? (tabRects[c.activeIndex].isNull ? nil : tabRects[c.activeIndex]) {
-            let x0 = max(r.minX, viewport.minX), x1 = min(r.maxX, viewport.maxX)
-            if x1 - x0 > 20 { docked = CGRect(x: x0, y: r.minY, width: x1 - x0, height: r.height) }
-        }
+        let docked = dockedRect(c)
         // The strip's tint and bottom edge leave the active tab out, so it shows the terminal's own background.
         th.tabBarTint.setFill()
         let tint = NSBezierPath(rect: bounds)
@@ -3199,10 +3362,18 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             let (l, r) = dockEdges(d)
             return (dockFlush(d) ? l - 0.5 : l - Self.dockFlare, r + Self.dockFlare)
         } ?? (bounds.width, bounds.width)
-        NSRect(x: 0, y: bounds.height - 1, width: gap.0, height: 1).fill()
-        NSRect(x: gap.1, y: bounds.height - 1, width: max(0, bounds.width - gap.1), height: 1).fill()
-        // The right column's strip starts with the line between the columns.
-        if !c.isLeading { NSRect(x: 0, y: 0, width: 1, height: bounds.height).fill() }
+        // The bottom line is the top edge of the cards below (see `Cards`), between their rounded corners, and not
+        // where the active tab opens onto one. Only this strip's own width: a view may draw outside itself, and the
+        // other column's cards are under the other strip.
+        let spans: [(CGFloat, CGFloat)] = (superview as? WindowRootView).map { root in
+            root.cardFrames.filter(\.top).map { (max(0, $0.rect.minX - frame.minX + Cards.radius),
+                                                   min(bounds.width, $0.rect.maxX - frame.minX - Cards.radius)) }
+        } ?? [(0, bounds.width)]
+        for (a, b) in spans {
+            for (x0, x1) in [(a, min(b, gap.0)), (max(a, gap.1), b)] where x1 > x0 {
+                NSRect(x: x0, y: bounds.height - 1, width: x1 - x0, height: 1).fill()
+            }
+        }
         if let d = docked {
             th.border.setStroke()
             let edge = dockPath(d, closed: false)
@@ -3647,8 +3818,8 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             i == c.activeIndex || (!dragging && hoverIndex == i) || selectedTabs.contains(c.tabs[i]) || dropTab == i || c.tabs[i] === sendTarget
         }
         Config.shared.theme.foreground.withAlphaComponent(0.18).setFill()
-        // One before the first tab, too, unless it starts on the sidebar's border line.
-        if let first = shown.first, !quiet(first.i), sidebarEdge.map({ abs(first.r.minX - $0) >= 0.5 }) ?? true {
+        // One before the first tab, too, unless it starts on the card's edge.
+        if let first = shown.first, !quiet(first.i), cardEdge.map({ abs(first.r.minX - $0) >= 0.5 }) ?? true {
             // On the tab's own left edge: just outside it would be clipped off the start of the strip.
             NSRect(x: first.r.minX.rounded(), y: first.r.midY - 8, width: 1, height: 16).fill()
         }
@@ -3667,13 +3838,39 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     /// How far the active tab's foot curves out on each side.
     private static let dockFlare: CGFloat = 5
 
-    /// Where the file sidebar's border line meets the strip, when the tabs start on it (see computeRects).
-    private var sidebarEdge: CGFloat?
+    /// The left edge of the card below, when the tabs start on it (see computeRects).
+    private var cardEdge: CGFloat?
 
-    /// Whether the active tab's left side is the sidebar's border carried on up: it runs straight down,
-    /// without curving out.
+    /// Whether the active tab's left side is the card's edge carried on up: it runs straight down, without curving
+    /// out, and the card's corner under it is square.
     private func dockFlush(_ r: CGRect) -> Bool {
-        sidebarEdge.map { abs(r.minX - $0) < 0.5 } ?? false
+        cardEdge.map { abs(r.minX - $0) < 0.5 } ?? false
+    }
+
+    /// The active tab, where it sits (not while it's dragged), cut to the part scrolled into view.
+    private func dockedRect(_ c: TabColumn) -> CGRect? {
+        let liftedGroup = dragGroupMoved ? dragGroup : nil
+        guard c.tabs.indices.contains(c.activeIndex), !(dragging && dragIndex == c.activeIndex),
+              liftedGroup == nil || c.tabs[c.activeIndex].group !== liftedGroup,
+              let r = shownRect(ObjectIdentifier(c.tabs[c.activeIndex])) ?? (tabRects[c.activeIndex].isNull ? nil : tabRects[c.activeIndex])
+        else { return nil }
+        let x0 = max(r.minX, viewport.minX), x1 = min(r.maxX, viewport.maxX)
+        return x1 - x0 > 20 ? CGRect(x: x0, y: r.minY, width: x1 - x0, height: r.height) : nil
+    }
+
+    /// Whether the active tab runs straight down into the card below's left edge, whose top left corner is then square
+    /// (see `WindowRootView.updateCards`).
+    var activeTabIsFlush: Bool {
+        guard let c = controller else { return false }
+        computeRects()
+        return dockedRect(c).map(dockFlush) ?? false
+    }
+
+    /// Before each draw: the window's cards are where they are now (a tab switch lays out no more than the tab), with
+    /// the right corner square.
+    override func viewWillDraw() {
+        super.viewWillDraw()
+        (superview as? WindowRootView)?.updateCards()
     }
 
     /// The active tab's left and right edges, on half points so its 1pt outline covers whole pixels instead of

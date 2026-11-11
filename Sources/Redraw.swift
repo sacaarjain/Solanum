@@ -63,7 +63,7 @@ extension TerminalView {
         // Code boxes (with a Copy button in the row above), thumbnails and a link's card are drawn across several rows.
         for r in dirty {
             let near = rowMap[max(0, r - 1)...min(rowMap.count - 1, r + 1)]
-            if codeBoxes.contains(where: { b in near.contains { $0 >= b.first - 1 && $0 <= b.last } })
+            if codeBoxes.contains(where: { b in near.contains { $0 >= b.first - 1 && $0 <= b.last + 1 } })
                 || imageChipState.strips.contains(where: { $0.area.insetBy(dx: 0, dy: -4).intersects(rowBand(r)) })
                 || linkCardRect.insetBy(dx: 0, dy: -8).intersects(rowBand(r)) {
                 return nil
@@ -131,7 +131,7 @@ extension TerminalView {
         h.combine(selection?.start); h.combine(selection?.end); h.combine(selection?.rect)
         h.combine(markedText); h.combine(markedSelection.location); h.combine(markedSelection.length)
         h.combine(searchMatches.count); h.combine(currentMatch)
-        h.combine(hoverURL?.line); h.combine(hoverURL?.start); h.combine(hoverURL?.end); h.combine(hoverLinkCard)
+        h.combine(hoverURL?.line); h.combine(hoverURL?.start); h.combine(hoverURL?.end); h.combine(hoverURL?.rows); h.combine(hoverLinkCard)
         for b in selectedBlocks { h.combine(b.id) }
         for b in [hoverBlock, copiedBlock] { h.combine(b?.id) }
         h.combine(hoverBlockCopy); h.combine(hoverBlockSend)
