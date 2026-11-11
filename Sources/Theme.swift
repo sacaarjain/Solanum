@@ -60,6 +60,9 @@ struct Theme {
     var file: URL?
     /// A picture behind everything (see `Backdrop`), as Windows has it.
     var image: ThemeImage?
+    /// What shows beside its name and on its card (see `ThemeIcon`): "planet:<name>", "flower", "none" or a picture's
+    /// file in the themes folder; nil for the planet it's named after.
+    var icon: String?
 
     var isCustom: Bool { file != nil }
 
@@ -70,6 +73,7 @@ struct Theme {
                                 "ansi": ansi.map(\.hexString)]
         if let b2 = background2 { j["background2"] = b2.hexString }
         if let c = chrome { j["chrome"] = c.hexString }
+        if let icon { j["icon"] = icon }
         // As Windows writes it, so a theme moves between them whole.
         if let image {
             j["background-image"] = image.file
@@ -187,6 +191,7 @@ enum ThemeLibrary {
                 if let tint = (j["background-image-tint"] as? NSNumber)?.doubleValue { image.tint = min(max(tint, 0), 0.95) }
                 t.image = image
             }
+            if let icon = j["icon"] as? String, !icon.isEmpty { t.icon = icon }
             custom.append(t)
         }
         custom.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -238,6 +243,8 @@ enum ThemeLibrary {
         var t = base
         t.file = nil
         t.name = uniqueName(base.isCustom ? base.name : "My \(base.name)")
+        // Solanum Default's flower comes from being the built-in one: a copy keeps it by asking for it.
+        if t.icon == nil, ThemeIcon.of(base) == .flower { t.icon = "flower" }
         return save(t)
     }
 

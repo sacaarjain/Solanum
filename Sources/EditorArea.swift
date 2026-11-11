@@ -28,17 +28,24 @@ final class EditorAreaView: NSView {
     /// as the window's, so it stands apart from the terminal below it rather than running into it, as on Windows. With
     /// no picture the window's own background shows through as before.
     override func draw(_ dirtyRect: NSRect) {
-        var root = superview
+        guard let fill = Self.fill(in: self) else { return }
+        fill.setFill()
+        NSRect(x: 0, y: FileTabStrip.height, width: bounds.width, height: max(0, bounds.height - FileTabStrip.height)).fill()
+    }
+
+    /// What the file is drawn on, in `view`'s window: nil without a picture behind it (the window's own background).
+    /// The active sub-tab is filled with it too, so it's one piece with the file it opens onto.
+    static func fill(in view: NSView) -> NSColor? {
+        var root = view.superview
         while let v = root, !(v is WindowRootView) { root = v.superview }
-        guard let backdrop = (root as? WindowRootView)?.background.backdrop else { return }
+        guard let backdrop = (root as? WindowRootView)?.background.backdrop else { return nil }
         let cfg = Config.shared, base: CGFloat
         switch backdrop {
-        case .none: return
+        case .none: return nil
         case .picture(_, let image): base = CGFloat(image.tint)
         case .wallpaper: base = cfg.opacity
         }
-        cfg.theme.background.withAlphaComponent(base + (1 - base) * 0.5).setFill()
-        NSRect(x: 0, y: FileTabStrip.height, width: bounds.width, height: max(0, bounds.height - FileTabStrip.height)).fill()
+        return cfg.theme.background.withAlphaComponent(base + (1 - base) * 0.5)
     }
 
     func show(_ ed: FileEditorView) {
@@ -114,7 +121,8 @@ final class FileTabStrip: NSView {
             rightArrowRect = .null
             viewport = CGRect(x: 0, y: 0, width: max(0, limit), height: bounds.height)
         }
-        let pad: CGFloat = leftArrowRect.isNull ? 6 : 2
+        // The first sub-tab starts on the card's left edge, as the main strip's first tab does on its card.
+        let pad: CGFloat = leftArrowRect.isNull ? 0 : 2
         var laid: [CGRect] = []
         var x = viewport.minX + pad
         for w in widths {
@@ -196,11 +204,90 @@ final class FileTabStrip: NSView {
 
     var devScrollState: String { "scroll=\(Int(scrollX)) of \(Int(maxScrollX)) arrows=\(!leftArrowRect.isNull)" }
 
+    /// The active sub-tab's outline, as the main tab strip draws its active tab: rounded on top, its sides running down
+    /// to the strip's bottom line and curving out onto it, so it opens onto the file below. `r` is cut to the viewport.
+    /// On the card's left edge (`flush`), its left side is the card's own: square at the top, running straight down,
+    /// and not stroked (the card's outline is there), as the main strip's first tab does.
+    private func dockPath(_ r: CGRect, closed: Bool = false) -> NSBezierPath {
+        let flush = isFlush(r)
+        let left = flush && closed ? 0 : r.minX.rounded() + 0.5, right = r.maxX.rounded() - 0.5
+        let line = bounds.height - 0.5, top = r.minY.rounded() + 0.5, radius: CGFloat = 6, f = Self.flare
+        let p = NSBezierPath()
+        func quad(to end: NSPoint, via c: NSPoint) {
+            let start = p.currentPoint
+            p.curve(to: end, controlPoint1: NSPoint(x: start.x + (c.x - start.x) * 2 / 3, y: start.y + (c.y - start.y) * 2 / 3),
+                    controlPoint2: NSPoint(x: end.x + (c.x - end.x) * 2 / 3, y: end.y + (c.y - end.y) * 2 / 3))
+        }
+        if flush && !closed {
+            p.move(to: NSPoint(x: 0, y: top))
+        } else if flush {
+            p.move(to: NSPoint(x: left, y: bounds.height))
+            p.line(to: NSPoint(x: left, y: top))
+        } else {
+            p.move(to: NSPoint(x: left - f, y: line))
+            quad(to: NSPoint(x: left, y: line - f), via: NSPoint(x: left, y: line))
+            p.line(to: NSPoint(x: left, y: top + radius))
+            quad(to: NSPoint(x: left + radius, y: top), via: NSPoint(x: left, y: top))
+        }
+        p.line(to: NSPoint(x: right - radius, y: top))
+        quad(to: NSPoint(x: right, y: top + radius), via: NSPoint(x: right, y: top))
+        p.line(to: NSPoint(x: right, y: line - f))
+        quad(to: NSPoint(x: right + f, y: line), via: NSPoint(x: right, y: line))
+        if closed {
+            p.line(to: NSPoint(x: right + f, y: bounds.height))
+            p.line(to: NSPoint(x: flush ? left : left - f, y: bounds.height))
+            p.close()
+        }
+        p.lineWidth = 1
+        return p
+    }
+    private static let flare: CGFloat = 4
+
+    /// A hovered sub-tab: rounded on top only (square on top at the left too, when `squareTopLeft`).
+    private static func pill(_ r: CGRect, squareTopLeft: Bool) -> NSBezierPath {
+        let p = NSBezierPath(), radius: CGFloat = 5
+        p.move(to: NSPoint(x: r.minX, y: r.maxY))
+        if squareTopLeft {
+            p.line(to: NSPoint(x: r.minX, y: r.minY))
+        } else {
+            p.line(to: NSPoint(x: r.minX, y: r.minY + radius))
+            p.appendArc(from: NSPoint(x: r.minX, y: r.minY), to: NSPoint(x: r.minX + radius, y: r.minY), radius: radius)
+        }
+        p.appendArc(from: NSPoint(x: r.maxX, y: r.minY), to: NSPoint(x: r.maxX, y: r.minY + radius), radius: radius)
+        p.line(to: NSPoint(x: r.maxX, y: r.maxY))
+        p.close()
+        return p
+    }
+
+    /// The sub-tab is on the card's left edge (the first, not scrolled, no ‹ arrow).
+    private func isFlush(_ r: CGRect) -> Bool { r.minX < 0.5 }
+
     override func draw(_ dirtyRect: NSRect) {
-        // On the card's own background (see `Cards`), with no band or line of its own: the active file is its pill.
+        // On the card's own background (see `Cards`). A line along the bottom, which the active file's sub-tab opens
+        // onto, as the main tab strip's active tab opens onto its card.
         let th = Config.shared.theme
         layoutRects()
         guard let tab else { return }
+        let docked: CGRect? = {
+            guard rects.indices.contains(tab.activeEditorIndex), !(dragging && pressed == tab.activeEditorIndex) else { return nil }
+            let r = rects[tab.activeEditorIndex], x0 = max(r.minX, viewport.minX), x1 = min(r.maxX, viewport.maxX)
+            return x1 - x0 > 12 ? CGRect(x: x0, y: r.minY, width: x1 - x0, height: r.height) : nil
+        }()
+        th.border.setFill()
+        // Wall to wall, but where the active sub-tab opens onto it.
+        let gap = docked.map { (isFlush($0) ? 0 : $0.minX.rounded() + 0.5 - Self.flare, $0.maxX.rounded() - 0.5 + Self.flare) }
+            ?? (bounds.width, bounds.width)
+        for (x0, x1) in [(0, min(bounds.width, gap.0)), (max(0, gap.1), bounds.width)] where x1 > x0 {
+            NSRect(x: x0, y: bounds.height - 1, width: x1 - x0, height: 1).fill()
+        }
+        if let d = docked {
+            if let fill = EditorAreaView.fill(in: self) {
+                fill.setFill()
+                dockPath(d, closed: true).fill()
+            }
+            th.border.setStroke()
+            dockPath(d).stroke()
+        }
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: viewport).addClip()
         // In a layer of their own, so the edges can fade the sub-tabs out (the bar behind them is see-through).
@@ -209,9 +296,10 @@ final class FileTabStrip: NSView {
         for (i, ed) in tab.editors.enumerated() where rects[i].maxX > viewport.minX && rects[i].minX < viewport.maxX {
             let r = rects[i]
             let active = i == tab.activeEditorIndex
-            if active || hover == i {
+            if (active && docked == nil) || (hover == i && !active) {
+                // Standing on the line: square at the bottom, and at the top left too on the card's edge.
                 (active ? th.surface : th.surface.withAlphaComponent(0.5)).setFill()
-                NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5).fill()
+                Self.pill(r, squareTopLeft: isFlush(r)).fill()
             }
             let name = ed.displayName
             if ed.mode == .file, let img = IconPacks.current?.icon(forName: name, directory: false, light: !th.isDark) {

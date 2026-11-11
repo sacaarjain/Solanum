@@ -3079,8 +3079,10 @@ final class LineNumberRuler: NSRulerView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        // Scrolled sideways, the text passes under the bar: a solid, darker background keeps the numbers readable.
-        if let tv = textView, tv.visibleRect.minX > 0 {
+        // Scrolled sideways, the text passes under the bar: a solid, darker background keeps the numbers readable, from
+        // the first point it's moved (the text view starts at the bar's right edge, which on today's macOS is past
+        // the scroll's left inset, so its visible rect starts below 0 until the text is well under the bar).
+        if let tv = textView, tv.convert(NSPoint(x: bounds.maxX, y: 0), from: self).x > 0.5 {
             let th = Config.shared.theme
             (th.background.usingColorSpace(.sRGB)?.blended(withFraction: 0.25, of: .black) ?? th.background).withAlphaComponent(1).setFill()
             bounds.fill()

@@ -857,6 +857,13 @@ final class StatusBarView: NSView {
     private var transferRect: CGRect = .null
     /// A planet theme's planet, left of the theme name.
     private static let planetSide: CGFloat = 18
+    /// A theme's own picture as its icon (see `ThemeIcon`), where the planet would be: a view, so a GIF plays.
+    private lazy var themeIconView: ThemeIconImageView = {
+        let v = ThemeIconImageView(frame: .zero)
+        v.isHidden = true
+        addSubview(v)
+        return v
+    }()
     /// Solanum Default's mark beside its name: the flower in outline, purple while the theme button is hovered.
     private static let flowerSide: CGFloat = 16
 
@@ -1036,22 +1043,29 @@ final class StatusBarView: NSView {
             let attrs: [NSAttributedString.Key: Any] = [.font: font, .kern: 0.8,
                                                         .foregroundColor: hoverButton == .theme ? th.foreground : th.dimText]
             let name = th.name.uppercased()
-            // A planet theme's planet stands in for the palette icon, centered on the label like the icon was;
-            // Solanum Default gets the flower. With the theme icon off, just the name.
+            // The theme's icon (see `ThemeIcon`: its planet, the flower, or a picture of its own) stands in for the
+            // palette icon, centered on the label like the icon was. With the theme icon off, just the name.
             let showIcon = Config.shared.themeIcon
+            let icon = showIcon ? ThemeIcon.of(th) : nil
             // The Quantum Moon may have wandered off (see QuantumMoon); its name stays.
             let planet = showIcon && !(QuantumMoon.active && !QuantumMoon.at(.home)) ? PlanetArt.planet(for: th) : nil
-            let flower = showIcon && !th.isCustom && th.name == ThemeLibrary.solanumDefault.name
-            let iw = !showIcon || QuantumMoon.active && planet == nil ? 0 : planet != nil ? Self.planetSide : flower ? Self.flowerSide
-                : symbol("paintpalette", dimIcon)?.size.width ?? 0
+            let flower = icon == .flower
+            var picture: URL?
+            if case .picture(let url)? = icon { picture = url }
+            let iw = !showIcon || QuantumMoon.active && planet == nil ? 0 : planet != nil || picture != nil ? Self.planetSide
+                : flower ? Self.flowerSide : symbol("paintpalette", dimIcon)?.size.width ?? 0
             let w = 6 + iw + (iw > 0 ? 4 : 0) + min(200, (name as NSString).size(withAttributes: attrs).width) + 7
             let start = bounds.width - (showsRightSidebarToggle ? 36 : 8) - w
             _ = drawButton(.theme, at: start, icon: "paintpalette", color: hoverButton == .theme ? th.accent : dimIcon,
                            text: name, textAttrs: attrs, maxTextWidth: 200,
-                           iconSpace: !showIcon || planet != nil || flower || QuantumMoon.active ? iw : nil)
+                           iconSpace: !showIcon || planet != nil || flower || picture != nil || QuantumMoon.active ? iw : nil)
             themeRect = CGRect(x: start, y: 2, width: w, height: bounds.height - 6)
             if let planet { drawPlanet(planet, x: start + 6) }
             if flower { drawFlowerOutline(x: start + 6) }
+            let s = Self.planetSide
+            themeIconView.show(picture, at: NSRect(x: start + 6, y: (centerY - s / 2).rounded(), width: s, height: s))
+        } else {
+            themeIconView.isHidden = true
         }
         let rightItems = themeRect
         // A transfer in progress, right-aligned before the theme name or the right column's folder.
@@ -1081,10 +1095,11 @@ final class StatusBarView: NSView {
             x = drawButton(.hosts, at: x, icon: "server.rack", color: dimIcon)
         }
         if showsKeepAwake {
-            x = drawButton(.keepAwake, at: x, icon: "", color: dimIcon, iconSpace: 17)
+            x = drawButton(.keepAwake, at: x, icon: "", color: dimIcon, iconSpace: 15)
             if let r = keepAwakeRect {
                 let on = KeepAwake.isOn
-                CupArt.draw(in: NSRect(x: r.minX, y: r.minY, width: r.width, height: r.height - 1),
+                // 1.5pt above the button's middle, where it sits level with the icons beside it.
+                CupArt.draw(in: NSRect(x: r.minX, y: r.minY - 1.5, width: r.width, height: r.height - 1),
                             color: on ? th.accent : th.foreground, alpha: on ? 1 : hoverButton == .keepAwake ? 0.75 : 0.5,
                             steam: on && steamTimer != nil ? Date.timeIntervalSinceReferenceDate : nil)
             }
@@ -1728,7 +1743,7 @@ final class WindowRootView: NSView {
         effect.isHidden = !(cfg.blur && cfg.opacity < 1 && background.backdrop == .none)
         background.needsDisplay = true
         // Editors stand apart from the terminals over a picture (see `EditorAreaView.draw`).
-        func mark(_ v: NSView) { if v is EditorAreaView { v.needsDisplay = true } else { v.subviews.forEach(mark) } }
+        func mark(_ v: NSView) { if let e = v as? EditorAreaView { e.needsDisplay = true; e.strip.needsDisplay = true } else { v.subviews.forEach(mark) } }
         mark(self)
     }
 
@@ -2984,10 +2999,22 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     private var ghosts: [(tab: TabSession, rect: CGRect)] = []
     private var knownTabs: [ObjectIdentifier: TabSession] = [:]
     private var lastLayoutWidth: CGFloat = 0
-    /// Where the tabs had room last time: when that moves (a sidebar or the columns' divider dragged, which moves the card
-    /// the tabs start on), they go straight there, in step with the card, rather than sliding after it.
-    private var lastViewport: CGRect = .null
+    /// Where the tabs start (the card's edge). When that moves (a sidebar or the columns' divider dragged, which moves
+    /// the card), they go straight there, in step with the card, rather than sliding after it. The room they have also
+    /// changes when the ‹ › arrows come or go, as opening a group can make them, and that slides as any other change.
+    private var stripLeft: CGFloat = 0
+    private var lastStripLeft: CGFloat = .nan
     private static let animDuration: CFTimeInterval = 0.2
+    /// A group opening or closing slides its tabs out of its chip or under it: longer, and eased at both ends, so it's
+    /// seen as a slide rather than a snap.
+    private static let foldDuration: CFTimeInterval = 0.34
+    private var animLength: CFTimeInterval = TabBarView.animDuration
+    private var animEaseInOut = false
+    /// Tabs in collapsed groups: laid out as a block of full-width tabs tucked under their chip (see `updateTargets`),
+    /// drawn only right of the chip, so closing a group slides them in under it.
+    private var folded: Set<AnyHashable> = []
+    /// The width the tabs have (what a folded tab keeps under its chip).
+    private var foldWidth: CGFloat = 0
     private static let plusKey: AnyHashable = "plus"
     /// The Solanum flower in the top-right corner; clicking it opens Settings.
     private var flowerRect: CGRect = .zero
@@ -3123,6 +3150,8 @@ final class TabBarView: NSView, NSTextFieldDelegate {
 
     /// Dev aids (DevTools tab-arrow, print-tab-scroll).
     func devPressArrow(_ dir: Int) { slideTabs(by: CGFloat(dir) * viewport.width * 0.75) }
+    /// As a swipe over the strip moving it `points` (DevTools tabbar-scroll).
+    func devScrollTabs(by points: CGFloat) { scrollTabs(by: points) }
     var devScrollState: String { "scroll=\(Int(scrollX)) of \(Int(maxScrollX)) sliding=\(tabSlide != nil)" }
 
     /// Dragging a tab or group near either end of a scrolling strip scrolls it, to carry it past tabs out of view.
@@ -3170,6 +3199,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         let edge = content.minX - 1
         cardEdge = !content.isEmpty && (!c.isLeading || c.trafficLightInset <= edge) ? edge : nil
         let left = cardEdge ?? max(c.trafficLightInset, content.isEmpty ? 0 : content.minX + cardInset)
+        stripLeft = left
         let plusW: CGFloat = 30
         // Each group gets a chip where it starts; tabs in collapsed groups take no space.
         var chipSpace: CGFloat = 0, visible = 0
@@ -3213,6 +3243,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         var x = viewport.minX - scrollX
         tabRects = []
         chips = []
+        foldWidth = w
         prev = nil
         for t in c.tabs {
             if let g = t.group, g !== prev {
@@ -3249,7 +3280,8 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     /// 0…1 through the current slide (eased), 1 when nothing is moving.
     private var animProgress: CGFloat {
         guard animTimer != nil else { return 1 }
-        let t = min(1, (CACurrentMediaTime() - animStart) / Self.animDuration)
+        let t = min(1, (CACurrentMediaTime() - animStart) / animLength)
+        if animEaseInOut { return CGFloat(t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2) }
         return CGFloat(1 - pow(1 - t, 3))
     }
 
@@ -3266,6 +3298,12 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         return Self.lerp(from, to, p)
     }
 
+    /// Whether a tab drawn at `r` is partly or wholly under its group's chip (folded away, or sliding in or out).
+    private func underChip(_ tab: TabSession, _ r: CGRect) -> Bool {
+        guard let g = tab.group, let chip = shownRect(ObjectIdentifier(g)) ?? chips.first(where: { $0.group === g })?.rect else { return false }
+        return r.minX < chip.maxX - 0.5
+    }
+
     /// Where `key` is drawn right now, in view coordinates (nil: not laid out).
     private func shownRect(_ key: AnyHashable) -> CGRect? {
         if key == Self.plusKey && targets[key] == nil { return plusRect }
@@ -3276,12 +3314,17 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     private func updateTargets(_ c: TabColumn, overflow: Bool) {
         var next: [AnyHashable: CGRect] = [:]
         var tabsNow: [ObjectIdentifier: TabSession] = [:]
+        var foldedNow: Set<AnyHashable> = []
         for (i, t) in c.tabs.enumerated() {
             tabsNow[ObjectIdentifier(t)] = t
             var r = tabRects[i]
-            // A tab in a collapsed group folds into the right edge of its chip.
+            // A tab in a collapsed group is tucked under its chip, its group's tabs end to end as they'd show, the last
+            // just left of the chip's right edge: closing slides them in under it together, opening out again.
             if r.isNull, let g = t.group, let chip = chips.first(where: { $0.group === g })?.rect {
-                r = CGRect(x: chip.maxX, y: (bounds.height - 28) / 2, width: 0, height: 28)
+                let mates = c.tabs.filter { $0.group === g }
+                let k = mates.firstIndex { $0 === t } ?? 0
+                r = CGRect(x: chip.maxX - CGFloat(mates.count - k) * (foldWidth + 4), y: (bounds.height - 28) / 2, width: foldWidth, height: 28)
+                foldedNow.insert(ObjectIdentifier(t))
             }
             if !r.isNull { next[ObjectIdentifier(t)] = r.offsetBy(dx: scrollX, dy: 0) }
         }
@@ -3292,9 +3335,12 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             guard let old = targets[k] else { return true }
             return abs(old.minX - r.minX) > 0.5 || abs(old.width - r.width) > 0.5
         }
-        let animate = changed && !targets.isEmpty && bounds.width == lastLayoutWidth && viewport == lastViewport
+        let animate = changed && !targets.isEmpty && bounds.width == lastLayoutWidth && stripLeft == lastStripLeft
             && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if animate {
+            let folding = foldedNow != folded.intersection(Set(next.keys))
+            animLength = folding ? Self.foldDuration : Self.animDuration
+            animEaseInOut = folding
             var from: [AnyHashable: CGRect] = [:]
             for (k, r) in next { if let cur = contentRect(k) { from[k] = cur } }
             // New tabs grow out of the right edge of the tab before them (as drawn now); new chips out of the left
@@ -3314,7 +3360,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             for k in next.keys { grow(k, at: nil) }
             let stillShrinking = ghosts.filter { tabsNow[ObjectIdentifier($0.tab)] == nil }
             ghosts = stillShrinking.map { ($0.tab, CGRect(x: $0.rect.minX, y: $0.rect.minY, width: $0.rect.width * (1 - animProgress), height: $0.rect.height)) }
-            for (id, tab) in knownTabs where tabsNow[id] == nil {
+            for (id, tab) in knownTabs where tabsNow[id] == nil && !folded.contains(id) {
                 if let r = contentRect(id), r.width > 1 { ghosts.append((tab, r)) }
             }
             animFrom = from
@@ -3322,7 +3368,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             if animTimer == nil {
                 let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] t in
                     guard let self else { return t.invalidate() }
-                    if CACurrentMediaTime() - self.animStart >= Self.animDuration {
+                    if CACurrentMediaTime() - self.animStart >= self.animLength {
                         t.invalidate()
                         self.animTimer = nil
                         self.ghosts = []
@@ -3332,15 +3378,16 @@ final class TabBarView: NSView, NSTextFieldDelegate {
                 RunLoop.main.add(timer, forMode: .common)
                 animTimer = timer
             }
-        } else if viewport != lastViewport {
+        } else if stripLeft != lastStripLeft {
             // A slide under way would carry on from where the tabs were before they moved.
             animFrom = [:]
             ghosts = []
         }
         targets = next
+        folded = foldedNow
         knownTabs = tabsNow
         lastLayoutWidth = bounds.width
-        lastViewport = viewport
+        lastStripLeft = stripLeft
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -3349,18 +3396,29 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         let th = Config.shared.theme
         let liftedGroup = dragGroupMoved ? dragGroup : nil
         let docked = dockedRect(c)
-        // The strip's tint and bottom edge leave the active tab out, so it shows the terminal's own background.
+        // The strip's tint and bottom edge leave the active tab out, so it shows the terminal's own background. A tab
+        // scrolled partly out of view keeps its shape, cut off where the tabs stop (at the arrows).
+        let dockClip = leftArrowRect.isNull ? viewport.insetBy(dx: -(Self.dockFlare + 1), dy: 0) : viewport
         th.tabBarTint.setFill()
-        let tint = NSBezierPath(rect: bounds)
         if let d = docked {
+            let outside = NSBezierPath(rect: bounds)
+            outside.append(NSBezierPath(rect: dockClip))
+            outside.windingRule = .evenOdd
+            outside.fill()
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: dockClip).addClip()
+            let tint = NSBezierPath(rect: bounds)
             tint.append(dockPath(d, closed: true))
             tint.windingRule = .evenOdd
+            tint.fill()
+            NSGraphicsContext.restoreGraphicsState()
+        } else {
+            bounds.fill()
         }
-        tint.fill()
         th.border.setFill()
         let gap = docked.map { d -> (CGFloat, CGFloat) in
             let (l, r) = dockEdges(d)
-            return (dockFlush(d) ? l - 0.5 : l - Self.dockFlare, r + Self.dockFlare)
+            return (max(dockFlush(d) ? l - 0.5 : l - Self.dockFlare, dockClip.minX), min(r + Self.dockFlare, dockClip.maxX))
         } ?? (bounds.width, bounds.width)
         // The bottom line is the top edge of the cards below (see `Cards`), between their rounded corners, and not
         // where the active tab opens onto one. Only this strip's own width: a view may draw outside itself, and the
@@ -3375,10 +3433,13 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             }
         }
         if let d = docked {
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: dockClip).addClip()
             th.border.setStroke()
             let edge = dockPath(d, closed: false)
             edge.lineWidth = 1
             edge.stroke()
+            NSGraphicsContext.restoreGraphicsState()
         }
 
         // The active tab of a column that isn't focused is drawn as in an inactive window.
@@ -3405,8 +3466,19 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             guard let r = shownRect(ObjectIdentifier(c.tabs[i])) ?? (tabRects[i].isNull ? nil : tabRects[i]), r.width > 2 else { continue }
             if dragging && i == dragIndex { continue }
             if let g = liftedGroup, c.tabs[i].group === g { continue }
+            // A group's tabs show only right of its chip: closing, they slide in under it; opening, out from it.
+            var under: CGFloat?
+            if let g = c.tabs[i].group, let chip = shownRect(ObjectIdentifier(g)) ?? chips.first(where: { $0.group === g })?.rect {
+                guard r.maxX > chip.maxX + 2 else { continue }
+                under = r.minX < chip.maxX ? chip.maxX : nil
+            }
+            if let x = under {
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath(rect: CGRect(x: x, y: 0, width: bounds.width - x, height: bounds.height)).addClip()
+            }
             drawTab(c.tabs[i], at: i, in: r, active: i == c.activeIndex, hovered: !dragging && hoverIndex == i,
                     picked: selectedTabs.contains(c.tabs[i]), keyWindow: keyWindow, docked: docked != nil)
+            if under != nil { NSGraphicsContext.restoreGraphicsState() }
         }
         drawSeparators(c, lifted: liftedGroup)
         // Closed tabs shrink and fade out where they were.
@@ -3779,7 +3851,8 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             ring.stroke()
         }
         for i in c.tabs.indices where dropTab == i || c.tabs[i] === sendTarget {
-            guard let r = shownRect(ObjectIdentifier(c.tabs[i])) ?? (tabRects[i].isNull ? nil : tabRects[i]), r.width > 2 else { continue }
+            guard let r = shownRect(ObjectIdentifier(c.tabs[i])) ?? (tabRects[i].isNull ? nil : tabRects[i]), r.width > 2,
+                  !underChip(c.tabs[i], r) else { continue }
             (c.tabs[i].group?.color.color ?? Config.shared.theme.accent).setStroke()
             let outline = NSBezierPath(roundedRect: r, xRadius: 7, yRadius: 7)
             outline.lineWidth = 1.5
@@ -3811,7 +3884,8 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     private func drawSeparators(_ c: TabColumn, lifted: TabGroup?) {
         let shown: [(i: Int, r: CGRect)] = c.tabs.indices.compactMap { i in
             guard !(dragging && i == dragIndex), lifted == nil || c.tabs[i].group !== lifted,
-                  let r = shownRect(ObjectIdentifier(c.tabs[i])) ?? (tabRects[i].isNull ? nil : tabRects[i]), r.width > 20 else { return nil }
+                  let r = shownRect(ObjectIdentifier(c.tabs[i])) ?? (tabRects[i].isNull ? nil : tabRects[i]), r.width > 20,
+                  !underChip(c.tabs[i], r) else { return nil }
             return (i, r)
         }
         func quiet(_ i: Int) -> Bool {
@@ -3844,18 +3918,20 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     /// Whether the active tab's left side is the card's edge carried on up: it runs straight down, without curving
     /// out, and the card's corner under it is square.
     private func dockFlush(_ r: CGRect) -> Bool {
-        cardEdge.map { abs(r.minX - $0) < 0.5 } ?? false
+        // Not while the tabs scroll: one passing the card's edge on its way under the ‹ arrow isn't standing on it.
+        guard leftArrowRect.isNull else { return false }
+        return cardEdge.map { abs(r.minX - $0) < 0.5 } ?? false
     }
 
-    /// The active tab, where it sits (not while it's dragged), cut to the part scrolled into view.
+    /// The active tab, where it sits (not while it's dragged), while any of it is scrolled into view: whole, so it keeps
+    /// its shape as it scrolls out (what's drawn of it is cut off at the arrows).
     private func dockedRect(_ c: TabColumn) -> CGRect? {
         let liftedGroup = dragGroupMoved ? dragGroup : nil
         guard c.tabs.indices.contains(c.activeIndex), !(dragging && dragIndex == c.activeIndex),
               liftedGroup == nil || c.tabs[c.activeIndex].group !== liftedGroup,
               let r = shownRect(ObjectIdentifier(c.tabs[c.activeIndex])) ?? (tabRects[c.activeIndex].isNull ? nil : tabRects[c.activeIndex])
         else { return nil }
-        let x0 = max(r.minX, viewport.minX), x1 = min(r.maxX, viewport.maxX)
-        return x1 - x0 > 20 ? CGRect(x: x0, y: r.minY, width: x1 - x0, height: r.height) : nil
+        return min(r.maxX, viewport.maxX) - max(r.minX, viewport.minX) > 0.5 ? r : nil
     }
 
     /// Whether the active tab runs straight down into the card below's left edge, whose top left corner is then square

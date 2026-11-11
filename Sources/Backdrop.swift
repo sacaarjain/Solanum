@@ -92,15 +92,15 @@ enum BackdropImages {
 
     /// A picture copied into the themes folder for `theme`, so the theme keeps it wherever the original goes; its name
     /// there (as Windows names it).
-    static func importImage(_ path: String, for theme: String) -> String? {
+    static func importImage(_ path: String, for theme: String, role: String = "background") -> String? {
         let dir = Config.shared.themesDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
         let slug = theme.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }.reduce(into: "") { $0.append($1) }
         let base = slug.isEmpty ? "theme" : slug, suffix = ext.isEmpty ? "jpg" : ext
-        var name = "\(base)-background.\(suffix)", n = 2
+        var name = "\(base)-\(role).\(suffix)", n = 2
         while FileManager.default.fileExists(atPath: dir.appendingPathComponent(name).path) {
-            name = "\(base)-background-\(n).\(suffix)"
+            name = "\(base)-\(role)-\(n).\(suffix)"
             n += 1
         }
         guard (try? FileManager.default.copyItem(atPath: path, toPath: dir.appendingPathComponent(name).path)) != nil else { return nil }

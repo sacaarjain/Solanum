@@ -108,8 +108,12 @@ enum CupArt {
     /// The cup centered in `r` (a flipped view: y down, as the paths are). `steam`, in seconds, moves the steam; nil
     /// draws it still.
     static func draw(in r: NSRect, color: NSColor, alpha: CGFloat, steam: Double?) {
-        let unit: CGFloat = 17 / 24, side = 24 * unit
-        let origin = NSPoint(x: (r.minX + (r.width - side) / 2).rounded(), y: (r.minY + (r.height - side) / 2).rounded())
+        let unit: CGFloat = 15 / 24, side = 24 * unit
+        // On whole device pixels (half points on Retina), so a half-point nudge lands rather than rounding away.
+        let px = NSGraphicsContext.current.map { CGFloat(hypot(Double($0.cgContext.userSpaceToDeviceSpaceTransform.a),
+                                                                Double($0.cgContext.userSpaceToDeviceSpaceTransform.b))) } ?? 2
+        func snap(_ v: CGFloat) -> CGFloat { (v * max(px, 1)).rounded() / max(px, 1) }
+        let origin = NSPoint(x: snap(r.minX + (r.width - side) / 2), y: snap(r.minY + (r.height - side) / 2))
         var place = AffineTransform(translationByX: origin.x, byY: origin.y)
         place.scale(unit)
         func placed(_ p: NSBezierPath) -> NSBezierPath {

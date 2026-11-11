@@ -917,6 +917,8 @@ final class KeyCapsView: NSView {
 /// A theme's look in miniature: a prompt, git status line and its palette, with the name underneath.
 final class ThemeCardView: NSView {
     var theme: Theme { didSet { needsDisplay = true } }
+    /// The theme's own picture as its icon, at the top right (a view, so a GIF plays); planets and the flower are drawn.
+    private let iconView = ThemeIconImageView(frame: .zero)
     var onPick: (() -> Void)?
     var onEdit: (() -> Void)?
     var onDuplicate: (() -> Void)?
@@ -930,6 +932,8 @@ final class ThemeCardView: NSView {
     init(_ theme: Theme) {
         self.theme = theme
         super.init(frame: .zero)
+        iconView.isHidden = true
+        addSubview(iconView)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -946,13 +950,22 @@ final class ThemeCardView: NSView {
         NSGraphicsContext.saveGraphicsState()
         shape.addClip()
         let preview = NSRect(x: card.minX, y: card.minY, width: card.width, height: card.height - 32)
-        if let b2 = t.background2 {
+        if let image = t.image, let url = ThemeLibrary.imageURL(image),
+           let picture = BackdropImages.image(url, size: preview.size, scale: window?.backingScaleFactor ?? 2,
+                                              blur: CGFloat(image.blur) * preview.width / 1280) {
+            // Its picture, filling the preview, under its background color as the window shows it (as on Windows).
+            NSImage(cgImage: picture, size: preview.size).draw(in: preview, from: .zero, operation: .sourceOver, fraction: 1,
+                                                                respectFlipped: true, hints: nil)
+            t.background.withAlphaComponent(CGFloat(image.tint)).setFill()
+            preview.fill(using: .sourceOver)
+        } else if let b2 = t.background2 {
             NSGradient(starting: t.background, ending: b2)?.draw(in: preview, angle: -90)
         } else {
             t.background.setFill()
             preview.fill()
         }
-        ui.surface.withAlphaComponent(0.8).setFill()
+        // The name strip in the theme's own colors, not the ones in use, so each card is its theme.
+        t.surface.setFill()
         NSRect(x: card.minX, y: preview.maxY, width: card.width, height: 32).fill()
 
         // Window dots
@@ -970,20 +983,31 @@ final class ThemeCardView: NSView {
         line([("❯ ", t.accent), ("git status", t.foreground)], 24)
         line([("on ", dim), ("main", t.ansi[5]), (" ✓ clean", t.ansi[2])], 40)
         line([("● ", t.ansi[3]), ("3 files ", t.foreground), ("changed", t.ansi[4])], 56)
-        for (i, c) in [t.ansi[1], t.ansi[2], t.ansi[3], t.ansi[4], t.ansi[5], t.ansi[6]].enumerated() {
+        // Its five colors (as the editor lists them: background, foreground, accent, cursor, selection), each a dot
+        // ringed in its foreground so even the background's shows. The selection is shown over the background, as it is.
+        for (i, c) in Self.swatches(t).enumerated() {
+            let dot = NSRect(x: preview.minX + 12 + CGFloat(i) * 20, y: preview.minY + 74, width: 14, height: 14)
+            t.foreground.withAlphaComponent(0.35).setFill()
+            NSBezierPath(ovalIn: dot.insetBy(dx: -1, dy: -1)).fill()
             c.setFill()
-            NSBezierPath(roundedRect: NSRect(x: preview.minX + 12 + CGFloat(i) * 19, y: preview.minY + 76, width: 15, height: 6),
-                         xRadius: 2, yRadius: 2).fill()
+            NSBezierPath(ovalIn: dot).fill()
         }
+        // Its icon at the top right: its planet, the flower, or its own picture (see `ThemeIcon`).
+        let iconRect = NSRect(x: card.maxX - 12 - 22, y: card.minY + 8, width: 22, height: 22)
+        let icon = ThemeIcon.of(t)
+        if let icon { ThemeIcon.draw(icon, in: iconRect, flippedHeight: bounds.height) }
+        var picture: URL?
+        if case .picture(let url)? = icon { picture = url }
+        iconView.show(picture, at: iconRect)
         NSGraphicsContext.restoreGraphicsState()
 
         (t.name as NSString).draw(at: NSPoint(x: card.minX + 12, y: preview.maxY + 8),
-                                  withAttributes: [.font: NSFont.systemFont(ofSize: 12.5, weight: .semibold), .foregroundColor: ui.foreground])
+                                  withAttributes: [.font: NSFont.systemFont(ofSize: 12.5, weight: .semibold), .foregroundColor: t.foreground])
         pencilRect = .zero
         if interactive && theme.isCustom {
             pencilRect = NSRect(x: card.maxX - (isSelected ? 50 : 28), y: preview.maxY + 6, width: 20, height: 20)
             let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
-                .applying(.init(paletteColors: [hovering ? ui.foreground : ui.dimText]))
+                .applying(.init(paletteColors: [hovering ? t.foreground : t.dimText]))
             if let img = NSImage(systemSymbolName: "pencil", accessibilityDescription: "Edit")?.withSymbolConfiguration(cfg) {
                 img.draw(in: NSRect(x: pencilRect.midX - img.size.width / 2, y: pencilRect.midY - img.size.height / 2,
                                     width: img.size.width, height: img.size.height))
@@ -1011,6 +1035,12 @@ final class ThemeCardView: NSView {
             shape.lineWidth = 1
         }
         shape.stroke()
+    }
+
+    /// Background, foreground, accent, cursor and selection (laid over the background, opaque).
+    static func swatches(_ t: Theme) -> [NSColor] {
+        let sel = t.selection.srgb, a = sel.alphaComponent
+        return [t.background, t.foreground, t.accent, t.cursor, t.background.mix(sel.withAlphaComponent(1), a)]
     }
 
     override func updateTrackingAreas() {

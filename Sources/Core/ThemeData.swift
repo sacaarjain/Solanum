@@ -16,6 +16,9 @@ struct ThemeSpec {
     let ansi: [String]
     /// A picture behind the terminal, under the background color (Windows, for now).
     var image: ThemeImage?
+    /// The icon beside its name: "planet:<name>", "flower", "none" or a picture's file; nil for the planet it's named
+    /// after. The Mac shows it (ThemeIcon); Windows keeps it, so a theme saved there doesn't lose it.
+    var icon: String?
 
     init(name: String, bg: String, bg2: String? = nil, fg: String, cursor: String? = nil, selection: String? = nil,
          accent: String, chrome: String? = nil, ansi: [String]) {

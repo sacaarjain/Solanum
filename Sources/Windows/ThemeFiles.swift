@@ -78,6 +78,7 @@ enum ThemeFiles {
             if let tint = (j["background-image-tint"] as? NSNumber)?.doubleValue { image.tint = min(max(tint, 0), 0.95) }
             spec.image = image
         }
+        if let icon = j["icon"] as? String, !icon.isEmpty { spec.icon = icon }
         return spec
     }
 
@@ -145,6 +146,7 @@ enum ThemeFiles {
         if let s = spec.selection { j["selection"] = s }
         if let b = spec.background2 { j["background2"] = b }
         if let c = spec.chrome { j["chrome"] = c }
+        if let icon = spec.icon { j["icon"] = icon }
         if let image = spec.image {
             j["background-image"] = image.file
             j["background-image-blur"] = (image.blur * 10).rounded() / 10
@@ -185,6 +187,7 @@ enum ThemeFiles {
         var copy = ThemeSpec(name: name, bg: base.background, bg2: base.background2, fg: base.foreground, cursor: base.cursor,
                              selection: base.selection, accent: base.accent, chrome: base.chrome, ansi: base.ansi)
         copy.image = base.image
+        copy.icon = base.icon
         guard let url = newFile(for: name), (try? json(copy).write(to: url, options: .atomic)) != nil else { return nil }
         AppSettings.shared.reloadThemes()
         return (name, url)

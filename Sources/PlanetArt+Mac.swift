@@ -3,9 +3,13 @@ import AppKit
 // The planets on the Mac: the pixels Core/PlanetArt.swift makes, as images drawn into the status bar.
 
 extension PlanetArt {
-    /// The planet a theme is named after: a built-in planet theme, or a custom one whose name contains a planet's
-    /// (e.g. "My Hourglass").
-    static func planet(for theme: Theme) -> Planet? { planet(themeName: theme.name, isVSCode: ThemeLibrary.isVSCode(theme)) }
+    /// The theme's planet: the one picked as its icon, else the one it's named after (a built-in planet theme, or a
+    /// custom one whose name contains a planet's, e.g. "My Hourglass"). See `ThemeIcon`. The Quantum Moon's tricks
+    /// follow it, picked or named.
+    static func planet(for theme: Theme) -> Planet? {
+        if case .planet(let p)? = ThemeIcon.of(theme) { return p }
+        return nil
+    }
 
     // MARK: Drawing
 

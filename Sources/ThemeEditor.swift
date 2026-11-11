@@ -91,6 +91,7 @@ enum ThemeEditor {
         let nameCard = SettingsCard()
         nameCard.add(SettingRow(icon: "character.cursor.ibeam", title: "Theme name", detail: "Shown on its card and in the Theme menu.",
                                 accessory: name, width: 220))
+        iconRow(nameCard, ctl, model)
         v.add(card: nameCard, gap: 26)
 
         v.add(sectionHeader("Base colors"), height: 16, gap: 10)
@@ -133,6 +134,50 @@ enum ThemeEditor {
         ])
         actions.spacing = 20
         v.add(actions, height: 20, gap: 0)
+    }
+
+    /// What shows beside the theme's name in the status bar and on its card (see `ThemeIcon`): its planet by name, a
+    /// planet picked, the flower, none, or a picture of your own (PNG, JPEG or an animated GIF), copied into the themes
+    /// folder as its background picture is. Picking the Quantum Moon brings its tricks along.
+    private static func iconRow(_ card: SettingsCard, _ ctl: SettingsWindowController, _ model: Model) {
+        let choices = ThemeIcon.choices
+        let current = model.theme.icon
+        let selected = choices.first { $0.1 == current }?.0 ?? (current as NSString?)?.lastPathComponent ?? choices[0].0
+        let popup = ChoicePopup(choices.map(\.0) + ["Picture…"], selected: selected)
+        popup.onChange = { [weak ctl] title in
+            if title == "Picture…" {
+                // Back to what it was until a picture's picked.
+                popup.selectItem(withTitle: selected)
+                return chooseIcon(model, ctl)
+            }
+            guard let choice = choices.first(where: { $0.0 == title }) else { return }
+            model.theme.icon = choice.1
+            model.changed()
+        }
+        card.add(SettingRow(icon: "sparkles", title: "Icon",
+                            detail: "Beside its name in the status bar and on its card. A picture can be a PNG, JPEG or an animated GIF.",
+                            accessory: popup, width: 170))
+    }
+
+    /// Picks a picture for the icon (not in a headless run, which never shows a panel).
+    private static func chooseIcon(_ model: Model, _ ctl: SettingsWindowController?) {
+        guard !Headless.active else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .image]
+        panel.allowsMultipleSelection = false
+        panel.message = "An icon for \(model.theme.name)"
+        panel.begin { [weak ctl] response in
+            guard response == .OK, let url = panel.url else { return }
+            setIcon(url.path, model, ctl)
+        }
+    }
+
+    /// The picture at `path`, copied into the themes folder, as the theme's icon.
+    static func setIcon(_ path: String, _ model: Model, _ ctl: SettingsWindowController?) {
+        guard let name = BackdropImages.importImage(path, for: model.theme.name, role: "icon") else { return }
+        model.theme.icon = name
+        model.changed()
+        ctl?.rebuild()
     }
 
     /// A photo behind the theme (see `Backdrop`), blurred and tinted with its background color, as on Windows: kept in

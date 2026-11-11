@@ -1161,8 +1161,8 @@ final class SettingsWindow {
         let radius = 11 * s, strip = (32 * s).rounded()
         let preview = UIRect(x: card.x, y: card.y, width: card.width, height: card.height - strip)
         // The whole card in the name strip's color, rounded all round; then the preview over its top, rounded only there.
-        sol_canvas_fill_rounded(c, card.x, card.y, card.width, card.height, radius, TerminalPalette.background, 1)
-        sol_canvas_fill_rounded(c, card.x, card.y, card.width, card.height, radius, TerminalPalette.surface, 0.8)
+        // The strip is in the theme's own colors, not the ones in use, so each card is its theme, as on the Mac.
+        sol_canvas_fill_rounded(c, card.x, card.y, card.width, card.height, radius, colors.surface, 1)
         sol_canvas_fill_rounded(c, preview.x, preview.y, preview.width, preview.height, radius, colors.background, 1)
         if let picture = spec.image, let image = thumbnail(picture, on: target) {
             // Its picture, filling the preview, under its background color as the window shows it.
@@ -1191,12 +1191,17 @@ final class SettingsWindow {
         line(22, [("❯ ", colors.accent), ("git status", colors.foreground)])
         line(38, [("on ", TerminalPalette.mix(colors.foreground, colors.background, 0.55)), ("main", colors.ansi[5]), (" ✓ clean", colors.ansi[2])])
         line(54, [("● ", colors.ansi[3]), ("3 files ", colors.foreground), ("changed", colors.ansi[4])])
-        for (k, color) in [1, 2, 3, 4, 5, 6].map({ colors.ansi[$0] }).enumerated() {
-            sol_canvas_fill_rounded(c, preview.x + (12 + Float(k) * 19) * s, preview.y + 76 * s, 15 * s, 6 * s, 2 * s, color, 1)
+        // Its five colors, as the editor lists them (background, foreground, accent, cursor, selection), each a dot ringed
+        // in its foreground so even the background's shows, as on the Mac.
+        for (k, color) in [colors.background, colors.foreground, colors.accent, colors.cursor, colors.selection].enumerated() {
+            let cx = preview.x + (12 + 7 + Float(k) * 20) * s, cy = preview.y + (74 + 7) * s
+            sol_canvas_fill_ellipse(c, cx, cy, 8 * s, 8 * s, colors.foreground, 0.35)
+            sol_canvas_fill_ellipse(c, cx, cy, 7 * s, 7 * s, color, 1)
         }
-        label(target, spec.name, UIRect(x: card.x + 12 * s, y: preview.maxY, width: card.width - 64 * s, height: strip), pixels: 12.5 * s, semibold: true)
+        label(target, spec.name, UIRect(x: card.x + 12 * s, y: preview.maxY, width: card.width - 64 * s, height: strip), pixels: 12.5 * s, semibold: true,
+              color: colors.foreground)
         if interactive, let pencil = pencilRect(spec, r) {
-            sol_canvas_draw_icon(c, pencil.x, pencil.y, pencil.width, pencil.height, 0xE70F, 11 * s, fg, hover ? 1 : 0.55)
+            sol_canvas_draw_icon(c, pencil.x, pencil.y, pencil.width, pencil.height, 0xE70F, 11 * s, colors.foreground, hover ? 1 : 0.55)
         }
         if current {
             // A check in the accent, at the strip's right.
