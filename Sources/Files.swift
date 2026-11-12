@@ -108,16 +108,24 @@ final class RemoteFileWatch {
     /// While anything's watched: starts the watch again when it isn't running (it ended, or the connection wasn't
     /// up yet) or has gone quiet.
     private var health: Timer?
+    /// The connection's background channels (see `ChannelGate`): told when the host refuses this one, and waited out.
+    private let gate: ChannelGate?
+    /// After the host refused it: not started again before this (longer each time in a row).
+    private var retryAt = Date.distantPast
+    private var backoff: TimeInterval = 0
 
     fileprivate convenience init(session: RemoteSession) {
-        self.init { [weak session] script in
+        self.init(gate: ChannelGate.shared(for: session.controlPath)) { [weak session] script in
             guard let session, session.isConnected else { return nil }
             return session.sshProcess(script)
         }
     }
 
     /// `launch`: a process running the script (`sh -c`, over ssh for a host), or nil when it can't now.
-    init(launch: @escaping (String) -> Process?) { self.launch = launch }
+    init(gate: ChannelGate? = nil, launch: @escaping (String) -> Process?) {
+        self.gate = gate
+        self.launch = launch
+    }
 
     /// `call` gets the file's signature (see `RemoteSession.statCommand`) when watching starts and whenever it
     /// changes; nil when it's gone. While the token's kept.
@@ -155,6 +163,8 @@ final class RemoteFileWatch {
             return
         }
         if process?.isRunning != true {
+            // Turned down by the host lately: no asking again every 3 s (each refusal prints a line in the terminal).
+            guard Date() >= retryAt, gate?.isHeld != true else { return }
             paths = []
             restart()
             if process == nil { live = false }
@@ -173,9 +183,9 @@ final class RemoteFileWatch {
         if let p = process { process = nil; p.terminate() }
         paths = wanted
         guard !wanted.isEmpty, let p = launch(Self.script(wanted)) else { return }
-        let out = Pipe()
+        let out = Pipe(), err = Pipe()
         p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
+        p.standardError = err
         p.standardInput = FileHandle.nullDevice
         let shown = wanted
         var pending = Data()
@@ -192,8 +202,14 @@ final class RemoteFileWatch {
             DispatchQueue.main.async { self?.received(lines, paths: shown) }
         }
         p.terminationHandler = { [weak self] ended in
+            let errText = String(decoding: (try? err.fileHandleForReading.readToEnd()) ?? Data(), as: UTF8.self)
             DispatchQueue.main.async {
                 guard let self, self.process === ended else { return }
+                if ChannelGate.isRefusal(ended.terminationStatus, errText) {
+                    self.backoff = min(60, max(3, self.backoff * 2))
+                    self.retryAt = Date().addingTimeInterval(self.backoff)
+                    self.gate?.refused()
+                }
                 // Ended on its own (the connection dropped, say): `checkHealth` starts it again while anything's
                 // still watched and the connection's up.
                 self.process = nil
@@ -240,6 +256,7 @@ final class RemoteFileWatch {
     private func received(_ lines: [String], paths shown: [String]) {
         guard shown == paths else { return }
         lastHeard = Date()
+        backoff = 0
         live = true
         for line in lines {
             let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
@@ -429,9 +446,11 @@ private extension Result {
 // MARK: - Remote (ssh)
 
 /// How many background commands run at once over one ssh connection. They share the user's own login as channels,
-/// and sshd allows only so many per connection (MaxSessions, 10 by default, the login included). Past that it refuses
-/// them, and the user's ssh prints "channel N: open failed: connect failed: open failed" into their terminal. The rest
-/// wait in line, so leaving room for the login and any tabs sharing it.
+/// and sshd allows only so many per connection (MaxSessions, 10 by default, the login and the file watch included; a
+/// host can set it lower, and a command stuck on the host, on a hung network mount say, keeps its session after it's
+/// given up on here). Past that it refuses them, and the user's ssh prints "channel N: open failed: connect failed:
+/// open failed" into their terminal. So the rest wait in line, and a refusal teaches it: one fewer at once from then
+/// on, and nothing new for a while (longer each time it happens again), creeping back up a minute after the last.
 final class ChannelGate {
     private static let lock = NSLock()
     private static var gates: [String: ChannelGate] = [:]
@@ -445,36 +464,88 @@ final class ChannelGate {
         return g
     }
 
+    /// What ssh says when the host turned the channel down.
+    static func isRefusal(_ status: Int32, _ err: String) -> Bool {
+        status == 255 && err.range(of: "refused by peer", options: .caseInsensitive) != nil
+    }
+
     private let lock = NSLock()
-    private let limit: Int
+    private let most: Int
+    private(set) var limit: Int
     private var active = 0
     private var waiting: [() -> Void] = []
+    private var heldUntil = Date.distantPast
+    private var backoff: TimeInterval = 0
+    private var lastRefused = Date.distantPast
+    private let now: () -> Date
+    /// Runs `drain` again once a hold is up (the main queue's clock; a test passes its own).
+    private let later: (TimeInterval, @escaping () -> Void) -> Void
 
-    init(limit: Int = 4) { self.limit = limit }
+    init(limit: Int = 4, now: @escaping () -> Date = Date.init,
+         later: @escaping (TimeInterval, @escaping () -> Void) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) }) {
+        most = limit
+        self.limit = limit
+        self.now = now
+        self.later = later
+    }
+
+    /// Whether new channels are waiting out a refusal.
+    var isHeld: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return heldUntil > now()
+    }
 
     /// Runs `work` now or when there's room. It must call `leave` once it's done with its channel.
     func enter(_ work: @escaping () -> Void) {
         lock.lock()
-        guard active < limit else {
-            waiting.append(work)
-            lock.unlock()
-            return
-        }
-        active += 1
+        waiting.append(work)
         lock.unlock()
-        work()
+        drain()
     }
 
     func leave() {
         lock.lock()
-        guard !waiting.isEmpty else {
-            active -= 1
-            lock.unlock()
-            return
-        }
-        let next = waiting.removeFirst()
+        active -= 1
         lock.unlock()
-        next()
+        drain()
+    }
+
+    /// The host turned a channel down (one of these: call before its `leave`), or the file watch's: one fewer than
+    /// were open, to leave room for it.
+    func refused() {
+        lock.lock()
+        let t = now()
+        limit = max(1, min(limit, active - 1))
+        backoff = min(60, max(2, backoff * 2))
+        heldUntil = t.addingTimeInterval(backoff)
+        lastRefused = t
+        let wait = backoff
+        lock.unlock()
+        Diagnostics.log("[bg] ssh: the host refused a channel: \(limit) at once from now on, nothing new for \(Int(wait)) s")
+        later(wait) { [weak self] in self?.drain() }
+    }
+
+    /// A channel opened and ran: the host's fine with this many, and maybe one more after a quiet minute.
+    func opened() {
+        lock.lock()
+        backoff = 0
+        if limit < most, now().timeIntervalSince(lastRefused) > 60 {
+            limit += 1
+            lastRefused = now()
+        }
+        lock.unlock()
+    }
+
+    private func drain() {
+        var go: [() -> Void] = []
+        lock.lock()
+        while active < limit, heldUntil <= now(), !waiting.isEmpty {
+            go.append(waiting.removeFirst())
+            active += 1
+        }
+        lock.unlock()
+        for work in go { work() }
     }
 }
 
@@ -707,7 +778,7 @@ final class RemoteSession: FileSystem {
     }
 
     /// Runs a POSIX sh script on the host; `done` gets (exit status, stdout, stderr) on the main queue.
-    func run(_ script: String, input: Data? = nil, timeout: TimeInterval = 60,
+    func run(_ script: String, input: Data? = nil, timeout: TimeInterval = 60, tries: Int = 3,
              _ done: @escaping (Int32, Data, String) -> Void) {
         guard isConnected else {
             done(255, Data(), endedMessage)
@@ -754,9 +825,20 @@ final class RemoteSession: FileSystem {
                     return
                 }
                 p.waitUntilExit()
-                gate.leave()
                 let status = p.terminationStatus
                 let errText = String(decoding: err, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                // Turned down by the host (too many sessions): it waits a while and tries again, a couple of times.
+                if ChannelGate.isRefusal(status, errText) {
+                    gate.refused()
+                    gate.leave()
+                    DispatchQueue.main.async {
+                        guard tries > 1 else { return report(status, out, "The host is refusing more sessions on this connection (its MaxSessions).") }
+                        self.run(script, input: input, timeout: timeout, tries: tries - 1, done)
+                    }
+                    return
+                }
+                if status != 255 { gate.opened() }
+                gate.leave()
                 DispatchQueue.main.async { report(status, out, errText) }
             }
         }

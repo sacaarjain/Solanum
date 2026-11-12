@@ -364,8 +364,22 @@ enum ShellIntegration {
     /// Skipped when the user has their own ssh alias or function. Unless the user's config sets keepalives, ssh
     /// probes the server every 15 s, so a dead connection ends within 45 s instead of hanging the pane (and the
     /// sidebar's commands) until TCP gives up. The exit status is reported too (255: the connection was lost).
+    /// What ssh itself prints goes through `__solanum_ssh_err`: the host turning down one of the sidebar's channels
+    /// ("channel N: open failed", when it allows fewer sessions than are open) goes to ~/Library/Logs/Solanum/ssh.log
+    /// instead of into the middle of what's being typed; everything else (a login banner, errors) shows as usual.
     static let sshWrapper = #"""
     if ! alias ssh >/dev/null 2>&1 && ! typeset -f ssh >/dev/null 2>&1; then
+    __solanum_ssh_err() {
+        local __solanum_l __solanum_log="$HOME/Library/Logs/Solanum/ssh.log"
+        while IFS= read -r __solanum_l || [ -n "$__solanum_l" ]; do
+            case "$__solanum_l" in
+            "channel "[0-9]*": open failed"*)
+                mkdir -p "${__solanum_log%/*}" 2>/dev/null
+                printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${__solanum_l%$'\r'}" >> "$__solanum_log" 2>/dev/null ;;
+            *) printf '%s\n' "$__solanum_l" >&2 ;;
+            esac
+        done
+    }
     function ssh {
         if [ ! -t 0 ] || [ ! -t 1 ]; then command ssh "$@"; return; fi
         # A session over a connection that's already open (-S its socket, from a new terminal Solanum opened beside
@@ -384,14 +398,22 @@ enum ShellIntegration {
         local __solanum_d="$HOME/.config/solanum/ssh"
         mkdir -p "$__solanum_d" 2>/dev/null && chmod 700 "$__solanum_d" 2>/dev/null
         local __solanum_s="$__solanum_d/$$-$RANDOM$RANDOM"
-        local __solanum_alive=()
-        if command ssh -G "$@" 2>/dev/null | grep -qi '^serveraliveinterval 0$'; then
+        local __solanum_alive=() __solanum_g __solanum_ret=0
+        __solanum_g=$(command ssh -G "$@" 2>/dev/null)
+        if printf '%s\n' "$__solanum_g" | grep -qi '^serveraliveinterval 0$'; then
             __solanum_alive=(-o ServerAliveInterval=15 -o ServerAliveCountMax=3)
         fi
         printf '\033]1337;SolanumSSHArgs=%s\007' "$(printf '%q ' "$@" | base64 | tr -d '\n')" > /dev/tty
         printf '\033]1337;SolanumSSH=%s\007' "$__solanum_s" > /dev/tty
-        command ssh -o ControlMaster=auto -o "ControlPath=$__solanum_s" -o ControlPersist=no "${__solanum_alive[@]}" "$@"
-        local __solanum_ret=$?
+        if printf '%s\n' "$__solanum_g" | grep -qi '^forkafterauthentication yes$'; then
+            # -f: it keeps running after this returns, so its messages can't go through a filter that's waited for.
+            command ssh -o ControlMaster=auto -o "ControlPath=$__solanum_s" -o ControlPersist=no "${__solanum_alive[@]}" "$@"
+            __solanum_ret=$?
+        else
+            # Its stderr through the filter, its stdout and stdin still the terminal; the status is ssh's.
+            { { command ssh -o ControlMaster=auto -o "ControlPath=$__solanum_s" -o ControlPersist=no "${__solanum_alive[@]}" "$@" 2>&1 1>&3 3>&-; } | __solanum_ssh_err
+              __solanum_ret=${PIPESTATUS[0]-${pipestatus[1]}}; } 3>&1
+        fi
         printf '\033]1337;SolanumSSHExit=%s\007' "$__solanum_ret" > /dev/tty
         printf '\033]1337;SolanumSSH=\007' > /dev/tty
         rm -f "$__solanum_s" 2>/dev/null
