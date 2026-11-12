@@ -47,7 +47,17 @@ final class EditorAreaView: NSView {
         let r = panel, radius = FileTabStrip.radius
         guard r.width > 0, r.height > 0 else { return }
         Self.fill(in: self).setFill()
-        NSBezierPath(roundedRect: r, xRadius: radius, yRadius: radius).fill()
+        // Square at the top left while the first sub-tab, active, runs straight down into it there.
+        let squareTopLeft = showsStrip && strip.dockedTab()?.flush == true
+        let p = NSBezierPath()
+        p.move(to: NSPoint(x: r.minX, y: r.minY + (squareTopLeft ? 0 : radius)))
+        if squareTopLeft { p.line(to: NSPoint(x: r.minX, y: r.minY)) }
+        else { p.appendArc(from: NSPoint(x: r.minX, y: r.minY), to: NSPoint(x: r.minX + radius, y: r.minY), radius: radius) }
+        p.appendArc(from: NSPoint(x: r.maxX, y: r.minY), to: NSPoint(x: r.maxX, y: r.maxY), radius: radius)
+        p.appendArc(from: NSPoint(x: r.maxX, y: r.maxY), to: NSPoint(x: r.minX, y: r.maxY), radius: radius)
+        p.appendArc(from: NSPoint(x: r.minX, y: r.maxY), to: NSPoint(x: r.minX, y: r.minY), radius: radius)
+        p.close()
+        p.fill()
     }
 
     /// What the file is drawn on, in `view`'s window; the active sub-tab is filled with it too, so it's one piece with
@@ -234,27 +244,77 @@ final class FileTabStrip: NSView {
     static let inset: CGFloat = 3
     static let radius: CGFloat = Cards.radius - inset
 
+    /// How far the active sub-tab's sides curve out where they meet the file's panel.
+    private static let flare: CGFloat = 4
+
+    /// The active sub-tab, if it's docked (showing, not being dragged): its rect, and whether it's the first one, on
+    /// the panel's left edge, where its side runs straight down into the panel's (whose corner is square then).
+    func dockedTab() -> (rect: CGRect, flush: Bool)? {
+        layoutRects()
+        guard let tab, rects.indices.contains(tab.activeEditorIndex), !(dragging && pressed == tab.activeEditorIndex) else { return nil }
+        let r = rects[tab.activeEditorIndex]
+        guard r.minX >= viewport.minX - 0.5, r.maxX <= viewport.maxX + 0.5 else { return nil }
+        return (r, leftArrowRect.isNull && r.minX <= Self.inset + 0.5)
+    }
+
+    /// The active sub-tab opening onto the file below, as a main tab opens onto its card: rounded on top (concentric
+    /// with the card), its sides running down to the panel and curving out onto its edge, or, `flush`, the panel's
+    /// left edge carried straight up.
+    private func dockShape(_ r: CGRect, flush: Bool) -> NSBezierPath {
+        let p = NSBezierPath(), rad = Self.radius, f = Self.flare, bottom = bounds.height
+        func quad(to end: NSPoint, via c: NSPoint) {
+            let start = p.currentPoint
+            p.curve(to: end, controlPoint1: NSPoint(x: start.x + (c.x - start.x) * 2 / 3, y: start.y + (c.y - start.y) * 2 / 3),
+                    controlPoint2: NSPoint(x: end.x + (c.x - end.x) * 2 / 3, y: end.y + (c.y - end.y) * 2 / 3))
+        }
+        if flush {
+            p.move(to: NSPoint(x: r.minX, y: bottom))
+        } else {
+            p.move(to: NSPoint(x: r.minX - f, y: bottom))
+            quad(to: NSPoint(x: r.minX, y: bottom - f), via: NSPoint(x: r.minX, y: bottom))
+        }
+        p.line(to: NSPoint(x: r.minX, y: r.minY + rad))
+        p.appendArc(from: NSPoint(x: r.minX, y: r.minY), to: NSPoint(x: r.minX + rad, y: r.minY), radius: rad)
+        p.appendArc(from: NSPoint(x: r.maxX, y: r.minY), to: NSPoint(x: r.maxX, y: r.minY + rad), radius: rad)
+        p.line(to: NSPoint(x: r.maxX, y: bottom - f))
+        quad(to: NSPoint(x: r.maxX + f, y: bottom), via: NSPoint(x: r.maxX, y: bottom))
+        p.close()
+        return p
+    }
+
+    /// Whether the docked tab was flush last time drawn, so the panel below redraws its corner when that changes.
+    private var drewFlush = false
+
     private static func pill(_ r: CGRect) -> NSBezierPath {
         NSBezierPath(roundedRect: r, xRadius: radius, yRadius: radius)
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        // On the card's own background (see `Cards`). The sub-tabs float on it as pills, inset evenly from the card's
-        // edges with corners concentric with its own, as the file's panel below is; the active one is a piece of that
-        // file (its surface).
+        // On the card's own background (see `Cards`). The sub-tabs sit inset evenly from the card's edges with corners
+        // concentric with its own, as the file's panel below is; the active one opens onto that panel, one piece with
+        // it, as a main tab does onto its card. The others are text, a pill on hover.
         let th = Config.shared.theme
-        layoutRects()
+        let docked = dockedTab()
         guard let tab else { return }
+        if (docked?.flush ?? false) != drewFlush {
+            drewFlush = docked?.flush ?? false
+            superview?.needsDisplay = true
+        }
         NSGraphicsContext.saveGraphicsState()
-        NSBezierPath(rect: viewport).addClip()
+        // A little past the viewport, for the docked tab's curved feet.
+        NSBezierPath(rect: viewport.insetBy(dx: -Self.flare, dy: 0)).addClip()
         // In a layer of their own, so the edges can fade the sub-tabs out (the bar behind them is see-through).
         let cg = NSGraphicsContext.current?.cgContext
         cg?.beginTransparencyLayer(auxiliaryInfo: nil)
         for (i, ed) in tab.editors.enumerated() where rects[i].maxX > viewport.minX && rects[i].minX < viewport.maxX {
             let r = rects[i]
             let active = i == tab.activeEditorIndex
-            if active {
-                // The same flat surface as the file's panel below: one material, no edges.
+            if active, let d = docked {
+                // One piece with the file's panel below: the same surface, no edges.
+                EditorAreaView.fill(in: self).setFill()
+                dockShape(d.rect, flush: d.flush).fill()
+            } else if active {
+                // Lifted (being dragged) or partly scrolled away: a pill of the same surface.
                 EditorAreaView.fill(in: self).setFill()
                 Self.pill(r).fill()
             } else if hover == i {
