@@ -86,3 +86,81 @@ final class ThemeIconImageView: NSImageView {
         isHidden = false
     }
 }
+
+/// What hovering the theme's name in the status bar shows just above it: the theme's icon, bigger, with its name below.
+final class ThemeHoverCard: NSView {
+    static let iconSide: CGFloat = 44
+    private static let font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+    private static let pad: CGFloat = 12
+    private let pictureView = ThemeIconImageView(frame: .zero)
+    private var icon: ThemeIcon?
+    private var name = ""
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.shadowOpacity = 0.35
+        layer?.shadowRadius = 10
+        layer?.shadowOffset = CGSize(width: 0, height: -3)
+        addSubview(pictureView)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    /// Shows `th`, and the size it needs. The Quantum Moon, while it's wandered off the status bar, isn't given away.
+    func show(_ th: Theme) -> NSSize {
+        let wandered = QuantumMoon.active && !QuantumMoon.at(.home)
+        icon = wandered ? nil : ThemeIcon.of(th)
+        name = th.name
+        let nameWidth = min(220, ceil((name as NSString).size(withAttributes: [.font: Self.font]).width))
+        let size = NSSize(width: max(Self.iconSide + 2 * Self.pad + 16, nameWidth + 2 * Self.pad),
+                          height: Self.pad + Self.iconSide + 8 + 15 + Self.pad - 2)
+        if case .picture(let url)? = icon {
+            pictureView.show(url, at: iconRect(in: size))
+        } else {
+            pictureView.isHidden = true
+        }
+        needsDisplay = true
+        return size
+    }
+
+    private func iconRect(in size: NSSize) -> NSRect {
+        NSRect(x: ((size.width - Self.iconSide) / 2).rounded(), y: Self.pad, width: Self.iconSide, height: Self.iconSide)
+    }
+
+    override func layout() {
+        super.layout()
+        layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: 10, cornerHeight: 10, transform: nil)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let th = Config.shared.theme
+        let box = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10)
+        th.surface.mix(th.isDark ? .white : .black, 0.04).setFill()
+        box.fill()
+        th.foreground.withAlphaComponent(th.isDark ? 0.16 : 0.18).setStroke()
+        box.lineWidth = 1
+        box.stroke()
+        let r = iconRect(in: bounds.size)
+        switch icon {
+        case .planet?, .flower?:
+            ThemeIcon.draw(icon!, in: r, flippedHeight: bounds.height)
+        case .picture?:
+            break
+        case nil:
+            // No icon of its own: the palette the status bar shows for it.
+            let config = NSImage.SymbolConfiguration(pointSize: 26, weight: .regular).applying(.init(paletteColors: [th.dimText]))
+            if let img = NSImage(systemSymbolName: "paintpalette", accessibilityDescription: nil)?.withSymbolConfiguration(config) {
+                img.draw(in: NSRect(x: r.midX - img.size.width / 2, y: r.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
+            }
+        }
+        let para = NSMutableParagraphStyle()
+        para.alignment = .center
+        para.lineBreakMode = .byTruncatingTail
+        (name as NSString).draw(in: NSRect(x: 8, y: r.maxY + 8, width: bounds.width - 16, height: 16),
+                                withAttributes: [.font: Self.font, .foregroundColor: th.foreground, .paragraphStyle: para])
+    }
+}

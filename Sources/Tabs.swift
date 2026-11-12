@@ -890,6 +890,54 @@ final class StatusBarView: NSView {
         addSubview(v)
         return v
     }()
+    /// Over the theme's name while it's hovered: its icon, bigger, and its name (see `ThemeHoverCard`).
+    private var themeCard: ThemeHoverCard?
+    private var themeCardTimer: Timer?
+
+    private func scheduleThemeCard() {
+        themeCardTimer?.invalidate()
+        themeCardTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in self?.showThemeCard() }
+    }
+
+    private func showThemeCard() {
+        themeCardTimer = nil
+        guard hoverButton == .theme, let b = buttons.first(where: { $0.kind == .theme }), let root = window?.contentView else { return }
+        let card = themeCard ?? ThemeHoverCard()
+        let size = card.show(Config.shared.theme)
+        // Centered over the name, 6 points above the bar, kept inside the window.
+        let anchor = convert(b.rect, to: root), bar = convert(bounds, to: root)
+        let x = min(max(anchor.midX - size.width / 2, 8), root.bounds.width - size.width - 8)
+        let y = root.isFlipped ? bar.minY - 6 - size.height : bar.maxY + 6
+        card.frame = NSRect(x: x.rounded(), y: y.rounded(), width: size.width, height: size.height)
+        if card.superview !== root || root.subviews.last !== card {
+            card.removeFromSuperview()
+            root.addSubview(card)
+        }
+        if themeCard == nil {
+            themeCard = card
+            card.alphaValue = 0
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.12
+                card.animator().alphaValue = 1
+            }
+        }
+    }
+
+    private func hideThemeCard() {
+        themeCardTimer?.invalidate()
+        themeCardTimer = nil
+        themeCard?.removeFromSuperview()
+        themeCard = nil
+    }
+
+    /// Dev aid (DevTools hover-theme): as if the pointer rested on the theme's name.
+    func devHoverTheme() {
+        hoverButton = .theme
+        needsDisplay = true
+        displayIfNeeded()
+        showThemeCard()
+    }
+
     /// Solanum Default's mark beside its name: the flower in outline, purple while the theme button is hovered.
     private static let flowerSide: CGFloat = 16
 
@@ -1334,13 +1382,16 @@ final class StatusBarView: NSView {
         if h != hover || hb != hoverButton {
             hover = h
             hoverButton = hb
-            toolTip = hb.map(tip) ?? h.map { "Folders in \(crumbs[$0].path)" } ?? path
+            // The theme's name has its card instead of a tip.
+            toolTip = hb == .theme ? nil : hb.map(tip) ?? h.map { "Folders in \(crumbs[$0].path)" } ?? path
+            if hb == .theme { scheduleThemeCard() } else { hideThemeCard() }
             needsDisplay = true
         }
         (h != nil || hb != nil ? NSCursor.pointingHand : NSCursor.arrow).set()
     }
 
     override func mouseExited(with e: NSEvent) {
+        hideThemeCard()
         hover = nil
         hoverButton = nil
         NSCursor.arrow.set()
@@ -1362,7 +1413,9 @@ final class StatusBarView: NSView {
             switch b.kind {
             case .sidebar: onToggleFileSidebar?()
             case .rightSidebar: onToggleRightSidebar?()
-            case .theme: onThemeMenu?(b.rect)
+            case .theme:
+                hideThemeCard()
+                onThemeMenu?(b.rect)
             case .extensions: onExtensions?()
             case .hosts: onShowHosts?(at)
             case .keepAwake: onKeepAwake?(b.rect)
