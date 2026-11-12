@@ -22,7 +22,6 @@ purple, and each planet theme is colored like its planet, with that planet besid
 - Keep Awake (⇧⌘A, or the cup in the status bar): the Mac stays awake for as long as Settings says, with an hour more,
   an hour less, or ending it from the cup's menu.
 - Command palette (⇧⌘P), searchable history (⌃H), snippets and aliases.
-- A quick-terminal drop-down available from any app (⌃` by default).
 - Session restore: windows, tabs, splits, groups, open files and recent output come back on launch and after closing
   the last window with its red button (closing its tabs one by one starts over, as does Restart Fresh), or are offered
   in the corner for a minute if you'd rather start fresh.
@@ -99,7 +98,6 @@ folder access) each time. To keep them, create a self-signed code-signing certif
 | ⇧⌘P | Command palette (every command, theme and snippet) |
 | ⇧⌘R | Restart Solanum, bringing everything back |
 | ⌥⇧⌘R | Restart Fresh: nothing that was open comes back |
-| ⌃` | Quick terminal (change in Settings) |
 | ⌘T / ⌘N / ⌘W | New tab / new window / close pane |
 | ⌘D / ⇧⌘D | Split right / split down |
 | ⌘] ⌘[ · ⌥⌘ arrows | Next / previous pane · move between panes (and split columns) |
@@ -214,7 +212,7 @@ it tints the whole line instead. Colors are theme color names (`red`, `bright-bl
 | `SyntaxHighlighting.swift`, `Diff.swift`, `GitGraph.swift` | JSON / YAML / XML syntax colors, the working tree diff, the git graph |
 | `Settings.swift`, `ThemeEditor.swift`, `Theme.swift`, `Config.swift` | Settings window, themes, preferences |
 | `Session.swift`, `Notices.swift` | Session save and restore, corner notices |
-| `CommandPalette.swift`, `QuickTerminal.swift`, `History.swift`, `Aliases.swift`, `SSHHosts.swift` | The UI around the terminal |
+| `CommandPalette.swift`, `History.swift`, `Aliases.swift`, `SSHHosts.swift` | The UI around the terminal |
 | `DevTools.swift` | Self-tests and the snapshot tool |
 | `SolanumArt.swift`, `Tools/MakeIcon.swift` | The flower, drawn in code, and the app icon generator |
 | `PlanetArt.swift`, `QuantumMoon.swift` | The planets, drawn in code, and the Quantum Moon's easter egg |

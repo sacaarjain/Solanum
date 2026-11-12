@@ -47,9 +47,20 @@ enum SleeperExtension {
         drawIcon: drawIcon,
         makePage: { SleeperPageView() })
 
-    /// A football on a field-green tile.
+    /// Sleeper's own logo (Support/Sleeper.png), on its tile's rounded corners; a football if it's missing.
+    private static let logo = Bundle.main.image(forResource: "Sleeper")
+
     static func drawIcon(_ r: NSRect) {
         let tile = NSBezierPath(roundedRect: r, xRadius: r.width * 0.22, yRadius: r.width * 0.22)
+        guard let logo else { return drawFootball(r, tile) }
+        NSGraphicsContext.saveGraphicsState()
+        tile.addClip()
+        logo.draw(in: r, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    /// A football on a field-green tile.
+    private static func drawFootball(_ r: NSRect, _ tile: NSBezierPath) {
         NSGradient(starting: NSColor(srgbRed: 0.10, green: 0.42, blue: 0.30, alpha: 1), ending: NSColor(srgbRed: 0.03, green: 0.20, blue: 0.16, alpha: 1))?
             .draw(in: tile, angle: -90)
         NSGraphicsContext.saveGraphicsState()
@@ -162,8 +173,10 @@ final class SleeperModel {
     private(set) var trendingAdds: [(id: String, count: Int)] = []
     private(set) var trendingDrops: [(id: String, count: Int)] = []
     private(set) var advice: Sleeper.Advice? = Sleeper.loadAdvice()
-    /// The player page's data: weekly points and projections.
-    private(set) var playerWeeks: (id: String, stats: [Int: SleeperStatLine], proj: [Int: SleeperStatLine])?
+    /// The player page's data: weekly points and projections (`loaded` once they've come back, empty or not).
+    private(set) var playerWeeks: (id: String, stats: [Int: SleeperStatLine], proj: [Int: SleeperStatLine], loaded: Bool)?
+    /// A player page opened before the league (and so the season) was known: loaded once it is.
+    private var pendingPlayer: String?
     private(set) var loading = false
     private(set) var connecting = false
     private(set) var error: String?
@@ -193,9 +206,11 @@ final class SleeperModel {
     }
 
     /// Advice that belongs on this league's page (or wasn't tied to one).
+    /// Claude's notes, when they're about the league and week showing (last week's "sit: bye" isn't this week's).
     var shownAdvice: Sleeper.Advice? {
         guard let a = advice else { return nil }
         if let l = a.leagueId, let cur = settings.leagueId, l != cur { return nil }
+        if let w = a.week, let shown = snapshot?.week, w != shown { return nil }
         return a
     }
 
@@ -283,6 +298,11 @@ final class SleeperModel {
                         Sleeper.saveSettings(self.settings)
                     }
                     self.snapshot = snap
+                    if let p = self.pendingPlayer {
+                        self.pendingPlayer = nil
+                        self.playerWeeks = nil
+                        self.loadPlayer(p)
+                    }
                     self.transactions = tx.filter { $0.status == "complete" }.sorted { $0.created > $1.created }
                     self.trendingAdds = adds
                     self.trendingDrops = drops
@@ -303,15 +323,18 @@ final class SleeperModel {
 
     func loadPlayer(_ id: String) {
         guard playerWeeks?.id != id else { return }
-        playerWeeks = (id, [:], [:])
+        playerWeeks = (id, [:], [:], false)
         onChange?()
         let season = snapshot.map { $0.league.season.isEmpty ? $0.state.season : $0.league.season } ?? state?.season ?? ""
+        // Opened before the league came in (Claude's show_in_solanum as the page opens): asking for an unknown
+        // season gets nothing back, which used to leave the page loading for good.
+        guard !season.isEmpty else { pendingPlayer = id; return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let stats = (try? Sleeper.playerWeeks(id, season: season, projected: false)) ?? [:]
             let proj = (try? Sleeper.playerWeeks(id, season: season, projected: true)) ?? [:]
             DispatchQueue.main.async {
                 guard let self, self.playerWeeks?.id == id else { return }
-                self.playerWeeks = (id, stats, proj)
+                self.playerWeeks = (id, stats, proj, true)
                 self.onChange?()
             }
         }
@@ -518,8 +541,9 @@ final class SleeperHeader: PageCanvas, DropdownAnchor {
     override func render() -> CGFloat {
         guard let page else { return 0 }
         let model = page.model
-        let w = bounds.width, pad: CGFloat = 18
-        fill(NSRect(x: 0, y: 0, width: w, height: Self.height), th.tabBarTint.withAlphaComponent(0.5))
+        let w = bounds.width, pad: CGFloat = 20
+        // The window chrome's own tint, as the theme sets it (a fixed alpha here made it solid lavender on light themes).
+        fill(NSRect(x: 0, y: 0, width: w, height: Self.height), th.tabBarTint)
         line(Self.height - 1, from: 0, to: w)
 
         // League: avatar, name ▾, settings.
@@ -736,7 +760,12 @@ final class SetupCanvas: PageCanvas {
 
 final class SleeperContent: PageCanvas {
     weak var page: SleeperPageView?
+    /// The page's grid: cards and rows' hover fills reach `pad` from the sides; everything in them (section labels,
+    /// avatars, slot pills, separators, and every number at the right) lines up `inset` further in.
     private let pad: CGFloat = 20
+    private let inset: CGFloat = 10
+    private var left: CGFloat { pad + inset }
+    private var rightEdge: CGFloat { bounds.width - pad - inset }
 
     private var model: SleeperModel? { page?.model }
 
@@ -795,9 +824,9 @@ final class SleeperContent: PageCanvas {
     private func injuryColor(_ short: String) -> NSColor { ["Q", "D"].contains(short) ? th.yellow : th.red }
 
     private func sectionLabel(_ title: String, y: CGFloat, right: String? = nil) -> CGFloat {
-        text(title.uppercased(), .systemFont(ofSize: 10.5, weight: .bold), th.dimText, x: pad, y: y, width: bounds.width - pad * 2)
+        text(title.uppercased(), .systemFont(ofSize: 10.5, weight: .bold), th.dimText, x: left, y: y, width: rightEdge - left)
         if let right {
-            text(right, .systemFont(ofSize: 10.5, weight: .semibold), th.dimText.withAlphaComponent(0.8), x: pad, y: y, width: bounds.width - pad * 2, align: .right)
+            text(right, .systemFont(ofSize: 10.5, weight: .semibold), th.dimText.withAlphaComponent(0.8), x: left, y: y, width: rightEdge - left, align: .right)
         }
         return y + 20
     }
@@ -856,9 +885,9 @@ final class SleeperContent: PageCanvas {
         let w = bounds.width
         if id == "0" || id.isEmpty {
             let r = NSRect(x: pad, y: y, width: w - pad * 2, height: 44)
-            if let slot { pill(SleeperLeagueSnapshot.slotName(slot), x: pad + 6, y: y + 13, color: Self.positionColor(slot), minWidth: 44) }
-            text("Empty", .systemFont(ofSize: 12.5, weight: .medium), th.red, x: pad + 104, y: y + 13, width: 200)
-            line(r.maxY, from: pad, to: w - pad, th.border.withAlphaComponent(0.5))
+            if let slot { pill(SleeperLeagueSnapshot.slotName(slot), x: left, y: y + 13, color: Self.positionColor(slot), minWidth: 44) }
+            text("Empty", .systemFont(ofSize: 12.5, weight: .medium), th.red, x: left + 52 + 48, y: y + 13, width: 200)
+            line(r.maxY, from: left, to: rightEdge, th.border.withAlphaComponent(0.5))
             return r.maxY + 1
         }
         let p = s.player(id)
@@ -868,7 +897,7 @@ final class SleeperContent: PageCanvas {
         let rowId = "row.\(id).\(Int(y))"
         if hover == rowId || hover == "ask.\(id).\(Int(y))" { fill(r, th.foreground.withAlphaComponent(0.05), radius: 8) }
         hit(r, rowId) { [weak page] in page?.showPlayer(id) }
-        var x = pad + 6
+        var x = left
         if let slot {
             let c = ["QB", "RB", "WR", "TE", "K", "DEF"].contains(slot) ? Self.positionColor(slot) : Self.positionColor("FLEX")
             pill(SleeperLeagueSnapshot.slotName(slot), x: x, y: y + 17, color: c, minWidth: 44)
@@ -882,7 +911,7 @@ final class SleeperContent: PageCanvas {
         fill(dot.insetBy(dx: 2, dy: 2), Self.positionColor(p.position), radius: 4)
         x = photo.maxX + 12
 
-        let right = w - pad - 10
+        let right = rightEdge
         let colW: CGFloat = 58
         let nameW = right - colW * 2 - 40 - x
         let nf = NSFont.systemFont(ofSize: 13, weight: .semibold)
@@ -929,14 +958,14 @@ final class SleeperContent: PageCanvas {
             // Registered even when not drawn, so the hover can find it.
             hit(NSRect(x: right - colW * 2 - 46, y: y + 12, width: 28, height: 28), askId) { [weak page] in page?.askPlayer(p) }
         }
-        line(r.maxY, from: pad + 8, to: w - pad - 8, th.border.withAlphaComponent(0.5))
+        line(r.maxY, from: left, to: rightEdge, th.border.withAlphaComponent(0.5))
         return r.maxY + 1
     }
 
     private func teamHeader(_ r: SleeperRoster, _ s: SleeperLeagueSnapshot, y: CGFloat, points: Double?, projected: Double) -> CGFloat {
         let w = bounds.width
         let o = s.owner(of: r)
-        let av = NSRect(x: pad, y: y, width: 52, height: 52)
+        let av = NSRect(x: left, y: y, width: 52, height: 52)
         avatar(o?.avatarURL, av, initials: PageCanvas.initials(s.teamName(r)))
         text(s.teamName(r), .systemFont(ofSize: 18, weight: .bold), th.foreground, x: av.maxX + 14, y: y + 4, width: w - 360)
         let rank = (s.standings.firstIndex { $0.rosterId == r.rosterId } ?? 0) + 1
@@ -944,15 +973,17 @@ final class SleeperContent: PageCanvas {
         if s.league.usesFAAB { parts.append("FAAB $\(s.league.waiverBudget - r.waiverBudgetUsed)") }
         else if let wp = r.waiverPosition { parts.append("Waiver #\(wp)") }
         text(parts.filter { !$0.isEmpty }.joined(separator: " · "), .systemFont(ofSize: 12), th.dimText, x: av.maxX + 14, y: y + 30, width: w - 360)
-        // Totals.
-        let right = w - pad
+        // Totals, on the numbers' edge.
+        let right = rightEdge
         if let points {
             text(Sleeper.format(points), .monospacedDigitSystemFont(ofSize: 24, weight: .bold), th.foreground, x: right - 120, y: y, width: 120, align: .right)
             text("Week \(s.week) points", .systemFont(ofSize: 11), th.dimText, x: right - 120, y: y + 32, width: 120, align: .right)
         }
+        // Alone, it takes the points' place at the edge; beside them, the column before.
+        let px = points == nil ? right - 120 : right - 220, pw: CGFloat = points == nil ? 120 : 90
         text(Sleeper.format(projected), .monospacedDigitSystemFont(ofSize: points == nil ? 24 : 16, weight: .bold), points == nil ? th.foreground : th.dimText,
-             x: right - (points == nil ? 120 : 220), y: y + (points == nil ? 0 : 6), width: 90, align: .right)
-        text("projected", .systemFont(ofSize: 11), th.dimText, x: right - (points == nil ? 120 : 220), y: y + 32, width: 90, align: .right)
+             x: px, y: y + (points == nil ? 0 : 6), width: pw, align: .right)
+        text("projected", .systemFont(ofSize: 11), th.dimText, x: px, y: y + 32, width: pw, align: .right)
         return y + 66
     }
 
@@ -967,7 +998,7 @@ final class SleeperContent: PageCanvas {
         guard let model else { return y0 }
         let rid = model.viewedRoster ?? s.myRosterId
         guard let rid, let r = s.roster(rid) else {
-            text("You don't have a team in this league. Pick one in Standings.", .systemFont(ofSize: 13), th.dimText, x: pad, y: y0 + 10, width: bounds.width - pad * 2)
+            text("You don't have a team in this league. Pick one in Standings.", .systemFont(ofSize: 13), th.dimText, x: left, y: y0 + 10, width: rightEdge - left)
             return y0 + 40
         }
         var y = y0
@@ -977,7 +1008,7 @@ final class SleeperContent: PageCanvas {
         let anyPoints = pts.values.contains { $0 != 0 }
         y = teamHeader(r, s, y: y, points: anyPoints ? m?.points : nil, projected: s.projectedTotal(starters))
         if rid != s.myRosterId, s.myRosterId != nil {
-            button("Back to my team", id: "myteam", x: pad, y: y, height: 24, symbol: "chevron.left", style: .plain) { [weak page] in page?.showTeam(nil) }
+            button("Back to my team", id: "myteam", x: left - 6, y: y, height: 24, symbol: "chevron.left", style: .plain) { [weak page] in page?.showTeam(nil) }
             y += 32
         }
         let slots = s.league.starterSlots
@@ -1086,7 +1117,7 @@ final class SleeperContent: PageCanvas {
             let rid = "mrow.\(id).\(left)"
             if hover == rid { fill(NSRect(x: x0, y: y + 2, width: x1 - x0, height: h - 4), th.foreground.withAlphaComponent(0.05), radius: 8) }
             hit(NSRect(x: x0, y: y, width: x1 - x0, height: h), rid) { [weak page] in page?.showPlayer(id) }
-            let photo = NSRect(x: left ? x0 + 6 : x1 - 6 - 32, y: y + 9, width: 32, height: 32)
+            let photo = NSRect(x: left ? x0 + inset : x1 - inset - 32, y: y + 9, width: 32, height: 32)
             avatar(p.photoURL, photo, initials: PageCanvas.initials(p.name), fit: p.isDefense)
             let ptsW: CGFloat = 54
             let tx = left ? photo.maxX + 10 : x0 + ptsW + 8
@@ -1110,7 +1141,7 @@ final class SleeperContent: PageCanvas {
         }
         cell(a, ma, left: true)
         cell(b, mb, left: false)
-        line(y + h, from: pad + 8, to: w - pad - 8, th.border.withAlphaComponent(0.5))
+        line(y + h, from: left, to: rightEdge, th.border.withAlphaComponent(0.5))
         return y + h + 1
     }
 
@@ -1176,8 +1207,8 @@ final class SleeperContent: PageCanvas {
             xs[name] = cx
             text(name, .systemFont(ofSize: 10, weight: .bold), th.dimText, x: cx, y: y, width: cw, align: .right)
         }
-        text("#", .systemFont(ofSize: 10, weight: .bold), th.dimText, x: pad + 8, y: y, width: 20)
-        text("TEAM", .systemFont(ofSize: 10, weight: .bold), th.dimText, x: pad + 74, y: y, width: 100)
+        text("#", .systemFont(ofSize: 10, weight: .bold), th.dimText, x: left, y: y, width: 20)
+        text("TEAM", .systemFont(ofSize: 10, weight: .bold), th.dimText, x: left + 66, y: y, width: 100)
         y += 20
         let playoffTeams = s.league.totalRosters >= 10 ? 6 : 4
         for (i, r) in s.standings.enumerated() {
@@ -1188,13 +1219,13 @@ final class SleeperContent: PageCanvas {
             if mine { fill(rr, th.accent.withAlphaComponent(0.10), radius: 8) }
             else if hover == id { fill(rr, th.foreground.withAlphaComponent(0.05), radius: 8) }
             hit(rr, id) { [weak page] in page?.showTeam(r.rosterId) }
-            text("\(i + 1)", .monospacedDigitSystemFont(ofSize: 12.5, weight: .bold), i < playoffTeams ? th.foreground : th.dimText, x: pad + 8, y: y + 14, width: 22)
+            text("\(i + 1)", .monospacedDigitSystemFont(ofSize: 12.5, weight: .bold), i < playoffTeams ? th.foreground : th.dimText, x: left, y: y + 14, width: 22)
             if i < playoffTeams { fill(NSRect(x: pad + 2, y: y + 12, width: 3, height: 22), th.green.withAlphaComponent(0.8), radius: 1.5) }
             let o = s.owner(of: r)
-            avatar(o?.avatarURL, NSRect(x: pad + 34, y: y + 8, width: 30, height: 30), initials: PageCanvas.initials(s.teamName(r)))
-            let nameW = (xs[order[0]] ?? right) - (pad + 74) - 10
-            text(s.teamName(r), .systemFont(ofSize: 13, weight: .semibold), mine ? th.accent : th.foreground, x: pad + 74, y: y + 7, width: nameW)
-            text(o?.displayName ?? "", .systemFont(ofSize: 11), th.dimText, x: pad + 74, y: y + 25, width: nameW)
+            avatar(o?.avatarURL, NSRect(x: left + 26, y: y + 8, width: 30, height: 30), initials: PageCanvas.initials(s.teamName(r)))
+            let nameW = (xs[order[0]] ?? right) - (left + 66) - 10
+            text(s.teamName(r), .systemFont(ofSize: 13, weight: .semibold), mine ? th.accent : th.foreground, x: left + 66, y: y + 7, width: nameW)
+            text(o?.displayName ?? "", .systemFont(ofSize: 11), th.dimText, x: left + 66, y: y + 25, width: nameW)
             func col(_ name: String, _ value: String, _ color: NSColor? = nil) {
                 guard let x = xs[name], let cw = cols.first(where: { $0.0 == name })?.1 else { return }
                 text(value, .monospacedDigitSystemFont(ofSize: 12.5, weight: .medium), color ?? th.foreground, x: x, y: y + 14, width: cw, align: .right)
@@ -1207,7 +1238,7 @@ final class SleeperContent: PageCanvas {
             if let st = r.streak { col("STREAK", st, st.hasSuffix("W") ? th.green : th.red) }
             y += h + 2
         }
-        text("Top \(playoffTeams) marked; playoffs start week \(s.league.playoffWeekStart).", .systemFont(ofSize: 11), th.dimText, x: pad, y: y + 8, width: w - pad * 2)
+        text("Top \(playoffTeams) marked; playoffs start week \(s.league.playoffWeekStart).", .systemFont(ofSize: 11), th.dimText, x: left, y: y + 8, width: rightEdge - left)
         return y + 30
     }
 
@@ -1222,12 +1253,12 @@ final class SleeperContent: PageCanvas {
             let info = s.league.usesFAAB
                 ? "You have $\(s.league.waiverBudget - mine.waiverBudgetUsed) of $\(s.league.waiverBudget) FAAB left."
                 : "You're #\(mine.waiverPosition ?? 0) in the waiver order."
-            symbol("dollarsign.circle", NSRect(x: pad, y: y, width: 16, height: 18), th.accent, size: 13)
-            text(info + " Claims are made in the Sleeper app.", .systemFont(ofSize: 12.5), th.foreground, x: pad + 22, y: y + 1, width: w - pad * 2 - 22)
+            symbol("dollarsign.circle", NSRect(x: left, y: y, width: 16, height: 18), th.accent, size: 13)
+            text(info + " Claims are made in the Sleeper app.", .systemFont(ofSize: 12.5), th.foreground, x: left + 22, y: y + 1, width: rightEdge - left - 22)
             y += 28
         }
         // Position chips.
-        var x = pad
+        var x = left
         for pos in ["ALL", "QB", "RB", "WR", "TE", "FLEX", "K", "DEF"] {
             let on = page.waiverPosition == pos
             let f = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
@@ -1245,7 +1276,7 @@ final class SleeperContent: PageCanvas {
         y = sectionLabel("Available · best projected for week \(s.week)", y: y, right: "\(list.count) shown") + 2
         if list.isEmpty {
             text(s.projections.isEmpty ? "No projections for this week yet." : "Nobody available at \(page.waiverPosition).", .systemFont(ofSize: 12.5), th.dimText,
-                 x: pad, y: y + 8, width: w - pad * 2)
+                 x: left, y: y + 8, width: rightEdge - left)
             y += 36
         }
         for p in list {
@@ -1283,9 +1314,9 @@ final class SleeperContent: PageCanvas {
         let colW = twoCols ? (w - pad * 2 - 20) / 2 : w - pad * 2
         func list(_ title: String, _ items: [(id: String, count: Int)], x: CGFloat, y y1: CGFloat, add: Bool) -> CGFloat {
             var y = y1
-            text(title.uppercased(), .systemFont(ofSize: 10.5, weight: .bold), th.dimText, x: x, y: y, width: colW)
+            text(title.uppercased(), .systemFont(ofSize: 10.5, weight: .bold), th.dimText, x: x + inset, y: y, width: colW - inset * 2)
             y += 22
-            if items.isEmpty { text("Nothing yet.", .systemFont(ofSize: 12), th.dimText, x: x, y: y, width: colW); return y + 24 }
+            if items.isEmpty { text("Nothing yet.", .systemFont(ofSize: 12), th.dimText, x: x + inset, y: y, width: colW - inset * 2); return y + 24 }
             let maxCount = Double(items.map(\.count).max() ?? 1)
             for (i, t) in items.prefix(25).enumerated() {
                 let p = s.player(t.id)
@@ -1309,9 +1340,9 @@ final class SleeperContent: PageCanvas {
                 // Where he is in this league.
                 if let rr = s.rosterOf(t.id) {
                     let mine = rr.rosterId == s.myRosterId
-                    pill(mine ? "Yours" : fitted(s.teamName(rr), chipW - 16), x: r.maxX - 6, y: y + 14, color: mine ? th.accent : th.foreground, rightAligned: true)
+                    pill(mine ? "Yours" : fitted(s.teamName(rr), chipW - 16), x: r.maxX - inset, y: y + 14, color: mine ? th.accent : th.foreground, rightAligned: true)
                 } else {
-                    pill("Available", x: r.maxX - 6, y: y + 14, color: th.green, filled: false, rightAligned: true)
+                    pill("Available", x: r.maxX - inset, y: y + 14, color: th.green, filled: false, rightAligned: true)
                 }
                 y += h + 1
             }
@@ -1377,7 +1408,7 @@ final class SleeperContent: PageCanvas {
         let list = model.transactions
         if list.isEmpty {
             _ = sectionLabel("League activity", y: y)
-            text("No moves in the last three weeks.", .systemFont(ofSize: 12.5), th.dimText, x: pad, y: y + 28, width: bounds.width - pad * 2)
+            text("No moves in the last three weeks.", .systemFont(ofSize: 12.5), th.dimText, x: left, y: y + 28, width: rightEdge - left)
             return y + 60
         }
         var lastWeek = -1
@@ -1398,10 +1429,10 @@ final class SleeperContent: PageCanvas {
         let w = bounds.width
         let p = s.player(id)
         var y = y0
-        button("Back", id: "back", x: pad - 6, y: y, height: 24, symbol: "chevron.left", style: .plain) { [weak page] in page?.back() }
+        button("Back", id: "back", x: left - 6, y: y, height: 24, symbol: "chevron.left", style: .plain) { [weak page] in page?.back() }
         y += 34
         // Card: photo, name, team.
-        let photo = NSRect(x: pad, y: y, width: 104, height: 104)
+        let photo = NSRect(x: left, y: y, width: 104, height: 104)
         avatar(p.photoURL, photo, initials: PageCanvas.initials(p.name), fit: p.isDefense)
         stroke(photo, Self.positionColor(p.position), radius: 52, width: 3)
         let tx = photo.maxX + 20
@@ -1425,19 +1456,19 @@ final class SleeperContent: PageCanvas {
         if let e = p.yearsExp { bio.append(e == 0 ? "Rookie" : "\(e) yr\(e == 1 ? "" : "s") exp") }
         if let c = p.college { bio.append(c) }
         if let d = p.depthPosition, let o = p.depthOrder { bio.append("Depth chart: \(d)\(o)") }
-        text(bio.joined(separator: " · "), .systemFont(ofSize: 12), th.dimText, x: tx, y: ny, width: w - tx - pad)
+        text(bio.joined(separator: " · "), .systemFont(ofSize: 12), th.dimText, x: tx, y: ny, width: rightEdge - 220 - tx)
         ny += 22
         // Who has him.
         if let r = s.rosterOf(id) {
             let mine = r.rosterId == s.myRosterId
             let label = mine ? "On your team" : "On \(s.teamName(r))"
             let starting = (s.matchup(for: r.rosterId)?.starters ?? r.starters).contains(id)
-            text(label + (starting ? " · starting" : " · bench"), .systemFont(ofSize: 12.5, weight: .semibold), mine ? th.accent : th.foreground, x: tx, y: ny, width: w - tx - pad)
+            text(label + (starting ? " · starting" : " · bench"), .systemFont(ofSize: 12.5, weight: .semibold), mine ? th.accent : th.foreground, x: tx, y: ny, width: rightEdge - 220 - tx)
         } else {
-            text("Available in \(s.league.name)", .systemFont(ofSize: 12.5, weight: .semibold), th.green, x: tx, y: ny, width: w - tx - pad)
+            text("Available in \(s.league.name)", .systemFont(ofSize: 12.5, weight: .semibold), th.green, x: tx, y: ny, width: rightEdge - 220 - tx)
         }
-        // This week, at the right.
-        let right = w - pad
+        // This week, at the right (on the numbers' edge).
+        let right = rightEdge
         if let proj = s.projected(id) {
             text(Sleeper.format(proj), .monospacedDigitSystemFont(ofSize: 30, weight: .heavy), th.foreground, x: right - 160, y: y + 4, width: 160, align: .right)
             text("projected · week \(s.week)" + (s.opponent(id).map { " vs \($0)" } ?? ""), .systemFont(ofSize: 11.5), th.dimText, x: right - 220, y: y + 42, width: 220, align: .right)
@@ -1470,7 +1501,8 @@ final class SleeperContent: PageCanvas {
         let season = s.state.displayWeek
         let played = weeks.stats.filter { ($0.value.stats["gp"] ?? $0.value.stats["gms_active"] ?? 0) > 0 }
         if weeks.stats.isEmpty && weeks.proj.isEmpty {
-            text("Loading his season…", .systemFont(ofSize: 12.5), th.dimText, x: pad, y: y, width: w - pad * 2)
+            text(weeks.loaded ? "No games or projections for him this season." : "Loading his season…", .systemFont(ofSize: 12.5), th.dimText,
+                 x: left, y: y, width: rightEdge - left)
             return y + 30
         }
         let pts = played.mapValues { $0.points(s.league.scoring) }
@@ -1481,7 +1513,7 @@ final class SleeperContent: PageCanvas {
         let weeksShown = Array(1...18)
         let chartH: CGFloat = 130
         let gap: CGFloat = 4
-        let barW = max(8, (w - pad * 2 - gap * CGFloat(weeksShown.count - 1)) / CGFloat(weeksShown.count))
+        let barW = max(8, (rightEdge - left - gap * CGFloat(weeksShown.count - 1)) / CGFloat(weeksShown.count))
         var maxV = 1.0
         for wk in weeksShown {
             if let v = pts[wk] { maxV = max(maxV, v) }
@@ -1490,10 +1522,10 @@ final class SleeperContent: PageCanvas {
         let base = y + chartH
         if let avg {
             let ay = base - CGFloat(avg / maxV) * (chartH - 16)
-            fill(NSRect(x: pad, y: ay, width: w - pad * 2, height: 1), th.accent.withAlphaComponent(0.35))
+            fill(NSRect(x: left, y: ay, width: rightEdge - left, height: 1), th.accent.withAlphaComponent(0.35))
         }
         for (i, wk) in weeksShown.enumerated() {
-            let x = pad + CGFloat(i) * (barW + gap)
+            let x = left + CGFloat(i) * (barW + gap)
             if let v = pts[wk] {
                 let h = max(2, CGFloat(v / maxV) * (chartH - 16))
                 let r = NSRect(x: x, y: base - h, width: barW, height: h)
@@ -1514,16 +1546,16 @@ final class SleeperContent: PageCanvas {
             let opp = weeks.stats[wk]?.opponent ?? weeks.proj[wk]?.opponent
             if barW >= 26, let opp { text(opp, .systemFont(ofSize: 8.5), th.dimText.withAlphaComponent(0.8), x: x - 4, y: base + 17, width: barW + 8, align: .center) }
         }
-        line(base, from: pad, to: w - pad, th.border)
+        line(base, from: left, to: rightEdge, th.border)
         y = base + 36
         // Legend.
-        fill(NSRect(x: pad, y: y + 3, width: 10, height: 10), th.accent, radius: 2)
-        text("Points", .systemFont(ofSize: 11), th.dimText, x: pad + 16, y: y, width: 60)
-        stroke(NSRect(x: pad + 74, y: y + 3, width: 10, height: 10), th.dimText, radius: 2)
-        text("Projected", .systemFont(ofSize: 11), th.dimText, x: pad + 90, y: y, width: 80)
+        fill(NSRect(x: left, y: y + 3, width: 10, height: 10), th.accent, radius: 2)
+        text("Points", .systemFont(ofSize: 11), th.dimText, x: left + 16, y: y, width: 60)
+        stroke(NSRect(x: left + 74, y: y + 3, width: 10, height: 10), th.dimText, radius: 2)
+        text("Projected", .systemFont(ofSize: 11), th.dimText, x: left + 90, y: y, width: 80)
         if avg != nil {
-            fill(NSRect(x: pad + 170, y: y + 8, width: 14, height: 1), th.accent.withAlphaComponent(0.6))
-            text("Average", .systemFont(ofSize: 11), th.dimText, x: pad + 190, y: y, width: 80)
+            fill(NSRect(x: left + 170, y: y + 8, width: 14, height: 1), th.accent.withAlphaComponent(0.6))
+            text("Average", .systemFont(ofSize: 11), th.dimText, x: left + 190, y: y, width: 80)
         }
         y += 30
 

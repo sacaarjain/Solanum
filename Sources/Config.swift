@@ -19,6 +19,10 @@ final class Config {
     var fontFamily = "System Mono"
     var fontSize: CGFloat = 13
     var lineHeight: CGFloat = 1.3
+    /// The file editor's Tab: this many columns a level, and spaces rather than a tab character. Each file's own
+    /// indentation wins over both when it has some (see `Indentation`).
+    var editorTabSize = 4
+    var editorInsertSpaces = true
     var opacity: CGFloat = 0.95
     var blur = true
     /// What a see-through background shows: "wallpaper" (the desktop's picture, drawn by Solanum, the same in front or
@@ -39,9 +43,6 @@ final class Config {
     var scrollback = 10_000
     var shell = ""
     var shellIntegration = true
-    var quickTerminalHotkey = "ctrl+`"
-    var quickTerminalHeight: CGFloat = 0.45
-    var quickTerminalAutoHide = true
     var notifyAfterSeconds: Double = 10
     var copyOnSelect = false
     var confirmQuit = true
@@ -127,6 +128,8 @@ final class Config {
         case "font-family": fontFamily = value.isEmpty ? "System Mono" : value
         case "font-size": if let n = num() { fontSize = min(max(n, 8), 40) }
         case "line-height": if let n = num() { lineHeight = min(max(n, 0.9), 2.0) }
+        case "editor-tab-size": if let n = Int(value) { editorTabSize = min(max(n, 1), 8) }
+        case "editor-insert-spaces": editorInsertSpaces = bool()
         case "background-opacity": if let n = num() { opacity = min(max(n, 0.3), 1) }
         case "background-blur": blur = bool()
         case "see-through": seeThrough = value.lowercased() == "wallpaper" ? "wallpaper" : "windows"
@@ -146,9 +149,6 @@ final class Config {
         case "scrollback-lines": if let n = Int(value) { scrollback = min(max(n, 100), 200_000) }
         case "shell": shell = value
         case "shell-integration": shellIntegration = bool()
-        case "quick-terminal-hotkey": quickTerminalHotkey = value
-        case "quick-terminal-height": if let n = num() { quickTerminalHeight = min(max(n, 0.2), 0.95) }
-        case "quick-terminal-autohide": quickTerminalAutoHide = bool()
         case "notify-after-seconds": if let n = Double(value) { notifyAfterSeconds = n }
         case "keep-awake-seconds": if let n = Int(value) { keepAwakeSeconds = n }
         case "copy-on-select": copyOnSelect = bool()
@@ -178,6 +178,11 @@ final class Config {
         font-size = \(fmt(fontSize))
         line-height = \(fmt(lineHeight))
         font-ligatures = \(ligatures)
+
+        # The file editor's Tab: spaces to the next multiple of the tab size (or a tab character, false). A file
+        # already indented with tabs, or 2 spaces a level, keeps its own way.
+        editor-tab-size = \(editorTabSize)
+        editor-insert-spaces = \(editorInsertSpaces)
 
         background-opacity = \(fmt(opacity))
         background-blur = \(blur)
@@ -212,11 +217,6 @@ final class Config {
         # Leave empty to use your login shell.
         shell = \(shell)
         shell-integration = \(shellIntegration)
-
-        # Modifiers: ctrl, alt/option, cmd, shift.  e.g. ctrl+`  or  alt+space
-        quick-terminal-hotkey = \(quickTerminalHotkey)
-        quick-terminal-height = \(fmt(quickTerminalHeight))
-        quick-terminal-autohide = \(quickTerminalAutoHide)
 
         # Notify when a command running in the background takes at least this long (0 = off).
         notify-after-seconds = \(fmt(CGFloat(notifyAfterSeconds)))

@@ -25,7 +25,10 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         }
     }
     var onClose: (() -> Void)?
-    /// The file was renamed, so what the sub-tab says and where it lives changed.
+    /// While it's its tab's only file, with no terminal: the header's button for one (see `TabSession.arrange`).
+    var onShowTerminal: (() -> Void)? { didSet { header.onShowTerminal = onShowTerminal } }
+    /// What the sub-tab shows changed: the file was renamed (its name, where it lives), deleted, or saved or edited
+    /// (its unsaved dot).
     var onPathChanged: (() -> Void)?
     /// The header's Preview and Working Tree buttons: this file, shown another way in another sub-tab.
     var onOpenAs: ((EditorMode) -> Void)?
@@ -46,7 +49,13 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     /// `reveal` was called before the text arrived.
     private var revealWhenLoaded: (line: Int, text: String)?
     private var saving = false
-    private(set) var isDirty = false { didSet { header.dirty = isDirty } }
+    /// Its sub-tab's dot goes as soon as it's saved (it waited for the pointer to pass over it before).
+    private(set) var isDirty = false {
+        didSet {
+            header.dirty = isDirty
+            if isDirty != oldValue { onPathChanged?() }
+        }
+    }
     /// The file is gone from disk (deleted, or moved away by something else): shown struck through, as in VS Code,
     /// and saving puts it back.
     private(set) var isDeleted = false {
@@ -254,6 +263,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
 
         applyTheme()
         observers.append(NotificationCenter.default.addObserver(forName: .solanumConfigChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.updateIndentation()
             self?.applyTheme()
         })
         scroll.contentView.postsBoundsChangedNotifications = true
@@ -555,7 +565,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         textView.selectedTextAttributes = [.backgroundColor: th.selection]
         let para = NSMutableParagraphStyle()
         let space = (" " as NSString).size(withAttributes: [.font: font]).width
-        para.defaultTabInterval = space * 4
+        para.defaultTabInterval = space * CGFloat(textView.indentation.size)
         para.tabStops = []
         if windowed {
             // Every line the same height (see `windowed`).
@@ -707,6 +717,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 self.textView.string = text
                 if self.language == .log { self.chooseLogFormat() }
                 self.findTextChanged()
+                self.updateIndentation()
                 self.applyTheme()
                 self.partial = partial
                 self.textView.isEditable = !partial
@@ -1210,6 +1221,8 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     private func loadExtensionPage() {
         header.editable = false
         header.textTools = false
+        // Its subtitle ("Sleeper · league · week") says where you are; there's no path to copy.
+        header.onCopyPath = nil
         if pageView != nil { return }
         let page: (NSView & ExtensionPage)?
         switch mode {
@@ -1551,6 +1564,14 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         guard textView.hidesEscapes, new.length == 0, let s = tv.textStorage?.mutableString, new.location < s.length,
               let r = ANSIText.escapeRange(s, around: new.location), r.location < new.location else { return new }
         return NSRange(location: new.location >= old.location ? NSMaxRange(r) : r.location, length: 0)
+    }
+
+    /// What Tab inserts here, and how wide a tab shows: the file's own indentation, else the settings (see
+    /// `Indentation`); a Makefile or Go file with none yet takes tabs.
+    private func updateIndentation() {
+        let c = Config.shared
+        let tabsByDefault = language == .code(.makefile) || (path as NSString).pathExtension.lowercased() == "go"
+        textView.indentation = Indentation.detect(textView.string, spaces: c.editorInsertSpaces, size: c.editorTabSize, tabsByDefault: tabsByDefault)
     }
 
     private func highlightSyntax() {
@@ -2025,6 +2046,20 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     }
 
     var devFindBar: EditorFindBar? { findBar }
+
+    /// Dev aid (DevTools editor-key): a key as the text view takes it: tab, backtab, backspace, start (caret to the
+    /// very start), all (select everything).
+    func devKey(_ key: String) {
+        switch key {
+        case "tab": textView.insertTab(nil)
+        case "backtab": textView.insertBacktab(nil)
+        case "backspace": textView.deleteBackward(nil)
+        case "start": textView.setSelectedRange(NSRange(location: 0, length: 0))
+        case "all": textView.selectAll(nil)
+        default: break
+        }
+        FileHandle.standardError.write("editor after \(key): \(textView.string.debugDescription) indent \(textView.indentation)\n".data(using: .utf8)!)
+    }
     var devFindState: String {
         let current = findIndex.map { (textView.string as NSString).substring(with: findMatches[$0]) } ?? ""
         return "count=\(findIndex.map { "\($0 + 1)" } ?? "-") of \(findMatches.count) current='\(current)'"
@@ -2230,6 +2265,79 @@ final class EditorTextView: NSTextView, NSLayoutManagerDelegate {
         super.cursorUpdate(with: e)
     }
 
+    /// What Tab inserts and how wide a level is (see `FileEditorView.updateIndentation`).
+    var indentation = Indentation(tabs: false, size: 4)
+
+    /// The line (as a range) and its text holding `location`.
+    private func line(at location: Int) -> NSRange {
+        (string as NSString).lineRange(for: NSRange(location: location, length: 0))
+    }
+
+    /// Tab: spaces to the next tab stop (or a tab, in a file indented with tabs). With lines selected, they're
+    /// indented a level instead, as in VS Code.
+    override func insertTab(_ sender: Any?) {
+        let sel = selectedRange()
+        let ns = string as NSString
+        if sel.length > 0, ns.substring(with: sel).contains("\n") { return shiftLines(by: 1) }
+        guard !indentation.tabs else { return super.insertTab(sender) }
+        let lineStart = line(at: sel.location).location
+        let col = indentation.column(of: ns.substring(with: NSRange(location: lineStart, length: sel.location - lineStart)).utf16[...],
+                                     upTo: sel.location - lineStart)
+        insertText(indentation.spaces(at: col), replacementRange: sel)
+    }
+
+    /// ⇧Tab: the line (or every selected line) a level back.
+    override func insertBacktab(_ sender: Any?) { shiftLines(by: -1) }
+
+    /// Backspace in a line's leading spaces takes them back to the tab stop before, as Tab put them in.
+    override func deleteBackward(_ sender: Any?) {
+        let sel = selectedRange()
+        guard !indentation.tabs, sel.length == 0, sel.location > 0 else { return super.deleteBackward(sender) }
+        let ns = string as NSString
+        let lineStart = line(at: sel.location).location
+        let before = ns.substring(with: NSRange(location: lineStart, length: sel.location - lineStart))
+        guard before.count >= 2, before.allSatisfy({ $0 == " " }) else { return super.deleteBackward(sender) }
+        let n = indentation.backspace(at: before.count, spacesBefore: before.count)
+        insertText("", replacementRange: NSRange(location: sel.location - n, length: n))
+    }
+
+    /// Indents (`by` 1) or outdents (-1) every line the selection touches by a level, as one step ⌘Z undoes, keeping
+    /// them selected.
+    private func shiftLines(by direction: Int) {
+        let ns = string as NSString
+        let sel = selectedRange()
+        // A selection ending at a line's start doesn't take that line in.
+        let endProbe = sel.length > 0 && sel.location + sel.length > 0 && ns.character(at: sel.location + sel.length - 1) == 10
+            ? sel.location + sel.length - 1 : sel.location + sel.length
+        let range = ns.lineRange(for: NSRange(location: sel.location, length: max(0, endProbe - sel.location)))
+        let unit = indentation.tabs ? "\t" : String(repeating: " ", count: indentation.size)
+        var lines = ns.substring(with: range).components(separatedBy: "\n")
+        let trailing = lines.last == "" ? lines.removeLast() : nil
+        var firstDelta = 0
+        for (i, l) in lines.enumerated() {
+            var next = l
+            if direction > 0 {
+                if !l.isEmpty { next = unit + l }
+            } else if l.hasPrefix("\t") {
+                next = String(l.dropFirst())
+            } else {
+                next = String(l.dropFirst(min(indentation.size, l.prefix { $0 == " " }.count)))
+            }
+            if i == 0 { firstDelta = (next as NSString).length - (l as NSString).length }
+            lines[i] = next
+        }
+        let text = lines.joined(separator: "\n") + (trailing != nil ? "\n" : "")
+        guard text != ns.substring(with: range), shouldChangeText(in: range, replacementString: text) else { return }
+        textStorage?.replaceCharacters(in: range, with: text)
+        didChangeText()
+        let grown = (text as NSString).length - range.length
+        if sel.length == 0 {
+            setSelectedRange(NSRange(location: max(range.location, sel.location + firstDelta), length: 0))
+        } else {
+            setSelectedRange(NSRange(location: range.location, length: range.length + grown - (trailing != nil ? 1 : 0)))
+        }
+    }
+
     override func keyDown(with e: NSEvent) {
         if e.modifierFlags.intersection([.command, .control, .option, .shift]) == .option, e.keyCode == 6 {
             NSApp.sendAction(#selector(FileEditorView.toggleWrap(_:)), to: nil, from: self)
@@ -2264,6 +2372,8 @@ final class EditorHeaderView: NSView {
     var editable = true { didSet { needsDisplay = true } }
     /// Off for previews, diffs and graphs: only the close button shows.
     var textTools = true { didSet { needsDisplay = true } }
+    /// Set while this file is its tab's only one and there's no terminal (no sub-tab strip): shows one under it.
+    var onShowTerminal: (() -> Void)? { didSet { if (onShowTerminal == nil) != (oldValue == nil) { needsDisplay = true } } }
     /// A format with a formatter (JSON, YAML, XML) and not read-only: the format button shows.
     var canFormat = false { didSet { needsDisplay = true } }
     /// A Markdown file: the preview button shows.
@@ -2345,6 +2455,8 @@ final class EditorHeaderView: NSView {
     /// Right to left: close, save, format, wrap, tail, working tree, preview. No action: greyed out (save, with nothing to save).
     private var buttons: [(symbol: String, tip: String, active: Bool, action: (() -> Void)?)] {
         var b: [(symbol: String, tip: String, active: Bool, action: (() -> Void)?)] = [("xmark", "Close (⌘W)", false, onClose)]
+        // A tab of just this file has no sub-tab strip, whose button this is otherwise.
+        if let onShowTerminal { b.append(("terminal", "Show Terminal", false, onShowTerminal)) }
         guard textTools else { return b }
         if editable {
             b.append(dirty || deleted ? (Self.saveIcon, deleted ? "Save (⌘S), Putting the Deleted File Back" : "Save (⌘S)", true, onSave)
@@ -2447,7 +2559,7 @@ final class EditorHeaderView: NSView {
     }
 
     override func resetCursorRects() {
-        if !pathRect.isEmpty { addCursorRect(pathRect, cursor: .pointingHand) }
+        if !pathRect.isEmpty, onCopyPath != nil { addCursorRect(pathRect, cursor: .pointingHand) }
     }
 
     override func updateTrackingAreas() {
@@ -2463,7 +2575,8 @@ final class EditorHeaderView: NSView {
 
     override func mouseMoved(with e: NSEvent) {
         let h = button(at: e)
-        let onPath = h == nil && pathRect.contains(convert(e.locationInWindow, from: nil))
+        // The subtitle copies the path, when there is one (not an extension's page).
+        let onPath = h == nil && onCopyPath != nil && pathRect.contains(convert(e.locationInWindow, from: nil))
         if h != hover || onPath != hoverPath {
             hover = h
             hoverPath = onPath
@@ -2480,7 +2593,7 @@ final class EditorHeaderView: NSView {
 
     override func mouseDown(with e: NSEvent) {
         if let i = button(at: e) { buttons[i].action?() }
-        else if pathRect.contains(convert(e.locationInWindow, from: nil)) { onCopyPath?() }
+        else if let onCopyPath, pathRect.contains(convert(e.locationInWindow, from: nil)) { onCopyPath() }
     }
 }
 

@@ -1908,6 +1908,17 @@ enum SettingsPages {
                        accessory: toggle(c.ligatures) { [weak ctl] on in Config.shared.ligatures = on; ctl?.commit() }),
         ])
 
+        v.add(sectionHeader("Editor"), height: 16, gap: 10)
+        let tabSize = ChoicePopup(["2", "4", "8"], selected: "\(c.editorTabSize)")
+        tabSize.onChange = { [weak ctl] s in Config.shared.editorTabSize = Int(s) ?? 4; ctl?.commit() }
+        card(v, [
+            SettingRow(icon: "increase.indent", title: "Tab size", detail: "Columns per indent level, and how wide a tab character shows.",
+                       accessory: tabSize, width: 80),
+            SettingRow(icon: "arrow.right.to.line", title: "Insert spaces",
+                       detail: "Tab inserts spaces, as VS Code does. A file already indented with tabs (a Makefile, Go) keeps tabs.",
+                       accessory: toggle(c.editorInsertSpaces) { [weak ctl] on in Config.shared.editorInsertSpaces = on; ctl?.commit() }),
+        ])
+
         v.add(sectionHeader("Cursor"), height: 16, gap: 10)
         let style = ChoicePopup(["Bar", "Block", "Underline"], selected: c.cursorStyle.capitalized)
         style.onChange = { [weak ctl] s in Config.shared.cursorStyle = s.lowercased(); ctl?.commit() }
@@ -1921,14 +1932,6 @@ enum SettingsPages {
     // Shortcuts: keyboard options, then every menu shortcut and the ones that live outside menus.
     private static func shortcuts(_ v: SettingsPageView, _ ctl: SettingsWindowController) {
         let c = Config.shared
-        let hotkey = ThemedField(c.quickTerminalHotkey, placeholder: "ctrl+`")
-        hotkey.onCommit = { [weak ctl] s in
-            let hk = s.trimmingCharacters(in: .whitespaces)
-            guard !hk.isEmpty, hk != Config.shared.quickTerminalHotkey else { return }
-            Config.shared.quickTerminalHotkey = hk
-            ctl?.commit()
-            (NSApp.delegate as? AppDelegate)?.registerHotKey()
-        }
         let metaNames = ["both": "Both", "left": "Left", "right": "Right", "off": "Off"]
         let meta = ChoicePopup(["Both", "Left", "Right", "Off"], selected: metaNames[c.optionAsMeta] ?? "Both")
         meta.onChange = { [weak ctl] s in
@@ -1942,13 +1945,6 @@ enum SettingsPages {
                        accessory: meta, width: 100),
             SettingRow(icon: "doc.on.clipboard", title: "Copy on select",
                        accessory: toggle(c.copyOnSelect) { [weak ctl] on in Config.shared.copyOnSelect = on; ctl?.commit() }),
-        ])
-        v.add(sectionHeader("Quick Terminal"), height: 16, gap: 10)
-        card(v, [
-            SettingRow(icon: "rectangle.topthird.inset.filled", title: "Hotkey", detail: "From any app, e.g. ctrl+`  or  alt+space.",
-                       accessory: hotkey, width: 120),
-            SettingRow(icon: "eye.slash", title: "Hide when it loses focus",
-                       accessory: toggle(c.quickTerminalAutoHide) { [weak ctl] on in Config.shared.quickTerminalAutoHide = on; ctl?.commit() }),
         ])
 
         var groups: [(String, [(String, String)])] = []
@@ -1975,29 +1971,11 @@ enum SettingsPages {
             ("Edit a history entry · run it", "↩"),
             ("Run a history entry", "⌘↩"),
             ("Wrap lines in the file editor", "⌥Z"),
-            ("Quick terminal", Self.hotkeyGlyphs(c.quickTerminalHotkey)),
         ]))
         for (title, list) in groups {
             v.add(sectionHeader(title), height: 16, gap: 10)
             card(v, list.map { SettingRow(title: $0.0, accessory: KeyCapsView($0.1)) })
         }
-    }
-
-    /// "ctrl+`" → "⌃`" for display.
-    static func hotkeyGlyphs(_ s: String) -> String {
-        let parts = s.lowercased().split(separator: "+").map { $0.trimmingCharacters(in: .whitespaces) }
-        var out = ""
-        for p in parts.dropLast() {
-            switch p {
-            case "ctrl", "control": out += "⌃"
-            case "alt", "option", "opt": out += "⌥"
-            case "shift": out += "⇧"
-            case "cmd", "command": out += "⌘"
-            default: break
-            }
-        }
-        let key = parts.last ?? ""
-        return out + (key == "space" ? "Space" : key.uppercased())
     }
 
     // Aliases: name → command rows, editable in place, and a button for another.

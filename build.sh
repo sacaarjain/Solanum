@@ -128,7 +128,7 @@ if [[ ! -f "$BUILD_DIR/AppIcon.icns" || Tools/MakeIcon.swift -nt "$BUILD_DIR/App
   fi
 fi
 [[ -f "$BUILD_DIR/AppIcon.icns" ]] && cp "$BUILD_DIR/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
-cp Support/Bells.svg Support/Solanum.svg Support/QuantumMoon.png Support/Fonts/SpaceMono-Regular.ttf "$APP/Contents/Resources/"
+cp Support/Bells.svg Support/Solanum.svg Support/QuantumMoon.png Support/Sleeper.png Support/Fonts/SpaceMono-Regular.ttf "$APP/Contents/Resources/"
 
 # Where this build came from, for Solanum's update check (Sources/Updater.swift): the repository (the main
 # checkout, also when building in a worktree) and the commit.

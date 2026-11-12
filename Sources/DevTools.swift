@@ -35,6 +35,10 @@ enum SelfTest {
             let r = SleeperRoster(["roster_id": 3, "players": ["a", "b", "c", "d"], "starters": ["a"], "reserve": ["d"],
                                    "settings": ["wins": 5, "losses": 3, "fpts": 900, "fpts_decimal": 45]])
             check("sleeper roster", r?.bench == ["b", "c"] && r?.pointsFor == 900.45 && r?.recordText == "5-3")
+            check("sleeper advice: the week it's for, kept or from its title",
+                  Sleeper.Advice(["summary": "x", "title": "Week 9: Antonio Williams start/sit"])?.week == 9
+                  && Sleeper.Advice(["summary": "x", "week": 11, "title": "Week 9 lineup"])?.week == 11
+                  && Sleeper.Advice(["summary": "x", "title": "Waiver targets"])?.week == nil)
             check("sleeper slot names", SleeperLeagueSnapshot.slotName("SUPER_FLEX") == "SF" && SleeperLeagueSnapshot.slotName("WRRB_FLEX") == "W/R")
             // The MCP server: handshake, tool list, and an unknown tool refused (all offline).
             let tools = SleeperTools()
@@ -573,7 +577,7 @@ enum SelfTest {
 
 /// Development aid: snapshot runs (SOLANUM_SNAPSHOT) are headless, so a test never shows up over someone's work or
 /// takes their keyboard. There's no Dock icon or menu bar, the app never activates (nor hands activation to another
-/// app), and every window (sheets, panels, tooltips, the quick terminal) is fully transparent and click-through while
+/// app), and every window (sheets, panels, tooltips) is fully transparent and click-through while
 /// still laying out and drawing as usual: the snapshot is drawn from the views, not read off the screen. Opening a
 /// link or file in another app only prints "headless: open <url>".
 /// SOLANUM_SNAPSHOT_VISIBLE=1 shows the windows, to watch a run.
@@ -629,7 +633,7 @@ extension NSWorkspace {
 /// Development aid: SOLANUM_SNAPSHOT=/path.png renders the first window to a PNG after a delay.
 /// SOLANUM_SNAPSHOT_INPUT types text first; SOLANUM_SNAPSHOT_ACTIONS=split,palette,select-block,collapse,jump-prompt,find,term-find:<q>,term-toggle:<case|word|regex>,print-term-find,find-commands,find-output,click:<col>:<row>,keys:<text>,theme:<name>,
 /// newtab,rename-tab,new-group,edit:<text>,select-tab:<i>,collapse-group:<i>,split-down,save-session,
-/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,right-click:<fx>:<fy>,left-click:<fx>:<fy>,preview-find:<q>,preview-find-toggle:<case|word|regex>,preview-find-next,switch-theme:<name>,pretend-claude,pane-up,sleep:<seconds>,screen-boxes,hover-box:<i>,code-box:<code>,move-to:<x>:<y>,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,print-bars,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-file:<path>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,editor-drag-hold:<x>,sidebar-width:<points>,strip-scroll:<points>,strip-activate:<i>,strip-arrow:<-1|1>,print-strip-scroll,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,print-editor-text,open-slow-file-tab:<path>,open-devssh-file-tab:<path>,print-sidebar-rows,lost-notice:<command>,notice-reconnect,notice-close,print-lost,toggle-group:<i>,notice-secret:<text>,print-notice,editor-insert:<text>,editor-save,editor-conflict:<Compare|Overwrite|Revert|Cancel>,watch-tag:<live|off>,editor-race,freeze:<seconds>,crash-trap,editor-tail,live-scroll,print-window,print-view,wheel-up:<points>,window-jump:<fraction>,editor-scroll-steps:<n>:<dy>,editor-live-steps:<n>:<dy>,print-editor-end,crumb-menu[:<item>],crumb-context[:<label>[:<item>]],drop-files:<index>:<path>|<path>,drop-hover:<x>,press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,settings-scroll-to:<label>,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,git-action:<name>[:<path>],git-message:<text>,git-press:<button>,print-git-box,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,tabbar-scroll:<points>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>,log-menu[:<menu>>…>item],graph-type:<text>,graph-press:<Branch|User|Date|Paths>,graph-click:<Branch|User|Date|Paths>,dropdown-type:<text>,hosts-dropdown,keep-awake-start:<seconds>,keep-awake-menu,keep-awake-stop,print-keep-awake,extensions,dropdown-option,chip-dropdown,print-watch-script:<path>|<path>,dropdown-run:<title>,graph-menu-run:<title>,graph-branch:<title>,graph-branch-filter:<text>,graph-path:<path>,print-graph,log-marker-text:<text>,log-select:<text>,editor-end,editor-edge-drag:<fraction>:<seconds>,print-deleted,editor-lost-bar:<host>,print-time,hang-watch,display-time,log-import:<path>,print-log-format,theme-edit:<name>,theme-icon:<setting|/path>,theme-background:<hex>,theme-ansi:<i>:<hex>,theme-bar:<Save Changes|Reset>,theme-leave:<page>,print-theme,print-samehost,release-history,print-releases,settings-window-png:<path>,settings-sheet-press:<title>,themed-alert[:problem],themed-alert-ok,window-png:<path>,settings-sidebar-png:<path>
+/// tabbar-drag:<x1>:<x2>,chip-menu-rename,open-config,git-branches,later-keys:<text>,newtab-run:<command>,pin-sidebar,collapse-sidebar,print-claude-fg,undo,redo,print-input,right-click:<fx>:<fy>,left-click:<fx>:<fy>,preview-find:<q>,preview-find-toggle:<case|word|regex>,preview-find-next,switch-theme:<name>,pretend-claude,pane-up,sleep:<seconds>,screen-boxes,hover-box:<i>,code-box:<code>,move-to:<x>:<y>,print-boxes,print-return-keys,hover-last-block,scrollbar:<y0>:<y1>,print-tabs,cmd-click-tab:<i>,group-picked,name-tabs,chip-drag[-hold]:<x>,print-anim,close-tab:<i>,newtab-group,click-input:<col>,split-columns,print-bars,close-split,move-tab-other,right-sidebar,focus-other,close-right-tabs,print-columns,tab-drop[-hold]:<i>:<fx>:<fy>,open-file-tab:<path>,open-file:<path>,editor-key:<tab|backtab|backspace|start|all>,sleeper:<view>[:<player id>],status-hover:<x>,hover-at:<x>:<y>,click-at:<x>:<y>,open-diff:<path>,open-graph:<path>,open-preview:<path>,format-file,hover-graph:<row>,toggle-terminal,editor-drag-hold:<x>,sidebar-width:<points>,strip-scroll:<points>,strip-activate:<i>,strip-arrow:<-1|1>,print-strip-scroll,restore-prompt,editor-drag-out,select-input:<r0>:<c0>:<r1>:<c1>,drag-input:<r0>:<c0>:<r1>:<c1>:<seconds>,delete-selection,cmd-delete,select-cmd:<from>:<to>,print-selection,print-ssh,close-file,hover-title,print-sidebar,print-pins,sidebar-expand:<name>,sidebar-rename:<name>,sidebar-rename-to:<name>,sidebar-import:<path>,print-rows,status-transfer:<text>,pane-send:<text>,lost-bar:<Reconnect|Close>,print-lost-bar,refresh-sidebar,refresh-tab,glide-bottom,print-scroll,reopen-tab,quantum:<home|flower|folders>,nomai-read,palette-query:<text>,palette-run,print-cwds,sidebar-click:<name>,press-return,print-focus,print-editors,print-editor-text,open-slow-file-tab:<path>,open-devssh-file-tab:<path>,print-sidebar-rows,lost-notice:<command>,notice-reconnect,notice-close,print-lost,toggle-group:<i>,notice-secret:<text>,print-notice,editor-insert:<text>,editor-save,editor-conflict:<Compare|Overwrite|Revert|Cancel>,watch-tag:<live|off>,editor-race,freeze:<seconds>,crash-trap,editor-tail,live-scroll,print-window,print-view,wheel-up:<points>,window-jump:<fraction>,editor-scroll-steps:<n>:<dy>,editor-live-steps:<n>:<dy>,print-editor-end,crumb-menu[:<item>],crumb-context[:<label>[:<item>]],drop-files:<index>:<path>|<path>,drop-hover:<x>,press-beautify,print-header,header-press:<tooltip start>,editor-scroll-x:<points>,file-icons:<id>,print-icons,minimum-contrast:<true|false>,icon-popup[:<label>],settings-size:<w>:<h>,settings-bottom,settings-scroll-to:<label>,folder-icon:<path>,open-status:<repo>,status-click:<path>,status-open:<path>,status-all,git-action:<name>[:<path>],git-message:<text>,git-press:<button>,print-git-box,graph-changes:<row>,find-in-folder:<query>,print-editor-place,sidebar-search,find-bar:<q>,find-case,find-word,find-regex,find-step,find-replace:<text>,find-replace-one,find-replace-all,print-find,find-close,find-speed:<q>,find-latency:<q>,find-type:<text>,editor-wrap,tab-arrow:<-1|1>,tabbar-scroll:<points>,print-tab-scroll,press-key:<text>,hover-link:<col>:<row>,cmd-hover-link:<col>:<row>,cmd-click:<col>:<row>,set-pin:<path>,print-tab-files,print-blocks,block-copy,print-clipboard,send-menu,send-menu-run:<title start>,send-menu-mark:<title end>,app-reopen,app-quit,app-new-window,restart-fresh,window-red-button,sheet-press:<title>,send-menu-real[:<path>],settings-page:<title>,settings-press:<title>,settings-page-png:<path>,send-menu-png:<path>,bar-press:<title>,press-send-pill,press-copy-pill,print-agent-tail,print-context-menu:<col>:<row>,log-menu[:<menu>>…>item],graph-type:<text>,graph-press:<Branch|User|Date|Paths>,graph-click:<Branch|User|Date|Paths>,dropdown-type:<text>,hosts-dropdown,keep-awake-start:<seconds>,keep-awake-menu,keep-awake-stop,print-keep-awake,extensions,dropdown-option,chip-dropdown,print-watch-script:<path>|<path>,dropdown-run:<title>,graph-menu-run:<title>,graph-branch:<title>,graph-branch-filter:<text>,graph-path:<path>,print-graph,log-marker-text:<text>,log-select:<text>,editor-end,editor-edge-drag:<fraction>:<seconds>,print-deleted,editor-lost-bar:<host>,print-time,hang-watch,display-time,log-import:<path>,print-log-format,theme-edit:<name>,theme-icon:<setting|/path>,theme-background:<hex>,theme-ansi:<i>:<hex>,theme-bar:<Save Changes|Reset>,theme-leave:<page>,print-theme,print-samehost,release-history,print-releases,settings-window-png:<path>,settings-sheet-press:<title>,themed-alert[:problem],themed-alert-ok,window-png:<path>,settings-sidebar-png:<path>
 /// (with SOLANUM_SESSION_FILE set, which also makes the run restore from that file).
 /// Dev aid: files on this Mac, served as if from an ssh host whose folder listings take `delay` seconds (DevTools
 /// open-slow-file-tab), to see what the sidebar shows while one is on its way.
@@ -925,7 +929,6 @@ enum SnapshotHelper {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { for ch in "Work" { key(String(ch), 0) } }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { state() }
                     }
-                case "quick": QuickTerminalController.shared.show()
                 case "settings": SettingsWindowController.shared.present()
                 case "settings-text": SettingsWindowController.shared.present(.text)
                 case "settings-shortcuts": SettingsWindowController.shared.present(.shortcuts)
@@ -1221,6 +1224,50 @@ enum SnapshotHelper {
                         c.focused.addFileTab(FileEditorView(fs: LocalFileSystem.shared, path: String(action.dropFirst(14))))
                     }
                     if action.hasPrefix("open-diff:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(10)), mode: .diff) }
+                    if action.hasPrefix("hover-at:"), let w = c.window, let content = w.contentView {
+                        // hover-at:<x>:<y> — the pointer over that point of the window (points from its top left), as the
+                        // view there sees it: entering it, then moving in it. Prints which view that is.
+                        let f = action.dropFirst(9).split(separator: ":").compactMap { Double($0) }
+                        if f.count == 2 {
+                            let p = NSPoint(x: f[0], y: content.bounds.height - f[1])
+                            if let v = content.hitTest(p) {
+                                FileHandle.standardError.write("hover on \(type(of: v))\n".data(using: .utf8)!)
+                                for type in [NSEvent.EventType.mouseEntered, .mouseMoved] {
+                                    let e = type == .mouseMoved
+                                        ? NSEvent.mouseEvent(with: .mouseMoved, location: p, modifierFlags: [], timestamp: 0, windowNumber: w.windowNumber,
+                                                             context: nil, eventNumber: 0, clickCount: 0, pressure: 0)
+                                        : NSEvent.enterExitEvent(with: .mouseEntered, location: p, modifierFlags: [], timestamp: 0, windowNumber: w.windowNumber,
+                                                                 context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)
+                                    if let e { type == .mouseMoved ? v.mouseMoved(with: e) : v.mouseEntered(with: e) }
+                                }
+                            }
+                        }
+                    }
+                    if action.hasPrefix("click-at:"), let w = c.window, let content = w.contentView {
+                        // click-at:<x>:<y> — a press and release at that point of the window (points from its top left).
+                        let f = action.dropFirst(9).split(separator: ":").compactMap { Double($0) }
+                        if f.count == 2 {
+                            let p = NSPoint(x: f[0], y: content.bounds.height - f[1])
+                            if let v = content.hitTest(p) {
+                                FileHandle.standardError.write("click on \(type(of: v))\n".data(using: .utf8)!)
+                                // A button's own press waits for a real release (its tracking loop): clicked as a click is.
+                                if let button = v as? NSButton { button.performClick(nil); return }
+                                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                                    if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [], timestamp: 0, windowNumber: w.windowNumber,
+                                                                  context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                                        type == .leftMouseDown ? v.mouseDown(with: e) : v.mouseUp(with: e)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if action.hasPrefix("status-hover:"), let x = Double(action.dropFirst(13)), let w = c.window {
+                        // The pointer over the window's first status bar at x (points from its left).
+                        let bar = c.rootView.statusBar
+                        let at = bar.convert(NSPoint(x: CGFloat(x), y: bar.bounds.midY), to: nil)
+                        if let e = NSEvent.mouseEvent(with: .mouseMoved, location: at, modifierFlags: [], timestamp: 0, windowNumber: w.windowNumber,
+                                                      context: nil, eventNumber: 0, clickCount: 0, pressure: 0) { bar.mouseMoved(with: e) }
+                    }
                     if action.hasPrefix("open-file:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(10))) }
                     if action.hasPrefix("open-preview:") { c.activeTab?.openFile(LocalFileSystem.shared, String(action.dropFirst(13)), mode: .preview) }
                     if action == "format-file" { c.activeTab?.editor?.formatDocument(nil) }
@@ -1392,6 +1439,17 @@ enum SnapshotHelper {
                        let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                                 windowNumber: w.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
                                                 isARepeat: false, keyCode: 36) { w.sendEvent(e) }
+                    if action.hasPrefix("sleeper:") {
+                        // sleeper:<team|matchup|standings|waivers|trending|activity|player>[:<player id>] — the Sleeper page,
+                        // above the focused tab's terminal, on that view.
+                        let parts = action.dropFirst(8).split(separator: ":").map(String.init)
+                        if let ed = Extensions.showPage(SleeperExtension.id, in: c.activeTab), let page = ed.pageView as? SleeperPageView {
+                            var info = ["view": parts.first ?? "team"]
+                            if parts.count > 1 { info["player_id"] = parts[1] }
+                            page.navigate(info)
+                        }
+                    }
+                    if action.hasPrefix("editor-key:") { c.activeTab?.editor?.devKey(String(action.dropFirst(11))) }
                     if action == "print-editor-text" {
                         for ed in c.allTabs.flatMap(\.editors) {
                             FileHandle.standardError.write("editor text: \(ed.displayName): \(ed.devTextState)\n".data(using: .utf8)!)
@@ -1827,7 +1885,6 @@ enum SnapshotHelper {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             let target: NSWindow?
             switch env["SOLANUM_SNAPSHOT_WINDOW"] {
-            case "quick": target = QuickTerminalController.shared.window
             case "settings": target = SettingsWindowController.shared.window
             default: target = wc()?.window
             }

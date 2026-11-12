@@ -607,6 +607,11 @@ final class TabSession: NSObject {
 
     /// Puts the files on top and the terminal below, whichever of them there are.
     private func arrange() {
+        // A tab of one file and no terminal shows no sub-tab strip (its tab says what it is); the file's header has
+        // the strip's Show Terminal button then.
+        let strip = showsTerminal || editors.count > 1
+        for ed in editors { ed.onShowTerminal = strip ? nil : { [weak self] in self?.toggleTerminal() } }
+        editorArea.needsLayout = true
         let wanted: [NSView] = (editors.isEmpty ? [] : [editorArea]) + (showsTerminal ? [root] : [])
         let current = view.arrangedSubviews
         guard current != wanted else { return }
@@ -848,6 +853,8 @@ final class StatusBarView: NSView {
     /// clicking it lists the themes.
     var showsThemeName = false { didSet { needsDisplay = true } }
     var onThemeMenu: ((NSRect) -> Void)?
+    /// The Extensions button, left of the theme name: opens the Extensions tab.
+    var onExtensions: (() -> Void)?
     /// The right sidebar's toggle, at the far right while the window is split.
     var showsRightSidebarToggle = false { didSet { needsDisplay = true } }
     var rightSidebarVisible = false { didSet { needsDisplay = true } }
@@ -921,7 +928,7 @@ final class StatusBarView: NSView {
     var onSync: ((NSRect) -> Void)?
     var onChanges: ((NSRect) -> Void)?
 
-    private enum Button { case sidebar, hosts, keepAwake, branch, sync, changes, rightSidebar, theme, moon }
+    private enum Button { case sidebar, hosts, keepAwake, branch, sync, changes, rightSidebar, theme, moon, extensions }
 
     /// The cup's rect, for its menu to open from.
     var keepAwakeRect: NSRect? { buttons.first { $0.kind == .keepAwake }?.rect }
@@ -1016,13 +1023,15 @@ final class StatusBarView: NSView {
     /// `iconSpace` leaves that much room for an icon drawn by the caller instead of `icon` (0: no icon).
     private func drawButton(_ kind: Button, at x: CGFloat, icon: String, color: NSColor, text: String? = nil,
                             textAttrs: [NSAttributedString.Key: Any] = [:], maxTextWidth: CGFloat = 220,
-                            iconSpace: CGFloat? = nil) -> CGFloat {
+                            iconSpace: CGFloat? = nil, boxCenter: CGFloat? = nil) -> CGFloat {
         let img = iconSpace == nil ? symbol(icon, color) : nil
         let iw = iconSpace ?? img?.size.width ?? 0
         let tw = text.map { min(maxTextWidth, ($0 as NSString).size(withAttributes: textAttrs).width) } ?? 0
         let gap: CGFloat = iw > 0 ? 4 : 0
         let w = text == nil ? 22 : 6 + iw + gap + tw + 7
-        let r = NSRect(x: x, y: 2, width: w, height: bounds.height - 6)
+        // Centered on the bar's line, as the icons and text in it are (or on `boxCenter`, for a glyph that sits off it).
+        let h = bounds.height - 6
+        let r = NSRect(x: x, y: (boxCenter ?? centerY) - h / 2, width: w, height: h)
         if measuring { return r.maxX + 2 }
         buttons.append((r, kind))
         if hoverButton == kind {
@@ -1078,7 +1087,11 @@ final class StatusBarView: NSView {
             _ = drawButton(.theme, at: start, icon: "paintpalette", color: hoverButton == .theme ? th.accent : dimIcon,
                            text: name, textAttrs: attrs, maxTextWidth: 200,
                            iconSpace: !showIcon || planet != nil || flower || picture != nil || QuantumMoon.active ? iw : nil)
-            themeRect = CGRect(x: start, y: 2, width: w, height: bounds.height - 6)
+            themeRect = CGRect(x: start, y: centerY - (bounds.height - 6) / 2, width: w, height: bounds.height - 6)
+            // Extensions, just left of it.
+            let ext = start - 2 - 22
+            _ = drawButton(.extensions, at: ext, icon: "puzzlepiece.extension", color: hoverButton == .extensions ? th.accent : dimIcon)
+            themeRect = themeRect.union(CGRect(x: ext, y: themeRect.minY, width: 22, height: themeRect.height))
             if let planet { drawPlanet(planet, x: start + 6) }
             if flower { drawFlowerOutline(x: start + 6) }
             let s = Self.planetSide
@@ -1114,11 +1127,13 @@ final class StatusBarView: NSView {
             x = drawButton(.hosts, at: x, icon: "server.rack", color: dimIcon)
         }
         if showsKeepAwake {
-            x = drawButton(.keepAwake, at: x, icon: "", color: dimIcon, iconSpace: 15)
+            // The cup sits 1.5pt above the bar's line, level with the icons beside it (its steam would otherwise pull
+            // it low); its highlight is centered on it there.
+            x = drawButton(.keepAwake, at: x, icon: "", color: dimIcon, iconSpace: 15, boxCenter: centerY - 1.5)
             if let r = keepAwakeRect {
                 let on = KeepAwake.isOn
-                // 1.5pt above the button's middle, where it sits level with the icons beside it.
-                CupArt.draw(in: NSRect(x: r.minX, y: r.minY - 1.5, width: r.width, height: r.height - 1),
+                // Where it was always drawn: centered in its button, which is centered on the cup.
+                CupArt.draw(in: NSRect(x: r.minX, y: r.minY + 0.5, width: r.width, height: r.height - 1),
                             color: on ? th.accent : th.foreground, alpha: on ? 1 : hoverButton == .keepAwake ? 0.75 : 0.5,
                             steam: on && steamTimer != nil ? Date.timeIntervalSinceReferenceDate : nil)
             }
@@ -1291,6 +1306,7 @@ final class StatusBarView: NSView {
         case .sidebar: return sidebarVisible ? "Hide File Sidebar (⌘B)" : "Show File Sidebar (⌘B)"
         case .rightSidebar: return rightSidebarVisible ? "Hide Right Sidebar (⌥⌘B)" : "Show Right Sidebar (⌥⌘B)"
         case .theme: return "Theme: \(Config.shared.theme.name) — click to switch"
+        case .extensions: return "Extensions"
         case .moon: return "The Quantum Moon?"
         case .hosts: return "SSH Hosts"
         case .keepAwake: return KeepAwake.tip
@@ -1347,6 +1363,7 @@ final class StatusBarView: NSView {
             case .sidebar: onToggleFileSidebar?()
             case .rightSidebar: onToggleRightSidebar?()
             case .theme: onThemeMenu?(b.rect)
+            case .extensions: onExtensions?()
             case .hosts: onShowHosts?(at)
             case .keepAwake: onKeepAwake?(b.rect)
             case .branch: onBranch?()
@@ -1696,7 +1713,7 @@ final class WindowRootView: NSView {
     }
     /// The space the columns share (between the sidebars), for the divider's drag.
     private(set) var columnArea: NSRect = .zero
-    /// Holds a lone tab in windows without columns (the Quick Terminal).
+    /// Holds a lone tab in a window without columns (none now: the Quick Terminal had one).
     let content = NSView()
     /// Where a tab dragged off its strip would land, shaded over the terminals.
     var dropPreview: NSRect? { didSet { if dropPreview != oldValue { dropOverlay.target = dropPreview; needsLayout = true } } }
@@ -1857,7 +1874,7 @@ final class WindowRootView: NSView {
         let barH = columns.isEmpty ? 0 : tabBarHeight
         let statusH = StatusBarView.height
         // The panes float on the chrome as cards, a gap from the window's sides, the status bar and each other (not
-        // the Quick Terminal's lone pane, which has no chrome to float on).
+        // a lone pane without columns, which has no chrome to float on).
         let g: CGFloat = columns.isEmpty ? 0 : Cards.gap
         let h = bounds.height - barH - statusH - g
         let split = columns.count > 1
@@ -2147,6 +2164,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         bar.showsKeepAwake = true
         bar.onKeepAwake = { [weak self] rect in self?.keepAwakeClicked(rect) }
         bar.showsThemeName = true
+        bar.onExtensions = { [weak self] in self?.showExtensions(nil) }
         bar.onThemeMenu = { [weak bar] rect in
             guard let bar else { return }
             let menu = NSMenu()
@@ -3953,6 +3971,9 @@ final class TabBarView: NSView, NSTextFieldDelegate {
                      from: .zero, operation: .sourceOver, fraction: fraction, respectFlipped: true, hints: nil)
         }
         let name = (ed.path as NSString).lastPathComponent
+        if case .extensionPage(let id) = ed.mode, let ext = Extensions.find(id) {
+            return ext.drawIcon(NSRect(x: r.minX + Self.tabPad + (slot - 14) / 2, y: (r.midY - 7).rounded(), width: 14, height: 14))
+        }
         if isFile, let img = IconPacks.current?.icon(forName: name, directory: false, light: !Config.shared.theme.isDark) {
             place(img, NSSize(width: 14, height: 14), fraction: fraction)
             return

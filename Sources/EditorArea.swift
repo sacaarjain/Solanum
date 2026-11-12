@@ -34,9 +34,12 @@ final class EditorAreaView: NSView {
     /// The file, below the sub-tabs: a rounded panel of its own inside the card, inset as the sub-tabs are (so their
     /// left edges line up) with corners concentric with the card's.
     private var panel: NSRect {
-        let m = FileTabStrip.inset
-        return NSRect(x: m, y: FileTabStrip.height, width: max(0, bounds.width - 2 * m), height: max(0, bounds.height - FileTabStrip.height - m))
+        let m = FileTabStrip.inset, top = showsStrip ? FileTabStrip.height : m
+        return NSRect(x: m, y: top, width: max(0, bounds.width - 2 * m), height: max(0, bounds.height - top - m))
     }
+
+    /// The sub-tabs show when there's more than the one file, or a terminal under it (see `TabSession.arrange`).
+    private var showsStrip: Bool { tab.map { $0.showsTerminal || $0.editors.count > 1 } ?? true }
 
     /// A well in the card, set apart by its color alone: the card's outline is the only line around it, as around
     /// every other card (an edge of its own as well made a second border just inside the card's).
@@ -79,6 +82,7 @@ final class EditorAreaView: NSView {
     override func layout() {
         super.layout()
         strip.frame = NSRect(x: 0, y: 0, width: bounds.width, height: FileTabStrip.height)
+        strip.isHidden = !showsStrip
         clip.frame = panel
         shown?.frame = clip.bounds
         needsDisplay = true
@@ -360,6 +364,10 @@ final class FileTabStrip: NSView {
     }
 
     private func drawSymbol(_ mode: EditorMode, _ name: String, _ r: NSRect, _ th: Theme) {
+        // An extension's page: its own icon (Sleeper's logo), as on its card in Extensions.
+        if case .extensionPage(let id) = mode, let ext = Extensions.find(id) {
+            return ext.drawIcon(NSRect(x: r.minX + 9, y: (r.midY - 7).rounded(), width: 14, height: 14))
+        }
         let config = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular).applying(.init(paletteColors: [th.dimText]))
         if let img = NSImage(systemSymbolName: Self.symbol(mode, name), accessibilityDescription: nil)?.withSymbolConfiguration(config) {
             img.draw(in: NSRect(x: r.minX + 9, y: r.midY - img.size.height / 2, width: img.size.width, height: img.size.height))

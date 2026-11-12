@@ -172,6 +172,7 @@ final class SleeperTools {
              "Put your advice on Solanum's Sleeper page: a short summary card, and tags on players (start, sit, add, drop, trade, watch) each with a one-line reason. Replaces earlier notes.",
              ["summary": ["type": "string", "description": "A few sentences, shown at the top of the page."],
               "title": ["type": "string", "description": "A short heading (\"Week 9 lineup\")."],
+              "week": ["type": "integer", "description": "The NFL week the advice is for (default: the current week). The page shows it only on that week."],
               "annotations": ["type": "array", "items": ["type": "object", "properties": [
                   "player": ["type": "string", "description": "Player id or name."],
                   "tag": ["type": "string", "enum": ["start", "sit", "add", "drop", "trade", "watch"]],
@@ -584,7 +585,8 @@ final class SleeperTools {
             guard let p = try? resolvePlayer(q, players) else { unknown.append(q); continue }
             notes.append(.init(playerId: p.id, tag: (str(item, "tag") ?? "watch").lowercased(), reason: str(item, "reason") ?? ""))
         }
-        let advice = Sleeper.Advice(leagueId: str(a, "league_id") ?? settings.leagueId, title: str(a, "title"),
+        let week = (a["week"] as? NSNumber)?.intValue ?? (try? Sleeper.state().displayWeek)
+        let advice = Sleeper.Advice(leagueId: str(a, "league_id") ?? settings.leagueId, week: week, title: str(a, "title"),
                                     summary: str(a, "summary") ?? "", notes: notes)
         Sleeper.saveAdvice(advice)
         post(Sleeper.adviceNotification, [:])

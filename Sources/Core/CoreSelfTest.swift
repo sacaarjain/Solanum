@@ -636,6 +636,18 @@ enum CoreSelfTest {
             check("agent card: the latest prompt and Claude's answer, from its transcript",
                   exchange.prompt == "[Image #2] latest question" && exchange.reply.map { ClaudeTranscript.summary($0) } == "Done",
                   String(describing: exchange))
+            check("indentation: a file's own way wins, else the settings",
+                  Indentation.detect("def f():\n    x = 1\n    if x:\n        y()\n", spaces: true, size: 2) == Indentation(tabs: false, size: 4)
+                  && Indentation.detect("a:\n  b:\n    c: 1\n  d: 2\n", spaces: true, size: 4) == Indentation(tabs: false, size: 2)
+                  && Indentation.detect("all:\n\tcc a.c\n\tcc b.c\n", spaces: true, size: 4) == Indentation(tabs: true, size: 4)
+                  && Indentation.detect("no indent here\n", spaces: true, size: 4) == Indentation(tabs: false, size: 4)
+                  && Indentation.detect("", spaces: true, size: 4, tabsByDefault: true).tabs
+                  && Indentation.detect("/*\n * doc\n */\nint x;\n", spaces: true, size: 4) == Indentation(tabs: false, size: 4))
+            let four = Indentation(tabs: false, size: 4)
+            check("indentation: Tab to the next stop, Backspace back to the one before",
+                  four.spaces(at: 0) == "    " && four.spaces(at: 2) == "  " && four.spaces(at: 5) == "   "
+                  && four.backspace(at: 8, spacesBefore: 8) == 4 && four.backspace(at: 6, spacesBefore: 6) == 2
+                  && four.column(of: "\tab"[...].utf16, upTo: 2) == 5)
             check("syntax: every code grammar compiles", CodeLanguage.allCases.allSatisfy { $0.grammar.regex.pattern != "(?!)" && $0.grammar.kinds.count == $0.grammar.regex.numberOfCaptureGroups })
             check("syntax: languages by name, extension and #! line",
                   SyntaxLanguage(path: "/a/run.sh") == .code(.shell) && SyntaxLanguage(path: ".zshrc") == .code(.shell)

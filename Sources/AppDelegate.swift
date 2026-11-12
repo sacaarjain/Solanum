@@ -3,13 +3,11 @@ import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
     private(set) var windows: [TerminalWindowController] = []
-    private var hotKey: HotKey?
     /// Its title says how long, which Settings can change.
     private weak var keepAwakeItem: NSMenuItem?
     private weak var extensionsMenu: NSMenu?
     private let themeMenu = NSMenu(title: "Theme")
     private let snippetsMenu = NSMenu(title: "Snippets")
-    private var quickTerminalItem: NSMenuItem?
     private var autosaveTimer: Timer?
     /// Files handed to us (Finder "Open With") before launch finished; opened once windows exist.
     private var pendingOpens: [URL]? = []
@@ -45,8 +43,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         StartupTrace.mark("buildMenu")
         installTabSwitchMonitor()
         StartupTrace.mark("installTabSwitchMonitor")
-        registerHotKey()
-        StartupTrace.mark("registerHotKey")
         if Bundle.main.bundleIdentifier != nil {
             UNUserNotificationCenter.current().delegate = self
         }
@@ -184,7 +180,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let m = NSMenu()
         m.addItem(withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "")
-        m.addItem(withTitle: "Quick Terminal", action: #selector(toggleQuickTerminal(_:)), keyEquivalent: "")
         return m
     }
 
@@ -265,7 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         wc.rootView.showNotice(prompt)
     }
 
-    /// Fallback when ⌘T is pressed somewhere without tabs (e.g. the quick terminal).
+    /// Fallback when ⌘T is pressed somewhere without tabs (Settings, say).
     @objc func newTab(_ sender: Any?) {
         if let wc = windows.first(where: { $0.window?.isVisible == true }) {
             wc.newTab(nil)
@@ -277,17 +272,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
     @objc func showSettings(_ sender: Any?) {
         SettingsWindowController.shared.present()
-    }
-
-    @objc func toggleQuickTerminal(_ sender: Any?) {
-        QuickTerminalController.shared.toggle()
-    }
-
-    func registerHotKey() {
-        hotKey = nil
-        let spec = Config.shared.quickTerminalHotkey
-        hotKey = HotKey(spec: spec) { QuickTerminalController.shared.toggle() }
-        quickTerminalItem?.title = hotKey != nil ? "Quick Terminal  (\(HotKey.displayString(spec)))" : "Quick Terminal"
     }
 
     // MARK: - Theme / font
@@ -324,7 +308,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     @objc func reloadConfig(_ sender: Any?) {
         Config.shared.reloadFromDisk()
         SnippetStore.shared.load()
-        registerHotKey()
     }
 
     // MARK: - Snippets
@@ -508,7 +491,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         // View
         let view = top("View")
         _ = add(view, "Command Palette…", #selector(TerminalWindowController.showCommandPalette(_:)), "p", [.command, .shift])
-        quickTerminalItem = add(view, "Quick Terminal", #selector(toggleQuickTerminal(_:)), "")
         _ = add(view, "Toggle File Sidebar", #selector(TerminalWindowController.toggleFileSidebar(_:)), "b")
         _ = add(view, "Pin Sidebar Folder", #selector(TerminalWindowController.togglePinnedSidebarFolder(_:)), "b", [.command, .shift])
         _ = add(view, "Toggle Right Sidebar", #selector(TerminalWindowController.toggleRightSidebar(_:)), "b", [.command, .option])

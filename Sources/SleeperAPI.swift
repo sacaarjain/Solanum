@@ -567,45 +567,65 @@ enum Sleeper {
     static var playersFile: URL { dir.appendingPathComponent("players.json") }
 
     /// Every NFL player Sleeper knows, by id. Downloaded once a day (about 15 MB) and kept slimmed on disk, shared
-    /// by the page and the MCP server.
+    /// by the page and the MCP server. A list from an earlier day is used straight away and replaced in the
+    /// background: waiting on the download held the page at "Loading your league…" for several seconds each day.
     static func players() throws -> [String: SleeperPlayer] {
         playerLock.lock()
         defer { playerLock.unlock() }
         let file = playersFile
         let age = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate).map { -$0.timeIntervalSinceNow }
-        if let cached = playerCache, let age, age < 86_400 { return cached }
-        if let age, age < 86_400, let data = try? Data(contentsOf: file),
-           let j = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] {
-            let map = Dictionary(uniqueKeysWithValues: j.map { ($0.key, SleeperPlayer(id: $0.key, j: $0.value)) })
+        let fresh = age.map { $0 < 86_400 } ?? false
+        if let cached = playerCache {
+            if !fresh { refreshPlayersLater() }
+            return cached
+        }
+        if let map = readPlayers(file) {
             playerCache = map
+            if !fresh { refreshPlayersLater() }
             return map
         }
-        do {
-            let data = try fetch(URL(string: base + "/players/nfl")!)
-            guard let all = try JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] else {
-                throw SleeperError.invalid("Sleeper's player list didn't read.")
-            }
-            var slim: [String: [String: Any]] = [:]
-            for (id, p) in all {
-                // Retired and long-gone players with no team and no fantasy position aren't worth keeping.
-                guard p["fantasy_positions"] is [Any] || p["position"] as? String == "DEF" else { continue }
-                var keep: [String: Any] = [:]
-                for k in SleeperPlayer.keptKeys { if let v = p[k], !(v is NSNull) { keep[k] = v } }
-                slim[id] = keep
-            }
-            if let out = try? JSONSerialization.data(withJSONObject: slim) { try? out.write(to: file, options: .atomic) }
-            let map = Dictionary(uniqueKeysWithValues: slim.map { ($0.key, SleeperPlayer(id: $0.key, j: $0.value)) })
-            playerCache = map
-            return map
-        } catch {
-            // Offline: a stale list beats none.
-            if let data = try? Data(contentsOf: file), let j = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] {
-                let map = Dictionary(uniqueKeysWithValues: j.map { ($0.key, SleeperPlayer(id: $0.key, j: $0.value)) })
-                playerCache = map
-                return map
-            }
-            throw error
+        // None on disk yet: this once, the download is waited for.
+        let map = try downloadPlayers()
+        playerCache = map
+        return map
+    }
+
+    private static var refreshingPlayers = false
+
+    /// Replaces the list in the background (once at a time); the next read gets the new one.
+    private static func refreshPlayersLater() {
+        guard !refreshingPlayers else { return }
+        refreshingPlayers = true
+        DispatchQueue.global(qos: .utility).async {
+            let map = try? downloadPlayers()
+            playerLock.lock()
+            if let map { playerCache = map }
+            refreshingPlayers = false
+            playerLock.unlock()
         }
+    }
+
+    private static func readPlayers(_ file: URL) -> [String: SleeperPlayer]? {
+        guard let data = try? Data(contentsOf: file), let j = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] else { return nil }
+        return Dictionary(uniqueKeysWithValues: j.map { ($0.key, SleeperPlayer(id: $0.key, j: $0.value)) })
+    }
+
+    /// The whole list from Sleeper, slimmed to what's used and saved for next time.
+    private static func downloadPlayers() throws -> [String: SleeperPlayer] {
+        let data = try fetch(URL(string: base + "/players/nfl")!)
+        guard let all = try JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] else {
+            throw SleeperError.invalid("Sleeper's player list didn't read.")
+        }
+        var slim: [String: [String: Any]] = [:]
+        for (id, p) in all {
+            // Retired and long-gone players with no team and no fantasy position aren't worth keeping.
+            guard p["fantasy_positions"] is [Any] || p["position"] as? String == "DEF" else { continue }
+            var keep: [String: Any] = [:]
+            for k in SleeperPlayer.keptKeys { if let v = p[k], !(v is NSNull) { keep[k] = v } }
+            slim[id] = keep
+        }
+        if let out = try? JSONSerialization.data(withJSONObject: slim) { try? out.write(to: playersFile, options: .atomic) }
+        return Dictionary(uniqueKeysWithValues: slim.map { ($0.key, SleeperPlayer(id: $0.key, j: $0.value)) })
     }
 
     /// Players whose name matches `query` (every word, any order), best known first.
@@ -672,6 +692,8 @@ enum Sleeper {
             let reason: String
         }
         var leagueId: String?
+        /// The NFL week it's about: shown on the page only there (a week-9 "PIT bye" isn't week 10's).
+        var week: Int?
         var title: String?
         var summary: String
         var notes: [Note]
@@ -681,12 +703,14 @@ enum Sleeper {
             var j: [String: Any] = ["summary": summary, "updated": updated.timeIntervalSince1970,
                                     "annotations": notes.map { ["player_id": $0.playerId, "tag": $0.tag, "reason": $0.reason] }]
             if let leagueId { j["league_id"] = leagueId }
+            if let week { j["week"] = week }
             if let title { j["title"] = title }
             return j
         }
 
-        init(leagueId: String?, title: String?, summary: String, notes: [Note], updated: Date = Date()) {
+        init(leagueId: String?, week: Int?, title: String?, summary: String, notes: [Note], updated: Date = Date()) {
             self.leagueId = leagueId
+            self.week = week
             self.title = title
             self.summary = summary
             self.notes = notes
@@ -696,6 +720,8 @@ enum Sleeper {
         init?(_ j: [String: Any]) {
             leagueId = j["league_id"] as? String
             title = j["title"] as? String
+            // Notes written before the week was kept: the "Week 9" their title has, if any.
+            week = (j["week"] as? NSNumber)?.intValue ?? title.flatMap(Advice.week(in:))
             summary = j["summary"] as? String ?? ""
             notes = (j["annotations"] as? [[String: Any]] ?? []).compactMap { a in
                 guard let id = a["player_id"] as? String else { return nil }
@@ -706,6 +732,12 @@ enum Sleeper {
         }
 
         func note(for playerId: String) -> Note? { notes.last { $0.playerId == playerId } }
+
+        /// The N of "Week N" in `s`.
+        static func week(in s: String) -> Int? {
+            guard let r = s.range(of: #"(?i)\bweek\s+(\d{1,2})\b"#, options: .regularExpression) else { return nil }
+            return Int(s[r].filter(\.isNumber))
+        }
     }
 
     static var adviceFile: URL { dir.appendingPathComponent("advice.json") }
