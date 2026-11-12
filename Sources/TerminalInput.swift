@@ -15,6 +15,14 @@ extension TerminalView {
             }
         }
         let plainMods = mods.intersection([.command, .control, .option, .shift])
+        // The arrows in the text being typed, as in a document: ⇧ selects (⌥ a word, ⌘ to the end), and with text
+        // selected ← and → go to its start or end.
+        if (123...126).contains(event.keyCode), !plainMods.contains(.control) {
+            if plainMods.contains(.shift), selectInput(key: event.keyCode, word: plainMods.contains(.option), toEnd: plainMods.contains(.command)) {
+                return
+            }
+            if plainMods.isEmpty, selection != nil, collapseInputSelection(key: event.keyCode) { return }
+        }
         // Delete / forward delete with text selected in the line being edited removes the selection, with ⌘ or ⌥
         // too (as in a text field), rather than the line or word they delete otherwise.
         if (event.keyCode == 51 || event.keyCode == 117) && plainMods.subtracting([.command, .option]).isEmpty
@@ -271,6 +279,12 @@ extension TerminalView {
     }
 
     @objc override func selectAll(_ sender: Any?) {
+        // ⌘A in the text being typed selects just that, as in a text field. In a Claude chat it's never the whole
+        // conversation, even with nothing typed yet.
+        if let text = editableInput() {
+            if !text.isEmpty { return showInputSelection(text, anchor: 0, head: text.stops.count - 1) }
+            if inAgentInput { return }
+        }
         let first = terminal.firstAbs
         var last = terminal.lastAbs
         while last > first, let l = terminal.line(abs: last), l.isBlank { last -= 1 }
@@ -624,11 +638,12 @@ extension TerminalView {
     /// handles mouse clicks itself. Returns false when the click isn't inside the input being edited.
     private func placeCursor(at pos: GridPos) -> Bool {
         guard !terminal.usingAlt, terminal.mouseMode == .none, let b = terminal.currentBlock else { return false }
-        if b.state == .running {
-            guard let rows = terminal.agentInputRows(b), rows.contains(pos.line), rows.contains(terminal.cursorAbs) else { return false }
+        if b.state == .running, let rows = terminal.agentInputRows(b), rows.contains(terminal.cursorAbs) {
+            guard rows.contains(pos.line) else { return false }
             placeAgentCursor(row: pos.line - rows.lowerBound, col: pos.col, sentVertical: false)
             return true
         }
+        // A shell's command line: this Mac's, or (with ssh running) the host's.
         return placeShellCursor(b, at: pos)
     }
 
@@ -648,14 +663,94 @@ extension TerminalView {
         scrollOffset = 0
     }
 
-    /// A shell's input, if a shell is what's waiting for it.
-    private func shellInput(_ b: Block) -> (start: Int, last: Int, index: (Int, Int) -> Int)? {
-        pty?.hasForegroundJob == false ? terminal.shellInput(b) : nil
+    /// A shell's input, if a shell is what's waiting for it: this Mac's, or one on an ssh host (at its prompt, with
+    /// nothing running there).
+    private func shellInput(_ b: Block) -> (start: Int, col: Int, last: Int, index: (Int, Int) -> Int)? {
+        if pty?.hasForegroundJob == false {
+            guard b.state == .prompt, let start = b.commandLine else { return nil }
+            return terminal.commandRun(line: start, col: b.commandCol)
+        }
+        // Claude Code's box (here or on the host) isn't a shell's command line, though its ❯ looks like a prompt.
+        if inAgentInput { return nil }
+        return terminal.hostCommandRun()
     }
 
     private func placeShellCursor(_ b: Block, at pos: GridPos) -> Bool {
-        guard pty?.hasForegroundJob == false, let arrows = terminal.shellCursorArrows(b, line: pos.line, col: pos.col) else { return false }
-        sendArrows(arrows, back: "D", forward: "C")
+        guard let input = shellInput(b), pos.line >= input.start, pos.line <= input.last else { return false }
+        let cursor = input.index(terminal.cursorAbs, terminal.cursorX)
+        let textEnd = input.index(input.last, terminal.line(abs: input.last)?.trimmedLength ?? 0)
+        sendArrows(min(input.index(pos.line, pos.col), max(textEnd, cursor)) - cursor, back: "D", forward: "C")
+        return true
+    }
+
+    /// Whether the cursor is in Claude Code's input box.
+    var inAgentInput: Bool {
+        guard !terminal.usingAlt, let b = terminal.currentBlock, b.state == .running, let rows = terminal.agentInputRows(b) else { return false }
+        return rows.contains(terminal.cursorAbs)
+    }
+
+    // MARK: - Selecting what's being typed from the keyboard
+
+    /// The text being typed, wherever the cursor is in it: Claude Code's input box, or a shell's command line (here or
+    /// on an ssh host). Nil in a full-screen program, one that takes the mouse, or output.
+    func editableInput() -> InputText? {
+        guard !terminal.usingAlt, terminal.mouseMode == .none, let b = terminal.currentBlock else { return nil }
+        if b.state == .running, let rows = terminal.agentInputRows(b), rows.contains(terminal.cursorAbs) {
+            return terminal.agentInputText(rows)
+        }
+        guard let run = shellInput(b) else { return nil }
+        return terminal.commandText(start: run.start, col: run.col, last: run.last)
+    }
+
+    /// ⇧ and an arrow: starts a selection at the cursor or moves the end of the one going. False when the cursor isn't
+    /// in text being typed (the key goes to the program then).
+    private func selectInput(key: UInt16, word: Bool, toEnd: Bool) -> Bool {
+        guard let text = editableInput(), !text.isEmpty else { return false }
+        var anchor = text.index(of: GridPos(line: terminal.cursorAbs, col: terminal.cursorX)), head = anchor
+        if let k = keySelection, let made = k.made, made == selection, k.anchor < text.stops.count, k.head < text.stops.count {
+            anchor = k.anchor
+            head = k.head
+        } else if let s = selection, !s.rect, s.start >= text.stops[0], s.end < text.stops[text.stops.count - 1] {
+            // One made with the mouse in the text: carried on from its end.
+            anchor = text.index(of: s.start)
+            head = min(text.stops.count - 1, text.index(of: s.end) + 1)
+        }
+        switch key {
+        case 123: head = toEnd ? text.lineStart(head) : word ? text.wordLeft(head) : text.left(head)
+        case 124: head = toEnd ? text.lineEnd(head) : word ? text.wordRight(head) : text.right(head)
+        case 126: head = toEnd ? 0 : text.vertical(head, by: -1)
+        default: head = toEnd ? text.stops.count - 1 : text.vertical(head, by: 1)
+        }
+        showInputSelection(text, anchor: anchor, head: head)
+        return true
+    }
+
+    private func showInputSelection(_ text: InputText, anchor: Int, head: Int) {
+        if let (a, b) = text.cells(anchor, head) {
+            selection = Selection(mode: .char, aStart: a, aEnd: a, hStart: b, hEnd: b)
+        } else {
+            selection = nil
+        }
+        keySelection = (anchor, head, selection)
+        selectedBlock = nil
+        selectedTurnLine = nil
+        scrollOffset = 0
+        resetBlink()
+        needsDisplay = true
+    }
+
+    /// ← or → with text selected in what's being typed: the cursor goes to the selection's start or end, and it's let
+    /// go, as in a text field. False when the selection isn't in the text being typed.
+    private func collapseInputSelection(key: UInt16) -> Bool {
+        guard let s = selection, !s.rect, let text = editableInput(), !text.isEmpty,
+              s.start >= text.stops[0], s.end < text.stops[text.stops.count - 1] else { return false }
+        selection = nil
+        keySelection = nil
+        needsDisplay = true
+        // ↑ and ↓ just let it go, and go on to the program.
+        guard key == 123 || key == 124 else { return false }
+        let lo = text.index(of: s.start), hi = min(text.stops.count - 1, text.index(of: s.end) + 1)
+        _ = placeCursor(at: text.stops[key == 123 ? lo : hi])
         return true
     }
 

@@ -3,7 +3,7 @@ import UserNotifications
 
 // GridPos is in Core/CodeBoxFinder.swift, shared with Windows.
 
-struct Selection {
+struct Selection: Equatable {
     enum Mode { case char, word, line }
     var mode: Mode
     var aStart: GridPos, aEnd: GridPos
@@ -176,6 +176,9 @@ final class TerminalView: NSView, TerminalDelegate {
         }
     }
     private var followingInputBox = false
+    /// A selection made in the text being typed with ⇧ and the arrows: its stops (see `InputText`) and the selection
+    /// it made, so the next ⇧-arrow carries on from its moving end while that selection is still the one shown.
+    var keySelection: (anchor: Int, head: Int, made: Selection?)?
     /// The selected commands, in the order they were picked: one from a click, more with ⌘-click.
     var selectedBlocks: [Block] = [] { didSet { updateSelectionBar() } }
     /// The one a single selection is on (for several, the last picked).

@@ -1268,6 +1268,38 @@ final class Terminal {
         return true
     }
 
+    /// The command being typed at an ssh host's shell prompt (nothing running there, the cursor on or after the prompt),
+    /// as `commandRun` gives it, so it can be clicked into, selected and edited as a local one is.
+    func hostCommandRun() -> (start: Int, col: Int, last: Int, index: (Int, Int) -> Int)? {
+        guard sshControlPath != nil, !usingAlt, hostCommand == nil, hostEnter == nil else { return nil }
+        let start = logicalStart(cursorAbs)
+        var text = ""
+        var a = start
+        while let l = line(abs: a) {
+            text += l.text(trim: !l.wrapped)
+            guard l.wrapped, a < lastAbs else { break }
+            a += 1
+        }
+        let noted = hostPromptNoted?.line == start ? hostPromptNoted?.prefix : nil
+        guard let end = HostPrompt.end(of: text, noted: noted, heads: hostPromptHeads, firstCommand: false) else { return nil }
+        // The prompt's end as a cell: `end` characters in, wide ones taking two cells.
+        var n = 0, row = start, col = 0
+        while n < end, let l = line(abs: row) {
+            if col >= cols || col >= l.cells.count {
+                guard l.wrapped else { break }
+                row += 1
+                col = 0
+                continue
+            }
+            if l.cells[col].width != 0 { n += 1 }
+            col += 1
+        }
+        let run = commandRun(line: row, col: col)
+        // The cursor is in what's typed, not in the prompt.
+        guard cursorAbs > row || (cursorAbs == row && cursorX >= col) else { return nil }
+        return run
+    }
+
     /// The cursor's line as it reads.
     var cursorLineText: String {
         guard let l = line(abs: cursorAbs), cols > 0 else { return "" }

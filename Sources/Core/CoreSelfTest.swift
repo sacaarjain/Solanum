@@ -309,6 +309,48 @@ enum CoreSelfTest {
             check("ED 2 keeps running block", t.currentBlock?.state == .running && t.currentBlock?.command == "claude")
         }
         do {
+            // The text being typed, a stop at a time from the keyboard (⇧ and the arrows).
+            let (t, _) = make(20, 6)
+            feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}echo hello world and")
+            let b = t.currentBlock!
+            let run = t.commandRun(line: b.commandLine!, col: b.commandCol)
+            let text = t.commandText(start: run.start, col: run.col, last: run.last)
+            let end = text.stops.count - 1
+            check("keys: a stop between every character of a wrapped command", end == 20 && text.index(of: GridPos(line: t.cursorAbs, col: t.cursorX)) == end,
+                  "\(end) \(text.stops)")
+            check("keys: ⌥← to the word before, ⌥→ to the word's end", text.wordLeft(end) == 17 && text.wordLeft(17) == 11 && text.wordRight(5) == 10)
+            check("keys: ⌘ goes to the ends of the whole command", text.lineStart(15) == 0 && text.lineEnd(3) == end)
+            if let (lo, hi) = text.cells(5, 10) {
+                check("keys: a selection's cells", lo.line == hi.line && t.line(abs: lo.line)?.text(from: lo.col, to: hi.col, trim: false) == "hello")
+            } else { check("keys: a selection's cells", false) }
+            check("keys: nothing selected between a stop and itself", text.cells(4, 4) == nil)
+            // Claude Code's box: ⌘ goes to its row's ends; a row break is a stop of its own.
+            let (a, _) = make(30, 8)
+            feed(a, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}claude\r\n\u{1b}]133;C\u{07}")
+            let rule = String(repeating: "─", count: 30)
+            feed(a, "\(rule)❯ one two\r\n  three\r\n\(rule)\u{1b}[3;6H")
+            if let rows = a.agentInputRows(a.currentBlock!) {
+                let box = a.agentInputText(rows)
+                let row2 = box.index(of: GridPos(line: rows.lowerBound + 1, col: 2))
+                check("keys: Claude Code's rows", box.stops.count == 14 && row2 == 8 && box.lineEnd(2) == 7 && box.lineStart(10) == 8
+                      && box.vertical(3, by: 1) == 11 && box.vertical(11, by: -1) == 3 && box.vertical(3, by: -1) == 0,
+                      "\(box.stops)")
+            } else { check("keys: Claude Code's rows", false) }
+            // An ssh host's prompt has no marks: what's typed after it is found from its shape.
+            let (h, _) = make(40, 6)
+            feed(h, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}ssh box\r\n\u{1b}]133;C\u{07}\u{1b}]1337;SolanumSSH=/tmp/s\u{07}Welcome!\r\n")
+            feed(h, "[me@box ~]$ ")
+            h.remoteKeyPressed()
+            feed(h, "kubectl get pods")
+            let host = h.hostCommandRun()
+            check("keys: an ssh host's command starts after its prompt", host?.start == h.cursorAbs && host?.col == 12
+                  && host.map { h.commandText(start: $0.start, col: $0.col, last: $0.last).stops.count } == 17, "\(String(describing: host?.col))")
+            h.remoteEnterPressed()
+            feed(h, "\r\nNAME READY\r\n")
+            h.remoteKeyPressed()
+            check("keys: nothing to edit while it runs", h.hostCommandRun() == nil)
+        }
+        do {
             // Clicks in the line being typed.
             let (t, _) = make(20, 6)
             feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}hello world and more")
