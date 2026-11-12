@@ -1642,21 +1642,25 @@ final class TerminalView: NSView, TerminalDelegate {
         for (i, b) in codeBoxes.enumerated() where i == hoverBox || i == copiedBox {
             guard let r = rowMap.firstIndex(of: b.first) else { continue }
             let copied = copiedBox == i
-            // Above the box when the line there is empty (Claude leaves one), so it never covers a long first line:
-            // flush with the box's right edge and a few points clear of its top border, within that empty line.
-            let roomAbove = b.kind != .table && r > 0 && rowMap[r - 1] == b.first - 1 && (terminal.line(abs: b.first - 1)?.isBlank ?? false)
-            // The panel reaches up into that line (see codeBoxPadding), so the button, a few points clear of it, rises into
-            // the line above that when nothing's written there under it (Claude's line before a block is usually short);
-            // otherwise it keeps within the empty line.
-            let boxTop = rowY(r) - (b.kind == .code ? codeBoxPadding(b, rows: r, r).top : 1)
-            let rightX = bounds.width - padX + (roomAbove ? 6 : 2)
-            let clearAbove: Bool = {
-                guard r > 1, rowMap[r - 2] >= 0, let l = terminal.line(abs: rowMap[r - 2]) else { return r <= 1 }
+            // Above the box at its top right, flush with its right edge and a few points clear of its top border, so it
+            // never covers a long first line: in the empty line Claude usually leaves before a block, or in the line of
+            // text just above when that ends well short of the button ("…Push when you're ready:"). Inside the box, on
+            // its first line, only when neither has room (and for tables, which draw their own border).
+            func textClear(_ row: Int, of x: CGFloat) -> Bool {
+                guard row >= 0, rowMap[row] >= 0, let l = terminal.line(abs: rowMap[row]) else { return row < 0 }
                 let lastText = l.cells.lastIndex { $0.ch != 0 && $0.ch != 0x20 } ?? -1
-                return padX + CGFloat(lastText + 1) * fonts.cellW < rightX - 110
-            }()
+                return padX + CGFloat(lastText + 1) * fonts.cellW < x - 110
+            }
+            let above = r > 0 && rowMap[r - 1] == b.first - 1 ? terminal.line(abs: b.first - 1) : nil
+            let emptyAbove = above?.isBlank ?? false
+            let rightX = bounds.width - padX + 6
+            let roomAbove = b.kind != .table && above != nil && (emptyAbove || textClear(r - 1, of: rightX))
+            // The panel reaches up into an empty line (see codeBoxPadding), so there the button, a few points clear of it,
+            // rises into the line above that when nothing's written there under it; otherwise it keeps within the empty line.
+            let boxTop = rowY(r) - (b.kind == .code ? codeBoxPadding(b, rows: r, r).top : 1)
+            let clearAbove = !emptyAbove || textClear(r - 2, of: rightX)
             let rect = drawCopyPill(copied ? "Copied" : b.kind == .table ? "Copy table" : "Copy", copied: copied, hover: hoverCopyButton == i,
-                                    rightX: rightX,
+                                    rightX: roomAbove ? rightX : bounds.width - padX + 2,
                                     top: { roomAbove ? (clearAbove ? boxTop - $0 - 3 : max(self.rowY(r) - self.fonts.cellH - 1, boxTop - $0 - 3))
                                                      : self.rowY(r) + (self.fonts.cellH - $0) / 2 }, ctx)
             codeCopyButtons.append((rect, i))

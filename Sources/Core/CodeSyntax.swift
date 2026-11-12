@@ -87,6 +87,8 @@ enum CodeLanguage: String, CaseIterable {
 struct CodeGrammar {
     let regex: NSRegularExpression
     let kinds: [SyntaxToken?]
+    /// Grammars run again inside the tokens of a kind, their tokens painted over it (an ini value's `${…}`).
+    var nested: [SyntaxToken: CodeGrammar] = [:]
 
     fileprivate static let lock = NSLock()
     fileprivate static var cache: [CodeLanguage: CodeGrammar] = [:]
@@ -99,7 +101,10 @@ struct CodeGrammar {
             for (i, k) in kinds.enumerated() {
                 guard let k else { continue }
                 let r = m.range(at: i + 1)
-                if r.location != NSNotFound, r.length > 0 { out.append((r, k)) }
+                if r.location != NSNotFound, r.length > 0 {
+                    out.append((r, k))
+                    nested[k]?.tokens(in: text, range: r, into: &out)
+                }
             }
         }
     }
@@ -144,6 +149,19 @@ struct CodeGrammar {
     private static let capitalType = #"\b_?[A-Z][a-z0-9]\w*\b"#
     /// Any other word, taken whole so nothing above matches part of it.
     private static let word = #"\b\w+\b"#
+
+    /// Inside an ini / .properties value: a number or true/false only when it's the whole value (`server.port=8080`,
+    /// `enabled = true`, `timeout=30s`), and anywhere in it `${…}` / `$VAR` / `%(name)s` / `@maven.property@`
+    /// placeholders, `\` escapes, and a `\` that carries the value onto the next line.
+    private static let iniValue: CodeGrammar = {
+        var r = Rules()
+        r.add(#"\A[ \t]*-?(?:\d+(?:\.\d+)?|\.\d+)(?:[A-Za-z%]{1,3})?\s*\z"#, .number)
+        r.add(#"(?i:\A[ \t]*(?:true|false|yes|no|on|off|null|none)\s*\z)"#, .literal)
+        r.add(#"\$\{[^}\n]*\}|\$[A-Za-z_]\w*|%\([\w.]+\)s|@[A-Za-z][\w.-]*@"#, .variable)
+        r.add(#"\\(?=\r?\n)"#, .punctuation)
+        r.add(#"\\(?:u[0-9a-fA-F]{4}|.)"#, .entity)
+        return r.compile()
+    }()
 
     /// The usual order: comments, strings, then `extra` (language specifics), numbers, keywords, literals, types,
     /// calls, capitalized names as types, and any other word.
@@ -509,16 +527,18 @@ struct CodeGrammar {
             return r.compile()
 
         case .ini:
+            // ini, Java .properties, .env, git config: a line at a time. A setting's value is all one string (to the end
+            // of the line, and on past one ending in `\` in a .properties file), so a password or a URL is never taken
+            // apart into numbers and words; only what's inside it is picked out (see `iniValue`).
             var r = Rules()
             r.add(#"^[ \t]*[#;!][^\n]*"#, .comment)
             r.add(#"^[ \t]*\[[^\]\n]*\]"#, .type)
-            r.add(#"^[ \t]*(?:export[ \t]+)?[^\s=:#;\[][^=:\n]*?(?=[ \t]*[=:])"#, .key)
-            r.add(dq + "|" + sq, .string)
-            r.add(#"\$\{[^}\n]*\}|\$[A-Za-z_]\w*|%\([\w.]+\)s"#, .variable)
-            r.add(number, .number)
-            r.words(["true", "false", "yes", "no", "on", "off", "True", "False", "TRUE", "FALSE", "null", "none"], .literal)
-            r.add(word, nil)
-            return r.compile()
+            r.add(#"^[ \t]*(export[ \t]+)?((?:[^\s=:#;!\[\\]|\\.)(?:[^=:\n\\]|\\.)*?)[ \t]*([=:])[ \t]*((?:[^\n\\]|\\(?:\r?\n|.)|\\$)*)"#,
+                  nil, .keyword, .key, .punctuation, .string)
+            r.add(#"[^\n]+"#, nil)
+            var g = r.compile()
+            g.nested[.string] = iniValue
+            return g
 
         case .dockerfile:
             var r = Rules()

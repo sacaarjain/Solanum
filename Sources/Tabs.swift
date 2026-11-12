@@ -1694,10 +1694,10 @@ final class WindowRootView: NSView {
     private let gutter = CardGutterView()
     private(set) var columns: [TabColumn] = []
     let sidebar = FileSidebarView()
-    private let sidebarHandle = SidebarResizeHandle()
+    let sidebarHandle = SidebarResizeHandle()
     let rightSidebar = FileSidebarView()
-    private let rightSidebarHandle = SidebarResizeHandle()
-    private let divider = ColumnDivider()
+    let rightSidebarHandle = SidebarResizeHandle()
+    let divider = ColumnDivider()
     let statusBar = StatusBarView()
     /// The right column's own status bar while split (folder, git), beside the left column's.
     let rightStatusBar = StatusBarView()
@@ -1888,16 +1888,44 @@ final class WindowRootView: NSView {
         }
     }
     private var splitObserver: NSObjectProtocol?
+    /// The pointer is where two dividers meet, showing the move cursor (see `SashJunction`).
+    var overJunction = false
 
     required init?(coder: NSCoder) { fatalError() }
 
     override var isFlipped: Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                                       owner: self))
+    }
+
+    override func mouseMoved(with e: NSEvent) { junctionHover(convert(e.locationInWindow, from: nil)) }
+
+    override func mouseExited(with e: NSEvent) { overJunction = false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        guard let event else { return false }
+        return junction(at: convert(event.locationInWindow, from: nil)) != nil
+    }
+
+    override func mouseDown(with e: NSEvent) {
+        if let j = junction(at: convert(e.locationInWindow, from: nil)) { dragJunction(j, from: e) } else { super.mouseDown(with: e) }
+    }
 
     /// A press on a resize strip goes to the strip, not the file row or terminal it overlaps, whatever order
     /// the views happen to be in. (Tab strips, notices and overlays over the strip still get their clicks.)
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
         let p = convert(point, from: superview)
+        // Where two dividers meet, a press moves both (see `SashJunction`): this view takes it.
+        if let hit, [sidebarHandle, rightSidebarHandle, divider].contains(where: { hit === $0 })
+            || [sidebar, rightSidebar].contains(where: { hit.isDescendant(of: $0) })
+            || columns.contains(where: { hit.isDescendant(of: $0.content) }), junction(at: p) != nil {
+            return self
+        }
         guard let hit, [sidebar, rightSidebar].contains(where: { hit.isDescendant(of: $0) })
                 || columns.contains(where: { hit.isDescendant(of: $0.content) }) else { return hit }
         for handle in [sidebarHandle, rightSidebarHandle] where !handle.isHidden && handle.frame.contains(p) {

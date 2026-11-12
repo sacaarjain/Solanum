@@ -1161,17 +1161,20 @@ final class SystemHeroView: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// Small enough that Software Update (and its Check Now) shows without scrolling at the window's first size.
+    static let height: CGFloat = 92
+
     override func draw(_ dirtyRect: NSRect) {
         let th = Config.shared.theme
-        Self.flower.draw(in: NSRect(x: bounds.midX - 36, y: 0, width: 72, height: 72))
-        let name = NSAttributedString(string: "Solanum", attributes: [.font: NSFont.systemFont(ofSize: 22, weight: .bold), .foregroundColor: th.foreground])
+        Self.flower.draw(in: NSRect(x: bounds.midX - 24, y: 0, width: 48, height: 48))
+        let name = NSAttributedString(string: "Solanum", attributes: [.font: NSFont.systemFont(ofSize: 18, weight: .bold), .foregroundColor: th.foreground])
         let line = NSAttributedString(string: "Version \(version)" + (commit.map { " (\($0))" } ?? ""), attributes: [
-            .font: NSFont.systemFont(ofSize: 12.5), .foregroundColor: th.dimText])
-        var y: CGFloat = 84
+            .font: NSFont.systemFont(ofSize: 12), .foregroundColor: th.dimText])
+        var y: CGFloat = 54
         for s in [name, line] {
             let size = s.size()
             s.draw(at: NSPoint(x: bounds.midX - size.width / 2, y: y))
-            y += size.height + 2
+            y += size.height
         }
     }
 }
@@ -1427,7 +1430,10 @@ enum SettingsPages {
         let v = SettingsPageView()
         let editing = page == .appearance ? controller.editingTheme.flatMap { url in ThemeLibrary.custom.first { $0.file == url } } : nil
         let releases = page == .system && controller.showingReleases
-        v.add(settingsLabel(editing != nil ? "Edit Theme" : releases ? "Release History" : page.title, size: 26, weight: .bold), height: 32, gap: 24)
+        // The sidebar already names the page; only a page within one (a theme being edited, the release history) gets a title.
+        if editing != nil || releases {
+            v.add(settingsLabel(editing != nil ? "Edit Theme" : "Release History", size: 26, weight: .bold), height: 32, gap: 24)
+        }
         if releases {
             ReleaseHistoryPage.build(v, controller)
             return v
@@ -1854,7 +1860,7 @@ enum SettingsPages {
             .map { DateFormatter.localizedString(from: $0, dateStyle: .medium, timeStyle: .short) }
         let os = ProcessInfo.processInfo.operatingSystemVersion
 
-        v.add(SystemHeroView(version: version, commit: commit), height: 130, gap: 22)
+        v.add(SystemHeroView(version: version, commit: commit), height: SystemHeroView.height, gap: 18)
         v.add(sectionHeader("About"), height: 16, gap: 10)
         func value(_ s: String, mono: Bool = false) -> NSTextField {
             let l = settingsLabel(s, size: 12.5, dim: true, mono: mono)
@@ -1863,9 +1869,8 @@ enum SettingsPages {
             return l
         }
         let home = NSHomeDirectory()
+        // The version and build are under the flower, not repeated here.
         card(v, [
-            SettingRow(title: "Version", accessory: value(version)),
-            SettingRow(title: "Build", accessory: value(commit ?? "Unknown", mono: true)),
             SettingRow(title: "Built", accessory: value(builtAt ?? "Unknown")),
             SettingRow(title: "Built from", accessory: value(u.repo.map { FilePaths.abbreviate($0, home: home) } ?? "Unknown", mono: true)),
             SettingRow(title: "Installed at", accessory: value(FilePaths.abbreviate(Bundle.main.bundlePath, home: home), mono: true)),
@@ -1879,7 +1884,7 @@ enum SettingsPages {
         links.spacing = 18
         links.alignment = .centerY
         links.distribution = .gravityAreas
-        v.add(links, height: 20, gap: 30)
+        v.add(links, height: 20, gap: 24)
         updates(v, ctl)
     }
 

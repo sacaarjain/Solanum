@@ -659,6 +659,15 @@ enum CoreSelfTest {
             let pyTokens = SyntaxScanner.tokens(in: "def f(self, x=1):  # c\n    return 'a#b' if obj.default else None\n", as: .code(.python)).map(\.token)
             check("syntax: Python", pyTokens == [.keyword, .function, .variable, .number, .comment, .keyword, .string, .keyword, .keyword, .literal],
                   String(describing: pyTokens))
+            // An ini / .properties value is one string: digits inside a password or URL aren't numbers; a whole-value
+            // number or boolean is, and placeholders and continuations inside a value are picked out.
+            let props = "# c\nTOKEN=6QlAD9z-west-2\nserver.port = 8080\nssl: true\nurl=jdbc:x://h:5432/?a=b\nuser=${DB_USER:admin}\nmulti=one \\\n  two\n[section]\n"
+            let propTokens = SyntaxScanner.tokens(in: props, as: .code(.ini))
+            let propText = { (t: SyntaxToken) in propTokens.filter { $0.token == t }.map { (props as NSString).substring(with: $0.range) } }
+            check("syntax: properties values", propText(.comment) == ["# c"] && propText(.number) == ["8080"] && propText(.literal) == ["true"]
+                  && propText(.key) == ["TOKEN", "server.port", "ssl", "url", "user", "multi"] && propText(.variable) == ["${DB_USER:admin}"]
+                  && propText(.string).contains("one \\\n  two") && propText(.string).contains("jdbc:x://h:5432/?a=b") && propText(.type) == ["[section]"]
+                  && propText(.punctuation).filter { $0 == "\\" }.count == 1)
             let shTokens = SyntaxScanner.tokens(in: "echo \"$HOME\" ${x} -n # c\nformat=1\n", as: .code(.shell)).map(\.token)
             check("syntax: shell", shTokens == [.function, .string, .variable, .attribute, .comment, .number], String(describing: shTokens))
             check("file kinds", FileKind(name: "a.PNG") == .image && FileKind(name: #"C:\x\run.ps1"#) == .code && FileKind(name: ".bashrc") == .other

@@ -65,8 +65,9 @@ struct CodeBoxView {
         }
     }
 
-    /// "Copy" at the top right of each box whose first line is on screen: above it when the line there is empty (Claude
-    /// leaves one), so it never covers a long first line.
+    /// "Copy" at the top right of each box whose first line is on screen: above it, so it never covers a long first
+    /// line, in the empty line Claude usually leaves or in a line of text that ends well short of it; on the box's first
+    /// line only when neither has room.
     @discardableResult
     func drawButtons(hover hovered: Int?, copied copiedIndex: Int?) -> [(rect: UIRect, box: Int)] {
         var copyButtons: [(rect: UIRect, box: Int)] = []
@@ -77,8 +78,11 @@ struct CodeBoxView {
             let r = b.first - top
             guard r >= 0, r < terminal.rows else { continue }
             let copied = copiedIndex == i, hover = hovered == i
-            let roomAbove = b.kind != .table && r > 0 && (terminal.line(abs: b.first - 1).map(ImageTokens.isBlank) ?? false)
             let size = Self.pillSize(copied ? "Copied" : b.kind == .table ? "Copy table" : "Copy", copied: copied, canvas: canvas, scale: s)
+            let roomAbove = b.kind != .table && r > 0 && (terminal.line(abs: b.first - 1).map { l in
+                let lastText = l.cells.lastIndex { !ImageTokens.isSpace($0.ch) } ?? -1
+                return ImageTokens.isBlank(l) || canvas.contentX + Float(lastText + 1) * m.cellWidth < edge - size.width - 12 * s
+            } ?? false)
             let rowY = canvas.contentY + Float(r) * m.cellHeight
             // Above the box, 6 px clear of its top border (which is a pixel above its first row), in the empty line there.
             let y = roomAbove ? rowY - 1 - 6 * s - size.height : rowY + (m.cellHeight - size.height) / 2
