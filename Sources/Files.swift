@@ -135,6 +135,7 @@ final class RemoteFileWatch {
         queueRestart()
         if health == nil {
             let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in self?.checkHealth() }
+            timer.tolerance = 0.5
             RunLoop.main.add(timer, forMode: .common)
             health = timer
         }

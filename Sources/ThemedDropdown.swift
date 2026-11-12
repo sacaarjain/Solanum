@@ -201,7 +201,12 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
+        // Not inset for the window's title bar: a dropdown opened under it (a tab's menu) had its rows pushed down
+        // under the panel's bottom edge, a gap left over them.
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsetsZero
         panel.addSubview(scroll)
+        list.textX = items.contains { $0.kind == .item && ($0.image != nil || $0.symbol != nil || $0.color != nil || $0.checked) } ? 34 : 14
         list.items = items
         list.onPick = { [weak self] i, option in self?.pick(i, option: option) }
         if searchable {
@@ -244,7 +249,7 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
             let d = [item.detail, item.optionDetail].compactMap { $0 }.map { ($0 as NSString).size(withAttributes: [.font: small]).width + 8 }.max()
             return t + (d ?? 0)
         }.max() ?? 0
-        let w = min(max(minWidth, a.width, ceil(widest) + 56), bounds.width - 16)
+        let w = min(max(minWidth, a.width, ceil(widest) + list.textX + 22), bounds.width - 16)
         let listH = list.contentHeight
         let top = searchable ? Self.fieldHeight + 6 : 6
         let roomBelow = bounds.height - a.maxY - 12, roomAbove = a.minY - 12
@@ -451,6 +456,8 @@ final class DropdownListView: NSView {
     var onPick: ((Int, Bool) -> Void)?
     private static let separatorHeight: CGFloat = 11
     private static let headerHeight: CGFloat = 24
+    /// Where titles start: past the icon / check column when any row has one, else just inside the highlight.
+    var textX: CGFloat = 34
 
     override var isFlipped: Bool { true }
 
@@ -504,7 +511,7 @@ final class DropdownListView: NSView {
         let middle = NSMutableParagraphStyle()
         middle.lineBreakMode = .byTruncatingMiddle
         if items.isEmpty {
-            ("No matches" as NSString).draw(in: NSRect(x: 34, y: ThemedDropdown.rowHeight / 2 - 8.5, width: bounds.width - 46, height: 17),
+            ("No matches" as NSString).draw(in: NSRect(x: textX, y: ThemedDropdown.rowHeight / 2 - 8.5, width: bounds.width - textX - 12, height: 17),
                                             withAttributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: th.dimText])
         }
         var y: CGFloat = 0
@@ -516,7 +523,7 @@ final class DropdownListView: NSView {
             switch item.kind {
             case .separator:
                 th.border.setFill()
-                NSRect(x: 12, y: r.midY, width: r.width - 24, height: 1).fill()
+                NSRect(x: 6, y: r.midY, width: r.width - 12, height: 1).fill()
             case .header:
                 (item.title.uppercased() as NSString).draw(in: NSRect(x: 14, y: r.maxY - 18, width: r.width - 28, height: 14),
                                                            withAttributes: [.font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
@@ -567,13 +574,13 @@ final class DropdownListView: NSView {
                     }
                 }
                 let font = NSFont.systemFont(ofSize: 13, weight: item.checked ? .semibold : .regular)
-                (item.title as NSString).draw(in: NSRect(x: 34, y: r.midY - 8.5, width: r.width - 46, height: 17),
+                (item.title as NSString).draw(in: NSRect(x: textX, y: r.midY - 8.5, width: r.width - textX - 12, height: 17),
                                               withAttributes: [.font: font, .paragraphStyle: middle,
                                                                .foregroundColor: item.checked && item.color == nil ? th.accent : th.foreground.withAlphaComponent(0.92)])
                 let alternate = optionHeld ? item.optionDetail : nil
                 if let detail = alternate ?? item.detail {
                     let tw = (item.title as NSString).size(withAttributes: [.font: font]).width
-                    let x = 34 + ceil(tw) + 8
+                    let x = textX + ceil(tw) + 8
                     if x < r.width - 40 {
                         (detail as NSString).draw(in: NSRect(x: x, y: r.midY - 7.5, width: r.width - 12 - x, height: 15),
                                                   withAttributes: [.font: NSFont.systemFont(ofSize: 11.5, weight: alternate == nil ? .regular : .medium),

@@ -59,17 +59,28 @@ struct WallpaperOptions: Equatable {
 /// Pictures for `Backdrop`, blurred once and kept until what they're made from or their size changes.
 enum BackdropImages {
     private static let context = CIContext(options: [.cacheIntermediates: false])
-    private static var cache: [String: CGImage] = [:]
+    /// The latest few, most recently used last. Each is the size of a window (about 20 MB on a Retina screen), so
+    /// only as many as there are windows of different sizes, give or take.
+    private static var cache: [(key: String, picture: String, image: CGImage)] = []
+    private static let kept = 3
 
     /// `url`'s picture at `size` points (times `scale` pixels): cropped to fill it (`fit`: fitted inside it instead,
-    /// on `fill`), blurred by `blur` points.
-    static func image(_ url: URL, size: NSSize, scale: CGFloat, blur: CGFloat, fit: Bool = false, fill: NSColor? = nil) -> CGImage? {
+    /// on `fill`), blurred by `blur` points. `reuse`: while a window's being resized, the same picture made for
+    /// another size, if there is one, rather than blurring a new one at every step (the caller draws it to fill).
+    static func image(_ url: URL, size: NSSize, scale: CGFloat, blur: CGFloat, fit: Bool = false, fill: NSColor? = nil,
+                      reuse: Bool = false) -> CGImage? {
         guard size.width >= 1, size.height >= 1 else { return nil }
         // Sizes in steps, so resizing the window doesn't remake it every frame; it's drawn into the exact size.
         let px = NSSize(width: (size.width * scale / 32).rounded(.up) * 32, height: (size.height * scale / 32).rounded(.up) * 32)
         let modified = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        let key = "\(url.path)|\(modified)|\(Int(px.width))x\(Int(px.height))|\(blur * scale)|\(fit)|\(fill?.hexString ?? "")"
-        if let hit = cache[key] { return hit }
+        let picture = "\(url.path)|\(modified)|\(blur * scale)|\(fit)|\(fill?.hexString ?? "")"
+        let key = picture + "|\(Int(px.width))x\(Int(px.height))"
+        if let i = cache.firstIndex(where: { $0.key == key }) {
+            let hit = cache.remove(at: i)
+            cache.append(hit)
+            return hit.image
+        }
+        if reuse, let near = cache.last(where: { $0.picture == picture }) { return near.image }
         guard let source = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else { return nil }
         let e = source.extent
         let zoom = fit ? min(px.width / e.width, px.height / e.height) : max(px.width / e.width, px.height / e.height)
@@ -84,9 +95,10 @@ enum BackdropImages {
             img = img.clampedToExtent().applyingGaussianBlur(sigma: Double(blur * scale) / 2)
         }
         guard let made = context.createCGImage(img.cropped(to: target), from: target) else { return nil }
-        // Only the latest few: a picture's an image the size of the window.
-        if cache.count > 6 { cache.removeAll() }
-        cache[key] = made
+        // What Core Image kept to make it (the full-size source, the blur's passes) isn't needed again.
+        context.clearCaches()
+        cache.append((key, picture, made))
+        if cache.count > kept { cache.removeFirst(cache.count - kept) }
         return made
     }
 

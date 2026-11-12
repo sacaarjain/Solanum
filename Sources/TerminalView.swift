@@ -399,6 +399,8 @@ final class TerminalView: NSView, TerminalDelegate {
         updatePTYSize()
         updateBlinkTimer()
         titleTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in self?.refreshTitle() }
+        // Leeway, so every pane's ticks (and the system's) wake the app together instead of one by one.
+        titleTimer?.tolerance = 0.2
     }
 
     private func receive(_ data: Data) {
@@ -782,14 +784,28 @@ final class TerminalView: NSView, TerminalDelegate {
             let threshold = Config.shared.notifyAfterSeconds
             let d = stoppedAt.timeIntervalSince(since)
             guard threshold > 0, d >= threshold, !self.isWatched, let tab = self.tab else { return }
-            let th = Config.shared.theme
-            let prompt = self.terminal.currentBlock.flatMap { self.terminal.agentTurns(in: $0).last }
-                .map { self.terminal.agentPromptText($0).split(whereSeparator: \.isNewline).joined(separator: " ") }
-            self.showCornerNotice(title: a.kind.name + (a.status == .done ? " finished" : " needs your input"),
-                                  symbol: a.status == .done ? ("checkmark.circle.fill", th.ansi[2]) : ("questionmark.circle.fill", a.status.color),
-                                  lines: [Self.place(of: tab)] + (prompt.map { ["❯ " + $0] } ?? []) + ["Worked \(TerminalView.formatDuration(d))"],
-                                  in: tab)
-            if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
+            // Your latest prompt and the start of Claude's answer, from its transcript (read off the main thread: it
+            // can be long); else, over ssh or for another agent, the last prompt found on screen.
+            let onScreen = self.terminal.currentBlock.flatMap { self.terminal.agentTurns(in: $0).last }
+                .map { self.terminal.agentPromptText($0) }
+            let session = a.kind == .claude && self.remote == nil ? self.pty?.foregroundPID.flatMap(ClaudeSessions.id(group:)) : nil
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let exchange = session.flatMap(ClaudeSessions.lastExchange)
+                DispatchQueue.main.async {
+                    guard let self, let tab = self.tab else { return }
+                    let th = Config.shared.theme
+                    let prompt = (exchange?.prompt ?? onScreen).map { ClaudeTranscript.summary($0, limit: 80) }
+                    let reply = exchange?.reply.map { ClaudeTranscript.summary($0) }
+                    var lines = [Self.place(of: tab)]
+                    if let prompt, !prompt.isEmpty { lines.append("❯ " + prompt) }
+                    if let reply, !reply.isEmpty { lines.append(reply) }
+                    lines.append("Worked \(TerminalView.formatDuration(d))")
+                    self.showCornerNotice(title: a.kind.name + (a.status == .done ? " finished" : " needs your input"),
+                                          symbol: a.status == .done ? ("checkmark.circle.fill", th.ansi[2]) : ("questionmark.circle.fill", a.status.color),
+                                          lines: lines, in: tab)
+                    if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
+                }
+            }
         }
         agentStopCheck = check
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: check)

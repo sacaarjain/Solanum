@@ -168,6 +168,7 @@ final class GitController {
             guard let self, NSApp.isActive, self.bar?.window?.isVisible == true else { return }
             self.refresh()
         }
+        timer?.tolerance = 1
     }
 
     deinit { timer?.invalidate() }

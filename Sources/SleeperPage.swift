@@ -367,6 +367,7 @@ final class SleeperPageView: NSView, ExtensionPage {
             guard let self, NSApp.isActive, self.window?.isVisible == true, !self.isHiddenOrHasHiddenAncestor else { return }
             self.model.load()
         }
+        timer?.tolerance = 10
     }
 
     private func modelChanged() {

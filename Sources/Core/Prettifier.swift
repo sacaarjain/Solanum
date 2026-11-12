@@ -16,6 +16,7 @@ enum Prettifier {
         case .yaml: return yaml(text)
         case .xml: return try xml(text)
         case .log: throw Failure(message: "Logs can't be beautified.")
+        case .code: throw Failure(message: "Beautify works on JSON, YAML and XML.")
         }
     }
 

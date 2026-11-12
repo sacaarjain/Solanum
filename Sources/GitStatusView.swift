@@ -295,6 +295,7 @@ final class GitStatusView: NSView {
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             if NSApp.isActive { self?.onRefresh?() }
         }
+        timer?.tolerance = 1
     }
 
     func show(_ report: GitStatusReport) {

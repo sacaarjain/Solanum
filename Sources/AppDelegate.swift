@@ -24,17 +24,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Writes to a pipe whose reader died (e.g. an ssh helper for the file sidebar) must fail, not kill the app.
         signal(SIGPIPE, SIG_IGN)
+        StartupTrace.mark("AppKit launch")
         Diagnostics.start()
+        StartupTrace.mark("Diagnostics")
         ShellIntegration.install()
+        StartupTrace.mark("ShellIntegration.install")
         InstalledAgents.shared.refresh()
+        StartupTrace.mark("InstalledAgents.refresh")
         Config.shared.load()
+        StartupTrace.mark("load")
         Config.shared.startWatching()
+        StartupTrace.mark("startWatching")
         Tooltips.shared.start()
+        StartupTrace.mark("Tooltips")
         SnippetStore.shared.load()
+        StartupTrace.mark("SnippetStore.load")
         AliasStore.shared.load()
+        StartupTrace.mark("AliasStore.load")
         buildMenu()
+        StartupTrace.mark("buildMenu")
         installTabSwitchMonitor()
+        StartupTrace.mark("installTabSwitchMonitor")
         registerHotKey()
+        StartupTrace.mark("registerHotKey")
         if Bundle.main.bundleIdentifier != nil {
             UNUserNotificationCenter.current().delegate = self
         }
@@ -46,19 +58,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             if self?.keepAwakeItem?.title != KeepAwake.menuTitle { self?.keepAwakeItem?.title = KeepAwake.menuTitle }
         }
         Extensions.start()
+        StartupTrace.mark("Extensions")
         reopenWorkspace()
+        StartupTrace.mark("reopenWorkspace")
         Updater.shared.start()
+        StartupTrace.mark("Updater")
         QuantumMoon.start()
+        StartupTrace.mark("QuantumMoon")
         // Saved periodically too, so a crash or force-quit loses at most a few seconds of layout.
         autosaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             SessionStore.save(self?.windows ?? [])
         }
+        autosaveTimer?.tolerance = 5
         // A snapshot run (DevTools) stays behind, so it doesn't take the keyboard from whoever's typing.
         if ProcessInfo.processInfo.environment["SOLANUM_SNAPSHOT"] == nil { NSApp.activate(ignoringOtherApps: true) }
         let opens = pendingOpens ?? []
         pendingOpens = nil
         opens.forEach { openInEditor($0.path) }
+        StartupTrace.mark("open files")
         SnapshotHelper.runIfRequested()
+        StartupTrace.mark("done")
     }
 
     /// Finder "Open With › Solanum", or dropping files on the Dock icon.

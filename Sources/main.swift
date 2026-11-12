@@ -11,6 +11,7 @@ if CommandLine.arguments.contains("--selftest") {
 
 PendingInstall.installAtLaunch()
 
+StartupTrace.mark("main")
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

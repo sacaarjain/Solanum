@@ -161,6 +161,8 @@ final class FileEditorView: NSView, NSTextViewDelegate {
     /// Colored as JSON, YAML, XML or a log (see SyntaxHighlighting.swift, LogFormat.swift); other files stay plain.
     private var language: SyntaxLanguage? { didSet { header.canFormat = language?.canFormat ?? false } }
     private var pendingHighlight: DispatchWorkItem?
+    /// Bumped by every edit and every coloring pass, so a scan finished in the background for an older text is dropped.
+    private var highlightGeneration = 0
     /// A log's coloring: the format chosen for it (an imported one, or the built-in), and the one picked from the
     /// header's menu instead, by name.
     private var logFormat: LogFormat? { didSet { header.logFormatName = logFormat?.name } }
@@ -346,6 +348,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 // A stat, in case the folder's events can't be had (a network drive, say).
                 if !self.fs.isRemote { self.syncWithDisk() }
             }
+            existsTimer?.tolerance = 0.5
             updateConnection()
             checkExists()
         }
@@ -686,6 +689,11 @@ final class FileEditorView: NSView, NSTextViewDelegate {
                 self.textView.hidesEscapes = escapes
                 if self.language == nil, escapes || LogFormatStore.formats.contains(where: { $0.matches(fileName: (self.path as NSString).lastPathComponent) }) {
                     self.language = .log
+                }
+                // A script without an extension: what it is from its `#!` line.
+                if self.language == nil, let first = text.prefix(300).split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first,
+                   let sniffed = SyntaxLanguage(firstLine: first) {
+                    self.language = sniffed
                 }
                 self.logPainted = IndexSet()
                 let caret = self.textView.selectedRange()
@@ -1324,6 +1332,7 @@ final class FileEditorView: NSView, NSTextViewDelegate {
         findTextChanged()
         guard language != nil else { return }
         if language == .log { logPainted = IndexSet() }
+        highlightGeneration += 1
         // Re-color once typing pauses rather than on every keystroke.
         pendingHighlight?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.highlightSyntax() }
@@ -1550,10 +1559,25 @@ final class FileEditorView: NSView, NSTextViewDelegate {
             logPainted = IndexSet()
             return paintVisibleLog()
         }
-        storage.beginEditing()
-        storage.addAttribute(.foregroundColor, value: Config.shared.theme.foreground, range: NSRange(location: 0, length: storage.length))
-        SyntaxHighlighter.highlight(storage, as: language)
-        storage.endEditing()
+        highlightGeneration += 1
+        let generation = highlightGeneration, theme = Config.shared.theme
+        func paint(_ tokens: [(range: NSRange, token: SyntaxToken)]) {
+            storage.beginEditing()
+            storage.addAttribute(.foregroundColor, value: theme.foreground, range: NSRange(location: 0, length: storage.length))
+            SyntaxHighlighter.paint(storage, tokens, theme: theme)
+            storage.endEditing()
+        }
+        // A small file is scanned right here (no moment uncolored); a big one off the main thread, so typing in it
+        // doesn't stall while it's scanned, and painted if nothing's changed since.
+        guard storage.length > 40_000 else { return paint(SyntaxScanner.tokens(in: storage.string, as: language)) }
+        let text = String(storage.string), length = storage.length
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let tokens = SyntaxScanner.tokens(in: text, as: language)
+            DispatchQueue.main.async {
+                guard let self, self.highlightGeneration == generation, storage.length == length else { return }
+                paint(tokens)
+            }
+        }
     }
 
     @objc func saveDocument(_ sender: Any?) {

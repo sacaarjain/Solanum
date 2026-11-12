@@ -292,10 +292,26 @@ enum ClaudeSessions {
     static func isID(_ s: String) -> Bool { !s.isEmpty && s.allSatisfy { $0.isHexDigit || $0 == "-" } }
 
     /// The chat has a transcript to resume (in any project folder; Claude Code names them after the folder).
-    static func hasTranscript(_ id: String) -> Bool {
+    static func hasTranscript(_ id: String) -> Bool { transcript(id) != nil }
+
+    /// Where the chat's transcript is, if it has one yet.
+    static func transcript(_ id: String) -> String? {
+        guard isID(id) else { return nil }
         let projects = NSHomeDirectory() + "/.claude/projects"
         let fm = FileManager.default
-        return ((try? fm.contentsOfDirectory(atPath: projects)) ?? []).contains { fm.fileExists(atPath: "\(projects)/\($0)/\(id).jsonl") }
+        return ((try? fm.contentsOfDirectory(atPath: projects)) ?? []).lazy.map { "\(projects)/\($0)/\(id).jsonl" }.first { fm.fileExists(atPath: $0) }
+    }
+
+    /// The latest prompt in the chat, and the start of Claude's answer to it (see ClaudeTranscript), read from the end
+    /// of its transcript: further back only if the prompt's not in the last stretch (long tool output since).
+    static func lastExchange(_ id: String) -> (prompt: String?, reply: String?)? {
+        guard let path = transcript(id) else { return nil }
+        for bytes in [2 << 20, 16 << 20, 64 << 20] {
+            guard let data = ClaudeTranscript.tail(of: path, bytes: bytes) else { return nil }
+            let found = ClaudeTranscript.lastExchange(data)
+            if found.prompt != nil || data.count < bytes - 1024 { return found }
+        }
+        return nil
     }
 
     /// The continue command made to resume `session`: its "-c" / "--continue" becomes "--resume <id>". A chat that
