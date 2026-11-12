@@ -497,6 +497,33 @@ enum SelfTest {
             check("channels: all get their turn, in order", started == [0, 1, 2, 3, 4])
             gate.enter { started.append(5) }
             check("channels: room again once they've ended", started.last == 5)
+            gate.leave()
+        }
+        do {
+            // The host refusing a channel (a MaxSessions lower than ours, or sessions stuck there): fewer at once,
+            // and a pause before anything new, instead of a refusal printed in the terminal every few seconds.
+            var clock = Date(timeIntervalSince1970: 1000)
+            var wakeups: [(TimeInterval, () -> Void)] = []
+            let gate = ChannelGate(limit: 4, now: { clock }, later: { wakeups.append(($0, $1)) })
+            var started: [Int] = []
+            for i in 0..<3 { gate.enter { started.append(i) } }
+            gate.refused()
+            gate.leave()
+            gate.enter { started.append(3) }
+            check("channels: a refusal holds new ones", started == [0, 1, 2] && gate.isHeld && gate.limit == 2 && wakeups.count == 1)
+            clock += wakeups[0].0
+            wakeups[0].1()
+            check("channels: then one fewer than were open", started == [0, 1, 2] && !gate.isHeld)
+            gate.leave()
+            check("channels: the next goes in under the new limit", started == [0, 1, 2, 3])
+            gate.refused()
+            check("channels: a refusal again waits longer", gate.limit == 1 && wakeups.count == 2 && wakeups[1].0 > wakeups[0].0)
+            clock += 61
+            gate.opened()
+            check("channels: back up one after a quiet minute", gate.limit == 2)
+            check("channels: what ssh says on a refusal",
+                  ChannelGate.isRefusal(255, "mux_client_request_session: session request failed: Session open refused by peer")
+                  && !ChannelGate.isRefusal(1, "Session open refused by peer") && !ChannelGate.isRefusal(255, "Connection closed"))
         }
         do {
             // Commands on an ssh host, found from Enter at its prompt.
