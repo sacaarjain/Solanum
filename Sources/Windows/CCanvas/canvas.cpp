@@ -718,6 +718,94 @@ int32_t sol_canvas_load_image_file(SolCanvas *canvas, const uint16_t *path, int3
     return static_cast<int32_t>(canvas->images.size()) - 1;
 }
 
+namespace {
+/// A number from a GIF frame's metadata ("/imgdesc/Left", "/grctlext/Delay"…), or `fallback`.
+UINT gifNumber(IWICMetadataQueryReader *reader, const wchar_t *name, UINT fallback) {
+    if (!reader) return fallback;
+    PROPVARIANT value;
+    PropVariantInit(&value);
+    UINT out = fallback;
+    if (SUCCEEDED(reader->GetMetadataByName(name, &value))) {
+        if (value.vt == VT_UI1) out = value.bVal;
+        else if (value.vt == VT_UI2) out = value.uiVal;
+        else if (value.vt == VT_UI4) out = value.ulVal;
+    }
+    PropVariantClear(&value);
+    return out;
+}
+}
+
+int32_t sol_canvas_load_image_frames(SolCanvas *canvas, const uint16_t *path, int32_t maxSide, int32_t *images, int32_t *delays, int32_t capacity) {
+    if (capacity < 1) return -1;
+    ComPtr<IWICBitmapDecoder> decoder;
+    if (FAILED(canvas->wic->CreateDecoderFromFilename(reinterpret_cast<const wchar_t *>(path), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder))) return -1;
+    UINT count = 0;
+    GUID format = {};
+    decoder->GetContainerFormat(&format);
+    if (FAILED(decoder->GetFrameCount(&count)) || count == 0) return -1;
+    if (format != GUID_ContainerFormatGif || count == 1) {
+        images[0] = sol_canvas_load_image_file(canvas, path, maxSide);
+        delays[0] = 0;
+        return images[0] < 0 ? -1 : 1;
+    }
+    // The GIF's own canvas; each frame is drawn onto it at its offset and then disposed of as it says.
+    ComPtr<IWICMetadataQueryReader> top;
+    decoder->GetMetadataQueryReader(&top);
+    UINT W = gifNumber(top.Get(), L"/logscrdesc/Width", 0), H = gifNumber(top.Get(), L"/logscrdesc/Height", 0);
+    if (W == 0 || H == 0) {
+        ComPtr<IWICBitmapFrameDecode> first;
+        if (FAILED(decoder->GetFrame(0, &first)) || FAILED(first->GetSize(&W, &H))) return -1;
+    }
+    if (W > 4096 || H > 4096) return -1;
+    const float shrink = (std::min)(1.0f, static_cast<float>(maxSide) / static_cast<float>((std::max)(W, H)));
+    const UINT sw = (std::max)(1u, static_cast<UINT>(W * shrink)), sh = (std::max)(1u, static_cast<UINT>(H * shrink));
+    std::vector<BYTE> screen(static_cast<size_t>(W) * H * 4, 0), saved;
+    int32_t made = 0;
+    for (UINT i = 0; i < count && made < capacity; i++) {
+        ComPtr<IWICBitmapFrameDecode> frame;
+        ComPtr<IWICFormatConverter> converter;
+        UINT fw = 0, fh = 0;
+        if (FAILED(decoder->GetFrame(i, &frame)) || FAILED(frame->GetSize(&fw, &fh))) break;
+        ComPtr<IWICMetadataQueryReader> meta;
+        frame->GetMetadataQueryReader(&meta);
+        const UINT left = gifNumber(meta.Get(), L"/imgdesc/Left", 0), topY = gifNumber(meta.Get(), L"/imgdesc/Top", 0);
+        const UINT delay = gifNumber(meta.Get(), L"/grctlext/Delay", 10), disposal = gifNumber(meta.Get(), L"/grctlext/Disposal", 0);
+        std::vector<BYTE> pixels(static_cast<size_t>(fw) * fh * 4);
+        if (FAILED(canvas->wic->CreateFormatConverter(&converter)) ||
+            FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom)) ||
+            FAILED(converter->CopyPixels(nullptr, fw * 4, static_cast<UINT>(pixels.size()), pixels.data()))) break;
+        if (disposal == 3) saved = screen;
+        for (UINT y = 0; y < fh && topY + y < H; y++) {
+            for (UINT x = 0; x < fw && left + x < W; x++) {
+                const BYTE *p = &pixels[(static_cast<size_t>(y) * fw + x) * 4];
+                if (p[3] == 0) continue;
+                std::copy(p, p + 4, &screen[(static_cast<size_t>(topY + y) * W + left + x) * 4]);
+            }
+        }
+        // This frame as shown: the whole canvas, shrunk to fit.
+        ComPtr<IWICBitmap> full;
+        ComPtr<IWICBitmapScaler> scaler;
+        ComPtr<IWICBitmap> copy;
+        if (FAILED(canvas->wic->CreateBitmapFromMemory(W, H, GUID_WICPixelFormat32bppPBGRA, W * 4, static_cast<UINT>(screen.size()), screen.data(), &full)) ||
+            FAILED(canvas->wic->CreateBitmapScaler(&scaler)) || FAILED(scaler->Initialize(full.Get(), sw, sh, WICBitmapInterpolationModeFant)) ||
+            FAILED(canvas->wic->CreateBitmapFromSource(scaler.Get(), WICBitmapCacheOnLoad, &copy))) break;
+        canvas->images.push_back(copy);
+        canvas->deviceImages.emplace_back();
+        images[made] = static_cast<int32_t>(canvas->images.size()) - 1;
+        // Browsers show a delay under 20 ms as 100 ms.
+        delays[made] = delay < 2 ? 100 : static_cast<int32_t>(delay) * 10;
+        made++;
+        if (disposal == 2) {
+            for (UINT y = 0; y < fh && topY + y < H; y++) {
+                std::fill_n(&screen[(static_cast<size_t>(topY + y) * W + left) * 4], static_cast<size_t>((std::min)(fw, W - left)) * 4, BYTE(0));
+            }
+        } else if (disposal == 3 && !saved.empty()) {
+            screen = saved;
+        }
+    }
+    return made > 0 ? made : -1;
+}
+
 void sol_canvas_fill_rounded_image(SolCanvas *canvas, int32_t image, float x, float y, float width, float height, float radius,
                                    float ix, float iy, float iw, float ih) {
     if (image < 0 || image >= static_cast<int32_t>(canvas->images.size()) || !canvas->images[static_cast<size_t>(image)]) return;

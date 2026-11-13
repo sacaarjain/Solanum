@@ -87,6 +87,10 @@ void sol_canvas_set_wallpaper_zoom(SolCanvas *canvas, float zoom);
 int32_t sol_image_file_size(SolCanvas *canvas, const uint16_t *path, int32_t *width, int32_t *height);
 /// A picture file as an image to draw, no bigger than `maxSide` either way; -1 if it can't be read.
 int32_t sol_canvas_load_image_file(SolCanvas *canvas, const uint16_t *path, int32_t maxSide);
+/// Every frame of a picture file as images to draw (an animated GIF's frames composed as a browser shows them, each
+/// no bigger than `maxSide`), into `images`, with how long each shows in `delays` (milliseconds; 0 for a still).
+/// Returns how many, at most `capacity`; -1 if it can't be read.
+int32_t sol_canvas_load_image_frames(SolCanvas *canvas, const uint16_t *path, int32_t maxSide, int32_t *images, int32_t *delays, int32_t capacity);
 /// A rounded rectangle filled with an image laid out at (ix, iy, iw, ih): cropped to the rectangle and its corners.
 void sol_canvas_fill_rounded_image(SolCanvas *canvas, int32_t image, float x, float y, float width, float height, float radius,
                                    float ix, float iy, float iw, float ih);

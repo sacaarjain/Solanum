@@ -77,9 +77,11 @@ final class AppSettings {
 
     /// The theme's planet, beside its name in the status bar, as on the Mac: a planet theme's, or a custom theme's that's
     /// named after one. VS Code's themes have none.
+    /// The theme's planet, by its name or picked as its icon (so the Quantum Moon's tricks follow the moon wherever it's
+    /// chosen, as on the Mac).
     var themePlanet: PlanetArt.Planet? {
-        let name = themeName, custom = customThemes.contains { $0.name == name }
-        return PlanetArt.planet(themeName: name, isVSCode: !custom && ThemeSpecs.vsCode.contains { $0.name == name })
+        if case .planet(let p)? = ThemeIcon.of(theme) { return p }
+        return nil
     }
 
     var theme: ThemeSpec {

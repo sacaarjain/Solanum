@@ -123,6 +123,8 @@ final class Canvas {
     }
 
     private var loadedArt: [String: Int32] = [:]
+    /// Theme icon pictures' frames and delays, by file and version (see ThemeIcons.swift).
+    var loadedFrames: [String: (images: [Int32], delays: [Int32])] = [:]
 
     /// Draws a piece of Solanum's art (`ArtData`) into a rectangle, from the rendering made for this display scale.
     /// `tint`: every pixel in that color, keeping its shape (a grey symbol drawn in the theme's text color).

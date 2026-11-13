@@ -95,6 +95,27 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-git-bar"), CommandLin
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }
 
+// The card hovering the theme's name at 200%, with a picture as its icon (a GIF: its frames at 0, 0.4 and 0.9 s, along
+// the bottom). --draw-theme-icon <picture> <png>
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-theme-icon"), CommandLine.arguments.indices.contains(flag + 2) {
+    let width: Float = 900, height: Float = 420, picture = CommandLine.arguments[flag + 1]
+    guard let canvas = Canvas(width: Int(width), height: Int(height), fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    var chrome = WindowChrome(canvas: canvas, layout: WindowLayout(width: width, height: 300, scale: 2, tabCount: 1), tabs: ["~"], activeTab: 0)
+    chrome.themeIcon = .picture(picture)
+    chrome.themeTitle = "My Theme"
+    chrome.themeName = "MY THEME"
+    chrome.themeHovered = true
+    chrome.draw()
+    chrome.drawThemeHoverCard()
+    for (k, t) in [0, 0.4, 0.9].enumerated() {
+        canvas.drawThemeIcon(.picture(picture), UIRect(x: 40 + Float(k) * 120, y: 310, width: 96, height: 96), scale: 2, time: t)
+    }
+    canvas.drawThemeIcon(.planet(.quantumMoon), UIRect(x: 420, y: 310, width: 96, height: 96), scale: 2)
+    canvas.drawThemeIcon(.flower, UIRect(x: 540, y: 310, width: 96, height: 96), scale: 2)
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: CommandLine.arguments[flag + 2]) ? 0 : 1)
+}
+
 // Keep Awake's cup large: off, then five moments of its steam rising, and at 100% and 200%. --draw-cup <png>
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-cup"), CommandLine.arguments.indices.contains(flag + 1) {
     guard let canvas = Canvas(width: 1100, height: 260, fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.chrome) >= 0 else { exit(1) }

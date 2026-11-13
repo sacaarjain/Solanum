@@ -518,6 +518,9 @@ final class TerminalWindow {
     private static let groupTimer: UINT_PTR = 8
     /// While a new theme's colors ease in.
     private static let themeTimer: UINT_PTR = 9
+    /// While the theme's icon is a GIF: its frames.
+    private static let iconTimer: UINT_PTR = 10
+    private var iconTimerRunning = false
 
     /// A group opening or closing, as on the Mac: its tabs slide out of its chip, or back into it, over a fifth of a second.
     private struct GroupMotion {
@@ -940,10 +943,20 @@ final class TerminalWindow {
         chrome.steamTime = steaming ? Date().timeIntervalSinceReferenceDate : nil
         // As on the Mac: a planet theme's planet, Solanum Default's flower, and nothing for the rest. The Quantum Moon
         // may have wandered off (see QuantumMoon), leaving its name.
-        let theme = AppSettings.shared.themeName, custom = AppSettings.shared.customThemes.contains { $0.name == theme }
-        chrome.themePlanet = AppSettings.shared.themePlanet
-        if QuantumMoon.active && !QuantumMoon.at(.home) { chrome.themePlanet = nil }
-        chrome.showsThemeIcon = AppSettings.shared.themeIcon && (chrome.themePlanet != nil || (!custom && theme == ThemeSpecs.defaultName))
+        // Or one picked in Edit Theme, a picture of your own included (see ThemeIcon).
+        var icon = AppSettings.shared.themeIcon ? ThemeIcon.of(AppSettings.shared.theme) : nil
+        if QuantumMoon.active && !QuantumMoon.at(.home), case .planet(.quantumMoon)? = icon { icon = nil }
+        chrome.themeIcon = icon
+        chrome.themeTitle = AppSettings.shared.themeName
+        chrome.iconTime = Date().timeIntervalSinceReferenceDate
+        // A GIF plays: the window redraws as its frames come, while it's shown.
+        if icon?.isAnimated == true, IsIconic(hwnd) == false, !iconTimerRunning {
+            iconTimerRunning = true
+            _ = SetTimer(hwnd, Self.iconTimer, 50, nil)
+        } else if icon?.isAnimated != true, iconTimerRunning {
+            iconTimerRunning = false
+            KillTimer(hwnd, Self.iconTimer)
+        }
         chrome.moonInCorner = QuantumMoon.at(.flower)
         chrome.moonByFolders = QuantumMoon.at(.folders)
         chrome.moonHovered = moonHovered
@@ -1012,7 +1025,11 @@ final class TerminalWindow {
         drawPalette(on: canvas)
         drawReading(on: canvas)
         drawDragGhost(on: canvas)
-        if menu == nil { chrome(on: canvas, layout: layout).drawKeepAwakeTip() }
+        if menu == nil {
+            let bar = chrome(on: canvas, layout: layout)
+            bar.drawKeepAwakeTip()
+            bar.drawThemeHoverCard()
+        }
         if let menu { MenuView(canvas: canvas, menu: menu).draw() }
         if let dialog { DialogView(canvas: canvas, dialog: dialog, width: Float(clientWidth), height: Float(clientHeight), scale: scale).draw() }
         _ = sol_canvas_end(canvas.raw)
@@ -1171,6 +1188,12 @@ final class TerminalWindow {
                 slideStep()
             } else if wParam == WPARAM(Self.groupTimer) {
                 groupStep()
+            } else if wParam == WPARAM(Self.iconTimer) {
+                // Only the status bar and the card over it change.
+                let l = currentLayout, top = themeHovered ? l.statusBar.y - 120 * scale : l.statusBar.y
+                var rect = RECT(left: 0, top: LONG(max(top, 0)), right: LONG(clientWidth), bottom: LONG(clientHeight))
+                InvalidateRect(hwnd, &rect, false)
+                if IsIconic(hwnd) { iconTimerRunning = false; KillTimer(hwnd, Self.iconTimer) }
             } else if wParam == WPARAM(Self.themeTimer) {
                 // Every window shows the same colors on the way; whichever ticks first moves them along.
                 if !TerminalPalette.stepFade() { KillTimer(hwnd, Self.themeTimer) }

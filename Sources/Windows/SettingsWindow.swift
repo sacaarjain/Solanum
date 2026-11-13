@@ -535,6 +535,8 @@ final class SettingsWindow {
             .themePreview,
             .header("Name"),
             .card([Row(glyph: 0xE70F, title: "Theme name", detail: "Shown on its card and in the Theme menu.", control: name)]),
+            .header("Icon"),
+            .card(iconRows()),
             .header("Base colors"),
             .card([
                 Row(glyph: 0xE771, title: "Background", control: color("background", { $0.background }) { $0.with(background: $1) }),
@@ -555,6 +557,31 @@ final class SettingsWindow {
             .links([("Duplicate", { [weak self] in self?.duplicateEditedTheme() }),
                     (Self.deleteTitle, { [weak self] in self?.deleteEditedTheme() })]),
         ]
+    }
+
+    /// What the theme shows beside its name and on its card: a planet (the Quantum Moon's tricks follow it), the
+    /// flower, none, or a picture of your own, an animated GIF playing. As the Mac's Edit Theme › Icon.
+    private func iconRows() -> [Row] {
+        let choices = ThemeIcon.choices
+        let picked = draft?.icon
+        let own = picked.flatMap { v in choices.contains { $0.value == v } ? nil : v }
+        var options = choices.map(\.title)
+        if let own { options.append(ThemeIcon.title(of: own)) }
+        let choice = Control.choice(options: options, get: { [weak self] in ThemeIcon.title(of: self?.draft?.icon) }, set: { [weak self] title in
+            guard let self, let d = self.draft, let hit = choices.first(where: { $0.title == title }) else { return }
+            self.draftChanged(d.with(icon: .some(hit.value)))
+        })
+        return [Row(glyph: 0xE790, title: "Icon", detail: "Beside its name in the status bar and on its card. From its name: an Outer Wilds theme's planet.",
+                    control: choice),
+                Row(glyph: 0xEB9F, title: "Picture of your own",
+                    detail: own.map { "\(ThemeIcon.title(of: $0)), copied into the themes folder." } ?? "A PNG, JPEG or animated GIF, which plays.",
+                    control: .button(own == nil ? "Choose…" : "Change…", { [weak self] in self?.chooseThemeIcon() }))]
+    }
+
+    private func chooseThemeIcon() {
+        guard let d = draft, let path = ThemeFiles.pickIcon(owner: hwnd) else { return }
+        guard let file = ThemeFiles.importImage(path, for: savedTheme?.name ?? d.name, as: "icon") else { _ = MessageBeep(UINT(bitPattern: -1)); return }
+        draftChanged(d.with(icon: .some(file)))
     }
 
     /// A photo behind the theme, blurred and tinted with its background color as the wallpaper is.
@@ -1205,6 +1232,12 @@ final class SettingsWindow {
         }
         label(target, spec.name, UIRect(x: card.x + 12 * s, y: preview.maxY, width: card.width - 64 * s, height: strip), pixels: 12.5 * s, semibold: true,
               color: colors.foreground)
+        // Its icon at the top right, as on the Mac.
+        if let icon = ThemeIcon.of(spec) {
+            let side = (22 * s).rounded()
+            target.drawThemeIcon(icon, UIRect(x: (preview.maxX - side - 10 * s).rounded(), y: (preview.y + 8 * s).rounded(), width: side, height: side),
+                                 scale: s, time: Date().timeIntervalSinceReferenceDate)
+        }
         if interactive, let pencil = pencilRect(spec, r) {
             sol_canvas_draw_icon(c, pencil.x, pencil.y, pencil.width, pencil.height, 0xE70F, 11 * s, colors.foreground, hover ? 1 : 0.55)
         }

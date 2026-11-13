@@ -89,14 +89,14 @@ enum ThemeFiles {
     }
 
     /// A picture copied into the themes folder for `theme`, so the theme keeps it wherever the original goes; its name there.
-    static func importImage(_ path: String, for theme: String) -> String? {
+    static func importImage(_ path: String, for theme: String, as kind: String = "background") -> String? {
         guard let dir = folder else { return nil }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
         let slug = theme.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }.reduce(into: "") { $0.append($1) }
-        var name = "\(slug.isEmpty ? "theme" : slug)-background.\(ext.isEmpty ? "jpg" : ext)", n = 2
+        var name = "\(slug.isEmpty ? "theme" : slug)-\(kind).\(ext.isEmpty ? "jpg" : ext)", n = 2
         while FileManager.default.fileExists(atPath: dir.appendingPathComponent(name).path) {
-            name = "\(slug.isEmpty ? "theme" : slug)-background-\(n).\(ext.isEmpty ? "jpg" : ext)"
+            name = "\(slug.isEmpty ? "theme" : slug)-\(kind)-\(n).\(ext.isEmpty ? "jpg" : ext)"
             n += 1
         }
         guard (try? FileManager.default.copyItem(atPath: path, toPath: dir.appendingPathComponent(name).path)) != nil else { return nil }
@@ -228,6 +228,11 @@ enum ThemeFiles {
     }
 
     /// A picture for a theme's background.
+    /// A picture for a theme's icon: a PNG, JPEG or (animated) GIF.
+    static func pickIcon(owner: HWND?) -> String? {
+        pickFile(owner: owner, title: "Choose an Icon", filter: "Pictures\u{0}*.png;*.jpg;*.jpeg;*.gif;*.bmp\u{0}All files\u{0}*.*\u{0}\u{0}")
+    }
+
     static func pickImage(owner: HWND?) -> String? {
         pickFile(owner: owner, title: "Choose a Background Picture",
                  filter: "Pictures\u{0}*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp;*.heic;*.tif;*.tiff\u{0}All files\u{0}*.*\u{0}\u{0}")
@@ -261,11 +266,12 @@ extension ThemeSpec {
     /// A copy with some colors changed. A `nil` gradient, cursor or selection removes it; leaving one out keeps it.
     func with(name: String? = nil, background: String? = nil, background2: String?? = nil, foreground: String? = nil,
               cursor: String?? = nil, selection: String?? = nil, accent: String? = nil, ansi: [String]? = nil,
-              image: ThemeImage?? = nil) -> ThemeSpec {
+              image: ThemeImage?? = nil, icon: String?? = nil) -> ThemeSpec {
         var spec = ThemeSpec(name: name ?? self.name, bg: background ?? self.background, bg2: background2 ?? self.background2,
                              fg: foreground ?? self.foreground, cursor: cursor ?? self.cursor, selection: selection ?? self.selection,
                              accent: accent ?? self.accent, chrome: chrome, ansi: ansi ?? self.ansi)
         spec.image = image ?? self.image
+        spec.icon = icon ?? self.icon
         return spec
     }
 }

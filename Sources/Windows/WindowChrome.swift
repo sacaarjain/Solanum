@@ -91,9 +91,13 @@ struct WindowChrome {
     var folder: String?
     var home: String?
     var themeName = ThemeSpecs.defaultName.uppercased()
-    var showsThemeIcon = true
-    /// The theme's planet beside its name, as on the Mac; nil shows Solanum's flower (for Solanum Default).
-    var themePlanet: PlanetArt.Planet?
+    /// The theme's icon beside its name (see ThemeIcon): its planet, the flower, a picture of your own, or none.
+    var themeIcon: ThemeIcon?
+    var showsThemeIcon: Bool { themeIcon != nil }
+    /// The clock a GIF icon's frames go by.
+    var iconTime: Double = 0
+    /// The theme's own name, as typed (the status bar shows it in capitals), for the card hovering it.
+    var themeTitle = ThemeSpecs.defaultName
     /// The Quantum Moon, wandered off from beside the theme name (see QuantumMoon): into the flower's corner, or by the
     /// folder path, where it can be clicked.
     var moonInCorner = false
@@ -461,6 +465,36 @@ struct WindowChrome {
         label(text, UIRect(x: box.x + 9 * scale, y: box.y, width: box.width - 18 * scale + 1, height: box.height), pixels: px)
     }
 
+    /// Where the card hovering the theme's name goes: just above it, lined up with its right end.
+    func themeHoverCard() -> UIRect? {
+        guard themeHovered, !layout.isSplit else { return nil }
+        let s = scale, spot = themeSpot()
+        let nameWidth = min(220 * s, width(of: themeTitle, pixels: 11.5 * s, semibold: true))
+        let w = max(44 * s + 2 * 12 * s + 16 * s, nameWidth + 2 * 12 * s).rounded(), h = (12 + 44 + 8 + 15 + 12 - 2) * s
+        let x = min(spot.maxX - w, layout.statusBar.maxX - w - 6 * s)
+        return UIRect(x: max(x, 6 * s).rounded(), y: (layout.statusBar.y - h - 6 * s).rounded(), width: w, height: h.rounded())
+    }
+
+    /// Hovering the theme's name shows its icon, bigger, with the name below, as on the Mac. The Quantum Moon, while it's
+    /// wandered off the status bar, isn't given away (`themeIcon` is nil then). Drawn over everything else.
+    func drawThemeHoverCard() {
+        guard let box = themeHoverCard() else { return }
+        let s = scale, c = canvas.raw, radius = 10 * s
+        sol_canvas_fill_rounded(c, box.x, box.y + 3 * s, box.width, box.height, radius, 0x000000, 0.28)
+        sol_canvas_fill_rounded(c, box.x, box.y, box.width, box.height, radius, TerminalPalette.mix(TerminalPalette.isDark ? 0xFFFFFF : 0x000000, TerminalPalette.surface, 0.04), 1)
+        sol_canvas_stroke_rounded(c, box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1, radius, fg, TerminalPalette.isDark ? 0.16 : 0.18, 1)
+        let side = (44 * s).rounded()
+        let r = UIRect(x: (box.x + (box.width - side) / 2).rounded(), y: box.y + 12 * s, width: side, height: side)
+        if let themeIcon {
+            canvas.drawThemeIcon(themeIcon, r, scale: scale, time: iconTime)
+        } else {
+            // No icon of its own: a palette.
+            sol_canvas_draw_icon(c, r.x, r.y, r.width, r.height, 0xE790, 26 * s, fg, 0.55)
+        }
+        let px = 11.5 * s, nameWidth = min(width(of: themeTitle, pixels: px, semibold: true), box.width - 16 * s)
+        label(themeTitle, UIRect(x: (box.x + (box.width - nameWidth) / 2).rounded(), y: r.maxY + 8 * s, width: nameWidth + 1, height: 16 * s), pixels: px, semibold: true, alpha: 0.95)
+    }
+
     /// The theme's name and icon in the status bar, which open the theme menu.
     func themeSpot() -> UIRect {
         // Not while split, where the right column's folder goes, as on the Mac.
@@ -641,12 +675,12 @@ struct WindowChrome {
             let spot = themeSpot()
             if themeHovered { sol_canvas_fill_rounded(canvas.raw, spot.x, spot.y + 3 * scale, spot.width, spot.height - 6 * scale, 4 * scale, fg, 0.10) }
             label(themeName, UIRect(x: themeX, y: bar.y, width: themeWidth + 2, height: bar.height), pixels: themePixels, semibold: true, alpha: themeHovered ? 0.9 : 0.55)
-            if showsThemeIcon, let planet = themePlanet {
-                let side = (18 * scale).rounded()
-                canvas.drawPlanet(planet, UIRect(x: themeX - side - 4 * scale, y: (bar.midY - side / 2).rounded(), width: side, height: side))
-            } else if showsThemeIcon {
-                let side = (16 * scale).rounded()
-                canvas.drawArt("flowerOutline", UIRect(x: themeX - side - 5 * scale, y: (bar.midY - side / 2).rounded(), width: side, height: side), scale: scale)
+            if let themeIcon {
+                // The flower is drawn a touch smaller, as its outline fills its square.
+                let flower = themeIcon == .flower
+                let side = ((flower ? 16 : 18) * scale).rounded()
+                canvas.drawThemeIcon(themeIcon, UIRect(x: themeX - side - (flower ? 5 : 4) * scale, y: (bar.midY - side / 2).rounded(), width: side, height: side),
+                                     scale: scale, time: iconTime, outline: true)
             }
         }
 
