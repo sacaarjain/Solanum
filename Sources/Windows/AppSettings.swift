@@ -36,6 +36,9 @@ final class AppSettings {
     var audibleBell: Bool { file.bool("audible-bell", false) }
     var boldIsBright: Bool { file.bool("bold-is-bright", false) }
     var copyOnSelect: Bool { file.bool("copy-on-select", false) }
+    /// The file editor's indent: columns per level and whether Tab inserts spaces (a file's own style wins; Indentation).
+    var editorTabSize: Int { [2, 4, 8].contains(Int(file.number("editor-tab-size", 4, in: 1...16))) ? Int(file.number("editor-tab-size", 4, in: 1...16)) : 4 }
+    var editorInsertSpaces: Bool { file.bool("editor-insert-spaces", true) }
     var scrollback: Int { Int(file.number("scrollback-lines", 10000, in: 100...200_000)) }
     /// Lines the terminal and open pages move per notch of a mouse wheel; a touchpad's small steps move it in proportion.
     var scrollSpeed: Double { file.number("scroll-speed", 3, in: 0.25...20) }

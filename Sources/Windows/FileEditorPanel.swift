@@ -319,6 +319,9 @@ final class FileEditorPanel: ColumnPanel {
         let followingEnd = wasText && (tailing || scrollRow + visibleRows >= rowCount)
         lines = text.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" }).map(String.init)
         if lines.isEmpty { lines = [""] }
+        // A script with no extension, by its #! line (or XML by its <?xml).
+        if language == nil, let first = lines.first { language = SyntaxLanguage(firstLine: Substring(first)) }
+        if firstRead { detectIndentation() }
         readOnly = cut
         content = .text
         caret = clamp(caret)
@@ -558,11 +561,11 @@ final class FileEditorPanel: ColumnPanel {
         return Pos(line: line, col: min(max(p.col, 0), lines[line].count))
     }
 
-    /// How many cells the first `col` characters of a line take: a tab four.
+    /// How many cells the first `col` characters of a line take: a tab `tabWidth`.
     private func cells(_ line: Int, upTo col: Int) -> Int {
         let hidden = escapeMask(line)
         var n = 0
-        for (i, ch) in lines[line].enumerated() where i < col && !(hidden?[i] ?? false) { n += ch == "\t" ? 4 : 1 }
+        for (i, ch) in lines[line].enumerated() where i < col && !(hidden?[i] ?? false) { n += ch == "\t" ? tabWidth : 1 }
         return n
     }
 
@@ -571,7 +574,7 @@ final class FileEditorPanel: ColumnPanel {
         let hidden = escapeMask(line)
         var n = 0
         for (i, ch) in lines[line].enumerated() where !(hidden?[i] ?? false) {
-            let w = ch == "\t" ? 4 : 1
+            let w = ch == "\t" ? tabWidth : 1
             if cell < n + (w + 1) / 2 { return i }
             n += w
         }
@@ -579,9 +582,10 @@ final class FileEditorPanel: ColumnPanel {
     }
 
     private func shown(_ line: Int) -> String {
-        guard let hidden = escapeMask(line) else { return lines[line].replacingOccurrences(of: "\t", with: "    ") }
+        let tab = String(repeating: " ", count: tabWidth)
+        guard let hidden = escapeMask(line) else { return lines[line].replacingOccurrences(of: "\t", with: tab) }
         var out = ""
-        for (i, ch) in lines[line].enumerated() where !hidden[i] { if ch == "\t" { out += "    " } else { out.append(ch) } }
+        for (i, ch) in lines[line].enumerated() where !hidden[i] { if ch == "\t" { out += tab } else { out.append(ch) } }
         return out
     }
 
@@ -785,9 +789,33 @@ final class FileEditorPanel: ColumnPanel {
         goalColumn = goal
     }
 
-    private var indentUnit: String {
-        if lines.prefix(400).contains(where: { $0.hasPrefix("\t") }) { return "\t" }
-        return language == .json || language == .yaml || isMarkdown ? "  " : "    "
+    /// How this file is indented (Core's Indentation, as VS Code works it out on opening): what Tab inserts and how wide
+    /// a tab is drawn. From the file's own lines, else Settings › Text & Size › Editor.
+    private(set) var indentation = Indentation(tabs: false, size: 4)
+    var tabWidth: Int { indentation.size }
+
+    private func detectIndentation() {
+        let s = AppSettings.shared
+        let name = (path as NSString).lastPathComponent.lowercased()
+        let tabsByDefault = language == .code(.makefile) || name.hasSuffix(".go")
+        indentation = Indentation.detect(lines.prefix(5000).joined(separator: "\n"), spaces: s.editorInsertSpaces, size: s.editorTabSize,
+                                         tabsByDefault: tabsByDefault)
+    }
+
+    private var indentUnit: String { indentation.tabs ? "\t" : String(repeating: " ", count: indentation.size) }
+
+    /// What Tab types at the caret: a tab, or spaces to the next tab stop.
+    private var tabText: String {
+        indentation.tabs ? "\t" : indentation.spaces(at: cells(caret.line, upTo: caret.col))
+    }
+
+    /// Backspace in a line's leading spaces goes back to the tab stop before, as VS Code does: the column to delete to.
+    private func indentBackspace() -> Pos? {
+        guard selection == nil, !indentation.tabs, caret.col > 0 else { return nil }
+        let before = lines[caret.line].prefix(caret.col)
+        guard before.allSatisfy({ $0 == " " }) else { return nil }
+        let n = indentation.backspace(at: caret.col, spacesBefore: before.count)
+        return n > 1 ? Pos(line: caret.line, col: caret.col - n) : nil
     }
 
     /// Tab and Shift+Tab over selected lines: each indented, or out.
@@ -798,7 +826,7 @@ final class FileEditorPanel: ColumnPanel {
             for l in a.line...b.line {
                 if out {
                     let lead = lines[l].prefix { $0 == " " || $0 == "\t" }
-                    let drop = lead.hasPrefix("\t") ? 1 : min(lead.count, unit == "\t" ? 4 : unit.count)
+                    let drop = lead.hasPrefix("\t") ? 1 : min(lead.prefix { $0 == " " }.count, indentation.size)
                     lines[l] = String(lines[l].dropFirst(drop))
                 } else if !lines[l].isEmpty || a.line == b.line {
                     lines[l] = unit + lines[l]
@@ -965,12 +993,12 @@ final class FileEditorPanel: ColumnPanel {
                 offset = 0
             }
         }
-        // From UTF-16 units to cells as drawn: a character takes its first unit's color, a tab four cells.
+        // From UTF-16 units to cells as drawn: a character takes its first unit's color, a tab `tabWidth` cells.
         lineColors = lines.enumerated().map { i, text in
             var out: [UInt32] = [], unit = 0
             for ch in text {
                 let c = perUnit[i][min(unit, max(perUnit[i].count - 1, 0))]
-                if ch == "\t" { out += [c, c, c, c] } else { out.append(c) }
+                if ch == "\t" { out += [UInt32](repeating: c, count: tabWidth) } else { out.append(c) }
                 unit += ch.utf16.count
             }
             return out
@@ -1070,7 +1098,7 @@ final class FileEditorPanel: ColumnPanel {
                 guard let cell else { continue }
                 let number = String(cell.number), w = Float(number.count) * cellSize.width
                 p.mono(number, x: x0 + gutter - 10 * s - w, y: y, maxCells: number.count, color: TerminalPalette.mix(p.fg, TerminalPalette.background, 0.4))
-                let text = cell.text.replacingOccurrences(of: "\t", with: "    ")
+                let text = cell.text.replacingOccurrences(of: "\t", with: String(repeating: " ", count: tabWidth))
                 p.mono(text, x: x0 + gutter, y: y, maxCells: cellsPerSide, color: p.fg)
             }
         }
@@ -1375,7 +1403,8 @@ final class FileEditorPanel: ColumnPanel {
                 move(to: Pos(line: caret.line, col: caret.col == lead ? 0 : lead), extend: shift)
             }
         case Win.VK_END: move(to: ctrl ? Pos(line: lines.count - 1, col: lines[lines.count - 1].count) : Pos(line: caret.line, col: lines[caret.line].count), extend: shift)
-        case Win.VK_BACK: delete(forward: false, word: ctrl)
+        case Win.VK_BACK:
+            if !ctrl, let to = indentBackspace() { anchor = to; insert("", kind: .other) } else { delete(forward: false, word: ctrl) }
         case Win.VK_DELETE:
             if shift && !ctrl, let t = selectedText { copy(t); deleteSelection() } else { delete(forward: true, word: ctrl) }
         case Win.VK_RETURN:
@@ -1384,7 +1413,7 @@ final class FileEditorPanel: ColumnPanel {
             let lead = String(lines[caret.line].prefix { $0 == " " || $0 == "\t" })
             insert("\n" + lead, kind: .other)
         case Win.VK_TAB:
-            if shift || (selection.map { $0.0.line != $0.1.line } ?? false) { indent(shift) } else { insert(indentUnit, kind: .other) }
+            if shift || (selection.map { $0.0.line != $0.1.line } ?? false) { indent(shift) } else { insert(tabText, kind: .other) }
         case Win.VK_ESCAPE:
             if compareRows != nil { compareRows = nil; invalidate() }
             else if anchor != nil || markedLine != nil { anchor = nil; markedLine = nil; invalidate() }
@@ -1530,7 +1559,7 @@ extension FileEditorPanel {
                 if run.bold { bold[k] = true }
             }
         }
-        // From UTF-16 units to cells as drawn: a character takes its first unit's look, a tab four cells, a color code none.
+        // From UTF-16 units to cells as drawn: a character takes its first unit's look, a tab `tabWidth` cells, a color code none.
         let hidden = escapeMask(l)
         var look = LogLook(colors: [], bold: [], wash: paint.wash.map(Self.color))
         var unit = 0
@@ -1538,7 +1567,7 @@ extension FileEditorPanel {
             defer { unit += ch.utf16.count }
             if hidden?[i] ?? false { continue }
             let k = min(unit, max(units - 1, 0)), c = units > 0 ? colors[k] : fg, b = units > 0 && bold[k]
-            for _ in 0..<(ch == "\t" ? 4 : 1) {
+            for _ in 0..<(ch == "\t" ? tabWidth : 1) {
                 look.colors.append(c)
                 look.bold.append(b)
             }

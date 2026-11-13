@@ -1042,12 +1042,26 @@ enum WindowSelfTest {
         }, done: {
             guard let e = editor(), e.textLines != nil else { return false }
             e.press(button: .beautify)
-            // Colored as on the Mac: the key in the theme's blue, the number in its magenta.
+            // Colored as on the Mac: the key in the theme's blue, the number in its yellow.
             return e.textLines == ["{", #"  "a": 1,"#, #"  "b": ["#, "    1,", "    2", "  ]", "}"]
-                && e.colorAt(line: 1, cell: 2) == TerminalPalette.ansi[4] && e.colorAt(line: 1, cell: 7) == TerminalPalette.ansi[5]
+                && e.colorAt(line: 1, cell: 2) == TerminalPalette.ansi[4] && e.colorAt(line: 1, cell: 7) == TerminalPalette.ansi[3]
                 && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\editor.png") } ?? true)
         }))
         steps.append(Step(name: "editor: and saves", action: { key(0x53, ctrl: true) }, done: { onDisk(json).hasPrefix("{\n  \"a\": 1,") }))
+        // Tab follows the file's own indentation, as VS Code: this file steps by 2, so Tab at the start puts in 2 spaces.
+        let script = windowsFolder + "\\indent.py"
+        steps.append(Step(name: "editor: Tab indents as the file does", action: {
+            _ = FileManager.default.createFile(atPath: script, contents: Data("if x:\n  y()\n  if z:\n    w()\n".utf8))
+            window.showFile(script, in: pane)
+        }, done: { editor()?.textLines?.first == "if x:" }))
+        steps.append(Step(name: "editor: by two spaces", action: {
+            key(Win.VK_HOME, ctrl: true)
+            key(Win.VK_TAB)
+        }, done: { editor()?.textLines?.first == "  if x:" && editor()?.tabWidth == 2 }))
+        steps.append(Step(name: "editor: Backspace goes back a whole level", action: { key(Win.VK_BACK) },
+                          done: { editor()?.textLines?.first == "if x:" }))
+        steps.append(Step(name: "editor: saved, so nothing asks later", action: { key(0x53, ctrl: true) },
+                          done: { editor()?.hasUnsavedChanges == false }))
         let readme = windowsFolder + "\\readme.md"
         steps.append(Step(name: "preview: a Markdown file renders", action: {
             _ = FileManager.default.createFile(atPath: readme, contents: Data("# Title\n\nSome **bold** and *italic* text, `code`, a [link](https://example.com).\n\n- one\n- [x] done\n".utf8))
@@ -1597,6 +1611,18 @@ enum WindowSelfTest {
             return text.hasPrefix("$ Write-Output 'block-out'") && text.contains("\nblock-out")
         }))
         steps.append(Step(name: "blocks: Esc puts it away", action: { pane.pressEscape() }, done: { pane.selectedStop == nil }))
+        // Selecting what's being typed from the keyboard, as on the Mac.
+        steps.append(Step(name: "blocks: a command being typed", action: { pane.type("echo hello world") },
+                          done: { pane.terminal.cursorLineText.hasSuffix("echo hello world") }))
+        steps.append(Step(name: "blocks: Shift+Ctrl+Left selects its last word", action: {
+            _ = window.keyDown(Win.VK_LEFT, shift: true, ctrl: true, alt: false)
+        }, done: { pane.selectedTextForTesting == "world" }))
+        steps.append(Step(name: "blocks: Shift+Left takes in one more", action: { _ = window.keyDown(Win.VK_LEFT, shift: true, ctrl: false, alt: false) },
+                          done: { pane.selectedTextForTesting == " world" }))
+        steps.append(Step(name: "blocks: Ctrl+A selects just what's typed", action: { _ = window.keyDown(0x41, shift: false, ctrl: true, alt: false) },
+                          done: { pane.selectedTextForTesting == "echo hello world" }))
+        steps.append(Step(name: "blocks: Backspace takes it out", action: { _ = window.keyDown(Win.VK_BACK, shift: false, ctrl: false, alt: false) },
+                          done: { pane.selectedTextForTesting == nil && !pane.terminal.cursorLineText.contains("hello") }))
         steps.append(Step(name: "blocks: Ctrl+J lists what was run", action: { _ = window.keyDown(0x4A, shift: false, ctrl: true, alt: false) },
                           done: { window.isPaletteOpen && window.paletteRows.contains { $0.title == "Write-Output 'block-out'" } }))
         steps.append(Step(name: "blocks: picking one goes to it", action: { pane.pressEnter() }, done: { !window.isPaletteOpen && pane.selectedStop != nil }))

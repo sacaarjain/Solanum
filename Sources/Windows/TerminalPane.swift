@@ -728,6 +728,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
 
     private func tickWork() {
         manageRemote()
+        // A command on the ssh host has finished once its prompt is back and the output has stopped.
+        if terminal.sshControlPath != nil, Date().timeIntervalSince(lastOutputAt) > 0.3, terminal.remoteOutputQuiet() { invalidate() }
         if let command = pendingCommand, atPrompt {
             pendingCommand = nil
             write(Array((command + "\r").utf8))
@@ -998,15 +1000,10 @@ final class TerminalPane: TerminalDelegate, Groupable {
         if ctrl && !shift && !alt {
             switch key {
             case 0x41:
-                // Ctrl+A in Claude Code's prompt box: all that's typed there, which typing or Backspace then replaces.
-                // Elsewhere it's the program's (PowerShell selects its line itself).
-                guard let block = terminal.currentBlock, block.state == .running, let rows = terminal.agentInputRows(block),
-                      rows.contains(terminal.cursorAbs) else { break }
-                let end = terminal.agentTextEnd(rows.upperBound)
-                guard rows.lowerBound < rows.upperBound || end > 2 else { break }
-                selection = TerminalSelection(anchor: (rows.lowerBound, 2), head: (rows.upperBound, end))
-                selecting = false
-                invalidate()
+                // Ctrl+A selects just what's being typed (Claude Code's box, a shell's command line, here or on an ssh
+                // host), never the whole conversation; typing or Backspace then replaces it. Elsewhere it's the program's.
+                guard let text = editableInput(), !text.isEmpty else { break }
+                showInputSelection(text, anchor: 0, head: text.stops.count - 1)
                 return true
             case 0x43:
                 // With nothing selected it's the program's interrupt. Copying clears the selection, so a second one is too.
@@ -1082,6 +1079,16 @@ final class TerminalPane: TerminalDelegate, Groupable {
             return true
         }
 
+        // Shift and the arrows select in what's being typed, as in a text field: Ctrl a word at a time, Home and End to
+        // its ends. Elsewhere (output, a full-screen program) the keys go to the program as ever.
+        if shift && !alt, [Win.VK_LEFT, Win.VK_RIGHT, Win.VK_UP, Win.VK_DOWN, Win.VK_HOME, Win.VK_END].contains(key),
+           !(ctrl && (key == Win.VK_UP || key == Win.VK_DOWN)), selectInput(key: key, word: ctrl) {
+            return true
+        }
+        // Left or Right with text selected there: to its start or end, and it's let go. Up and Down just let it go.
+        if !shift && !alt && !ctrl, [Win.VK_LEFT, Win.VK_RIGHT, Win.VK_UP, Win.VK_DOWN].contains(key), collapseInputSelection(key: key) {
+            return true
+        }
         // Backspace or Delete takes out text selected in the line being typed, whatever else is held.
         if (key == Win.VK_BACK || key == Win.VK_DELETE) && selection != nil && replaceSelectedInput(with: []) { return true }
         // PSReadLine undoes on Ctrl+Z itself. Claude Code's undo is Ctrl+_.
@@ -1151,6 +1158,95 @@ final class TerminalPane: TerminalDelegate, Groupable {
         input((meta ? [0x1B] : []) + Array(String(decoding: units, as: UTF16.self).utf8), replacesSelection: prints)
     }
 
+    // MARK: - Selecting what's being typed from the keyboard
+
+    /// A selection made with Shift and the arrows: its stops (see Core's InputText) and the selection it made, so the
+    /// next press carries on from it while it's still the one showing.
+    private var keySelection: (anchor: Int, head: Int, made: TerminalSelection?)?
+
+    /// A shell's command line being typed: this PC's at its prompt, or an ssh host's (nothing running there).
+    private func shellRun() -> (start: Int, col: Int, last: Int, index: (Int, Int) -> Int)? {
+        guard let b = terminal.currentBlock else { return nil }
+        if b.state == .prompt, let start = b.commandLine { return terminal.commandRun(line: start, col: b.commandCol) }
+        // Claude Code's box isn't a shell's command line, though its ❯ looks like a prompt.
+        guard agent == nil, !agentInputActive else { return nil }
+        return terminal.hostCommandRun()
+    }
+
+    /// The text being typed, wherever the cursor is in it: Claude Code's input box, or a shell's command line (here or
+    /// on an ssh host). Nil in a full-screen program, one that takes the mouse, or output.
+    private func editableInput() -> InputText? {
+        guard !terminal.usingAlt, terminal.mouseMode == .none, let b = terminal.currentBlock else { return nil }
+        if b.state == .running, let rows = terminal.agentInputRows(b), rows.contains(terminal.cursorAbs) {
+            return terminal.agentInputText(rows)
+        }
+        guard let run = shellRun() else { return nil }
+        return terminal.commandText(start: run.start, col: run.col, last: run.last)
+    }
+
+    /// Shift and an arrow: starts a selection at the cursor or moves the end of the one going. False when the cursor
+    /// isn't in text being typed.
+    private func selectInput(key: Int32, word: Bool) -> Bool {
+        guard let text = editableInput(), !text.isEmpty else { return false }
+        var anchor = text.index(of: GridPos(line: terminal.cursorAbs, col: terminal.cursorX)), head = anchor
+        if let k = keySelection, let made = k.made, made == selection, k.anchor < text.stops.count, k.head < text.stops.count {
+            anchor = k.anchor
+            head = k.head
+        } else if let s = selection, !s.isEmpty {
+            // One made with the mouse in the text: carried on from its end.
+            let (start, end) = s.ordered
+            let a = GridPos(line: start.line, col: start.col), b = GridPos(line: end.line, col: end.col)
+            if a >= text.stops[0], b <= text.stops[text.stops.count - 1] {
+                anchor = text.index(of: a)
+                head = text.index(of: b)
+            }
+        }
+        switch key {
+        case Win.VK_LEFT: head = word ? text.wordLeft(head) : text.left(head)
+        case Win.VK_RIGHT: head = word ? text.wordRight(head) : text.right(head)
+        case Win.VK_HOME: head = word ? 0 : text.lineStart(head)
+        case Win.VK_END: head = word ? text.stops.count - 1 : text.lineEnd(head)
+        case Win.VK_UP: head = text.vertical(head, by: -1)
+        default: head = text.vertical(head, by: 1)
+        }
+        showInputSelection(text, anchor: anchor, head: head)
+        return true
+    }
+
+    private func showInputSelection(_ text: InputText, anchor: Int, head: Int) {
+        let lo = min(anchor, head), hi = max(anchor, head)
+        if lo < hi {
+            // The selection's end is exclusive here: the stop after the last character, as a mouse selection's is.
+            let a = text.stops[lo], b = text.stops[hi]
+            selection = anchor <= head ? TerminalSelection(anchor: (a.line, a.col), head: (b.line, b.col))
+                                       : TerminalSelection(anchor: (b.line, b.col), head: (a.line, a.col))
+        } else {
+            selection = nil
+        }
+        selecting = false
+        keySelection = (anchor, head, selection)
+        selectedStop = nil
+        scrollOffset = 0
+        host?.restartBlink()
+        invalidate()
+    }
+
+    /// Left or Right with text selected in what's being typed: the cursor goes to the selection's start or end, and it's
+    /// let go, as in a text field. False when the selection isn't in the text being typed.
+    private func collapseInputSelection(key: Int32) -> Bool {
+        guard let s = selection, !s.isEmpty, let text = editableInput(), !text.isEmpty else { return false }
+        let (start, end) = s.ordered
+        let a = GridPos(line: start.line, col: start.col), b = GridPos(line: end.line, col: end.col)
+        guard a >= text.stops[0], b <= text.stops[text.stops.count - 1] else { return false }
+        selection = nil
+        keySelection = nil
+        invalidate()
+        guard key == Win.VK_LEFT || key == Win.VK_RIGHT else { return false }
+        let to = key == Win.VK_LEFT ? a : b
+        placeCursor(line: to.line, col: to.col)
+        return true
+    }
+
     /// Input from the person: shows the live screen again, as typing does in any terminal.
     private func input(_ bytes: [UInt8], replacesSelection: Bool = false) {
         scrollOffset = 0
@@ -1167,6 +1263,11 @@ final class TerminalPane: TerminalDelegate, Groupable {
     }
 
     private func write(_ bytes: [UInt8]) {
+        // In an ssh session, Enter at the host's prompt marks a command there (Terminal.remoteEnterPressed), so its
+        // command line can be clicked into and selected. Not while an agent runs: its box isn't a shell's prompt.
+        if terminal.sshControlPath != nil, agent == nil {
+            if bytes == [13] { terminal.remoteEnterPressed() } else { terminal.remoteKeyPressed() }
+        }
         let encoded = terminal.win32InputMode ? Win32Input.encode(bytes) : bytes
         // A big paste goes in pieces, so Windows 10's console host takes it all.
         if encoded.count > 512 { pty?.writePaced(encoded) } else { pty?.write(encoded) }
@@ -1714,8 +1815,11 @@ final class TerminalPane: TerminalDelegate, Groupable {
             guard let rows = terminal.agentInputRows(block), rows.contains(line), rows.contains(terminal.cursorAbs) else { return false }
             placeAgentCursor(row: line - rows.lowerBound, col: col, sentVertical: false)
             return true
-        } else if let arrows = terminal.shellCursorArrows(block, line: line, col: col) {
-            sendArrows(arrows, back: "D", forward: "C")
+        } else if let input = shellRun(), line >= input.start, line <= input.last {
+            // A shell's command line, this PC's or an ssh host's: arrows to the click, stopping at the end of the text.
+            let cursor = input.index(terminal.cursorAbs, terminal.cursorX)
+            let textEnd = input.index(input.last, terminal.line(abs: input.last)?.trimmedLength ?? 0)
+            sendArrows(min(input.index(line, col), max(textEnd, cursor)) - cursor, back: "D", forward: "C")
             return true
         }
         return false
@@ -1764,7 +1868,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
         guard let chosen = selection, !chosen.isEmpty, !terminal.usingAlt, terminal.mouseMode == .none,
               let block = terminal.currentBlock else { return false }
         let (start, end) = chosen.trimmed(cols: terminal.cols)
-        if let picked = terminal.shellSelection(block, start: start, end: end) {
+        if let picked = shellSelection(start: start, end: end) {
             // Selecting with PSReadLine's own Shift+Left, rather than backspacing, makes it one step for Ctrl+Z.
             sendArrows(picked.to - picked.cursor, back: "D", forward: "C")
             send(String(repeating: "\u{1b}[1;2D", count: picked.to - picked.from))
@@ -1775,6 +1879,17 @@ final class TerminalPane: TerminalDelegate, Groupable {
         selection = nil
         invalidate()
         return true
+    }
+
+    /// A selection as character offsets in the shell's command line being typed (this PC's or an ssh host's), clipped
+    /// to its text, with the cursor's offset. Nil when none of it is in the command.
+    private func shellSelection(start: (line: Int, col: Int), end: (line: Int, col: Int)) -> (from: Int, to: Int, cursor: Int)? {
+        guard let input = shellRun(), end.line >= input.start, start.line <= input.last else { return nil }
+        let textEnd = input.index(input.last, terminal.line(abs: input.last)?.trimmedLength ?? 0)
+        let from = min(input.index(start.line, start.col), textEnd)
+        let to = end.line > input.last ? textEnd : min(input.index(end.line, end.col), textEnd)
+        guard to > from else { return nil }
+        return (from, to, input.index(terminal.cursorAbs, terminal.cursorX))
     }
 
     /// Any number of rows of Claude Code's input box, the selection clipped to the box's text. Keys are worked through
@@ -2348,6 +2463,9 @@ final class TerminalPane: TerminalDelegate, Groupable {
     func type(_ text: String) {
         for unit in text.utf16 { PostMessageW(hwnd, Win.WM_CHAR, WPARAM(unit), 0) }
     }
+
+    /// The selected text, for tests.
+    var selectedTextForTesting: String? { selection.map(selectedText) }
 
     /// A plain click on a cell of the screen.
     func click(col: Int, row: Int) {
