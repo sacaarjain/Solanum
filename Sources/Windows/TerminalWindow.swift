@@ -612,13 +612,13 @@ final class TerminalWindow {
     /// A new tab: at `index`, or at the end of `column` (the active tab's column unless given).
     @discardableResult
     private func addPane(at index: Int? = nil, cwd: String? = nil, restoring text: String? = nil, place: SidebarPlace? = nil, column: Int? = nil,
-                         shell: ShellOption? = nil) -> Bool {
+                         shell: ShellOption? = nil, history: String? = nil) -> Bool {
         let wasSplit = isSplit
         let col = column ?? index.flatMap { i in panes.indices.contains(i - 1) ? panes[i - 1].column : nil } ?? (panes.isEmpty ? 0 : activePane.column)
         let grid = clientWidth > 0 ? self.grid(for: col == 1 ? rightTerminalArea : terminalArea) : (cols: 110, rows: 32)
         // A shell asked for, else the default as Settings has it now (a window started with its own command keeps that).
         let line = shell.map(Shells.commandLine) ?? (usesDefaultShell ? AppSettings.shared.shellCommandLine : commandLine)
-        guard let pane = TerminalPane(host: self, commandLine: line, cols: grid.cols, rows: grid.rows, cwd: cwd, restoring: text) else { return false }
+        guard let pane = TerminalPane(host: self, commandLine: line, cols: grid.cols, rows: grid.rows, cwd: cwd, restoring: text, history: history) else { return false }
         pane.shell = shell ?? Shells.identify(line)
         pane.column = col
         pane.showFindScopeMenu = { [weak self] items, r in
@@ -900,6 +900,9 @@ final class TerminalWindow {
             if !p.showsTerminal, p.editors.indices.contains(p.activeEditor) {
                 return .file(p.editors[p.activeEditor].glyph, name: p.editors[p.activeEditor].fileName)
             }
+            let t = p.terminal
+            if let b = t.currentBlock, b.state == .running, !b.command.isEmpty { return .dot(running: true) }
+            if t.blocks.last(where: { $0.state == .finished })?.failed == true { return .dot(running: false) }
             return .prompt
         }
         chrome.hovered = hovered
@@ -2614,6 +2617,7 @@ final class TerminalWindow {
                                        group: group, text: pane.terminal.restorableText(maxLines: SavedSession.lines),
                                        resume: pane.resumeCommand ?? pane.resumeOnShow)
             if let shell = pane.shell, shell != Shells.defaultShell { tab.shell = shell.id }
+            tab.history = pane.historyID
             // Its files on this PC, and their previews, as on the Mac (an ssh host's, and git's pages, aren't kept).
             var pages: [SavedSession.Page] = [], active: Int?
             for (i, item) in pane.editors.enumerated() {
@@ -2661,7 +2665,7 @@ final class TerminalWindow {
         for tab in session.tabs {
             // A folder that's gone starts the shell where it would otherwise.
             let folder = tab.folder.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
-            guard addPane(cwd: folder, restoring: tab.text, column: tab.column, shell: Shells.option(tab.shell)) else { continue }
+            guard addPane(cwd: folder, restoring: tab.text, column: tab.column, shell: Shells.option(tab.shell), history: tab.history) else { continue }
             panes.last?.customTitle = tab.title
             panes.last?.resumeOnShow = tab.resume
             panes.last?.group = tab.group.flatMap { groups.indices.contains($0) ? groups[$0] : nil }

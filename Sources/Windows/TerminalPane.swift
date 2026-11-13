@@ -131,7 +131,21 @@ final class TerminalPane: TerminalDelegate, Groupable {
     private static let inboxLimit = 8 * 1024 * 1024
 
     /// Starts a shell. Nil if it can't.
-    init?(host: TerminalWindow, commandLine: String, cols: Int, rows: Int, cwd: String? = nil, restoring text: String? = nil) {
+    /// This tab's own command history, kept across restarts (`historyFile`): ↑ in its shell goes through what ran here,
+    /// as on the Mac, while Ctrl+R and Command History still have every tab's.
+    let historyID: String
+
+    /// Where each tab's history is kept: %APPDATA%\Solanum\history\<id>.
+    static func historyFile(_ id: String) -> String? {
+        guard let appData = ProcessInfo.processInfo.environment["APPDATA"] else { return nil }
+        // Tests keep theirs apart, and never touch the real ones.
+        let dir = CommandLine.arguments.contains("--window-test") ? NSTemporaryDirectory() + "solanum-history-\(GetCurrentProcessId())" : appData + "\\Solanum\\history"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        return dir + "\\" + id + ".txt"
+    }
+
+    init?(host: TerminalWindow, commandLine: String, cols: Int, rows: Int, cwd: String? = nil, restoring text: String? = nil, history: String? = nil) {
+        historyID = history ?? UUID().uuidString
         id = Self.nextID
         Self.nextID += 1
         self.host = host
@@ -151,6 +165,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
         let environment = ["TERM": "xterm-256color", "COLORTERM": "truecolor", "TERM_PROGRAM": "Solanum", "SOLANUM_ALIASES": AliasFile.scriptURL.path,
                            "SOLANUM_ASKPASS_EXE": String(decodingCString: exe, as: UTF16.self),
                            "SOLANUM_ASKPASS_PIPE": host.askpassPipeName, "SOLANUM_ASKPASS_TOKEN": askpassToken]
+            .merging(Self.historyFile(historyID).map { ["SOLANUM_HISTFILE": $0] } ?? [:]) { a, _ in a }
         guard let pty = ConPTY(commandLine: commandLine, extraEnvironment: environment, cwd: cwd ?? home, cols: cols, rows: rows) else { return nil }
         self.pty = pty
         let target = UInt(bitPattern: hwnd), id = id
@@ -1721,12 +1736,26 @@ final class TerminalPane: TerminalDelegate, Groupable {
         let w = Float(terminal.cols) * m.cellWidth + 8 * s, h = Float(z - a + 1) * m.cellHeight + 4 * s
         sol_canvas_fill_rounded(canvas.raw, x, y, w, h, 6 * s, TerminalPalette.accent, 0.09)
         sol_canvas_stroke_rounded(canvas.raw, x + 0.5, y + 0.5, w - 1, h - 1, 6 * s, TerminalPalette.accent, 0.85, max(1, s.rounded()))
-        // A prompt's place among its session's, "Prompt 3 of 7": plain text just above the outline at its right, as on the
-        // Mac (there set into the divider above the prompt); on its first line, in a pill, when there's no room above.
+        // A prompt's place among its session's, "Prompt 3 of 7": set into Claude Code's divider line above the prompt at
+        // its right, the line stopping short of it, as on the Mac; with no divider there, plain text just above the
+        // outline; on its first line, in a pill, when there's no room above.
         if case .turn = stop, let t = selectedTurn, (row(ofLine: first) ?? first - top) == a, let b = terminal.blockContaining(t.promptLine) {
             let text = "Prompt \(t.index) of \(terminal.agentTurns(in: b).count)", units = Array(text.utf16)
             let pixels = max(10 * s, m.cellHeight * 0.62)
             let tw = sol_canvas_measure_label(canvas.raw, units, Int32(units.count), pixels, 1)
+            let dividerRow = a - 1
+            let isDivider = dividerRow >= 0 && (row(ofLine: first - 1) ?? first - 1 - top) == dividerRow && terminal.line(abs: first - 1).map { l in
+                let chars = l.cells.prefix(l.trimmedLength).map(\.ch).filter { $0 != 0 && $0 != 0x20 }
+                return chars.count >= 8 && chars.allSatisfy { $0 == 0x2500 || $0 == 0x2501 }
+            } == true
+            if isDivider {
+                // The line's cells under the label give way to the background, with a little room either side.
+                let rowY = canvas.contentY + Float(dividerRow) * m.cellHeight
+                let textX = (x + w - tw - 8 * s).rounded()
+                sol_canvas_backdrop_rect(canvas.raw, textX - 8 * s, rowY, x + w - textX + 8 * s, m.cellHeight, TerminalPalette.background)
+                sol_canvas_draw_label(canvas.raw, textX, rowY, tw + 2, m.cellHeight, units, Int32(units.count), pixels, 1, TerminalPalette.accent, 1)
+                return
+            }
             let ph = (pixels * 1.45).rounded(), pw = (tw + 14 * s).rounded()
             let above = (y - 2 * s - ph).rounded(), px = (x + w - (above >= 0 ? 0 : 6 * s) - pw).rounded()
             let py = above >= 0 ? above : (canvas.contentY + Float(a) * m.cellHeight + (m.cellHeight - ph) / 2).rounded()
@@ -2463,6 +2492,9 @@ final class TerminalPane: TerminalDelegate, Groupable {
     func type(_ text: String) {
         for unit in text.utf16 { PostMessageW(hwnd, Win.WM_CHAR, WPARAM(unit), 0) }
     }
+
+    /// Seconds since the program last printed anything, for tests.
+    var lastOutputAge: TimeInterval { Date().timeIntervalSince(lastOutputAt) }
 
     /// The selected text, for tests.
     var selectedTextForTesting: String? { selection.map(selectedText) }

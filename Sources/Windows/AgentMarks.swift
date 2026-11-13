@@ -8,6 +8,8 @@ enum TabIcon {
     case agent(AgentInfo)
     /// A file tab's icon (Segoe Fluent Icons), as its sub-tab shows, and its file's name for the icon pack's.
     case file(UInt16, name: String?)
+    /// A command running (green) or the last one failed (red), in the prompt's place, as on the Mac.
+    case dot(running: Bool)
 }
 
 /// Coding agents' marks, drawn as the Mac draws them (AgentKind.drawMark there): Claude Code's coral ✳, Antigravity's

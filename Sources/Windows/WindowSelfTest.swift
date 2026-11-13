@@ -1623,6 +1623,23 @@ enum WindowSelfTest {
                           done: { pane.selectedTextForTesting == "echo hello world" }))
         steps.append(Step(name: "blocks: Backspace takes it out", action: { _ = window.keyDown(Win.VK_BACK, shift: false, ctrl: false, alt: false) },
                           done: { pane.selectedTextForTesting == nil && !pane.terminal.cursorLineText.contains("hello") }))
+        // Each tab's own history, as on the Mac: Up gives what ran here, and a new tab has none of it.
+        steps.append(Step(name: "blocks: Up gives this tab's last command", action: { _ = window.keyDown(Win.VK_UP, shift: false, ctrl: false, alt: false) },
+                          done: { pane.terminal.cursorLineText.contains("Write-Output 'block-out'") }))
+        steps.append(Step(name: "blocks: Esc clears it", action: { pane.pressEscape() },
+                          done: { !pane.terminal.cursorLineText.contains("block-out") }))
+        var tabsBefore = 0
+        steps.append(Step(name: "blocks: a new tab", action: { tabsBefore = window.panes.count; press(0x54) }, done: { window.panes.count == tabsBefore + 1 && window.activePane.atPrompt }))
+        var newTabLine = ""
+        steps.append(Step(name: "blocks: Up there doesn't give the other tab's", action: {
+            _ = window.keyDown(Win.VK_UP, shift: false, ctrl: false, alt: false)
+        }, done: {
+            // Give PSReadLine a moment to draw whatever Up brings.
+            newTabLine = window.activePane.terminal.cursorLineText
+            return window.activePane.lastOutputAge > 0.4
+        }))
+        steps.append(Step(name: "blocks: (nothing from it)", action: {}, done: { !newTabLine.contains("block-out") }))
+        steps.append(Step(name: "blocks: closes", action: { press(0x57) }, done: { window.panes.count == tabsBefore }))
         steps.append(Step(name: "blocks: Ctrl+J lists what was run", action: { _ = window.keyDown(0x4A, shift: false, ctrl: true, alt: false) },
                           done: { window.isPaletteOpen && window.paletteRows.contains { $0.title == "Write-Output 'block-out'" } }))
         steps.append(Step(name: "blocks: picking one goes to it", action: { pane.pressEnter() }, done: { !window.isPaletteOpen && pane.selectedStop != nil }))

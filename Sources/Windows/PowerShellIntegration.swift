@@ -55,6 +55,20 @@ enum PowerShellIntegration {
                 } catch {}
             }
         }
+        # This tab's own history ($env:SOLANUM_HISTFILE, kept across restarts), as on the Mac: Up goes through what ran in
+        # this tab, newest first, and nothing else. PSReadLine reads its history file at the first prompt, so pointing it
+        # here now is enough; it saves each command as it's entered, before it runs, so one still running when the tab
+        # closes is kept. Each command goes into the shared file too, so Ctrl+R and Command History still have them all.
+        if ($env:SOLANUM_HISTFILE -and (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue)) {
+            try {
+                $global:__solanum_shared_history = (Get-PSReadLineOption).HistorySavePath
+                if ((Test-Path -LiteralPath $env:SOLANUM_HISTFILE) -and ((Get-Item -LiteralPath $env:SOLANUM_HISTFILE).Length -gt 512KB)) {
+                    $keep = Get-Content -LiteralPath $env:SOLANUM_HISTFILE -Tail 1000
+                    Set-Content -LiteralPath $env:SOLANUM_HISTFILE -Value $keep -Encoding UTF8
+                }
+                Set-PSReadLineOption -HistorySavePath $env:SOLANUM_HISTFILE
+            } catch { $global:__solanum_shared_history = $null }
+        }
         # ssh tells Solanum when a session starts and ends, and asks Solanum for passwords (see Askpass), so the sidebar
         # can sign in with the same one. Anything not at a person's terminal goes straight to ssh.
         function global:ssh {
@@ -83,6 +97,12 @@ enum PowerShellIntegration {
                 if ($line.Trim().Length -gt 0) {
                     $global:__solanum_running = $true
                     [Console]::Write((__solanum_osc '133;C'))
+                    if ($global:__solanum_shared_history) {
+                        # As PSReadLine writes it: a line of a multi-line command ends in a backtick.
+                        $nl = [Environment]::NewLine
+                        $text = ($line -split "\r?\n") -join ([string][char]96 + $nl)
+                        try { [IO.File]::AppendAllText($global:__solanum_shared_history, $text + $nl) } catch {}
+                    }
                 }
                 $line
             }

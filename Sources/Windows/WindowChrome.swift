@@ -342,6 +342,10 @@ struct WindowChrome {
             if !(name.map { FileIcons.draw(name: $0, directory: false, x: promptX, y: (r.midY - side / 2).rounded(), size: side, on: canvas, alpha: active ? 1 : 0.65) } ?? false) {
                 sol_canvas_draw_icon(canvas.raw, promptX, r.y, (15 * scale).rounded(), r.height, glyph, 11 * scale, fg, active ? 1 : 0.65)
             }
+        case .dot(let running):
+            // Green while a command runs, red when the last one failed: not the accent, which can be orange or red.
+            let d = 6 * scale
+            sol_canvas_fill_ellipse(canvas.raw, promptX + 7 * scale, r.midY, d / 2, d / 2, TerminalPalette.ansi[running ? 2 : 1], 1)
         case .prompt:
             drawPrompt(atX: promptX, midY: r.midY, active: active)
         }

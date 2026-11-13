@@ -28,6 +28,8 @@ struct SavedSession: Codable {
         var editorFraction: Float?
         /// Its shell (see Shells), when it isn't the default one.
         var shell: String?
+        /// Its own command history's file (see TerminalPane.historyID), so ↑ there gives what ran there.
+        var history: String?
     }
     struct Page: Codable {
         var path: String
