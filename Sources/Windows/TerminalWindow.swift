@@ -340,6 +340,7 @@ final class TerminalWindow {
     /// Settings have changed, here or in the file: everything that depends on them follows.
     private func settingsChanged() {
         let settings = AppSettings.shared
+        Diagnostics.refresh()
         // A new theme eases in over a moment rather than snapping, unless Windows has animations off. (A theme's picture,
         // behind it, changes straight away.)
         let colors = ThemeColors(settings.theme)
@@ -1277,6 +1278,7 @@ final class TerminalWindow {
                 }
                 lookForChanges()
                 KeepAwake.tick()
+                Diagnostics.beat()
                 updateSteam()
                 let awake = KeepAwake.secondsLeft.map(KeepAwake.shortDuration)
                 if awake != keepAwakeShown { keepAwakeShown = awake; invalidate() }
@@ -5518,6 +5520,13 @@ final class TerminalWindow {
             PaletteItem(title: "Reload Config", category: "Solanum") { AppSettings.shared.reloadIfChanged() },
             PaletteItem(title: "Restart Solanum", category: "Solanum", shortcut: "Ctrl+Shift+R") { [weak self] in self?.confirmRestart(fresh: false) },
             PaletteItem(title: "Restart Fresh", category: "Solanum", shortcut: "Ctrl+Alt+Shift+R") { [weak self] in self?.confirmRestart(fresh: true) },
+            Diagnostics.enabled
+                ? PaletteItem(title: "Turn Off Diagnostics", category: Diagnostics.until.map { "on until \(DateFormatter.localizedString(from: $0, dateStyle: .short, timeStyle: .short))" } ?? "Solanum") { Diagnostics.turnOn(hours: 0) }
+                : PaletteItem(title: "Turn On Diagnostics for a Day", category: "a log for chasing a problem") { Diagnostics.turnOn(hours: 24) },
+            PaletteItem(title: "Show Diagnostics Logs", category: "Solanum") {
+                try? FileManager.default.createDirectory(atPath: Diagnostics.folder, withIntermediateDirectories: true)
+                _ = wide(Diagnostics.folder).withUnsafeBufferPointer { ShellExecuteW(nil, nil, $0.baseAddress, nil, nil, 1) }
+            },
                         PaletteItem(title: "Minimize", category: "Window") { [weak self] in self?.pressCaptionButton(.minimize) },
             PaletteItem(title: IsZoomed(hwnd) ? "Restore" : "Maximize", category: "Window") { [weak self] in self?.pressCaptionButton(.maximize) },
             PaletteItem(title: "Close Window", category: "Window", shortcut: "Alt+F4") { [weak self] in self?.pressCaptionButton(.close) },
@@ -6126,6 +6135,7 @@ final class TerminalWindow {
         var failure = "Couldn't register the window class."
         var window: TerminalWindow?
         let settings = AppSettings.shared
+        Diagnostics.refresh()
         if prepare() {
             window = TerminalWindow(commandLine: settings.shellCommandLine, cols: settings.windowColumns, rows: settings.windowRows,
                                     session: SavedSession.load(), failure: &failure)
@@ -6139,6 +6149,7 @@ final class TerminalWindow {
             return 1
         }
         runLoop()
+        Diagnostics.quitting()
         return 0
     }
 }

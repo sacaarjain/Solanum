@@ -130,6 +130,20 @@ Each one ends with something that can be checked. GitHub's Windows machines buil
   default. A restored tab comes back in the shell it was using. Blocks and folder tracking use each shell's own hook:
   PowerShell's is done, Git Bash and WSL reuse the bash hook, and Command Prompt gets what its `PROMPT` can report (no
   exit status or command start).
+- **The card look:** the sidebars, a tab's files and each terminal are rounded cards on the tab bar's color, as on the
+  Mac. Layout and hit-testing are unchanged: `TerminalWindow.drawCards` draws the gaps and rounded corners over what's
+  already drawn (`sol_canvas_backdrop_frame`), then the outlines, and opens each active tab onto its card.
+- **Per-tab history:** each PowerShell tab points PSReadLine at its own file (`%APPDATA%\Solanum\history\<id>.txt`, the
+  id kept in the session), so Up gives what ran there. The hook also appends every command to the shared file, so
+  Ctrl+R and Command History see them all.
+- **Big files:** files over 16 MB and logs over 1 MB open read-only, at their end, and fetch 64 KB pieces as you scroll
+  (`FileEditorPanel.pager`). Line numbers appear once the lines before the window are counted, on the host for ssh.
+- **Theme icons:** `ThemeIcon` (the theme's "icon": a planet, the flower, none, or a picture in the themes folder).
+  GIF frames are composed by `sol_canvas_load_image_frames` and play while shown. Picking the Quantum Moon as the icon
+  brings its tricks.
+- **Diagnostics:** off unless turned on from the palette for a day (`diagnostics-until`), or with SOLANUM_DIAGNOSTICS=1.
+  The log goes to `%LOCALAPPDATA%\Solanum\Logs`: slow ssh, big files' windows, freezes over 2 s, and crashes as
+  module+offset, plus at the next launch what Windows Error Reporting kept. `--diagnostics-probe` checks it.
 
 ## Setting up the laptop (from milestone 3)
 

@@ -149,11 +149,16 @@ final class RemoteConnection {
             })
             self.lock.unlock()
             let line = command + "; printf '\\n" + marker + "%d\\n' $?\n"
+            let asked = Date()
             self.child?.write(Data(line.utf8))
             if finished.wait(timeout: .now() + timeout) == .timedOut {
                 self.lock.lock()
                 self.waiting = nil
                 self.lock.unlock()
+                Diagnostics.log("ssh: a command timed out after \(Int(timeout)) s: \(command.split(separator: " ").first ?? "")")
+            } else if Diagnostics.ms(asked) > 1000 || result.1 != 0 {
+                // What ran (its first word only: paths and arguments can say too much), how long, and how it ended.
+                Diagnostics.log("ssh: \(command.split(separator: " ").first ?? "") took \(Diagnostics.ms(asked)) ms, exit \(result.1), \(result.0?.utf8.count ?? 0) bytes")
             }
             done(result.0, result.1)
         }

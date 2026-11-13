@@ -222,6 +222,7 @@ final class FileEditorPanel: ColumnPanel {
                     kept = kept[(nl + 1)...]
                 }
                 self.load(Data(kept), cut: true)
+                Diagnostics.log("window \(self.name): opened at its end, \(kept.count >> 10) KB of \(total >> 10) KB")
                 self.pager = (start, total, total)
                 self.linesBefore = start == 0 ? 0 : nil
                 self.scrollToEnd()
@@ -271,6 +272,7 @@ final class FileEditorPanel: ColumnPanel {
                     self.pager = p
                     self.linesBefore = self.linesBefore.map { max($0 - added.count, 0) }
                     if start == 0 { self.linesBefore = 0 }
+                    Diagnostics.log("window \(self.name): +\(kept.count >> 10) KB above (from byte \(start))")
                     self.version += 1; self.savedVersion = self.version
                     self.rebuildRows()
                     self.scrollRow += self.rowCount - rowsBefore
@@ -605,6 +607,7 @@ final class FileEditorPanel: ColumnPanel {
 
     func toggleTail() {
         tailing.toggle()
+        Diagnostics.log("tail \(name): \(tailing ? "on" : "off")")
         if tailing { scrollToEnd(); lastSync = .distantPast }
         invalidate()
     }

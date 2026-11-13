@@ -533,6 +533,16 @@ if CommandLine.arguments.contains("--window-test") {
     exit(WindowSelfTest.runWindow())
 }
 
+// Diagnostics turned on (SOLANUM_DIAGNOSTICS=1), a line written and an address placed, the log's path printed:
+// --diagnostics-probe
+if CommandLine.arguments.contains("--diagnostics-probe") {
+    Diagnostics.refresh()
+    Diagnostics.log("probe: \(Diagnostics.place(of: unsafeBitCast(GetCurrentProcessId as @convention(c) () -> DWORD, to: UnsafeMutableRawPointer.self)))")
+    print(Diagnostics.enabled ? Diagnostics.path : "off")
+    Diagnostics.quitting()
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--restart-running") {
     exit(AppRestart.askRunningToRestart())
 }
