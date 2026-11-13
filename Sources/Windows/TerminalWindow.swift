@@ -1035,9 +1035,9 @@ final class TerminalWindow {
         guard !panes.isEmpty, sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
         chrome(on: canvas, layout: layout).draw()
         for pane in visiblePanes { drawColumn(pane, on: canvas, snapshot: false) }
-        drawDivider(on: canvas)
-        drawSplitDrop(on: canvas)
         drawSidebars(on: canvas, layout: layout)
+        drawCards(on: canvas)
+        drawSplitDrop(on: canvas)
         notices.draw(on: canvas, windowWidth: Float(clientWidth), top: layout.tabBarHeight, scale: scale)
         drawPalette(on: canvas)
         drawReading(on: canvas)
@@ -1054,10 +1054,52 @@ final class TerminalWindow {
         lastDrawn = Date()
     }
 
-    /// The band between the columns, while split, with its grip.
-    private func drawDivider(on target: Canvas) {
-        guard let band = layout.columnBand else { return }
-        Self.drawBand(band, vertical: true, on: target, scale: scale, active: draggingEdge == .columnDivider)
+    /// Where the sidebars, a tab's files and each terminal are drawn as cards, as on the Mac: rounded, outlined, on the
+    /// tab bar's color, with gaps between (the bands between columns and between files and terminal are those gaps).
+    var cardRects: [UIRect] {
+        let l = layout, s = scale, g = (6 * s).rounded(), half = (3 * s).rounded()
+        let top = l.tabBarHeight, bottom = l.statusBar.y - half
+        var cards: [UIRect] = []
+        func card(_ x0: Float, _ x1: Float, _ y0: Float, _ y1: Float) {
+            if x1 > x0 && y1 > y0 { cards.append(UIRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)) }
+        }
+        if l.leftWidth > 0 { card(g, l.leftWidth - half, top, bottom) }
+        if l.rightWidth > 0 { card(l.width - l.rightWidth + half, l.width - g, top, bottom) }
+        for pane in visiblePanes {
+            let col = columnArea(for: pane), split = editorSplit(for: pane)
+            // Against the window's edge, a full gap; against a sidebar, half (the sidebar's card has the other half); the
+            // band between columns is a gap already.
+            let x0 = col.x < 1 ? g : isSplit && pane.column == 1 ? col.x : col.x + half
+            let x1 = col.maxX > l.width - 1 ? l.width - g : isSplit && pane.column == 0 ? col.maxX : col.maxX - half
+            if let e = split.editor, split.showsTerminal {
+                card(x0, x1, top, e.maxY)
+                card(x0, x1, e.maxY + split.bandHeight, bottom)
+            } else {
+                card(x0, x1, top, bottom)
+            }
+        }
+        return cards
+    }
+
+    private func drawCards(on target: Canvas) {
+        let l = layout, c = target.raw, s = scale, radius = 8 * s, top = l.tabBarHeight, fg = TerminalPalette.foreground
+        let cards = cardRects
+        let flat = cards.flatMap { [$0.x, $0.y, $0.width, $0.height] }
+        flat.withUnsafeBufferPointer { sol_canvas_backdrop_frame(c, 0, top, l.width, l.statusBar.y - top, $0.baseAddress, Int32(cards.count), radius, TerminalPalette.chrome) }
+        for r in cards { sol_canvas_stroke_rounded(c, r.x + 0.5, r.y + 0.5, r.width - 1, r.height - 1, radius, fg, 0.13, 1) }
+        // The active tab (each column's) opens onto its card: no edge under it, and where it starts on the card's
+        // corner, that corner is square.
+        let actives = [activeIndex] + (isSplit ? [rightActivePane.flatMap { p in panes.firstIndex { $0 === p } }].compactMap { $0 } : [])
+        for i in actives where i < l.tabCount {
+            let t = l.tab(i)
+            guard t.width > 2, let under = cards.first(where: { $0.y == top && t.x < $0.maxX && t.maxX > $0.x }) else { continue }
+            let x0 = max(t.x + 1, under.x), x1 = min(t.maxX - 1, under.maxX)
+            sol_canvas_backdrop_rect(c, x0, top - 1, x1 - x0, 2, TerminalPalette.background)
+            if abs(t.x - under.x) <= 2 * s {
+                sol_canvas_backdrop_rect(c, under.x, top, radius, radius, TerminalPalette.background)
+                sol_canvas_fill_rect(c, under.x, top, 1, radius, fg, 0.13)
+            }
+        }
     }
 
     /// A band (not a hairline) between the columns, or between a tab's pages and its terminal, with a grip to show it
@@ -1088,9 +1130,9 @@ final class TerminalWindow {
         guard sol_canvas_begin(bitmap.raw, TerminalPalette.background) >= 0 else { return false }
         chrome(on: bitmap, layout: layout).draw()
         for pane in visiblePanes { drawColumn(pane, on: bitmap, snapshot: true) }
-        drawDivider(on: bitmap)
-        drawSplitDrop(on: bitmap)
         drawSidebars(on: bitmap, layout: layout)
+        drawCards(on: bitmap)
+        drawSplitDrop(on: bitmap)
         drawPalette(on: bitmap)
         drawReading(on: bitmap)
         drawDragGhost(on: bitmap)

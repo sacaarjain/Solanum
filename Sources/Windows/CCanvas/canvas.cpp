@@ -530,6 +530,27 @@ void sol_canvas_backdrop_rounded(SolCanvas *canvas, float x, float y, float widt
     });
 }
 
+void sol_canvas_backdrop_frame(SolCanvas *canvas, float x, float y, float width, float height, const float *cards, int32_t count, float radius, uint32_t rgb) {
+    ComPtr<ID2D1RectangleGeometry> outer;
+    if (FAILED(canvas->d2d->CreateRectangleGeometry(D2D1::RectF(x, y, x + width, y + height), &outer))) return;
+    ComPtr<ID2D1Geometry> shape = outer;
+    for (int32_t i = 0; i < count; i++) {
+        const float *c = cards + i * 4;
+        if (c[2] <= 0 || c[3] <= 0) continue;
+        ComPtr<ID2D1RoundedRectangleGeometry> card;
+        ComPtr<ID2D1PathGeometry> path;
+        ComPtr<ID2D1GeometrySink> sink;
+        if (FAILED(canvas->d2d->CreateRoundedRectangleGeometry(D2D1::RoundedRect(D2D1::RectF(c[0], c[1], c[0] + c[2], c[1] + c[3]), radius, radius), &card)) ||
+            FAILED(canvas->d2d->CreatePathGeometry(&path)) || FAILED(path->Open(&sink))) return;
+        if (FAILED(shape->CombineWithGeometry(card.Get(), D2D1_COMBINE_MODE_EXCLUDE, nullptr, sink.Get())) || FAILED(sink->Close())) return;
+        shape = path;
+    }
+    canvas->brush->SetColor(color(rgb, canvas->opacity));
+    backdrop(canvas, canvas->brush.Get(), [&](ID2D1Brush *b) {
+        canvas->smooth([&] { canvas->target->FillGeometry(shape.Get(), b); });
+    });
+}
+
 /// Frosted glass, as a Mac popover's: what's already drawn under the rounded rectangle, blurred, then a wash of `tint`
 /// over it. Where the system can't blur (or `blur` is 0) the wash is drawn solid instead.
 int32_t sol_canvas_frost_rounded(SolCanvas *canvas, float x, float y, float width, float height, float radius, float blur, uint32_t tint,

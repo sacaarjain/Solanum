@@ -90,6 +90,10 @@ int32_t sol_canvas_load_image_file(SolCanvas *canvas, const uint16_t *path, int3
 /// Every frame of a picture file as images to draw (an animated GIF's frames composed as a browser shows them, each
 /// no bigger than `maxSide`), into `images`, with how long each shows in `delays` (milliseconds; 0 for a still).
 /// Returns how many, at most `capacity`; -1 if it can't be read.
+/// The window's own background (as `sol_canvas_backdrop_rect` draws it) over the rectangle (x, y, width, height), all but
+/// the rounded cards in it (`cards`: x, y, width, height for each of `count`): the gaps between them and outside their
+/// corners.
+void sol_canvas_backdrop_frame(SolCanvas *canvas, float x, float y, float width, float height, const float *cards, int32_t count, float radius, uint32_t rgb);
 int32_t sol_canvas_load_image_frames(SolCanvas *canvas, const uint16_t *path, int32_t maxSide, int32_t *images, int32_t *delays, int32_t capacity);
 /// A rounded rectangle filled with an image laid out at (ix, iy, iw, ih): cropped to the rectangle and its corners.
 void sol_canvas_fill_rounded_image(SolCanvas *canvas, int32_t image, float x, float y, float width, float height, float radius,

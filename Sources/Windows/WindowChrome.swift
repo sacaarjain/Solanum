@@ -175,7 +175,6 @@ struct WindowChrome {
     private func drawTabBar() {
         let bar = UIRect(x: 0, y: 0, width: layout.width, height: layout.tabBarHeight)
         sol_canvas_backdrop_rect(canvas.raw, bar.x, bar.y, bar.width, bar.height, TerminalPalette.chrome)
-        sol_canvas_fill_rect(canvas.raw, 0, bar.maxY - 1, bar.width, 1, fg, 0.10)
         for column in layout.isSplit ? [0, 1] : [0] {
             let v = layout.tabViewport(column: column), range = layout.tabRange(column: column)
             sol_canvas_push_clip(canvas.raw, v.x, v.y, v.width, v.height)
