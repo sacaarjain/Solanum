@@ -39,6 +39,9 @@ final class TerminalWindow {
         hwnd == GetForegroundWindow() && visiblePanes.contains { $0 === pane }
     }
 
+    /// The pane's tab is in front in its column (whether or not this window is).
+    func isShowing(_ pane: TerminalPane) -> Bool { visiblePanes.contains { $0 === pane } }
+
     /// Brings a pane's tab to the front, and its window.
     func goTo(_ pane: TerminalPane?) {
         guard let pane, let i = panes.firstIndex(where: { $0 === pane }) else { return }

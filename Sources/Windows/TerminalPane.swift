@@ -408,6 +408,13 @@ final class TerminalPane: TerminalDelegate, Groupable {
         let wasReconnecting = reconnecting
         reconnecting = false
         lost?.block = terminal.currentBlock
+        // A try at logging back in that didn't work out (it never got as far as signing in): still lost. Reconnect is
+        // offered again, on the card if it was up, else on the bar.
+        if let lost, wasReconnecting, !sessionSignedIn {
+            if let card = lostNotice, !card.isGone { offerReconnect(host: lost.host, title: "Couldn't reconnect to \(lost.host)", card: true) }
+            invalidate()
+            return
+        }
         guard status == 255, sessionSignedIn || wasReconnecting, let args = sshArguments,
               let target = RemoteConnection.connectionArguments(args) else {
             if lost != nil { invalidate() }
@@ -415,14 +422,36 @@ final class TerminalPane: TerminalDelegate, Groupable {
         }
         let name = sshHost ?? "the ssh host"
         lost = (name, "ssh " + target.map(Self.powerShellWord).joined(separator: " "), terminal.currentBlock)
+        lostFolder = terminal.remoteCwd
         if let password = rememberedPassword { reconnectPassword = password }
-        // A card, as on the Mac, with Reconnect, up for ten minutes unless it's dealt with.
-        lostNotice?.dismiss()
-        noticeReconnect = nil
-        lostNotice = TerminalWindow.postNotice(NoticeRules.lostConnection(host: name, place: noticePlace, folder: terminal.remoteCwd), about: self,
-                                               button: ("Reconnect", { [weak self] in self?.reconnectFromNotice(host: name) }),
-                                               keepsOpen: true, lifetime: 600)
+        offerReconnect(host: name, title: "Lost connection to \(name)", card: !isOnScreen)
         if !(host?.isFocused ?? false) { FlashWindow(hwnd, true) }
+        invalidate()
+    }
+
+    /// The folder the lost session was in, for the card.
+    private var lostFolder: String?
+
+    /// In a window that's showing (not minimized), in a tab that's in front.
+    private var isOnScreen: Bool {
+        guard let host, IsWindowVisible(host.hwnd), !IsIconic(host.hwnd) else { return false }
+        return host.isShowing(self)
+    }
+
+    /// Reconnect is offered in one place at a time, as on the Mac: on a card in the window's corner when this tab
+    /// wasn't on screen as the connection dropped (the bar in it wouldn't be seen; the card can take a password too),
+    /// up for ten minutes unless it's dealt with; else, and once the card's gone, on the bar in the terminal.
+    private func offerReconnect(host name: String, title: String, card: Bool) {
+        lostNotice?.dismiss()
+        lostNotice = nil
+        noticeReconnect = nil
+        if card {
+            var rules = NoticeRules.lostConnection(host: name, place: noticePlace, folder: lostFolder)
+            rules.title = title
+            lostNotice = TerminalWindow.postNotice(rules, about: self,
+                                                   button: ("Reconnect", { [weak self] in self?.reconnectFromNotice(host: name) }),
+                                                   keepsOpen: true, lifetime: 600)
+        }
         invalidate()
     }
 
@@ -445,6 +474,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
         noticeReconnect = nil
         guard lost != nil || reconnectPassword != nil else { return }
         lost = nil
+        lostFolder = nil
         reconnecting = false
         reconnectPassword = nil
         invalidate()
@@ -467,7 +497,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
     /// The bar's Close: lets go of the kept password; the window closes the tab.
     func dismissLost() { clearLost() }
 
-    var showsLostBar: Bool { lost != nil && terminal.sshControlPath == nil && !reconnecting }
+    /// Not while the card offers Reconnect: one place at a time.
+    var showsLostBar: Bool { lost != nil && terminal.sshControlPath == nil && !reconnecting && (lostNotice?.isGone ?? true) }
 
     enum LostBarButton { case reconnect, close }
 
@@ -639,9 +670,38 @@ final class TerminalPane: TerminalDelegate, Groupable {
         guard let worked = agentWatch.settled(stillStopped: stopped), let a = agent else { return }
         let threshold = AppSettings.shared.notifyAfterSeconds
         guard threshold > 0, worked >= threshold, !isWatched else { return }
-        let prompt = terminal.currentBlock.flatMap { terminal.agentTurns(in: $0).last }.map { terminal.agentPromptText($0) }
-        TerminalWindow.postNotice(NoticeRules.agentStopped(agent: a.kind.name, waiting: a.status == .waiting, worked: worked,
-                                                           prompt: prompt, place: noticePlace), about: self)
+        let onScreen = terminal.currentBlock.flatMap { terminal.agentTurns(in: $0).last }.map { terminal.agentPromptText($0) }
+        let waiting = a.status == .waiting, place = noticePlace, name = a.kind.name
+        // Your latest prompt and the start of Claude's answer, from its newest transcript for this folder, as on the
+        // Mac (read off the window's thread: it can be long); else, over ssh or for another agent, the prompt on screen.
+        let cwd = a.kind == .claude && sshArguments == nil ? terminal.cwd : nil
+        let home = ProcessInfo.processInfo.environment["USERPROFILE"] ?? ""
+        DispatchQueue.global(qos: .utility).async { [weak self, weak host] in
+            let exchange = cwd.flatMap { Self.lastClaudeExchange(cwd: $0, home: home) }
+            host?.runOnWindowThreadPublic {
+                guard let self else { return }
+                let prompt = (exchange?.prompt ?? onScreen).map { ClaudeTranscript.summary($0, limit: 80) }
+                let reply = exchange?.reply.map { ClaudeTranscript.summary($0) }
+                TerminalWindow.postNotice(NoticeRules.agentStopped(agent: name, waiting: waiting, worked: worked, prompt: prompt, place: place, reply: reply),
+                                          about: self)
+            }
+        }
+    }
+
+    /// The latest prompt and the start of Claude's answer in the newest Claude Code session started in `cwd`, read from
+    /// the end of its transcript (further back only if the prompt isn't in the last stretch).
+    private static func lastClaudeExchange(cwd: String, home: String) -> (prompt: String?, reply: String?)? {
+        guard let dir = ClaudeTranscript.projectFolder(cwd: cwd, home: home) else { return nil }
+        let fm = FileManager.default
+        let newest = ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".jsonl") }.map { dir + "/" + $0 }
+            .max { ((try? fm.attributesOfItem(atPath: $0)[.modificationDate] as? Date) ?? .distantPast) < ((try? fm.attributesOfItem(atPath: $1)[.modificationDate] as? Date) ?? .distantPast) }
+        guard let path = newest else { return nil }
+        for bytes in [2 << 20, 16 << 20] {
+            guard let data = ClaudeTranscript.tail(of: path, bytes: bytes) else { return nil }
+            let found = ClaudeTranscript.lastExchange(data)
+            if found.prompt != nil || data.count < bytes - 1024 { return found }
+        }
+        return nil
     }
 
     /// Reconnect on the lost-connection card: logs back in here without leaving the tab you're in; if the host asks
@@ -743,6 +803,12 @@ final class TerminalPane: TerminalDelegate, Groupable {
 
     private func tickWork() {
         manageRemote()
+        // The card offering Reconnect has gone (closed, timed out, or clicked through to here): the bar takes over.
+        if lost != nil, let card = lostNotice, card.isGone {
+            lostNotice = nil
+            noticeReconnect = nil
+            invalidate()
+        }
         // A command on the ssh host has finished once its prompt is back and the output has stopped.
         if terminal.sshControlPath != nil, Date().timeIntervalSince(lastOutputAt) > 0.3, terminal.remoteOutputQuiet() { invalidate() }
         if let command = pendingCommand, atPrompt {

@@ -39,10 +39,12 @@ enum NoticeRules {
     }
 
     /// An agent that worked `worked` seconds and stopped: done, or waiting on you. `prompt` is what it was asked last.
-    static func agentStopped(agent: String, waiting: Bool, worked: TimeInterval, prompt: String?, place: String) -> Card {
+    /// `reply`: the start of its answer, when known (Claude's transcript, see ClaudeTranscript).
+    static func agentStopped(agent: String, waiting: Bool, worked: TimeInterval, prompt: String?, place: String, reply: String? = nil) -> Card {
         let asked = prompt.map { "\u{276F} " + $0.split(whereSeparator: \.isNewline).joined(separator: " ") }
+        let answer = reply.flatMap { $0.isEmpty ? nil : $0 }
         return Card(title: agent + (waiting ? " needs your input" : " finished"), mark: waiting ? .needsInput : .finished,
-                    lines: [place] + (asked.map { [$0] } ?? []) + ["Worked \(formatDuration(worked))"])
+                    lines: [place] + (asked.map { [$0] } ?? []) + (answer.map { [$0] } ?? []) + ["Worked \(formatDuration(worked))"])
     }
 
     static func lostConnection(host: String, place: String, folder: String?) -> Card {
