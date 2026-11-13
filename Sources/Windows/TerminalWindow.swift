@@ -898,7 +898,14 @@ final class TerminalWindow {
     // MARK: - Drawing
 
     private func chrome(on target: Canvas, layout: WindowLayout) -> WindowChrome {
+        // Something from elsewhere held over a strip (the other column's tab, a sub-tab, a file): the tabs part where it
+        // would land and it shows there as the tab it'll be, as on the Mac. Where it lands is worked out without the
+        // gap, so it doesn't move from under the pointer.
+        var layout = layout
+        let gapSpot = tabStripTarget ?? fileDragPoint.flatMap { tabBarSpot(atX: $0.x, y: $0.y) }
+        if let gapSpot, dragGhost != nil { layout.dropGap = gapSpot }
         var chrome = WindowChrome(canvas: target, layout: layout, tabs: panes.map(\.tabTitle), activeTab: activeIndex)
+        if layout.dropGap != nil, let g = dragGhost { chrome.dropGhost = (g.title, g.glyph) }
         chrome.tabIcons = panes.map { p -> TabIcon in
             if let agent = p.agent { return .agent(agent) }
             if !p.showsTerminal, p.editors.indices.contains(p.activeEditor) {
@@ -982,6 +989,8 @@ final class TerminalWindow {
             chrome.dropMarker = tabBarMarker(spot)
             chrome.dropMarkerColumn = spot.column
         }
+        // The parted tabs show where it goes; no bar as well. (A group's color still gets its bar.)
+        if chrome.dropGhost != nil, chrome.dropMarker?.color == TerminalPalette.accent { chrome.dropMarker = nil }
         // A tab lifted out of its strip, following the pointer, leaves its place empty.
         chrome.draggedTabLifted = tabPress?.dragging == true && dragGhost != nil
         if let g = tabDropChip { chrome.dropChip = panes.firstIndex { $0.group === g } }

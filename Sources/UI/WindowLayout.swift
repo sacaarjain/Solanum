@@ -40,6 +40,9 @@ struct WindowLayout {
     /// Tabs of a group opening or closing: how much of each shows (0 to 1), over what `hiddenTabs` says. They slide
     /// out of, or back into, the group's chip.
     var tabShown: [Int: Float] = [:]
+    /// While a tab from elsewhere (the other column's, a sub-tab, a file) is held over a strip: the tabs part there, a
+    /// tab's width, at `at` (the tab it would go in front of) in `column`, as on the Mac.
+    var dropGap: (column: Int, at: Int)?
     /// How wide the sidebars are, 0 when hidden.
     var leftWidth: Float = 0
     var rightWidth: Float = 0
@@ -179,8 +182,25 @@ struct WindowLayout {
             if let chip = chips[k] { x += chipGap + chip + chipGap }
             x += w * shown(k)
         }
+        if let g = dropGap, g.column == column(ofTab: i), i >= g.at { x += w }
         if let chip = chips[i] { x += chipGap + chip + chipGap }
         return x
+    }
+
+    /// Where the tabs have parted for a drop (see `dropGap`).
+    var dropGapRect: UIRect? {
+        guard let g = dropGap else { return nil }
+        let s = strip(g.column), w = tabWidth(s) > 0 ? tabWidth(s) : min(fittingTabWidth(s), 230 * scale).rounded()
+        let x: Float
+        if g.at < s.range.upperBound {
+            let next = tab(g.at)
+            x = next.x - w - (chips[g.at].map { chipGap + $0 + chipGap } ?? 0)
+        } else if let last = s.range.last {
+            x = tab(last).maxX
+        } else {
+            x = s.start
+        }
+        return UIRect(x: x, y: tabTop, width: w, height: tabBarHeight - tabTop)
     }
 
     /// A tab, or an empty rectangle where a collapsed one would be.

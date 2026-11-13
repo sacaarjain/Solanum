@@ -116,6 +116,19 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-theme-icon"), Command
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 2]) ? 0 : 1)
 }
 
+// The tab strip parted for a sub-tab held over it, at 200%. --draw-drop-gap <png>
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-drop-gap"), CommandLine.arguments.indices.contains(flag + 1) {
+    let width: Float = 1400, height: Float = 160
+    guard let canvas = Canvas(width: Int(width), height: Int(height), fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    var layout = WindowLayout(width: width, height: height, scale: 2, tabCount: 3)
+    layout.dropGap = (0, 1)
+    var chrome = WindowChrome(canvas: canvas, layout: layout, tabs: ["~", "api", "web"], activeTab: 0)
+    chrome.dropGhost = ("notes.md", 0xE8A5)
+    chrome.draw()
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
+}
+
 // Keep Awake's cup large: off, then five moments of its steam rising, and at 100% and 200%. --draw-cup <png>
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-cup"), CommandLine.arguments.indices.contains(flag + 1) {
     guard let canvas = Canvas(width: 1100, height: 260, fontPixels: 26), sol_canvas_begin(canvas.raw, TerminalPalette.chrome) >= 0 else { exit(1) }

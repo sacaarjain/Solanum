@@ -122,6 +122,8 @@ struct WindowChrome {
     var draggedX: Float = 0
     /// While a tab or group is dragged: where it would land, as a bar in that color.
     var dropMarker: (x: Float, color: UInt32)?
+    /// What's held over the strip where the tabs have parted for it (`layout.dropGap`): shown there as the tab it'll be.
+    var dropGhost: (title: String, glyph: UInt16?)?
     /// The column the marker is in, when it isn't where something in the bar is being dragged (a file, or a tab over the
     /// other column's strip).
     var dropMarkerColumn: Int?
@@ -192,6 +194,18 @@ struct WindowChrome {
                 drawGroups(range, lifted: true)
                 for i in g.first...g.last where layout.tab(i).width > 0 { drawTab(i) }
                 sol_canvas_pop_opacity(canvas.raw)
+            }
+            if let ghost = dropGhost, let gap = layout.dropGapRect, layout.dropGap?.column == column {
+                let inset = 2 * scale, r = gap, radius = 8 * scale
+                sol_canvas_fill_rounded(canvas.raw, r.x + inset, r.y + inset, r.width - inset * 2, r.height - inset * 3, radius - 2, TerminalPalette.surface, 0.9)
+                sol_canvas_stroke_rounded(canvas.raw, r.x + inset + 0.5, r.y + inset + 0.5, r.width - inset * 2 - 1, r.height - inset * 3 - 1, radius - 2,
+                                          TerminalPalette.accent, 0.8, max(scale, 1))
+                var tx = r.x + 12 * scale
+                if let glyph = ghost.glyph {
+                    sol_canvas_draw_icon(canvas.raw, tx, r.y, 15 * scale, r.height - inset, glyph, 11 * scale, TerminalPalette.accent, 0.9)
+                    tx += 22 * scale
+                }
+                label(ghost.title, UIRect(x: tx, y: r.y, width: max(r.maxX - tx - 10 * scale, 0), height: r.height - inset), pixels: 12.5 * scale, alpha: 0.85)
             }
             let markerHere = dropMarkerColumn.map { $0 == column } ?? range.contains(draggedTab ?? liftedGroup?.first ?? -1)
             if let marker = dropMarker, v.x - 4 * scale <= marker.x, marker.x <= v.maxX + 4 * scale, markerHere {
