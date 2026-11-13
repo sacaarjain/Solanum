@@ -181,7 +181,7 @@ final class GitCommitPanel: ColumnPanel {
     func draw(on canvas: Canvas, in a: UIRect, scale s: Float) {
         lastArea = a
         let p = PanelPaint(canvas: canvas, scale: s)
-        p.backdrop(a, TerminalPalette.background)
+        p.backdrop(a, TerminalPalette.page)
         sol_canvas_push_clip(canvas.raw, a.x, a.y, a.width, a.height)
         defer { sol_canvas_pop_clip(canvas.raw) }
         guard report != nil else {

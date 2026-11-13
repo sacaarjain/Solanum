@@ -76,8 +76,13 @@ struct EditorSplit {
     /// The pages, strip and all; nil without any.
     var editor: UIRect? { hasEditors ? UIRect(x: column.x, y: column.y, width: column.width, height: editorHeight) : nil }
     var strip: UIRect? { editor.map { UIRect(x: $0.x, y: $0.y, width: $0.width, height: stripHeight) } }
-    /// The active page, under the strip.
-    var page: UIRect? { editor.map { UIRect(x: $0.x, y: $0.y + stripHeight, width: $0.width, height: max($0.height - stripHeight, 0)) } }
+    /// How far the sub-tabs and the page float in from the card's edges, so their corners (`EditorStrip.radius`) are
+    /// concentric with the card's (8) and the gaps around them even, as on the Mac.
+    var inset: Float { (3 * scale).rounded() }
+    /// The active page, under the strip: a rounded panel of its own inside the card, inset as the sub-tabs are.
+    var page: UIRect? {
+        editor.map { UIRect(x: $0.x + inset, y: $0.y + stripHeight, width: max($0.width - 2 * inset, 0), height: max($0.height - stripHeight - inset, 0)) }
+    }
     /// The band between pages and terminal, as on the Mac.
     var bandHeight: Float { (6 * scale).rounded() }
     /// The band, and a couple of pixels either side of it, which drag it.
@@ -107,16 +112,21 @@ struct EditorStrip {
     var scroll: Float = 0
 
     private static let pixels: Float = 11.5
+    /// The sub-tabs' and page's corners: concentric with the card's, `inset` in.
+    static func radius(_ scale: Float) -> Float { 5 * scale }
+    private var inset: Float { (3 * scale).rounded() }
+    /// How far the active sub-tab's sides curve out where they meet the page.
+    private var flare: Float { (4 * scale).rounded() }
 
     var terminalButton: UIRect {
         let side = (22 * scale).rounded()
         return UIRect(x: strip.maxX - side - (8 * scale).rounded(), y: (strip.y + (strip.height - side) / 2).rounded(), width: side, height: side)
     }
 
-    private var gap: Float { (2 * scale).rounded() }
+    private var gap: Float { inset }
     private var arrowWidth: Float { (22 * scale).rounded() }
     /// Where sub-tabs can go when they all fit: from the strip's start to the terminal button.
-    private var room: (start: Float, end: Float) { (strip.x + (6 * scale).rounded(), terminalButton.x - (4 * scale).rounded()) }
+    private var room: (start: Float, end: Float) { (strip.x + inset, terminalButton.x - (4 * scale).rounded()) }
 
     private var widths: [Float] {
         items.map { item in
@@ -144,7 +154,7 @@ struct EditorStrip {
         var x = viewport.x - offset
         var out: [(UIRect, UIRect)] = []
         for w in widths {
-            let r = UIRect(x: x, y: strip.y + (3 * scale).rounded(), width: w, height: strip.height - (4 * scale).rounded())
+            let r = UIRect(x: x, y: strip.y + inset, width: w, height: strip.height - 2 * inset)
             let side = (16 * scale).rounded()
             out.append((r, UIRect(x: r.maxX - side - (4 * scale).rounded(), y: (r.midY - side / 2).rounded(), width: side, height: side)))
             x += w + gap
@@ -179,22 +189,54 @@ struct EditorStrip {
         return nil
     }
 
+    /// The active sub-tab, if it's docked (all of it showing, not being dragged): its rect, and whether it's the first,
+    /// on the page's left edge, where its side runs straight down into the page's (whose corner is square then).
+    func docked(active: Int, dragged: Int?) -> (rect: UIRect, flush: Bool)? {
+        let laid = tabs, v = viewport
+        guard laid.indices.contains(active), active != dragged else { return nil }
+        let r = laid[active].rect
+        guard r.x >= v.x - 0.5, r.maxX <= v.maxX + 0.5 else { return nil }
+        return (r, !overflows && r.x <= room.start + 0.5)
+    }
+
+    /// The active sub-tab opening onto the page below, as a main tab opens onto its card: rounded on top, its sides
+    /// running down to the page and curving out onto its edge, or, `flush`, the page's left edge carried straight up.
+    /// Backdrops throughout, so it's one surface with the page however see-through the window is.
+    private func drawDock(_ r: UIRect, flush: Bool) {
+        let c = canvas.raw, f = flare, rad = Self.radius(scale), bottom = strip.maxY
+        let page = TerminalPalette.page, card = TerminalPalette.background
+        let x0 = flush ? r.x : r.x - f, x1 = r.maxX + f
+        sol_canvas_backdrop_rect(c, x0, r.y, x1 - x0, bottom - r.y, page)
+        // The card again outside its rounded top (and either side of it, where the feet go).
+        let top: [Float] = [r.x, r.y, r.width, bottom - r.y + rad]
+        top.withUnsafeBufferPointer { sol_canvas_backdrop_frame(c, x0, r.y, x1 - x0, bottom - r.y, $0.baseAddress, 1, rad, card) }
+        // The feet: the page's color in the corner outside a quarter circle, curving from the tab's side onto the page.
+        let far: Float = 100 * scale
+        var feet: [([Float], UIRect)] = [([r.maxX, bottom - f - far, far + f, far + f], UIRect(x: r.maxX, y: bottom - f, width: f, height: f))]
+        if !flush { feet.append(([r.x - f - far, bottom - f - far, far + f, far + f], UIRect(x: r.x - f, y: bottom - f, width: f, height: f))) }
+        for (shape, o) in feet {
+            shape.withUnsafeBufferPointer { sol_canvas_backdrop_frame(c, o.x, o.y, o.width, o.height, $0.baseAddress, 1, f, page) }
+        }
+    }
+
     /// `dragged` is a sub-tab being dragged, shown faint where it was; `marker`, where it would land along the strip.
+    /// On the card's own background, as on the Mac: the active sub-tab opens onto the page below, one piece with it;
+    /// the others are just their names, a pill on hover.
     func draw(active: Int, hovered: Part?, showsTerminal: Bool, focused: Bool, dragged: Int? = nil, marker: Int? = nil) {
-        let c = canvas.raw, fg = TerminalPalette.foreground
-        sol_canvas_backdrop_rect(c, strip.x, strip.y, strip.width, strip.height, TerminalPalette.chrome)
-        sol_canvas_fill_rect(c, strip.x, strip.maxY - 1, strip.width, 1, fg, 0.10)
-        let v = viewport, laid = tabs
-        sol_canvas_push_clip(c, v.x, v.y, v.width, v.height)
+        let c = canvas.raw, fg = TerminalPalette.foreground, rad = Self.radius(scale)
+        let v = viewport, laid = tabs, dock = docked(active: active, dragged: dragged)
+        // A little past the viewport, for the docked tab's curved feet.
+        sol_canvas_push_clip(c, v.x - flare, v.y, v.width + 2 * flare, v.height)
         for (i, t) in laid.enumerated() where t.rect.maxX > v.x && t.rect.x < v.maxX {
             let r = t.rect, isActive = i == active, faint: Float = i == dragged ? 0.35 : 1
             let hoveredHere = dragged == nil && (hovered == .tab(i) || hovered == .close(i))
-            if isActive || hoveredHere {
-                sol_canvas_fill_rounded(c, r.x, r.y, r.width, r.height, 5 * scale, TerminalPalette.surface, (isActive ? 1 : 0.5) * faint)
-            }
-            if isActive {
-                // The accent underline, dimmer while the keyboard is in the terminal.
-                sol_canvas_fill_rounded(c, r.x + 8 * scale, r.maxY - 2 * scale, r.width - 16 * scale, 2 * scale, 1 * scale, TerminalPalette.accent, (focused ? 1 : 0.5) * faint)
+            if isActive, let dock {
+                drawDock(dock.rect, flush: dock.flush)
+            } else if isActive {
+                // Lifted (being dragged) or partly scrolled away: a pill of the same surface.
+                sol_canvas_fill_rounded(c, r.x, r.y, r.width, r.height, rad, TerminalPalette.page, faint)
+            } else if hoveredHere {
+                sol_canvas_fill_rounded(c, r.x, r.y, r.width, r.height, rad, TerminalPalette.surface, 0.5)
             }
             let item = items[i]
             // A file's icon from the icon pack in use, else Solanum's own.

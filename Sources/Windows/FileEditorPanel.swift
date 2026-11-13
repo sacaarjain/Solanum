@@ -1181,7 +1181,7 @@ final class FileEditorPanel: ColumnPanel {
         // The text changed under the find bar: its matches follow.
         if let f = find, f.searchedVersion != version, case .text = content { runFind(select: false) }
         let p = PanelPaint(canvas: canvas, scale: s), fg = p.fg
-        p.backdrop(a, TerminalPalette.background)
+        p.backdrop(a, TerminalPalette.page)
         sol_canvas_push_clip(canvas.raw, a.x, a.y, a.width, a.height)
         defer { sol_canvas_pop_clip(canvas.raw) }
         let b = body(a, s)
@@ -1271,8 +1271,9 @@ final class FileEditorPanel: ColumnPanel {
 
     private func drawHeader(_ a: UIRect, _ p: PanelPaint, _ s: Float, _ fg: UInt32) {
         let h = header(a, s), buttons = buttonRects(a, s)
-        p.backdrop(h, TerminalPalette.chrome)
-        p.fill(UIRect(x: a.x, y: h.maxY - 1, width: a.width, height: 1), fg, 0.10)
+        // On the page's own surface, as the Mac's: set off from what's under it by a hairline inset from the page's
+        // rounded edges, so the active sub-tab above runs straight into it.
+        p.fill(UIRect(x: a.x + 12 * s, y: h.maxY - 1, width: max(a.width - 24 * s, 0), height: 1), fg, 0.10)
         let side = (16 * s).rounded()
         if !FileIcons.draw(name: name, directory: false, x: a.x + 11 * s, y: (h.midY - side / 2).rounded(), size: side, on: p.canvas) {
             p.icon(FileKind(name: name).glyph, UIRect(x: a.x + 10 * s, y: h.y, width: 18 * s, height: h.height), pixels: 12, alpha: 0.65)

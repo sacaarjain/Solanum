@@ -3349,10 +3349,17 @@ final class TerminalWindow {
         }
         guard let editor = split.editor, let strip = editorStrip(for: pane, on: target) else { return }
         sol_canvas_backdrop_rect(target.raw, editor.x, editor.y, editor.width, editor.height, TerminalPalette.background)
+        let held = stripPress.flatMap { $0.dragging && $0.pane === pane ? $0 : nil }
         if let page = split.page, let panel = pane.panel {
             panel.draw(on: target, in: page, scale: scale)
+            // A rounded panel in the card, as on the Mac: the card shows outside its corners. Square at the top left while
+            // the first sub-tab, active, runs straight down into it there.
+            let r = EditorStrip.radius(scale), shape = [page.x, page.y, page.width, page.height]
+            shape.withUnsafeBufferPointer { sol_canvas_backdrop_frame(target.raw, page.x, page.y, page.width, page.height, $0.baseAddress, 1, r, TerminalPalette.background) }
+            if strip.docked(active: pane.activeEditor, dragged: held?.index)?.flush == true {
+                sol_canvas_backdrop_rect(target.raw, page.x, page.y, r, r, TerminalPalette.page)
+            }
         }
-        let held = stripPress.flatMap { $0.dragging && $0.pane === pane ? $0 : nil }
         strip.draw(active: pane.activeEditor, hovered: hoveredStrip?.pane == pane.id ? hoveredStrip?.part : nil, showsTerminal: pane.showsTerminal,
                    focused: pane.editorFocused && pane === activePane, dragged: held?.index, marker: held == nil ? nil : stripInsert)
         if split.showsTerminal {

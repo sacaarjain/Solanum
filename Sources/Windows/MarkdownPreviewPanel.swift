@@ -259,7 +259,7 @@ final class MarkdownPreviewPanel: ColumnPanel {
     func draw(on canvas: Canvas, in a: UIRect, scale s: Float) {
         lastArea = a
         let p = PanelPaint(canvas: canvas, scale: s), fg = p.fg
-        p.backdrop(a, TerminalPalette.background)
+        p.backdrop(a, TerminalPalette.page)
         sol_canvas_push_clip(canvas.raw, a.x, a.y, a.width, a.height)
         defer { sol_canvas_pop_clip(canvas.raw) }
         let h = header(a, s), body = UIRect(x: a.x, y: h.maxY, width: a.width, height: max(a.maxY - h.maxY, 0))
@@ -322,8 +322,9 @@ final class MarkdownPreviewPanel: ColumnPanel {
             finder?.draw(on: canvas, in: body, scale: s)
         }
         // The header: what this is, and close.
-        p.backdrop(h, TerminalPalette.chrome)
-        p.fill(UIRect(x: a.x, y: h.maxY - 1, width: a.width, height: 1), fg, 0.10)
+        // On the page's own surface, as the Mac's: set off from what's under it by a hairline inset from the page's
+        // rounded edges, so the active sub-tab above runs straight into it.
+        p.fill(UIRect(x: a.x + 12 * s, y: h.maxY - 1, width: max(a.width - 24 * s, 0), height: 1), fg, 0.10)
         p.icon(0xE8A1, UIRect(x: a.x + 10 * s, y: h.y, width: 18 * s, height: h.height), pixels: 12, alpha: 0.65)
         p.label("Preview " + name, UIRect(x: a.x + 34 * s, y: h.y, width: max(closeButton(a, s).x - a.x - 44 * s, 0), height: h.height), pixels: 13, semibold: true)
         p.button(0xE8BB, closeButton(a, s), hovered: hoveredClose)

@@ -59,6 +59,10 @@ enum TerminalPalette {
         }
     }
 
+    /// What a tab's pages (a file, Git, Markdown) are drawn on: a well in their card, a shade darker than it (a touch of
+    /// the text color on a light theme, where darker's too faint), as the Mac's file panel.
+    static var page: UInt32 { isDark ? mix(0x000000, background, 0.22) : mix(foreground, background, 0.05) }
+
     /// `amount` of `a`, the rest `b`.
     static func mix(_ a: UInt32, _ b: UInt32, _ amount: Float) -> UInt32 {
         func channel(_ shift: UInt32) -> UInt32 {

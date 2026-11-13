@@ -313,13 +313,14 @@ final class GitChangesPanel: ColumnPanel {
 
     func draw(on canvas: Canvas, in a: UIRect, scale s: Float) {
         let p = PanelPaint(canvas: canvas, scale: s), fg = p.fg
-        p.backdrop(a, TerminalPalette.background)
+        p.backdrop(a, TerminalPalette.page)
         sol_canvas_push_clip(canvas.raw, a.x, a.y, a.width, a.height)
         defer { sol_canvas_pop_clip(canvas.raw) }
         // The bar: what this is, the message, Commit.
         let h = header(a, s)
-        p.backdrop(h, TerminalPalette.chrome)
-        p.fill(UIRect(x: a.x, y: h.maxY - 1, width: a.width, height: 1), fg, 0.10)
+        // On the page's own surface, as the Mac's: set off from what's under it by a hairline inset from the page's
+        // rounded edges, so the active sub-tab above runs straight into it.
+        p.fill(UIRect(x: a.x + 12 * s, y: h.maxY - 1, width: max(a.width - 24 * s, 0), height: 1), fg, 0.10)
         let title = "Git Changes" + (info.map { " · \($0.branch)" } ?? "")
         titleWidth = min(p.width(title, pixels: 13, semibold: true) + 20 * s, a.width * 0.3)
         p.label(title, UIRect(x: a.x + 12 * s, y: h.y, width: titleWidth - 16 * s, height: h.height), pixels: 13, semibold: true)
