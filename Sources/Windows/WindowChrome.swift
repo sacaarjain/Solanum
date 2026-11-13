@@ -96,6 +96,8 @@ struct WindowChrome {
     var showsThemeIcon: Bool { themeIcon != nil }
     /// The clock a GIF icon's frames go by.
     var iconTime: Double = 0
+    /// The pointer's on the Extensions button.
+    var extensionsHovered = false
     /// The theme's own name, as typed (the status bar shows it in capitals), for the card hovering it.
     var themeTitle = ThemeSpecs.defaultName
     /// The Quantum Moon, wandered off from beside the theme name (see QuantumMoon): into the flower's corner, or by the
@@ -509,6 +511,13 @@ struct WindowChrome {
         return UIRect(x: left, y: layout.statusBar.y, width: right - left + 4 * scale, height: layout.statusBar.height)
     }
 
+    /// The Extensions button, just left of the theme's name, as on the Mac. Not while split, as the theme isn't.
+    func extensionsSpot() -> UIRect {
+        guard !layout.isSplit else { return UIRect(x: 0, y: 0, width: 0, height: 0) }
+        let spot = themeSpot(), side = layout.keepAwakeButton.width
+        return UIRect(x: (spot.x - 2 * scale - side).rounded(), y: layout.keepAwakeButton.y, width: side, height: layout.keepAwakeButton.height)
+    }
+
     /// Where the folder's parts go in the status bar, and what each stands for. For drawing them and for clicks.
     /// Where a column's half of the status bar puts things, as on the Mac: the ssh host, git's parts and a divider after
     /// them, then the folder. While split, the right half runs the other way: the folder, then git and the host against
@@ -546,7 +555,7 @@ struct WindowChrome {
         func spot(_ x: Float, _ w: Float) -> UIRect { UIRect(x: x, y: bar.y + 3 * scale, width: w, height: bar.height - 6 * scale) }
         if column == 0 {
             var x = layout.keepAwakeButton.maxX + 6 * scale
-            var h = Half(folderX: 0, limit: !layout.isSplit ? themeX - 34 * scale : layout.divider - 10 * scale)
+            var h = Half(folderX: 0, limit: !layout.isSplit ? extensionsSpot().x - 8 * scale : layout.divider - 10 * scale)
             if host != nil { h.hostX = x + 4 * scale; x += 4 * scale + hostW }
             for (part, w) in parts { h.git.append((part, spot(x, w))); x += w + 2 * scale }
             if g != nil { h.dividerX = x + 3 * scale; x += 9 * scale }
@@ -679,6 +688,10 @@ struct WindowChrome {
             let spot = themeSpot()
             if themeHovered { sol_canvas_fill_rounded(canvas.raw, spot.x, spot.y + 3 * scale, spot.width, spot.height - 6 * scale, 4 * scale, fg, 0.10) }
             label(themeName, UIRect(x: themeX, y: bar.y, width: themeWidth + 2, height: bar.height), pixels: themePixels, semibold: true, alpha: themeHovered ? 0.9 : 0.55)
+            // Extensions, a puzzle piece, just left of it.
+            let ext = extensionsSpot()
+            if extensionsHovered { sol_canvas_fill_rounded(canvas.raw, ext.x, ext.y, ext.width, ext.height, 4 * scale, fg, 0.10) }
+            icon(0xEA86, ext, pixels: 12 * scale, color: extensionsHovered ? TerminalPalette.accent : nil, alpha: extensionsHovered ? 1 : 0.75)
             if let themeIcon {
                 // The flower is drawn a touch smaller, as its outline fills its square.
                 let flower = themeIcon == .flower

@@ -96,6 +96,7 @@ final class TerminalWindow {
     private var hoveredCrumb: Int?
     private var hoveredGit: (column: Int, part: GitPart)?
     private var themeHovered = false
+    private var extensionsHovered = false
     /// The tab whose place the left sidebar shows (see `syncLeftSidebar`).
     private weak var leftOwner: TerminalPane?
     /// While split, the active tab of the column that doesn't have the keyboard.
@@ -967,6 +968,7 @@ final class TerminalWindow {
         chrome.moonByFolders = QuantumMoon.at(.folders)
         chrome.moonHovered = moonHovered
         chrome.themeHovered = themeHovered
+        chrome.extensionsHovered = extensionsHovered
         if let press = tabPress, press.dragging {
             chrome.draggedTab = press.index
             chrome.draggedX = draggedX
@@ -2556,6 +2558,15 @@ final class TerminalWindow {
         let panel = GitChangesPanel(place: place)
         wire(panel, in: pane)
         openEditor(EditorItem(key: key, title: "Git Changes", glyph: EditorItem.Glyph.changes, panel: panel), in: pane)
+    }
+
+    /// The Extensions page in a sub-tab of its own (Ctrl+Shift+X), as on the Mac.
+    func showExtensions() {
+        let pane = activePane, key = "extensions"
+        if focusEditor(key, in: pane) { return }
+        let panel = ExtensionsPanel()
+        panel.invalidate = { [weak self] in self?.invalidate() }
+        openEditor(EditorItem(key: key, title: "Extensions", glyph: 0xEA86, panel: panel), in: pane)
     }
 
     func showGitGraph() {
@@ -4290,7 +4301,7 @@ final class TerminalWindow {
         // While split, the right column's half follows the left one's.
         let leftSpots = bar.crumbSpots(), spots = leftSpots + (isSplit ? bar.crumbSpots(column: 1) : [])
         let hit = spots.firstIndex { $0.hit.contains(x, y) }
-        let onTheme = bar.themeSpot().contains(x, y)
+        let onTheme = bar.themeSpot().contains(x, y), onExtensions = bar.extensionsSpot().contains(x, y)
         var git: (column: Int, part: GitPart, rect: UIRect)?
         for column in isSplit ? [0, 1] : [0] {
             if let g = bar.gitSpots(column: column).first(where: { $0.rect.contains(x, y) }) { git = (column, g.part, g.rect) }
@@ -4308,12 +4319,16 @@ final class TerminalWindow {
         if git != nil { return message != Win.WM_MOUSEMOVE }
         switch message {
         case Win.WM_MOUSEMOVE:
-            if hit != hoveredCrumb || onTheme != themeHovered {
+            if hit != hoveredCrumb || onTheme != themeHovered || onExtensions != extensionsHovered {
                 hoveredCrumb = hit
                 themeHovered = onTheme
+                extensionsHovered = onExtensions
                 invalidate()
             }
             return false
+        case Win.WM_LBUTTONUP where onExtensions:
+            showExtensions()
+            return true
         case Win.WM_LBUTTONUP where onTheme:
             showThemeMenu(above: bar.themeSpot())
             return true
@@ -4450,6 +4465,7 @@ final class TerminalWindow {
     }
 
     var themeSpotRect: UIRect { chrome(on: canvas, layout: layout).themeSpot() }
+    var extensionsSpotRect: UIRect { chrome(on: canvas, layout: layout).extensionsSpot() }
     var keepAwakeButtonRect: UIRect { layout.keepAwakeButton }
 
     // MARK: - Dragging tabs
@@ -5270,7 +5286,7 @@ final class TerminalWindow {
         ("Edit", [("Copy (with something selected)", "Ctrl+C"), ("Stop the program (with nothing selected)", "Ctrl+C"), ("Cut (in the line being typed)", "Ctrl+X"),
                   ("Paste", "Ctrl+V"), ("Paste (also)", "Shift+Insert"), ("Undo (PowerShell and Claude Code)", "Ctrl+Z")]),
         ("Prompts", [("New Line (shells and Claude Code)", "Shift+Enter"), ("Paste an Image (Claude Code)", "Ctrl+V"), ("Jump to Prompt…", "Ctrl+J")]),
-        ("Find and Git", [("Search in Project Folder…", "Ctrl+Shift+F"), ("Show Git Graph", "Ctrl+Shift+G"), ("Show Git Changes", "Ctrl+Shift+S"),
+        ("Find and Git", [("Search in Project Folder…", "Ctrl+Shift+F"), ("Show Git Graph", "Ctrl+Shift+G"), ("Extensions", "Ctrl+Shift+X"), ("Show Git Changes", "Ctrl+Shift+S"),
                           ("Open a Link", "Ctrl+Click")]),
         ("Pages", [("Close the page with the keyboard", "Ctrl+W"), ("Back to the terminal", "Click it")]),
         ("View", [("Toggle File Sidebar", "Ctrl+B"), ("Toggle Right Sidebar (split)", "Ctrl+Alt+B"), ("Pin Sidebar Folder", "Ctrl+Shift+B"), ("Scroll Back a Page", "Shift+PageUp"), ("Scroll Forward a Page", "Shift+PageDown")]),
@@ -5306,6 +5322,7 @@ final class TerminalWindow {
             PaletteItem(title: "Search in Project Folder…", category: "Find", shortcut: "Ctrl+Shift+F") { [weak self] in self?.showSearch() },
             PaletteItem(title: "Show Git Changes", category: "Git", shortcut: "Ctrl+Shift+S") { [weak self] in self?.showGitChanges() },
             PaletteItem(title: "Show Git Graph", category: "Git", shortcut: "Ctrl+Shift+G") { [weak self] in self?.showGitGraph() },
+            PaletteItem(title: "Extensions", category: "View", shortcut: "Ctrl+Shift+X") { [weak self] in self?.showExtensions() },
             PaletteItem(title: "Switch Branch…", category: "Git") { [weak self] in self.map { $0.showBranches(for: $0.activePane) } },
             PaletteItem(title: isSplit ? "Move Tab to Other Split" : "Move Tab to New Split", category: "Shell", shortcut: "Ctrl+Shift+D") { [weak self] in
                 self.map { $0.moveToOtherColumn($0.activePane) }
@@ -5738,6 +5755,12 @@ final class TerminalWindow {
             } else {
                 showGitChanges()
             }
+            return true
+        }
+        // Extensions, as the Mac's Shift-Command-X; again with the page in front closes it. With text selected in the
+        // terminal it's still Cut.
+        if ctrl && shift && !alt && key == 0x58 && palette == nil && !(activePane.hasSelection && !activePane.editorFocused) {
+            if activePane.editorFocused, let panel = activePane.panel, panel is ExtensionsPanel { closeEditor(panel, in: activePane) } else { showExtensions() }
             return true
         }
         if palette != nil { return paletteKey(key, ctrl: ctrl, shift: shift) }

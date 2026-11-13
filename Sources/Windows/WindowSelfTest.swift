@@ -1581,6 +1581,12 @@ enum WindowSelfTest {
         }))
         steps.append(Step(name: "new tab: closes", action: { press(0x57) }, done: { window.panes.count == 2 }))
         // Themes.
+        // Extensions, as on the Mac: the puzzle piece left of the theme's name opens its page; Ctrl+Shift+X closes it.
+        steps.append(Step(name: "themes: the Extensions button opens its page", action: { window.click(window.extensionsSpotRect) }, done: {
+            guard pane.panel is ExtensionsPanel else { return false }
+            return snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\extensions.png") } ?? true
+        }))
+        steps.append(Step(name: "themes: Ctrl+Shift+X closes it", action: { press(0x58, shift: true) }, done: { !(pane.panel is ExtensionsPanel) }))
         steps.append(Step(name: "themes: the status bar's theme opens the menu", action: { window.click(window.themeSpotRect) },
                           done: { window.menuTitles.contains("Quantum Moon") && window.menuTitles.contains("Dark+") }))
         steps.append(Step(name: "themes: choosing one changes everything", action: { window.click(window.menuRow("Quantum Moon")!) },
