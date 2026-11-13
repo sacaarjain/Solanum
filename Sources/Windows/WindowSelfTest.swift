@@ -1062,6 +1062,16 @@ enum WindowSelfTest {
                           done: { editor()?.textLines?.first == "if x:" }))
         steps.append(Step(name: "editor: saved, so nothing asks later", action: { key(0x53, ctrl: true) },
                           done: { editor()?.hasUnsavedChanges == false }))
+        // Where the files' line meets the sidebar's edge, a drag moves both, as in VS Code.
+        var before: (left: Float, band: Float)?
+        steps.append(Step(name: "editor: where dividers meet, a drag moves both", action: {
+            guard let j = window.leftJunctionForTesting else { return }
+            before = (window.currentLayout.leftWidth, j.y)
+            window.drag(fromX: j.x, y: j.y, toX: j.x + 60, y: j.y + 45)
+        }, done: {
+            guard let before, let j = window.leftJunctionForTesting else { return false }
+            return window.currentLayout.leftWidth > before.left + 20 && j.y > before.band + 15
+        }))
         let readme = windowsFolder + "\\readme.md"
         steps.append(Step(name: "preview: a Markdown file renders", action: {
             _ = FileManager.default.createFile(atPath: readme, contents: Data("# Title\n\nSome **bold** and *italic* text, `code`, a [link](https://example.com).\n\n- one\n- [x] done\n".utf8))

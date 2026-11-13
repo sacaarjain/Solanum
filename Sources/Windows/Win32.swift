@@ -55,6 +55,8 @@ enum Win {
     static let resizeCursor = UnsafePointer<WCHAR>(bitPattern: 32644)
     static let resizeUpDownCursor = UnsafePointer<WCHAR>(bitPattern: 32645)
     static let handCursor = UnsafePointer<WCHAR>(bitPattern: 32649)
+    /// The four-way arrows, where two dividers meet.
+    static let moveCursor = UnsafePointer<WCHAR>(bitPattern: 32646)
     /// Resource 1 in Support/Windows/Solanum.rc.
     static let appIcon = UnsafePointer<WCHAR>(bitPattern: 1)
     static let SWP_NOSIZE: UINT = 0x0001, SWP_FRAMECHANGED: UINT = 0x0020

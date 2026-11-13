@@ -1435,6 +1435,10 @@ final class TerminalWindow {
         }
         let onEdge = palette == nil && (part == .leftEdge || part == .rightEdge || part == .columnDivider) || draggingEdge != nil
         let onLink = palette == nil && part == .terminal && !panes.isEmpty && activePane.hoveredLink != nil
+        if (draggingEdge != nil && draggingEditorLine != nil) || (draggingEdge == nil && draggingEditorLine == nil && junction(atX: px, y: py) != nil) {
+            SetCursor(LoadCursorW(nil, Win.moveCursor))
+            return 1
+        }
         let onEditorLine = palette == nil && menu == nil && part == .terminal && !panes.isEmpty
             && (draggingEditorLine != nil || editorSplit(for: pane(atX: px)).divider?.contains(px, py) == true)
         if onEditorLine {
@@ -1740,6 +1744,8 @@ final class TerminalWindow {
         let part = layout.part(atX: x, y: y)
         // The line between a tab's pages and its terminal, while it's dragged, wherever the pointer goes.
         if draggingEditorLine != nil {
+            // Where two dividers meet, both move (see `junction`).
+            if draggingEdge != nil { _ = sidebarMouse(message, part: part, x: x, y: y) }
             _ = editorMouse(message, part: part, x: x, y: y)
             return
         }
@@ -2176,6 +2182,22 @@ final class TerminalWindow {
         }
     }
 
+    /// Where a tab's line between its files and its terminal meets a sidebar's edge or the columns' divider, as in VS Code:
+    /// the pointer is the four-way arrows there and a drag moves both. The edge, and whose line it is.
+    private func junction(atX x: Float, y: Float) -> (edge: WindowPart, pane: TerminalPane)? {
+        guard palette == nil, menu == nil, dialog == nil else { return nil }
+        let s = scale
+        for pane in visiblePanes {
+            guard let band = editorSplit(for: pane).divider,
+                  y >= band.y - 3 * s, y <= band.maxY + 3 * s, x >= band.x - 8 * s, x <= band.maxX + 8 * s else { continue }
+            for dx in [0, -5 * s, 5 * s] {
+                let p = layout.part(atX: x + dx, y: y)
+                if p == .leftEdge || p == .rightEdge || p == .columnDivider { return (p, pane) }
+            }
+        }
+        return nil
+    }
+
     /// Takes the mouse when it's on a sidebar or its edge. Otherwise false, and it's someone else's.
     private func sidebarMouse(_ message: UINT, part: WindowPart, x: Float, y: Float) -> Bool {
         if let edge = draggingEdge {
@@ -2200,6 +2222,12 @@ final class TerminalWindow {
             // A double click puts the columns back to halves.
             splitFraction = 0.5
             layoutChanged()
+            return true
+        }
+        if message == Win.WM_LBUTTONDOWN, let j = junction(atX: x, y: y) {
+            draggingEdge = j.edge
+            draggingEditorLine = j.pane
+            SetCapture(hwnd)
             return true
         }
         if message == Win.WM_LBUTTONDOWN && (part == .leftEdge || part == .rightEdge || part == .columnDivider) {
@@ -5862,6 +5890,19 @@ final class TerminalWindow {
     var hoveredPart: WindowPart? { hovered }
     var leftShown: Float { left.shown }
     /// The pointer over a rectangle, handled before this returns, so a real pointer elsewhere can't get in first.
+    /// Presses at one point, moves to another, and lets go there, for tests.
+    func drag(fromX x0: Float, y y0: Float, toX x1: Float, y y1: Float) {
+        func at(_ x: Float, _ y: Float) -> LPARAM { LPARAM(Int(x) & 0xFFFF) | (LPARAM(Int(y) & 0xFFFF) << 16) }
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, at(x0, y0))
+        _ = SendMessageW(hwnd, Win.WM_MOUSEMOVE, 1, at(x1, y1))
+        _ = SendMessageW(hwnd, Win.WM_LBUTTONUP, 0, at(x1, y1))
+    }
+    /// Where the active tab's line between its files and terminal meets the left sidebar's edge, for tests.
+    var leftJunctionForTesting: (x: Float, y: Float)? {
+        guard let band = editorSplit(for: activePane).divider, layout.leftWidth > 0 else { return nil }
+        return (layout.leftWidth, band.midY)
+    }
+
     func hover(_ rect: UIRect) {
         let position = LPARAM(Int(rect.x + rect.width / 2) & 0xFFFF) | (LPARAM(Int(rect.y + rect.height / 2) & 0xFFFF) << 16)
         _ = SendMessageW(hwnd, Win.WM_MOUSEMOVE, 0, position)
