@@ -180,6 +180,156 @@ final class FileEditorPanel: ColumnPanel {
     var cellSize: (width: Float, height: Float) = (8, 16)
 
     static let textLimit = 50 * 1024 * 1024
+
+    // MARK: Big files, as less shows them
+
+    /// Bytes `length` from `offset` of the file (offset -1: its last `length`), and its size now. For big files.
+    private let readRange: ((_ offset: Int, _ length: Int, _ done: @escaping (Data?, Int) -> Void) -> Void)?
+    /// How many lines the file has before byte `upTo`, counted where it is (on the host, for one there).
+    private let countLines: ((_ upTo: Int, _ done: @escaping (Int?) -> Void) -> Void)?
+    /// Files over this, and logs over `bigLog`, open read-only as a window of the file, as the Mac's do: at the end at
+    /// once, more fetched as you scroll.
+    static let bigFile = 16 * 1024 * 1024
+    static let bigLog = 1024 * 1024
+    static let piece = 64 * 1024
+    /// The window of a big file shown: bytes `start..<end` of `total`, each on a line's start.
+    private(set) var pager: (start: Int, end: Int, total: Int)?
+    private var pagerBusy = false
+    /// Lines in the file before the window, once counted, for the line numbers.
+    private var linesBefore: Int?
+    private var isLogName: Bool {
+        language == .log || LogFormats.isLogFile(name: name) || LogFormatStore.formats.contains { $0.matches(fileName: name) }
+    }
+
+    /// Opens a file by its end: the whole of it when it's small, else as a window of it (see `pager`).
+    private func readByEnd() {
+        let first = 512 * 1024
+        readRange?(-1, first) { [weak self] data, total in
+            self?.post {
+                guard let self else { return }
+                guard let data else { return self.readWhole(false) }
+                let limit = self.isLogName ? Self.bigLog : Self.bigFile
+                if total <= limit {
+                    // Small: what came is all of it, or read the whole.
+                    if data.count >= total { self.reading = false; self.load(data, cut: false); self.invalidate() } else { self.readWhole(false) }
+                    return
+                }
+                self.reading = false
+                var start = total - data.count, kept = data
+                // From the start of a line.
+                if start > 0, let nl = kept.firstIndex(of: 0x0A) {
+                    start += nl - kept.startIndex + 1
+                    kept = kept[(nl + 1)...]
+                }
+                self.load(Data(kept), cut: true)
+                self.pager = (start, total, total)
+                self.linesBefore = start == 0 ? 0 : nil
+                self.scrollToEnd()
+                self.countBefore()
+                self.invalidate()
+            }
+        }
+    }
+
+    private func countBefore() {
+        guard let pager, linesBefore == nil, let countLines else { return }
+        let at = pager.start
+        countLines(at) { [weak self] n in
+            self?.post {
+                guard let self, let n, self.pager?.start == at else { return }
+                self.linesBefore = n
+                self.invalidate()
+            }
+        }
+    }
+
+    /// Near either end of the window, the next piece that way, as less does.
+    private func pagerFetch() {
+        guard let pager, !pagerBusy, let readRange else { return }
+        if scrollRow < visibleRows * 2, pager.start > 0 {
+            pagerBusy = true
+            let from = max(0, pager.start - Self.piece)
+            readRange(from, pager.start - from) { [weak self] data, _ in
+                self?.post {
+                    guard let self else { return }
+                    self.pagerBusy = false
+                    guard let data, var p = self.pager, p.start == pager.start else { return }
+                    var kept = data, start = from
+                    if start > 0, let nl = kept.firstIndex(of: 0x0A) {
+                        start += nl - kept.startIndex + 1
+                        kept = kept[(nl + 1)...]
+                    }
+                    var added = String(decoding: kept, as: UTF8.self).split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" }).map(String.init)
+                    // It ended on the newline before the first line here.
+                    if added.last == "" { added.removeLast() }
+                    guard !added.isEmpty || start < p.start else { return }
+                    let rowsBefore = self.rowCount
+                    self.lines.insert(contentsOf: added, at: 0)
+                    self.caret.line += added.count
+                    self.anchor?.line += added.count
+                    p.start = start
+                    self.pager = p
+                    self.linesBefore = self.linesBefore.map { max($0 - added.count, 0) }
+                    if start == 0 { self.linesBefore = 0 }
+                    self.version += 1; self.savedVersion = self.version
+                    self.rebuildRows()
+                    self.scrollRow += self.rowCount - rowsBefore
+                    self.invalidate()
+                }
+            }
+        } else if scrollRow + visibleRows * 3 > rowCount, pager.end < pager.total {
+            pagerBusy = true
+            readRange(pager.end, Self.piece) { [weak self] data, total in
+                self?.post {
+                    guard let self else { return }
+                    self.pagerBusy = false
+                    guard let data, var p = self.pager, p.end == pager.end else { return }
+                    self.append(data, to: &p, total: total)
+                }
+            }
+        }
+    }
+
+    /// Bytes read from the window's end: whole lines added (all of them at the file's end).
+    private func append(_ data: Data, to p: inout (start: Int, end: Int, total: Int), total: Int) {
+        var kept = data
+        if p.end + data.count < total, let nl = kept.lastIndex(of: 0x0A) { kept = kept[...nl] }
+        else if p.end + data.count < total { return }
+        guard !kept.isEmpty else { return }
+        var added = String(decoding: kept, as: UTF8.self).split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" }).map(String.init)
+        // The last line here was a whole one (it ended in a newline, an empty line after it): the new ones follow it.
+        if lines.last == "" { lines.removeLast() } else if let first = added.first, !lines.isEmpty {
+            lines[lines.count - 1] += first
+            added.removeFirst()
+        }
+        let atEnd = scrollRow + visibleRows >= rowCount
+        lines += added
+        if lines.isEmpty { lines = [""] }
+        p.end += kept.count
+        p.total = total
+        pager = p
+        version += 1
+        savedVersion = version
+        rebuildRows()
+        if tailing || (atEnd && p.end == total) { scrollToEnd() }
+        invalidate()
+    }
+
+    /// A big file's window looked at again: what it's grown by, when its end is showing (Tail File follows it).
+    private func pagerReload() {
+        guard let pager, let readRange else { return reading = false }
+        guard pager.end >= pager.total else { return reading = false }
+        readRange(pager.end, 4 * Self.piece) { [weak self] data, total in
+            self?.post {
+                guard let self else { return }
+                self.reading = false
+                self.changedOnDisk = false
+                guard let data, var p = self.pager, total > p.end else { return }
+                p.total = total
+                self.append(data, to: &p, total: total)
+            }
+        }
+    }
     static let imageLimit = 40 * 1024 * 1024
     static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "bmp", "ico", "tif", "tiff", "webp", "jfif"]
     var isImage: Bool { Self.imageExtensions.contains(name.split(separator: ".").last.map { $0.lowercased() } ?? "") }
@@ -188,7 +338,11 @@ final class FileEditorPanel: ColumnPanel {
          read: @escaping (_ limit: Int, _ done: @escaping (Data?, Bool) -> Void) -> Void,
          write: @escaping (_ data: Data, _ done: @escaping (String?) -> Void) -> Void,
          signature: @escaping (_ done: @escaping (_ answered: Bool, _ signature: String?) -> Void) -> Void = { $0(false, nil) },
-         readFrom: ((_ offset: Int, _ done: @escaping (Data?, Int) -> Void) -> Void)? = nil) {
+         readFrom: ((_ offset: Int, _ done: @escaping (Data?, Int) -> Void) -> Void)? = nil,
+         readRange: ((_ offset: Int, _ length: Int, _ done: @escaping (Data?, Int) -> Void) -> Void)? = nil,
+         countLines: ((_ upTo: Int, _ done: @escaping (Int?) -> Void) -> Void)? = nil) {
+        self.readRange = readRange
+        self.countLines = countLines
         self.path = path
         self.name = name
         self.folder = folder
@@ -227,6 +381,9 @@ final class FileEditorPanel: ColumnPanel {
 
     private func readNow() {
         let image = isImage
+        if pager != nil { return pagerReload() }
+        // Opened by its end where it can be, so a big file or log shows at once (see `pager`).
+        if !image, readRange != nil, content == .loading { return readByEnd() }
         // A file on this PC that only grew (a log): just what was added, when the end of what's here is still there.
         if !image, let readFrom, case .text = content, !readOnly, original.count > 0 {
             let keep = min(256, original.count), from = original.count - keep
@@ -895,7 +1052,11 @@ final class FileEditorPanel: ColumnPanel {
         let h = header(a, s)
         return UIRect(x: a.x, y: h.maxY, width: a.width, height: max(a.maxY - h.maxY, 0))
     }
-    private func gutterWidth(_ s: Float) -> Float { Float(max(String(lines.count).count, 3)) * cellSize.width + 22 * s }
+    private func gutterWidth(_ s: Float) -> Float {
+        // A big file's room for its biggest line number, guessed from its size until counted.
+        let most = pager.map { lines.count + (linesBefore ?? max($0.total / 40, 0)) } ?? lines.count
+        return Float(max(String(most).count, 3)) * cellSize.width + 22 * s
+    }
     private func textX(_ a: UIRect, _ s: Float) -> Float { body(a, s).x + gutterWidth(s) }
     private func textTop(_ a: UIRect, _ s: Float) -> Float { body(a, s).y + 6 * s }
 
@@ -1144,7 +1305,10 @@ final class FileEditorPanel: ColumnPanel {
             p.label(note.text, UIRect(x: x, y: h.y, width: max(right - x, 0), height: h.height), pixels: 11.5, color: note.problem ? 0xE06B6B : TerminalPalette.accent)
         } else {
             var detail = folder
-            if readOnly { detail = "read-only: only its first \(Self.textLimit / 1024 / 1024) MB  ·  " + folder }
+            if let pager {
+                let mb = Double(pager.total) / 1024 / 1024
+                detail = "read-only: \(mb >= 10 ? String(Int(mb)) : String(format: "%.1f", mb)) MB, read as you scroll  ·  " + folder
+            } else if readOnly { detail = "read-only: only its first \(Self.textLimit / 1024 / 1024) MB  ·  " + folder }
             if right - x > 40 * s { p.label(detail, UIRect(x: x, y: h.y, width: right - x, height: h.height), pixels: 11.5, alpha: 0.45) }
         }
         for (button, r) in buttons {
@@ -1178,6 +1342,7 @@ final class FileEditorPanel: ColumnPanel {
         rebuildRows()
         buildColors()
         scrollRow = min(scrollRow, max(rowCount - 1, 0))
+        if pager != nil { pagerFetch() }
         p.fill(UIRect(x: b.x, y: b.y, width: gutter - 8 * s, height: b.height), TerminalPalette.chrome, 0.35)
         let numberColor = TerminalPalette.mix(p.fg, TerminalPalette.background, 0.4)
         let sel = selection, focusedCaret = TerminalPalette.accent
@@ -1189,8 +1354,9 @@ final class FileEditorPanel: ColumnPanel {
             if let wash = look?.wash { p.fill(UIRect(x: b.x, y: y, width: b.width, height: lh), wash, TerminalPalette.isDark ? 0.13 : 0.10) }
             if markedLine == l + 1 { p.fill(UIRect(x: b.x, y: y, width: b.width, height: lh), TerminalPalette.accent, 0.14) }
             else if caret.line == l && sel == nil { p.fill(UIRect(x: tx - 4 * s, y: y, width: b.maxX - tx + 4 * s, height: lh), p.fg, 0.04) }
-            if sub == 0 {
-                let number = String(l + 1), w = Float(number.count) * cellSize.width
+            // A big file's lines are numbered once those before its window are counted.
+            if sub == 0, pager == nil || linesBefore != nil {
+                let number = String(l + 1 + (linesBefore ?? 0)), w = Float(number.count) * cellSize.width
                 p.mono(number, x: b.x + gutter - 16 * s - w, y: y, maxCells: number.count, color: caret.line == l ? p.fg : numberColor)
             }
             // The row's piece of the line.
@@ -1451,6 +1617,8 @@ final class FileEditorPanel: ColumnPanel {
 
     // For tests
     var textLines: [String]? { if case .text = content { return lines }; return nil }
+    /// The number the gutter gives the first line here (a big file's counted lines before its window), for tests.
+    var firstLineNumberForTesting: Int? { pager == nil ? 1 : linesBefore.map { $0 + 1 } }
     /// The color drawn at a cell of a line, for tests.
     func colorAt(line: Int, cell: Int) -> UInt32? {
         buildColors()

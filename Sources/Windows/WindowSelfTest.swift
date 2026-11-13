@@ -1049,7 +1049,9 @@ enum WindowSelfTest {
         }))
         steps.append(Step(name: "editor: and saves", action: { key(0x53, ctrl: true) }, done: { onDisk(json).hasPrefix("{\n  \"a\": 1,") }))
         // Tab follows the file's own indentation, as VS Code: this file steps by 2, so Tab at the start puts in 2 spaces.
-        let script = windowsFolder + "\\indent.py"
+        let scratch = NSTemporaryDirectory() + "solanum-editor-\(GetCurrentProcessId())"
+        try? FileManager.default.createDirectory(atPath: scratch, withIntermediateDirectories: true)
+        let script = scratch + "\\indent.py"
         steps.append(Step(name: "editor: Tab indents as the file does", action: {
             _ = FileManager.default.createFile(atPath: script, contents: Data("if x:\n  y()\n  if z:\n    w()\n".utf8))
             window.showFile(script, in: pane)
@@ -1062,6 +1064,26 @@ enum WindowSelfTest {
                           done: { editor()?.textLines?.first == "if x:" }))
         steps.append(Step(name: "editor: saved, so nothing asks later", action: { key(0x53, ctrl: true) },
                           done: { editor()?.hasUnsavedChanges == false }))
+        // A big log, as less shows it: at its end at once, read-only, the lines before it fetched as it's scrolled up.
+        let bigLog = scratch + "\\big.log"
+        steps.append(Step(name: "editor: a big log opens at its end", action: {
+            let text = (1...60_000).map { "2026-11-13 10:00:00 INFO line \($0) of the big log" }.joined(separator: "\n") + "\n"
+            _ = FileManager.default.createFile(atPath: bigLog, contents: Data(text.utf8))
+            window.showFile(bigLog, in: pane)
+        }, done: {
+            guard let e = editor(), e.path.hasSuffix("big.log"), let lines = e.textLines else { return false }
+            return e.pager != nil && e.readOnly && lines.dropLast().last?.hasSuffix("line 60000 of the big log") == true && lines.count < 20_000
+        }))
+        steps.append(Step(name: "editor: its lines are numbered as in the whole file", action: {}, done: {
+            guard let e = editor(), let first = e.textLines?.first, let n = e.firstLineNumberForTesting else { return false }
+            return first.contains("line \(n) of")
+        }))
+        var linesShown = 0
+        steps.append(Step(name: "editor: scrolled to its top, more of it comes", action: {
+            linesShown = editor()?.textLines?.count ?? 0
+            key(Win.VK_HOME, ctrl: true)
+        }, done: { (editor()?.textLines?.count ?? 0) > linesShown }))
+        steps.append(Step(name: "editor: and closes", action: { editor()?.press(button: .close) }, done: { editor()?.path.hasSuffix("big.log") != true }))
         // Where the files' line meets the sidebar's edge, a drag moves both, as in VS Code.
         var before: (left: Float, band: Float)?
         steps.append(Step(name: "editor: where dividers meet, a drag moves both", action: {
@@ -1072,6 +1094,10 @@ enum WindowSelfTest {
             guard let before, let j = window.leftJunctionForTesting else { return false }
             return window.currentLayout.leftWidth > before.left + 20 && j.y > before.band + 15
         }))
+        steps.append(Step(name: "editor: and back, for what follows", action: {
+            guard let j = window.leftJunctionForTesting else { return }
+            window.drag(fromX: j.x, y: j.y, toX: j.x - 60, y: j.y - 45)
+        }, done: { before.map { abs(window.currentLayout.leftWidth - $0.left) <= 2 } ?? false }))
         let readme = windowsFolder + "\\readme.md"
         steps.append(Step(name: "preview: a Markdown file renders", action: {
             _ = FileManager.default.createFile(atPath: readme, contents: Data("# Title\n\nSome **bold** and *italic* text, `code`, a [link](https://example.com).\n\n- one\n- [x] done\n".utf8))

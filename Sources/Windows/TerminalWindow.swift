@@ -2107,7 +2107,18 @@ final class TerminalWindow {
             if let remote { Self.writeRemote(path, remote, data, done) } else { Self.writeLocal(path, data, done) }
         }, signature: { done in
             if let remote { Self.remoteSignature(path, remote, done) } else { Self.localSignature(path, done) }
-        }, readFrom: remote != nil ? nil : { offset, done in Self.readLocal(path, from: offset, done) })
+        }, readFrom: remote != nil ? nil : { offset, done in Self.readLocal(path, from: offset, done) },
+        readRange: { offset, length, done in
+            if let remote { Self.readRemote(path, remote, offset: offset, length: length, done) } else { Self.readLocal(path, offset: offset, length: length, done) }
+        }, countLines: { upTo, done in
+            if let remote {
+                remote.run("head -c \(upTo) -- \(RemoteConnection.quote(path)) | wc -l", timeout: 120) { text, code in
+                    done(code == 0 ? text.flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } : nil)
+                }
+            } else {
+                Self.countLocalLines(path, upTo: upTo, done)
+            }
+        })
         panel.invalidate = { [weak self] in self?.invalidate() }
         panel.post = { [weak self] work in self?.runOnWindowThread(work) }
         panel.close = { [weak self, weak panel] in if let self, let panel, let pane = self.owner(of: panel) { self.closeEditor(panel, in: pane) } }
@@ -2156,6 +2167,45 @@ final class TerminalWindow {
         remote.run(FileSync.statScript([path]), timeout: 8) { text, code in
             guard let text, code == 0, let found = FileSync.parseStats(text, paths: [path])[path] else { return done(false, nil) }
             done(true, found)
+        }
+    }
+
+    /// `length` bytes of a file on this PC from `offset` (-1: its last `length`), and its size, off the window's thread.
+    static func readLocal(_ path: String, offset: Int, length: Int, _ done: @escaping (Data?, Int) -> Void) {
+        Thread.detachNewThread {
+            guard let handle = FileHandle(forReadingAtPath: path) else { return done(nil, 0) }
+            defer { try? handle.close() }
+            guard let size = try? handle.seekToEnd() else { return done(nil, 0) }
+            let from = offset < 0 ? max(Int(size) - length, 0) : min(offset, Int(size))
+            guard (try? handle.seek(toOffset: UInt64(from))) != nil, let data = try? handle.read(upToCount: length) else { return done(nil, Int(size)) }
+            done(data, Int(size))
+        }
+    }
+
+    /// The lines of a file on this PC before byte `upTo`, counted off the window's thread.
+    static func countLocalLines(_ path: String, upTo: Int, _ done: @escaping (Int?) -> Void) {
+        Thread.detachNewThread {
+            guard let handle = FileHandle(forReadingAtPath: path) else { return done(nil) }
+            defer { try? handle.close() }
+            var left = upTo, n = 0
+            while left > 0, let chunk = try? handle.read(upToCount: min(left, 4 << 20)), !chunk.isEmpty {
+                n += chunk.reduce(0) { $0 + ($1 == 0x0A ? 1 : 0) }
+                left -= chunk.count
+            }
+            done(n)
+        }
+    }
+
+    /// The same from an ssh host: its size, then the bytes in base64.
+    private static func readRemote(_ path: String, _ remote: RemoteConnection, offset: Int, length: Int, _ done: @escaping (Data?, Int) -> Void) {
+        let q = RemoteConnection.quote(path)
+        let take = offset < 0 ? "tail -c \(length) -- \(q)" : "tail -c +\(offset + 1) -- \(q) | head -c \(length)"
+        remote.run("wc -c < \(q) && \(take) | base64", timeout: 60) { text, code in
+            guard let text, code == 0 else { return done(nil, 0) }
+            let parts = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            let total = Int(parts.first?.trimmingCharacters(in: .whitespaces) ?? "") ?? 0
+            let data = parts.count > 1 ? Data(base64Encoded: String(parts[1]), options: .ignoreUnknownCharacters) : Data()
+            done(data, total)
         }
     }
 
