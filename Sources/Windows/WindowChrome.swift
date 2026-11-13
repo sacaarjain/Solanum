@@ -444,8 +444,8 @@ struct WindowChrome {
     /// Keep Awake's cup, centered in `r`, with three wisps of steam over it: waving as they rise while it's on (`steam`,
     /// in seconds, moves them), still otherwise (nil).
     static func drawCup(on canvas: Canvas, in r: UIRect, scale: Float, color: UInt32, alpha: Float, steam: Double?) {
-        // 24 units across 17 pixels at 100%.
-        let unit = 17 * scale / 24, side = 24 * unit
+        // 24 units across 15 pixels at 100% (as the Mac's).
+        let unit = 15 * scale / 24, side = 24 * unit
         let x = (r.x + (r.width - side) / 2).rounded(), y = (r.y + (r.height - side) / 2).rounded()
         sol_canvas_fill_svg_path(canvas.raw, cupBody, x, y, unit, color, alpha * 0.3)
         sol_canvas_fill_svg_path(canvas.raw, saucer, x, y, unit, color, alpha * 0.3)
@@ -732,8 +732,10 @@ struct WindowChrome {
             if hovered == .shell { sol_canvas_fill_rounded(canvas.raw, b.x, b.y, b.width, b.height, 4 * scale, fg, 0.10) }
             EditorStrip.drawTerminalSymbol(on: canvas, centerX: b.x + b.width / 2, centerY: b.midY, scale: scale, color: fg, alpha: 0.75, thin: true)
         }
-        // Keep Awake's cup: in the accent color while it's on, grey while it's off.
-        let cup = layout.keepAwakeButton
+        // Keep Awake's cup: in the accent color while it's on, grey while it's off. It and its highlight sit 1.5pt above
+        // the bar's middle, level with the icons beside it (its steam would otherwise pull it low), as on the Mac.
+        var cup = layout.keepAwakeButton
+        cup.y -= (1.5 * scale).rounded()
         if hovered == .keepAwake { sol_canvas_fill_rounded(canvas.raw, cup.x, cup.y, cup.width, cup.height, 4 * scale, fg, 0.10) }
         let on = keepAwakeLeft != nil
         Self.drawCup(on: canvas, in: cup, scale: scale, color: on ? TerminalPalette.accent : fg,
