@@ -95,9 +95,9 @@ struct CodeGrammar {
 
     /// Each token in `text` (UTF-16 ranges), in order.
     func tokens(in text: String, range whole: NSRange, into out: inout [(range: NSRange, token: SyntaxToken)]) {
-        let kinds = self.kinds
-        regex.enumerateMatches(in: text, range: whole) { m, _, _ in
-            guard let m else { return }
+        // A loop over the matches, not enumerateMatches: its closure is escaping in Windows' Foundation, so it can't
+        // add to `out`.
+        for m in regex.matches(in: text, range: whole) {
             for (i, k) in kinds.enumerated() {
                 guard let k else { continue }
                 let r = m.range(at: i + 1)
