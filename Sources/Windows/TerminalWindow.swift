@@ -1106,6 +1106,25 @@ final class TerminalWindow {
                 sol_canvas_fill_rect(c, under.x, top, 1, radius, fg, 0.13)
             }
         }
+        // The grips, on the gaps the frame above just painted: between the columns, and between each tab's pages and
+        // its terminal, as on the Mac.
+        if let band = l.columnBand { Self.drawGrip(band, vertical: true, on: target, scale: s, active: draggingEdge == .columnDivider) }
+        for pane in visiblePanes {
+            let split = editorSplit(for: pane)
+            guard let e = split.editor, split.showsTerminal else { continue }
+            Self.drawGrip(UIRect(x: e.x, y: e.maxY, width: e.width, height: split.bandHeight), vertical: false, on: target, scale: s,
+                          active: draggingEditorLine === pane)
+        }
+    }
+
+    /// Three dots across the middle of a band, to show it can be dragged.
+    static func drawGrip(_ r: UIRect, vertical: Bool, on target: Canvas, scale: Float, active: Bool) {
+        let midX = r.x + r.width / 2, midY = r.y + r.height / 2
+        for i in -1...1 {
+            let d = Float(i) * 7 * scale
+            sol_canvas_fill_ellipse(target.raw, vertical ? midX : midX + d, vertical ? midY + d : midY, 1.5 * scale, 1.5 * scale,
+                                    TerminalPalette.foreground, active ? 0.6 : 0.35)
+        }
     }
 
     /// A band (not a hairline) between the columns, or between a tab's pages and its terminal, with a grip to show it
@@ -1120,11 +1139,7 @@ final class TerminalWindow {
             sol_canvas_fill_rect(c, r.x, r.y, r.width, 1, fg, 0.10)
             sol_canvas_fill_rect(c, r.x, r.maxY - 1, r.width, 1, fg, 0.10)
         }
-        let midX = r.x + r.width / 2, midY = r.y + r.height / 2
-        for i in -1...1 {
-            let d = Float(i) * 7 * scale
-            sol_canvas_fill_ellipse(c, vertical ? midX : midX + d, vertical ? midY + d : midY, 1.5 * scale, 1.5 * scale, fg, active ? 0.6 : 0.35)
-        }
+        drawGrip(r, vertical: vertical, on: target, scale: scale, active: active)
     }
 
     /// What the window shows, to a PNG. For tests.
