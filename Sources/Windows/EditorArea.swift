@@ -64,6 +64,10 @@ struct EditorSplit {
     let showsTerminal: Bool
     /// How much of the column the pages take.
     let fraction: Float
+    /// Where the card the pages float on starts and ends across (it's set in from the column beside a sidebar or the
+    /// window's edge): the sub-tabs and page are inset from it, not the column. The column's edges when not given.
+    var card: (x0: Float, x1: Float)? = nil
+    private var span: (x0: Float, x1: Float) { card ?? (column.x, column.maxX) }
 
     var stripHeight: Float { (30 * scale).rounded() }
     private var editorHeight: Float {
@@ -75,13 +79,13 @@ struct EditorSplit {
 
     /// The pages, strip and all; nil without any.
     var editor: UIRect? { hasEditors ? UIRect(x: column.x, y: column.y, width: column.width, height: editorHeight) : nil }
-    var strip: UIRect? { editor.map { UIRect(x: $0.x, y: $0.y, width: $0.width, height: stripHeight) } }
+    var strip: UIRect? { editor.map { UIRect(x: span.x0, y: $0.y, width: span.x1 - span.x0, height: stripHeight) } }
     /// How far the sub-tabs and the page float in from the card's edges, so their corners (`EditorStrip.radius`) are
     /// concentric with the card's (8) and the gaps around them even, as on the Mac.
     var inset: Float { (3 * scale).rounded() }
     /// The active page, under the strip: a rounded panel of its own inside the card, inset as the sub-tabs are.
     var page: UIRect? {
-        editor.map { UIRect(x: $0.x + inset, y: $0.y + stripHeight, width: max($0.width - 2 * inset, 0), height: max($0.height - stripHeight - inset, 0)) }
+        editor.map { UIRect(x: span.x0 + inset, y: $0.y + stripHeight, width: max(span.x1 - span.x0 - 2 * inset, 0), height: max($0.height - stripHeight - inset, 0)) }
     }
     /// The band between pages and terminal, as on the Mac.
     var bandHeight: Float { (6 * scale).rounded() }

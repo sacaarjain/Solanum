@@ -1067,11 +1067,7 @@ final class TerminalWindow {
         if l.leftWidth > 0 { card(g, l.leftWidth - half, top, bottom) }
         if l.rightWidth > 0 { card(l.width - l.rightWidth + half, l.width - g, top, bottom) }
         for pane in visiblePanes {
-            let col = columnArea(for: pane), split = editorSplit(for: pane)
-            // Against the window's edge, a full gap; against a sidebar, half (the sidebar's card has the other half); the
-            // band between columns is a gap already.
-            let x0 = col.x < 1 ? g : isSplit && pane.column == 1 ? col.x : col.x + half
-            let x1 = col.maxX > l.width - 1 ? l.width - g : isSplit && pane.column == 0 ? col.maxX : col.maxX - half
+            let split = editorSplit(for: pane), (x0, x1) = cardSpan(for: pane)
             if let e = split.editor, split.showsTerminal {
                 card(x0, x1, top, e.maxY)
                 card(x0, x1, e.maxY + split.bandHeight, bottom)
@@ -1080,6 +1076,15 @@ final class TerminalWindow {
             }
         }
         return cards
+    }
+
+    /// Where a tab's cards start and end across its column: against the window's edge, a full gap; against a sidebar,
+    /// half (the sidebar's card has the other half); the band between columns is a gap already.
+    private func cardSpan(for pane: TerminalPane) -> (x0: Float, x1: Float) {
+        let l = layout, s = scale, g = (6 * s).rounded(), half = (3 * s).rounded(), col = columnArea(for: pane)
+        let x0 = col.x < 1 ? g : isSplit && pane.column == 1 ? col.x : col.x + half
+        let x1 = col.maxX > l.width - 1 ? l.width - g : isSplit && pane.column == 0 ? col.maxX : col.maxX - half
+        return (x0, x1)
     }
 
     private func drawCards(on target: Canvas) {
@@ -2945,7 +2950,7 @@ final class TerminalWindow {
 
     func editorSplit(for pane: TerminalPane) -> EditorSplit {
         EditorSplit(column: columnArea(for: pane), scale: scale, hasEditors: !pane.editors.isEmpty, showsTerminal: pane.showsTerminal,
-                    fraction: pane.editorFraction)
+                    fraction: pane.editorFraction, card: cardSpan(for: pane))
     }
 
     private func editorStrip(for pane: TerminalPane, on target: Canvas? = nil) -> EditorStrip? {
