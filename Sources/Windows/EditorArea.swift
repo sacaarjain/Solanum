@@ -66,8 +66,13 @@ struct EditorSplit {
     let fraction: Float
     /// Where the card the pages float on starts and ends across (it's set in from the column beside a sidebar or the
     /// window's edge): the sub-tabs and page are inset from it, not the column. The column's edges when not given.
-    var card: (x0: Float, x1: Float)? = nil
-    private var span: (x0: Float, x1: Float) { card ?? (column.x, column.maxX) }
+    /// (Plain numbers rather than an optional tuple: Swift 6.4's code generator crashed on that here.)
+    var cardLeft: Float = -1
+    var cardRight: Float = -1
+    /// Where the bottom card ends (above the status bar's gap); the column's bottom when not given.
+    var cardBottom: Float = -1
+    private var hasCard: Bool { cardRight > cardLeft }
+    private var span: (x0: Float, x1: Float) { hasCard ? (cardLeft, cardRight) : (column.x, column.maxX) }
 
     var stripHeight: Float { (30 * scale).rounded() }
     private var editorHeight: Float {
@@ -97,9 +102,12 @@ struct EditorSplit {
     }
     /// Where the terminal goes. Hidden, it keeps the size it would have, so the shell isn't resized for nothing.
     var terminal: UIRect {
-        guard let e = editor, showsTerminal else { return column }
-        let top = e.maxY + bandHeight
-        return UIRect(x: column.x, y: top, width: column.width, height: max(column.maxY - top, 0))
+        // Inside its card, set in from the card's edges as the page is, so its first and last columns aren't cut by the
+        // card's rounded outline.
+        let m: Float = hasCard ? inset : 0
+        let x0 = span.x0 + m, x1 = span.x1 - m, bottom = min(column.maxY, cardBottom > 0 ? cardBottom : column.maxY) - m
+        let top = editor.map { showsTerminal ? $0.maxY + bandHeight : column.y } ?? column.y
+        return UIRect(x: x0, y: top, width: max(x1 - x0, 0), height: max(bottom - top, 0))
     }
     /// The fraction that puts the line at `y`.
     func fraction(atY y: Float) -> Float { min(max((y - column.y) / max(column.height, 1), 0.15), 0.85) }

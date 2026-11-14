@@ -42,6 +42,8 @@ final class FileSidebar {
     var isFocused = false
     var hoveredRow: Int?
     var hoveredButton: SidebarButton?
+    /// The pointer's on the heading (the tab's name), which a click renames.
+    var hoveredTitle = false
     /// A file transfer under way (uploading, downloading), said in place of the path.
     var transfer: String?
     /// Where something dragged over it would go: a folder in it, or its root.
@@ -49,6 +51,12 @@ final class FileSidebar {
 
     /// How much of it is showing, from 0 to 1, while it slides in or out.
     var shown: Float
+
+    /// Git's letters for its rows (see SidebarGitStatus), for the folder `gitRoot`; nil outside a repository.
+    var git: SidebarGitStatus?
+    var gitRoot: String?
+    var gitRunning = false
+    var gitCheckedAt = Date.distantPast
 
     init(visible: Bool, width: Float) {
         isVisible = visible
@@ -81,6 +89,10 @@ struct SidebarView {
     var host: String?
     /// What it's waiting for, or why it can't show anything, instead of the list.
     var status: String?
+    /// The tab's own name, shown as the heading in place of the folder's, as on the Mac.
+    var tabName: String?
+    /// The tab's name being typed in the heading, and what it says while empty (the name it falls back to).
+    var titleField: (field: TextFieldState, placeholder: String)?
 
     private var scale: Float { layout.scale }
     private var fg: UInt32 { TerminalPalette.foreground }
@@ -102,7 +114,7 @@ struct SidebarView {
 
         let folder = tree.root
         let crumbs = folder.map { WindowText.crumbs($0, home: home) } ?? []
-        label(crumbs.last ?? "Files", layout.title, pixels: 13.5 * scale, semibold: true, alpha: 0.95)
+        drawTitle(tabName ?? crumbs.last ?? "Files")
         for button in SidebarButton.allCases {
             let r = layout.button(button.rawValue)
             let on = button == .pin && sidebar.pinned != nil
@@ -155,9 +167,42 @@ struct SidebarView {
         }
     }
 
+    /// The heading: the tab's name (else the folder's), a soft box under it on hover to say a click renames the tab; while
+    /// it's being renamed, a field with its caret.
+    private func drawTitle(_ title: String) {
+        let t = layout.title, pixels = 13.5 * scale, pad = 6 * scale
+        if let (field, placeholder) = titleField {
+            let box = UIRect(x: t.x - pad, y: t.y - 1 * scale, width: t.width + pad * 2, height: t.height + 2 * scale)
+            sol_canvas_fill_rounded(canvas.raw, box.x, box.y, box.width, box.height, 5 * scale, TerminalPalette.background, 1)
+            sol_canvas_stroke_rounded(canvas.raw, box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1, 5 * scale, TerminalPalette.accent, 0.9, 1)
+            if field.text.isEmpty {
+                label(placeholder, t, pixels: pixels, semibold: true, alpha: 0.35)
+            } else {
+                label(field.text, t, pixels: pixels, semibold: true, alpha: 0.95)
+            }
+            let before = Array(field.beforeCaret.utf16)
+            let caretX = t.x + sol_canvas_measure_label(canvas.raw, before, Int32(before.count), pixels, 1)
+            sol_canvas_fill_rect(canvas.raw, caretX.rounded(), t.y + 3 * scale, max(scale.rounded(), 1), t.height - 6 * scale, TerminalPalette.accent, 1)
+            return
+        }
+        if sidebar.hoveredTitle {
+            let units = Array(title.utf16)
+            let w = min(sol_canvas_measure_label(canvas.raw, units, Int32(units.count), pixels, 1), t.width)
+            sol_canvas_fill_rounded(canvas.raw, t.x - pad, t.y - 1 * scale, w + pad * 2, t.height + 2 * scale, 5 * scale, fg, 0.08)
+        }
+        label(title, t, pixels: pixels, semibold: true, alpha: 0.95)
+    }
+
     private func drawRow(_ row: FileTree.Row, in r: UIRect, visible: Int) {
         let tree = sidebar.tree, entry = row.entry
         let inset = 4 * scale
+        let change = sidebar.gitRoot == sidebar.tree.root ? sidebar.git?.code(for: entry.path, isDirectory: entry.isDirectory) : nil
+        let badge: (letter: String, color: UInt32)? = change.map { SidebarGitStatus.badge($0) }
+        // A changed file: a dark, muted wash in its change's color, as on the Mac.
+        if let badge, !entry.isDirectory {
+            sol_canvas_fill_rounded(canvas.raw, r.x + inset, r.y + scale / 2, r.width - inset * 2, r.height - scale, 5 * scale, badge.color,
+                                    TerminalPalette.isDark ? 0.12 : 0.16)
+        }
         if sidebar.dropFolder == entry.path && entry.isDirectory {
             sol_canvas_fill_rounded(canvas.raw, r.x + inset, r.y + scale / 2, r.width - inset * 2, r.height - scale, 5 * scale, TerminalPalette.accent, 0.32)
         } else if tree.selection == entry.path {
@@ -192,6 +237,15 @@ struct SidebarView {
             return
         }
         let dim: Float = tree.cutPaths.contains(entry.path) ? 0.45 : entry.isHidden ? 0.5 : 0.9
-        label(entry.name, UIRect(x: textX, y: r.y, width: max(r.maxX - textX - 8 * scale, 0), height: r.height), pixels: 12.5 * scale, alpha: dim)
+        // Git's letter at the row's right edge, so they line up; the name stops clear of it.
+        var nameEnd = r.maxX - 8 * scale
+        if let badge {
+            let units = Array(badge.letter.utf16), pixels = 11 * scale
+            let w = sol_canvas_measure_label(canvas.raw, units, Int32(units.count), pixels, 1)
+            let x = r.maxX - inset - 7 * scale - w
+            sol_canvas_draw_label(canvas.raw, x, r.y, w + 2, r.height, units, Int32(units.count), pixels, 1, badge.color, 0.9)
+            nameEnd = x - 6 * scale
+        }
+        label(entry.name, UIRect(x: textX, y: r.y, width: max(nameEnd - textX, 0), height: r.height), pixels: 12.5 * scale, alpha: dim)
     }
 }

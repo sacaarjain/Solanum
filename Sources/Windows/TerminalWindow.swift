@@ -90,7 +90,8 @@ final class TerminalWindow {
     /// Tabs picked with Ctrl or Shift, by pane.
     private var pickedTabs: Set<UInt> = []
     /// A tab's or a group's name being typed in the tab bar.
-    private enum NameTarget { case tab(UInt), group(TabGroup) }
+    /// `sidebarTab`: the tab's name typed in a sidebar's heading (the left one, or the right), as on the Mac.
+    private enum NameTarget { case tab(UInt), group(TabGroup), sidebarTab(UInt, left: Bool) }
     private var naming: (target: NameTarget, field: TextFieldState, placeholder: String)?
     private var menu: MenuModel?
     private var hoveredCrumb: Int?
@@ -951,6 +952,7 @@ final class TerminalWindow {
             case .tab(let id): if let i = panes.firstIndex(where: { $0.id == id }) { chrome.editingTab = (i, naming.field) }
             case .group(let g):
                 if let first = panes.firstIndex(where: { $0.group === g }) { chrome.editingChip = (first, naming.field, naming.placeholder) }
+            case .sidebarTab: break
             }
         }
         chrome.themeName = AppSettings.shared.themeName.uppercased()
@@ -1101,10 +1103,21 @@ final class TerminalWindow {
             guard t.width > 2, let under = cards.first(where: { $0.y == top && t.x < $0.maxX && t.maxX > $0.x }) else { continue }
             let x0 = max(t.x + 1, under.x), x1 = min(t.maxX - 1, under.maxX)
             sol_canvas_backdrop_rect(c, x0, top - 1, x1 - x0, 2, TerminalPalette.background)
-            if abs(t.x - under.x) <= 2 * s {
+            let flush = abs(t.x - under.x) <= 2 * s
+            if flush {
                 sol_canvas_backdrop_rect(c, under.x, top, radius, radius, TerminalPalette.background)
                 sol_canvas_fill_rect(c, under.x, top, 1, radius, fg, 0.13)
             }
+            // Its feet: each side curves out onto the card's top edge, as on the Mac (not where it runs straight down
+            // into the card's edge, nor where the curve would go past the card or under the strip's arrows).
+            let f = (5 * s).rounded(), far = 100 * s, view = l.tabViewport(column: isSplit && panes[i].column == 1 ? 1 : 0)
+            let leftFoot = !flush && t.x - f >= under.x + radius && t.x >= view.x - 0.5
+            let rightFoot = t.maxX + f <= under.maxX - radius && t.maxX <= view.maxX + 0.5
+            // The card's top edge goes from under the feet too: each curve lands on it where they end.
+            let c0 = leftFoot ? t.x - f + 1 : x0, c1 = rightFoot ? t.maxX + f - 1 : x1
+            sol_canvas_backdrop_rect(c, c0, top - 1, c1 - c0, 2, TerminalPalette.background)
+            if leftFoot { Self.drawTabFoot(on: target, edge: t.x + 0.5, top: top, flare: f, far: far, left: true) }
+            if rightFoot { Self.drawTabFoot(on: target, edge: t.maxX - 0.5, top: top, flare: f, far: far, left: false) }
         }
         // The grips, on the gaps the frame above just painted: between the columns, and between each tab's pages and
         // its terminal, as on the Mac.
@@ -1115,6 +1128,20 @@ final class TerminalWindow {
             Self.drawGrip(UIRect(x: e.x, y: e.maxY, width: e.width, height: split.bandHeight), vertical: false, on: target, scale: s,
                           active: draggingEditorLine === pane)
         }
+    }
+
+    /// One foot of the active tab: the card's color in the corner where the tab's side (its outline's centre at `edge`)
+    /// meets the card's top, outside a quarter circle, so the side curves out onto the card; then that curve's outline.
+    static func drawTabFoot(on target: Canvas, edge e: Float, top: Float, flare f: Float, far: Float, left: Bool) {
+        let c = target.raw
+        // The quarter circle's edge half a pixel outside the outline's centre, so the side's own outline there is covered.
+        let shape: [Float] = left ? [e - 0.5 - f - far, top - f - far, far + f, far + f] : [e + 0.5, top - f - far, far + f, far + f]
+        let outer = left ? UIRect(x: e - 0.5 - f, y: top - f, width: f + 1, height: f) : UIRect(x: e - 0.5, y: top - f, width: f + 1, height: f)
+        shape.withUnsafeBufferPointer {
+            sol_canvas_backdrop_frame(c, outer.x, outer.y, outer.width, outer.height, $0.baseAddress, 1, f, TerminalPalette.background)
+        }
+        let d = left ? "M0 -\(f) A\(f) \(f) 0 0 1 -\(f) 0.5" : "M0 -\(f) A\(f) \(f) 0 0 0 \(f) 0.5"
+        sol_canvas_stroke_svg_path(c, d, e, top, 1, TerminalPalette.foreground, 0.13, 1)
     }
 
     /// Three dots across the middle of a band, to show it can be dragged.
@@ -1824,7 +1851,7 @@ final class TerminalWindow {
         }
         // A click anywhere but the name being typed keeps it and ends the typing, as on the Mac.
         let presses = [Win.WM_LBUTTONDOWN, Win.WM_RBUTTONDOWN, Win.WM_MBUTTONDOWN, Win.WM_LBUTTONDBLCLK]
-        if naming != nil, presses.contains(message), !isOnNameField(part) {
+        if naming != nil, presses.contains(message), !isOnNameField(part), !isOnSidebarTitleField(x: x, y: y) {
             finishNaming(commit: true)
         }
         // Likewise a name typed in a sidebar.
@@ -1950,8 +1977,15 @@ final class TerminalWindow {
             sol_canvas_push_clip(target.raw, visible.x, visible.y, visible.width, visible.height)
             let onHost = sidebar.tree.root.map(AnyPath.isUnix) ?? false
             let showsStatus = sidebar.pinned == nil && status != nil
-            SidebarView(canvas: target, sidebar: sidebar, layout: SidebarLayout(area: area, scale: scale), terminalFolder: folder,
-                        home: onHost ? remoteHome : home, host: onHost || showsStatus ? sshHost : nil, status: showsStatus ? status : nil).draw()
+            // Moved to another folder: its git letters come at once rather than at the next look.
+            if sidebar.tree.root != sidebar.gitRoot && !sidebar.gitRunning { refreshSidebarGit(sidebar) }
+            var view = SidebarView(canvas: target, sidebar: sidebar, layout: SidebarLayout(area: area, scale: scale), terminalFolder: folder,
+                                   home: onHost ? remoteHome : home, host: onHost || showsStatus ? sshHost : nil, status: showsStatus ? status : nil)
+            view.tabName = pane?.customTitle
+            if case .sidebarTab(let id, let isLeft)? = naming?.target, isLeft == (sidebar === left), id == pane?.id {
+                view.titleField = (naming!.field, naming!.placeholder)
+            }
+            view.draw()
             sol_canvas_pop_clip(target.raw)
             sol_canvas_fill_rect(target.raw, edge, visible.y, 1, visible.height, TerminalPalette.foreground, 0.10)
         }
@@ -2006,9 +2040,41 @@ final class TerminalWindow {
     private func lookForChanges() {
         guard Date().timeIntervalSince(lastLook) > 3 else { return }
         lastLook = Date()
-        for sidebar in [left, right] where sidebar.isVisible { sidebar.tree.refresh() }
+        for sidebar in [left, right] where sidebar.isVisible {
+            sidebar.tree.refresh()
+            refreshSidebarGit(sidebar)
+        }
         visiblePanes.forEach { refreshGit($0) }
         AppSettings.shared.reloadIfChanged()
+    }
+
+    /// Reads `git status` for a sidebar's folder again (on this PC, or the ssh host it shows), for its rows' letters:
+    /// at once when it's moved to another folder, else every 10 seconds, as the Mac's.
+    private func refreshSidebarGit(_ sidebar: FileSidebar, now: Bool = false) {
+        guard let root = sidebar.tree.root else { return }
+        let moved = root != sidebar.gitRoot
+        guard !sidebar.gitRunning, moved || now || Date().timeIntervalSince(sidebar.gitCheckedAt) > 10 else { return }
+        let onHost = AnyPath.isUnix(root)
+        let connection = onHost ? remote(for: sidebar) : nil
+        if onHost && connection == nil { return }
+        sidebar.gitRunning = true
+        sidebar.gitCheckedAt = Date()
+        GitPlace(dir: root, remote: connection).run(SidebarGitStatus.script, timeout: 15) { [weak self, weak sidebar] status, out, _ in
+            let next = status == 0 ? SidebarGitStatus(output: out, root: root) : nil
+            self?.runOnWindowThread {
+                guard let self, let sidebar else { return }
+                sidebar.gitRunning = false
+                guard sidebar.tree.root == root else {
+                    self.refreshSidebarGit(sidebar)
+                    return
+                }
+                if next != sidebar.git || sidebar.gitRoot != root {
+                    sidebar.git = next
+                    sidebar.gitRoot = root
+                    self.invalidate()
+                }
+            }
+        }
     }
 
     private func saveSidebarPlace(to pane: TerminalPane) {
@@ -2409,8 +2475,8 @@ final class TerminalWindow {
         }
         if terminalHasMouse { return false }
         guard part == .leftSidebar || part == .rightSidebar else {
-            if left.hoveredRow != nil || right.hoveredRow != nil || left.hoveredButton != nil || right.hoveredButton != nil {
-                [left, right].forEach { $0.hoveredRow = nil; $0.hoveredButton = nil }
+            if left.hoveredRow != nil || right.hoveredRow != nil || left.hoveredButton != nil || right.hoveredButton != nil || left.hoveredTitle || right.hoveredTitle {
+                [left, right].forEach { $0.hoveredRow = nil; $0.hoveredButton = nil; $0.hoveredTitle = false }
                 invalidate()
             }
             return false
@@ -2424,11 +2490,20 @@ final class TerminalWindow {
         switch message {
         case Win.WM_MOUSEMOVE:
             setHovered(part, nonClient: false)
-            if sidebar.hoveredRow != visible || sidebar.hoveredButton != button {
+            let onTitle = l.title.contains(x, y)
+            if sidebar.hoveredRow != visible || sidebar.hoveredButton != button || sidebar.hoveredTitle != onTitle {
                 sidebar.hoveredRow = row == nil ? nil : visible
                 sidebar.hoveredButton = button
+                sidebar.hoveredTitle = onTitle
                 invalidate()
             }
+        case Win.WM_LBUTTONDOWN where l.title.contains(x, y):
+            // The heading is the tab's name: a click types a new one there, as on the Mac (empty: back to the default).
+            guard let heading = headingName(sidebar) else { break }
+            if case .sidebarTab? = naming?.target { break }
+            naming = (.sidebarTab(heading.pane.id, left: sidebar === left), TextFieldState(heading.pane.customTitle ?? ""), heading.fallback)
+            sidebar.hoveredTitle = false
+            invalidate()
         case Win.WM_LBUTTONDOWN:
             // Its buttons leave the keyboard where it was, so typing carries on in the terminal.
             if let button { press(button, sidebar) }
@@ -2964,8 +3039,13 @@ final class TerminalWindow {
     private func columnArea(for pane: TerminalPane) -> UIRect { isSplit && pane.column == 1 ? rightTerminalArea : terminalArea }
 
     func editorSplit(for pane: TerminalPane) -> EditorSplit {
-        EditorSplit(column: columnArea(for: pane), scale: scale, hasEditors: !pane.editors.isEmpty, showsTerminal: pane.showsTerminal,
-                    fraction: pane.editorFraction, card: cardSpan(for: pane))
+        let span = cardSpan(for: pane)
+        var split = EditorSplit(column: columnArea(for: pane), scale: scale, hasEditors: !pane.editors.isEmpty, showsTerminal: pane.showsTerminal,
+                                fraction: pane.editorFraction)
+        split.cardLeft = span.x0
+        split.cardRight = span.x1
+        split.cardBottom = layout.statusBar.y - (3 * scale).rounded()
+        return split
     }
 
     private func editorStrip(for pane: TerminalPane, on target: Canvas? = nil) -> EditorStrip? {
@@ -5186,6 +5266,21 @@ final class TerminalWindow {
         pickedTabs = []
     }
 
+    /// Whether a point is on the sidebar heading where the tab's name is being typed.
+    private func isOnSidebarTitleField(x: Float, y: Float) -> Bool {
+        guard case .sidebarTab(_, let isLeft)? = naming?.target else { return false }
+        return sidebarLayout(isLeft ? left : right).title.contains(x, y)
+    }
+
+    /// The tab whose name a sidebar's heading shows (and a click there renames), as on the Mac.
+    private func headingName(_ sidebar: FileSidebar) -> (pane: TerminalPane, fallback: String)? {
+        guard !panes.isEmpty else { return nil }
+        let pane = self.pane(for: sidebar), home = ProcessInfo.processInfo.environment["USERPROFILE"]
+        let root = sidebar.tree.root
+        let fallback = root.map { WindowText.crumbs($0, home: AnyPath.isUnix($0) ? pane.remote?.home : home).last ?? $0 } ?? "Files"
+        return (pane, fallback)
+    }
+
     /// Whether a part of the window is the tab or chip whose name is being typed.
     private func isOnNameField(_ part: WindowPart) -> Bool {
         guard let naming else { return false }
@@ -5217,7 +5312,7 @@ final class TerminalWindow {
         if commit {
             let text = current.field.text.trimmingCharacters(in: .whitespaces)
             switch current.target {
-            case .tab(let id): panes.first { $0.id == id }?.customTitle = text.isEmpty ? nil : text
+            case .tab(let id), .sidebarTab(let id, _): panes.first { $0.id == id }?.customTitle = text.isEmpty ? nil : text
             // Enter on a new group's empty field keeps the suggestion. Clearing a name leaves it unnamed.
             case .group(let g): g.name = text.isEmpty && g.name.isEmpty ? current.placeholder : text
             }
@@ -6003,6 +6098,9 @@ final class TerminalWindow {
     func resizeWindow(toCols cols: Int, rows: Int) { sizeWindow(toCols: cols, rows: rows) }
 
     func close() { PostMessageW(hwnd, Win.WM_CLOSE, 0, 0) }
+
+    /// For tests: the left sidebar's heading (the tab's name, which a click renames).
+    var leftTitleForTesting: UIRect { sidebarLayout(left).title }
 
     /// Clicks a part of the tab bar, as the mouse would.
     func click(_ rect: UIRect) {

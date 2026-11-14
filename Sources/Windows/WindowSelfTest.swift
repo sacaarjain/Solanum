@@ -286,6 +286,19 @@ enum WindowSelfTest {
         picker.drag(.swatch(0), toX: 0, y: 0)
         results.check("theme editor: the picker's square, opacity and the theme's colors set the color", white == "#FFFFFF" && picker.color.hex == "#00FF0080")
 
+        print("Sidebar git letters")
+        // The sidebar shows C:\Repo\Sub; git's paths are the repository's.
+        let porcelain = "sub/\n1 .M N... 100644 100644 100644 a b sub/lib/a.txt\u{0}1 D. N... 100644 000000 000000 a b sub/gone.txt\u{0}? sub/new/\u{0}? other.txt\u{0}"
+        let gitTree = SidebarGitStatus(output: Data(porcelain.utf8), root: "C:\\Repo\\Sub")
+        results.check("sidebar git: a changed file's M, a deleted file's D, case aside",
+                      gitTree?.code(for: "C:\\repo\\sub\\lib\\A.txt", isDirectory: false) == "M" && gitTree?.code(for: "C:\\Repo\\Sub\\gone.txt", isDirectory: false) == "D")
+        results.check("sidebar git: a folder shows the most serious change inside, an untracked folder's files are U",
+                      gitTree?.code(for: "C:\\Repo\\Sub\\lib", isDirectory: true) == "M" && gitTree?.code(for: "C:\\Repo\\Sub\\new\\x.txt", isDirectory: false) == "?"
+                        && SidebarGitStatus.badge("?").letter == "U")
+        results.check("sidebar git: changes outside the folder shown aren't listed", gitTree?.code(for: "C:\\Repo\\other.txt", isDirectory: false) == nil)
+        let hostGit = SidebarGitStatus(output: Data("\n? notes.md\u{0}".utf8), root: "/home/me/repo")
+        results.check("sidebar git: an ssh host's paths", hostGit?.code(for: "/home/me/repo/notes.md", isDirectory: false) == "?")
+
         print("Window layout")
         results.check("app: has its icon", LoadIconW(GetModuleHandleW(nil), Win.appIcon) != nil)
         let layout = WindowLayout(width: 1000, height: 640, scale: 1, tabCount: 3)
@@ -1108,9 +1121,19 @@ enum WindowSelfTest {
         }))
         steps.append(Step(name: "sidebar: the files close", action: {
             while let panel = pane.panel { window.closeEditor(panel, in: pane) }
-        }, done: { pane.editors.isEmpty && window.paneArea(pane) == window.editorSplit(for: pane).column }))
+        }, done: { pane.editors.isEmpty && window.paneArea(pane).y == window.editorSplit(for: pane).column.y }))
         steps.append(Step(name: "sidebar: Esc goes back to the terminal", action: { _ = window.keyDown(Int32(0x1B), shift: false, ctrl: false, alt: false) },
                           done: { !window.leftHasFocus }))
+        steps.append(Step(name: "sidebar: a click on its heading types the tab's name there", action: { window.click(window.leftTitleForTesting) },
+                          done: { window.isNaming && window.paneNameField == "" }))
+        steps.append(Step(name: "sidebar: typed into the heading", action: { window.typeIntoWindow("Work") }, done: { window.paneNameField == "Work" }))
+        steps.append(Step(name: "sidebar: Enter names the tab, and the heading shows it", action: { _ = window.keyDown(Int32(0x0D), shift: false, ctrl: false, alt: false) },
+                          done: { !window.isNaming && pane.customTitle == "Work" }))
+        steps.append(Step(name: "sidebar: emptied, the tab's name goes back to the default", action: {
+            window.click(window.leftTitleForTesting)
+            for _ in 0..<4 { _ = window.keyDown(Int32(0x08), shift: false, ctrl: false, alt: false) }
+            _ = window.keyDown(Int32(0x0D), shift: false, ctrl: false, alt: false)
+        }, done: { !window.isNaming && pane.customTitle == nil }))
         var sidebarWidthBefore: Float = 0
         steps.append(Step(name: "sidebar: its border drags", action: {
             sidebarWidthBefore = window.leftWidthNow
@@ -1356,7 +1379,7 @@ enum WindowSelfTest {
                 && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\git-commit.png") } ?? true)
         }))
         steps.append(Step(name: "git: Esc closes the commit, then the graph", action: { pane.pressEscape(); pane.pressEscape() }, done: {
-            window.activePanel == nil && pane.editors.isEmpty && !pane.editorFocused && window.paneArea(pane) == window.editorSplit(for: pane).column
+            window.activePanel == nil && pane.editors.isEmpty && !pane.editorFocused && window.paneArea(pane).y == window.editorSplit(for: pane).column.y
         }))
         // Git Graph's filters, as the Mac's toolbar.
         func graph() -> GitGraphPanel? { window.activePanel as? GitGraphPanel }
@@ -1857,7 +1880,7 @@ enum WindowSelfTest {
                           done: { window.isSplit && window.splitColumnCounts == [2, 1] && window.focusedColumn == 1 && pane.atPrompt }))
         steps.append(Step(name: "split: each column is half the width", action: {}, done: {
             let l = window.currentLayout, left = window.panes[0]
-            return window.paneArea(pane).x == l.rightColumnX && window.paneArea(left).maxX == l.divider && pane.terminal.cols * 2 <= left.terminal.cols + pane.terminal.cols + 2
+            return window.paneArea(pane).x >= l.rightColumnX && window.paneArea(pane).x <= l.rightColumnX + 24 && window.paneArea(left).maxX <= l.divider && window.paneArea(left).maxX >= l.divider - 24 && pane.terminal.cols * 2 <= left.terminal.cols + pane.terminal.cols + 2
         }))
         var colsBefore = 0
         steps.append(Step(name: "split: dragging the band between them resizes both", action: {
@@ -1866,7 +1889,7 @@ enum WindowSelfTest {
             window.dragColumnBand(to: l.divider + (l.width - l.divider) / 2)
         }, done: {
             let l = window.currentLayout
-            return pane.terminal.cols < colsBefore && window.paneArea(pane).x == l.rightColumnX
+            return pane.terminal.cols < colsBefore && window.paneArea(pane).x >= l.rightColumnX && window.paneArea(pane).x <= l.rightColumnX + 24
                 && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\split-band.png") } ?? true)
         }))
         steps.append(Step(name: "split: and back to halves", action: { window.dragColumnBand(to: window.currentLayout.width / 2) },
@@ -1897,7 +1920,7 @@ enum WindowSelfTest {
         steps.append(Step(name: "split: Ctrl+Alt+W puts the columns back together", action: { keys(0x57, alt: true) },
                           done: { !window.isSplit && window.splitColumnCounts == [3] && !window.rightIsVisible && window.shownPaneIDs.count == 1 }))
         steps.append(Step(name: "split: and the terminal is full width again", action: {}, done: {
-            window.paneArea(pane).maxX == window.currentLayout.terminal.maxX && window.currentLayout.terminal.x == window.currentLayout.leftWidth
+            window.paneArea(pane).maxX >= window.currentLayout.terminal.maxX - 24 && window.currentLayout.terminal.x == window.currentLayout.leftWidth
         }))
         steps.append(Step(name: "split: again, for closing its last tab", action: { keys(0x44, alt: true) },
                           done: { window.splitColumnCounts == [3, 1] && pane.atPrompt }))
