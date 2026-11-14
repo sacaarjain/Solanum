@@ -22,6 +22,9 @@ final class EditorItem {
         return nil
     }
 
+    /// Its file's gone from disk (saving puts it back): its sub-tab is struck through in red, as the Mac's and VS Code's.
+    var isDeleted: Bool { (panel as? FileEditorPanel)?.deletedOnDisk == true }
+
     init(key: String, title: String, glyph: UInt16, panel: ColumnPanel) {
         self.key = key
         self.title = title
@@ -257,7 +260,12 @@ struct EditorStrip {
                 sol_canvas_draw_icon(c, r.x + 6 * scale, r.y, 18 * scale, r.height, item.glyph, 10.5 * scale, isActive ? TerminalPalette.accent : fg, (isActive ? 0.95 : 0.55) * faint)
             }
             let units = Array(item.title.utf16)
-            sol_canvas_draw_label(c, r.x + 28 * scale, r.y, r.width - 52 * scale, r.height, units, Int32(units.count), Self.pixels * scale, 0, fg, (isActive ? 1 : 0.6) * faint)
+            let gone = item.isDeleted, ink = gone ? TerminalPalette.ansi[1] : fg, inkAlpha: Float = (gone ? (isActive ? 1 : 0.75) : (isActive ? 1 : 0.6)) * faint
+            sol_canvas_draw_label(c, r.x + 28 * scale, r.y, r.width - 52 * scale, r.height, units, Int32(units.count), Self.pixels * scale, 0, ink, inkAlpha)
+            if gone {
+                let w = min(sol_canvas_measure_label(c, units, Int32(units.count), Self.pixels * scale, 0), r.width - 52 * scale)
+                sol_canvas_fill_rect(c, r.x + 28 * scale, (r.midY + 0.5 * scale).rounded(), w, max(scale.rounded(), 1), ink, inkAlpha)
+            }
             if (isActive || hoveredHere) && dragged == nil {
                 let x = t.close
                 if hovered == .close(i) { sol_canvas_fill_rounded(c, x.x, x.y, x.width, x.height, 4 * scale, fg, 0.12) }

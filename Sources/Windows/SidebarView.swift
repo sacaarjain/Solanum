@@ -62,6 +62,7 @@ final class FileSidebar {
         isVisible = visible
         self.width = width
         shown = visible ? 1 : 0
+        tree.deletedNames = { [unowned self] folder in self.gitRoot == self.tree.root ? self.git?.deletedNames(in: folder) ?? [] : [] }
     }
 
     /// Lists a folder off the message loop, since a slow or disconnected drive can take a long time to answer.
@@ -236,7 +237,7 @@ struct SidebarView {
             sol_canvas_fill_rect(canvas.raw, caretX.rounded(), box.y + 3 * scale, max(scale.rounded(), 1), box.height - 6 * scale, TerminalPalette.accent, 1)
             return
         }
-        let dim: Float = tree.cutPaths.contains(entry.path) ? 0.45 : entry.isHidden ? 0.5 : 0.9
+        let dim: Float = entry.isDeleted || tree.cutPaths.contains(entry.path) ? 0.45 : entry.isHidden ? 0.5 : 0.9
         // Git's letter at the row's right edge, so they line up; the name stops clear of it.
         var nameEnd = r.maxX - 8 * scale
         if let badge {
@@ -247,5 +248,11 @@ struct SidebarView {
             nameEnd = x - 6 * scale
         }
         label(entry.name, UIRect(x: textX, y: r.y, width: max(nameEnd - textX, 0), height: r.height), pixels: 12.5 * scale, alpha: dim)
+        // A deleted file's name struck through, as the Mac's.
+        if entry.isDeleted {
+            let units = Array(entry.name.utf16)
+            let w = min(sol_canvas_measure_label(canvas.raw, units, Int32(units.count), 12.5 * scale, 0), max(nameEnd - textX, 0))
+            sol_canvas_fill_rect(canvas.raw, textX, (r.midY + 0.5 * scale).rounded(), w, max(scale.rounded(), 1), fg, dim)
+        }
     }
 }

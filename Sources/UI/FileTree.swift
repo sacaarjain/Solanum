@@ -6,6 +6,8 @@ struct FileEntry: Equatable {
     let isDirectory: Bool
     /// Hidden by the file system, or named with a leading dot.
     let isHidden: Bool
+    /// A file git tracks that's gone from disk: shown struck through, as the Mac's sidebar shows it. Nothing opens it.
+    var isDeleted = false
 }
 
 enum WindowsPath {
@@ -223,6 +225,12 @@ final class FileTree {
         }
     }
 
+    /// The names of files git tracks in a folder that are gone from disk (see `FileEntry.isDeleted`).
+    var deletedNames: ((String) -> [String])?
+
+    /// Builds its rows again: what `deletedNames` says has changed.
+    func reshow() { rebuild() }
+
     private func rebuild() {
         rows = []
         guard let root else { return }
@@ -242,6 +250,13 @@ final class FileTree {
             for entry in listings[folder] ?? [] where showHidden || !entry.isHidden {
                 rows.append(Row(entry: entry, depth: depth))
                 if entry.isDirectory && expanded.contains(entry.path) { add(entry.path, depth: depth + 1) }
+            }
+            // Then the folder's deleted files, after the rest, as on the Mac.
+            if let listed = listings[folder], let gone = deletedNames?(folder), !gone.isEmpty {
+                let present = Set(listed.map { $0.name.lowercased() })
+                for name in gone where !present.contains(name.lowercased()) {
+                    rows.append(Row(entry: FileEntry(name: name, path: AnyPath.join(folder, name), isDirectory: false, isHidden: false, isDeleted: true), depth: depth))
+                }
             }
         }
         add(root, depth: 0)

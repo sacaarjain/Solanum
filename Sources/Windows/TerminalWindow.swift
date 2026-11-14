@@ -2071,6 +2071,7 @@ final class TerminalWindow {
                 if next != sidebar.git || sidebar.gitRoot != root {
                     sidebar.git = next
                     sidebar.gitRoot = root
+                    sidebar.tree.reshow()
                     self.invalidate()
                 }
             }
@@ -2169,6 +2170,7 @@ final class TerminalWindow {
 
     /// A folder opens or closes, and a file shows above the terminal with the keyboard (Space, or Ctrl+Down).
     private func activate(_ entry: FileEntry, in sidebar: FileSidebar) {
+        guard !entry.isDeleted else { return }
         if entry.isDirectory { sidebar.tree.toggle(entry.path) } else { showFile(entry.path, in: pane(for: sidebar), remote: remoteIfUnix(entry.path, sidebar), focus: true) }
     }
 
@@ -2487,6 +2489,16 @@ final class TerminalWindow {
         let visible = l.visibleRow(atY: y)
         let index = visible.map { $0 + sidebar.tree.scrollTop }
         let row = index.flatMap { sidebar.tree.rows.indices.contains($0) ? sidebar.tree.rows[$0] : nil }
+        // A deleted file's row is just shown: a click selects it and nothing more (no opening, dragging or menu of its own).
+        if let row, row.entry.isDeleted, [Win.WM_LBUTTONDOWN, Win.WM_LBUTTONDBLCLK, Win.WM_RBUTTONDOWN, Win.WM_RBUTTONUP].contains(message) {
+            if message == Win.WM_LBUTTONDOWN || message == Win.WM_RBUTTONDOWN {
+                focus(sidebar)
+                sidebar.tree.selection = row.entry.path
+                invalidate()
+            }
+            if message == Win.WM_RBUTTONUP { showSidebarMenu(sidebar, entry: nil, x: x, y: y) }
+            return true
+        }
         switch message {
         case Win.WM_MOUSEMOVE:
             setHovered(part, nonClient: false)
@@ -5046,7 +5058,8 @@ final class TerminalWindow {
     /// Keys while a sidebar has the focus. False hands the key on, and typing goes back to the terminal.
     private func sidebarKey(_ key: Int32, _ sidebar: FileSidebar, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
         let tree = sidebar.tree
-        let selected = tree.selectedIndex.map { tree.rows[$0].entry }
+        // A deleted file's row can't be renamed, deleted, copied or opened.
+        let selected = tree.selectedIndex.map { tree.rows[$0].entry }.flatMap { $0.isDeleted ? nil : $0 }
         // Explorer's keys for files, and the Mac's: Enter renames as Return does there (F2 too), Ctrl+Down opens as
         // Command-Down does, and Space opens.
         switch key {
@@ -6169,6 +6182,14 @@ final class TerminalWindow {
     var leftWidthNow: Float { layout.leftWidth }
 
     /// The rectangle of a row of the left sidebar, for clicking it.
+    /// For tests: the left sidebar's row of that name, and git's change for it.
+    func leftEntry(named name: String) -> FileEntry? { left.tree.rows.first { $0.entry.name == name }?.entry }
+    func leftGitCode(named name: String) -> Character? {
+        guard let e = leftEntry(named: name), left.gitRoot == left.tree.root else { return nil }
+        return left.git?.code(for: e.path, isDirectory: e.isDirectory)
+    }
+    func refreshSidebarGitForTest() { left.tree.refresh(); refreshSidebarGit(left, now: true) }
+
     func leftRow(named name: String) -> UIRect? {
         guard let i = left.tree.rows.firstIndex(where: { $0.entry.name == name }) else { return nil }
         return sidebarLayout(left).row(i - left.tree.scrollTop)

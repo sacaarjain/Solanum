@@ -10,6 +10,8 @@ struct SidebarGitStatus: Equatable {
     private var folders: [String: Character] = [:]
     /// Untracked folders (git reports them whole): everything inside is untracked too.
     private var untrackedDirs: [String] = []
+    /// Names of deleted files, by folder (as `files`' keys).
+    private var deleted: [String: [String]] = [:]
     private var unix = false
 
     /// The folder's path inside its repository on the first line, then the changes, repository-relative.
@@ -23,7 +25,7 @@ struct SidebarGitStatus: Equatable {
         let prefix = String(s[..<nl])
         guard let changes = GitInfo(statusOutput: Data(("/\n" + s[s.index(after: nl)...]).utf8))?.changes else { return nil }
         let unix = AnyPath.isUnix(root), base = Self.key(root, unix: unix)
-        var files: [String: Character] = [:], folders: [String: Character] = [:], untracked: [String] = []
+        var files: [String: Character] = [:], folders: [String: Character] = [:], untracked: [String] = [], deleted: [String: [String]] = [:]
         for c in changes where c.path.hasPrefix(prefix) {
             let rel = String(c.path.dropFirst(prefix.count))
             let isDir = rel.hasSuffix("/")
@@ -33,6 +35,10 @@ struct SidebarGitStatus: Equatable {
                 folders[path] = c.code
             } else {
                 files[path] = c.code
+            }
+            if c.code == "D", !isDir {
+                // Its name as git gives it (the key's is lowercased here).
+                deleted[Self.parent(path, unix: unix), default: []].append(String(rel.split(separator: "/").last ?? ""))
             }
             var dir = Self.parent(path, unix: unix)
             while dir.count > base.count && dir.hasPrefix(base) {
@@ -44,6 +50,7 @@ struct SidebarGitStatus: Equatable {
         self.files = files
         self.folders = folders
         self.untrackedDirs = untracked
+        self.deleted = deleted
         self.unix = unix
     }
 
@@ -57,6 +64,9 @@ struct SidebarGitStatus: Equatable {
         guard let cut = path.range(of: separator(unix), options: .backwards) else { return "" }
         return String(path[..<cut.lowerBound])
     }
+
+    /// The files git tracks in `folder` that are gone from disk.
+    func deletedNames(in folder: String) -> [String] { deleted[Self.key(folder, unix: unix)] ?? [] }
 
     /// The change to show for a row, if any.
     func code(for path: String, isDirectory: Bool) -> Character? {

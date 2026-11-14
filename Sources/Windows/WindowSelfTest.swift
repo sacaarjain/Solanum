@@ -1332,6 +1332,39 @@ enum WindowSelfTest {
         if let dir = snapshotDirectory {
             steps.append(Step(name: "git: snapshot of the status bar", action: {}, done: { window.saveSnapshot(to: dir + "\\git-bar.png") }))
         }
+        // The sidebar's git letters, and a tracked file deleted: a row of its own, struck through; open, its sub-tab
+        // is struck through too, and saving puts it back.
+        steps.append(Step(name: "git: the sidebar marks an untracked file U", action: { window.refreshSidebarGitForTest() }, done: {
+            if window.leftGitCode(named: "new.txt") == nil { window.refreshSidebarGitForTest() }
+            return window.leftGitCode(named: "new.txt") == "?" && window.leftGitCode(named: "tracked.txt") == nil
+        }))
+        steps.append(Step(name: "git: a tracked file shows above the terminal", action: {
+            if let row = window.leftRow(named: "tracked.txt") { window.click(row) }
+        }, done: { (pane.panel as? FileEditorPanel)?.name == "tracked.txt" }))
+        steps.append(Step(name: "git: deleted, it stays in the sidebar, struck through, as D", action: {
+            pane.type("Remove-Item tracked.txt")
+            pane.pressEnter()
+        }, done: {
+            if window.leftEntry(named: "tracked.txt")?.isDeleted != true { window.refreshSidebarGitForTest() }
+            return window.leftEntry(named: "tracked.txt")?.isDeleted == true && window.leftGitCode(named: "tracked.txt") == "D"
+        }))
+        steps.append(Step(name: "git: and its sub-tab is struck through", action: {}, done: { pane.editors.first?.isDeleted == true }))
+        if let dir = snapshotDirectory {
+            steps.append(Step(name: "git: snapshot of the deleted file", action: {}, done: { window.saveSnapshot(to: dir + "\\deleted.png") }))
+        }
+        steps.append(Step(name: "git: saving puts it back", action: { (pane.panel as? FileEditorPanel)?.save() }, done: {
+            if window.leftEntry(named: "tracked.txt")?.isDeleted != false { window.refreshSidebarGitForTest() }
+            return pane.editors.first?.isDeleted == false && window.leftEntry(named: "tracked.txt")?.isDeleted == false
+                && window.leftGitCode(named: "tracked.txt") != "D"
+        }))
+        steps.append(Step(name: "git: and it closes, the file as committed", action: {
+            while let panel = pane.panel { window.closeEditor(panel, in: pane) }
+            pane.type("git checkout -- tracked.txt")
+            pane.pressEnter()
+        }, done: {
+            if pane.atPrompt { window.refreshGitForTest() }
+            return pane.editors.isEmpty && pane.atPrompt && window.activeGit?.changes.count == 1
+        }))
         steps.append(Step(name: "git: the branch opens the switcher", action: { window.click(window.gitSpot(.branch)!) },
                           done: { window.isPaletteOpen && window.paletteRows.contains { $0.title == "Show Git Graph" } && window.paletteRows.contains { $0.title == "main" } }))
         steps.append(Step(name: "git: and closes", action: { pane.pressEscape() }, done: { !window.isPaletteOpen }))
