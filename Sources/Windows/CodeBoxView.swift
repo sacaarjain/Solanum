@@ -65,31 +65,43 @@ struct CodeBoxView {
         }
     }
 
-    /// "Copy" at the top right of each box whose first line is on screen: above it, so it never covers a long first
-    /// line, in the empty line Claude usually leaves or in a line of text that ends well short of it; on the box's first
-    /// line only when neither has room.
+    /// Where each box whose first line is on screen has its Copy button, and the stretch the pointer shows it over (the
+    /// box, and the button above it); the button itself drawn only for the box `shows` says (the one under the pointer,
+    /// or one saying "Copied"). Above the box, so it never covers a long first line or a table's border, in the empty line
+    /// Claude usually leaves or in a line of text that ends well short of it; on the box's first line only when neither
+    /// has room. A table's lines up with the table's own right edge, a code box's with its panel's.
     @discardableResult
-    func drawButtons(hover hovered: Int?, copied copiedIndex: Int?) -> [(rect: UIRect, box: Int)] {
-        var copyButtons: [(rect: UIRect, box: Int)] = []
+    func drawButtons(hover hovered: Int?, copied copiedIndex: Int?, shows: (Int) -> Bool = { _ in true })
+        -> [(rect: UIRect, box: Int, region: UIRect, shown: Bool)] {
+        var copyButtons: [(rect: UIRect, box: Int, region: UIRect, shown: Bool)] = []
         guard !boxes.isEmpty, !terminal.usingAlt else { return [] }
         let m = canvas.metrics, s = scale
-        let edge = panelRight
         for (i, b) in boxes.enumerated() {
-            let r = b.first - top
+            let r = b.first - top, last = min(b.last - top, terminal.rows - 1)
             guard r >= 0, r < terminal.rows else { continue }
             let copied = copiedIndex == i, hover = hovered == i
-            let size = Self.pillSize(copied ? "Copied" : b.kind == .table ? "Copy table" : "Copy", copied: copied, canvas: canvas, scale: s)
-            let roomAbove = b.kind != .table && r > 0 && (terminal.line(abs: b.first - 1).map { l in
+            let text = copied ? "Copied" : b.kind == .table ? "Copy table" : "Copy"
+            let size = Self.pillSize(text, copied: copied, canvas: canvas, scale: s)
+            // A table's right edge: its first line's border, as drawn.
+            var edge = panelRight
+            if b.kind == .table, let first = terminal.line(abs: b.first), let end = first.cells.lastIndex(where: { !ImageTokens.isSpace($0.ch) }) {
+                edge = min((canvas.contentX + Float(end + 1) * m.cellWidth).rounded(), edge)
+            }
+            let roomAbove = r > 0 && (terminal.line(abs: b.first - 1).map { l in
                 let lastText = l.cells.lastIndex { !ImageTokens.isSpace($0.ch) } ?? -1
                 return ImageTokens.isBlank(l) || canvas.contentX + Float(lastText + 1) * m.cellWidth < edge - size.width - 12 * s
             } ?? false)
             let rowY = canvas.contentY + Float(r) * m.cellHeight
             // Above the box, 6 px clear of its top border (which is a pixel above its first row), in the empty line there.
             let y = roomAbove ? rowY - 1 - 6 * s - size.height : rowY + (m.cellHeight - size.height) / 2
-            // Flush with the panel's right edge above it; a little in from it on the box's first line.
-            let rect = Self.drawPill(copied ? "Copied" : b.kind == .table ? "Copy table" : "Copy", copied: copied, hover: hover,
-                                     right: edge - (roomAbove ? 0 : 6) * scale, y: y, canvas: canvas, scale: s)
-            copyButtons.append((rect, i))
+            // Flush with the box's right edge above it; a little in from it on the box's first line.
+            let right = edge - (roomAbove ? 0 : 6) * scale
+            let rect = UIRect(x: (right - size.width).rounded(), y: y.rounded(), width: size.width, height: size.height)
+            let shown = shows(i) || copied
+            if shown { Self.drawPill(text, copied: copied, hover: hover, right: right, y: y, canvas: canvas, scale: s) }
+            let bottom = canvas.contentY + Float(last + 1) * m.cellHeight
+            let region = UIRect(x: canvas.contentX - 6 * s, y: rect.y, width: max(rect.maxX, edge) - canvas.contentX + 6 * s, height: bottom - rect.y)
+            copyButtons.append((rect, i, region, shown))
         }
         return copyButtons
     }

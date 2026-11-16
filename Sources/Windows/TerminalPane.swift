@@ -579,8 +579,10 @@ final class TerminalPane: TerminalDelegate, Groupable {
     private var boxScanKey: String?
     private var boxScanning = false
     /// The Copy buttons drawn this frame, by index into `codeBoxes`; the one hovered; the one saying "Copied".
-    private var copyButtons: [(rect: UIRect, box: Int)] = []
+    private var copyButtons: [(rect: UIRect, box: Int, region: UIRect, shown: Bool)] = []
     private var hoverCopyButton: Int?
+    /// The box the pointer's over, whose Copy button shows (the others' stay hidden till the pointer comes to them).
+    private var hoverBox: Int?
     private var copiedBox: (box: Int, until: Date)?
 
     /// Re-finds Claude's code blocks, tables and quotes whenever its transcript or the screen has moved on. Skipped while
@@ -655,12 +657,21 @@ final class TerminalPane: TerminalDelegate, Groupable {
 
     private func drawCopyButtons(top: Int) {
         if let copied = copiedBox, Date() >= copied.until { copiedBox = nil }
+        let showing = hoverBox
         copyButtons = CodeBoxView(canvas: canvas, terminal: terminal, boxes: codeBoxes, top: top, scale: dpiScale)
-            .drawButtons(hover: hoverCopyButton, copied: copiedBox?.box)
+            .drawButtons(hover: hoverCopyButton, copied: copiedBox?.box, shows: { $0 == showing })
     }
 
-    /// Whether a point is on a Copy button: the pointer becomes a hand there.
-    func isOverCopyButton(x: Float, y: Float) -> Bool { copyButtons.contains { $0.rect.contains(x, y) } }
+    /// Whether a point is on a Copy button that shows: the pointer becomes a hand there.
+    func isOverCopyButton(x: Float, y: Float) -> Bool { copyButtons.contains { $0.shown && $0.rect.contains(x, y) } }
+
+    /// The pointer left the terminal: the Copy button it showed goes.
+    func mouseLeftBoxes() {
+        guard hoverBox != nil || hoverCopyButton != nil else { return }
+        hoverBox = nil
+        hoverCopyButton = nil
+        invalidate()
+    }
 
     // MARK: Corner cards (see CornerNotices and Core's NoticeRules)
 
@@ -1415,8 +1426,10 @@ final class TerminalPane: TerminalDelegate, Groupable {
     func mouse(_ message: UINT, _ wParam: WPARAM, _ lParam: LPARAM) {
         // Pasted images' thumbnails: hover rings one, a click shows it larger, a click on that opens it.
         let px = Float(Int16(truncatingIfNeeded: lParam & 0xFFFF)), py = Float(Int16(truncatingIfNeeded: (lParam >> 16) & 0xFFFF))
-        // Claude's code boxes: a Copy button copies its box.
-        let onCopy = copyButtons.first { $0.rect.contains(px, py) }?.box
+        // Claude's code boxes: over one, its Copy button shows; a press on that copies the box.
+        let inBox = copyButtons.first { $0.region.contains(px, py) }?.box
+        if message == Win.WM_MOUSEMOVE, !selecting, inBox != hoverBox { hoverBox = inBox; invalidate() }
+        let onCopy = copyButtons.first { $0.box == hoverBox && $0.rect.contains(px, py) }?.box
         if message == Win.WM_MOUSEMOVE, !selecting, onCopy != hoverCopyButton { hoverCopyButton = onCopy; invalidate() }
         if message == Win.WM_LBUTTONDOWN, let onCopy { copyBox(onCopy); return }
         if message == Win.WM_MOUSEMOVE, !selecting, imageChips.hovered(atX: px, y: py) { invalidate() }

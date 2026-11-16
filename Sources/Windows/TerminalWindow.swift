@@ -1269,6 +1269,7 @@ final class TerminalWindow {
             tracking = false
             setHovered(nil, nonClient: false)
             ScrollBars.mouseLeft()
+            visiblePanes.forEach { $0.mouseLeftBoxes() }
             invalidate()
             if !panes.isEmpty { leaveEditors() }
             return 0
@@ -2037,7 +2038,11 @@ final class TerminalWindow {
             extensionsHovered = false
             invalidate()
         }
-        if message == Win.WM_MOUSEMOVE { setHovered(part, nonClient: false) }
+        if message == Win.WM_MOUSEMOVE {
+            setHovered(part, nonClient: false)
+            // Off a terminal, its code boxes' Copy buttons go (each shows only while the pointer's over its box).
+            for p in visiblePanes where !(part == .terminal && p === pane(atX: x)) { p.mouseLeftBoxes() }
+        }
         if sidebarMouse(message, part: part, x: x, y: y) { return }
         if part == .terminal && !terminalHasMouse && lostBarMouse(message, x: x, y: y) { return }
         if part == .terminal && !terminalHasMouse && pane(atX: x).findMouse(message, x: x, y: y) {
