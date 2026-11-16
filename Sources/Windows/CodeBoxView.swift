@@ -92,8 +92,10 @@ struct CodeBoxView {
                 return ImageTokens.isBlank(l) || canvas.contentX + Float(lastText + 1) * m.cellWidth < edge - size.width - 12 * s
             } ?? false)
             let rowY = canvas.contentY + Float(r) * m.cellHeight
-            // Above the box, 6 px clear of its top border (which is a pixel above its first row), in the empty line there.
-            let y = roomAbove ? rowY - 1 - 6 * s - size.height : rowY + (m.cellHeight - size.height) / 2
+            // Above the box, 6 px clear of its top border, in the empty line there: a code box's is a pixel above its first
+            // row; a table's is the line drawn through the middle of its first row.
+            let border = b.kind == .table ? rowY + m.cellHeight / 2 : rowY - 1
+            let y = roomAbove ? border - 6 * s - size.height : rowY + (m.cellHeight - size.height) / 2
             // Flush with the box's right edge above it; a little in from it on the box's first line.
             let right = edge - (roomAbove ? 0 : 6) * scale
             let rect = UIRect(x: (right - size.width).rounded(), y: y.rounded(), width: size.width, height: size.height)
