@@ -615,10 +615,20 @@ final class TerminalWindow {
 
     private func sizeWindow(toCols cols: Int, rows: Int) {
         let m = canvas.metrics, bars = WindowLayout(width: 0, height: 0, scale: scale, tabCount: 0)
-        let sides = (left.isVisible ? sidebarWidth(left) : 0) + (rightIsShowing ? sidebarWidth(right) : 0)
-        var rect = RECT(left: 0, top: 0,
-                        right: LONG(Float(cols) * m.cellWidth + canvas.padding * 2 + 5 + sides),
-                        bottom: LONG(Float(rows) * m.cellHeight + canvas.padding * 2 + bars.tabBarHeight + bars.statusBarHeight))
+        // The window grows or shrinks by what the active tab's terminal needs (its card's margins and inset, the
+        // sidebars, whatever the layout puts round it, all stay as they are), with half a cell to spare so the
+        // rounding down to whole cells lands on `cols` and `rows`.
+        let need = (w: Float(cols) * m.cellWidth + canvas.padding * 2 + m.cellWidth / 2,
+                    h: Float(rows) * m.cellHeight + canvas.padding * 2 + m.cellHeight / 2)
+        var client: (w: Float, h: Float)
+        if !panes.isEmpty, clientWidth > 0 {
+            let now = area(for: activePane)
+            client = (Float(clientWidth) - now.width + need.w, Float(clientHeight) - now.height + need.h)
+        } else {
+            let sides = (left.isVisible ? sidebarWidth(left) : 0) + (rightIsShowing ? sidebarWidth(right) : 0)
+            client = (need.w + 5 + sides, need.h + bars.tabBarHeight + bars.statusBarHeight)
+        }
+        var rect = RECT(left: 0, top: 0, right: LONG(client.w.rounded()), bottom: LONG(client.h.rounded()))
         _ = AdjustWindowRectExForDpi(&rect, Win.WS_OVERLAPPEDWINDOW, false, 0, GetDpiForWindow(hwnd))
         // The frame's top edge isn't added to the client area's height here: the title bar it stands for is gone.
         SetWindowPos(hwnd, nil, 0, 0, rect.right - rect.left, rect.bottom, Win.SWP_NOMOVE | Win.SWP_NOZORDER | Win.SWP_NOACTIVATE)
@@ -6278,6 +6288,18 @@ final class TerminalWindow {
     /// Clicks a part of the tab bar, as the mouse would.
     /// How far the left sidebar can scroll sideways, how far it has, and a swipe across it.
     var leftMaxScrollX: Float { left.maxScrollX }
+    var leftRootForTesting: String? { left.tree.root }
+    /// The left sidebar shown and pinned to a folder (and, with nil, let go to follow the terminal again).
+    func pinLeftForTest(_ folder: String?) {
+        if folder != nil && !left.isVisible { toggleSidebar(left); leftShownForTest = true }
+        left.pinned = folder
+        if let folder { left.tree.setRoot(folder) } else { followTerminalFolder() }
+        left.tree.refresh()
+        // Shown only for this, it's hidden again after, as it was.
+        if folder == nil && leftShownForTest { leftShownForTest = false; toggleSidebar(left) }
+        invalidate()
+    }
+    private var leftShownForTest = false
     var leftScrollX: Float { left.scrollX }
     func swipeLeftSidebarForTest(by pixels: Float) {
         left.scrollSideways(by: pixels)

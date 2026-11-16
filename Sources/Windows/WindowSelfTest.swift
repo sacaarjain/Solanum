@@ -1790,17 +1790,21 @@ enum WindowSelfTest {
         steps.append(Step(name: "sidebar: scrollbar: back to the bottom", action: { pane.scrollToBottom() }, done: { pane.scrollOffset == 0 }))
         // A name too long for the sidebar: it scrolls sideways to read it.
         let longName = String(repeating: "a-very-long-name-", count: 6) + "end.txt"
+        // In a folder of its own, the sidebar shown and pinned to it, whatever came before (the terminal busy, the
+        // sidebar hidden or elsewhere).
+        let longFolder = NSTemporaryDirectory() + "solanum-long-names-\(GetCurrentProcessId())"
         steps.append(Step(name: "sidebar: scrollbar: a long name lets it scroll sideways", action: {
-            pane.type("New-Item -ItemType File '\(longName)' | Out-Null")
-            pane.pressEnter()
+            try? FileManager.default.createDirectory(atPath: longFolder, withIntermediateDirectories: true)
+            _ = FileManager.default.createFile(atPath: longFolder + "\\" + longName, contents: Data())
+            window.pinLeftForTest(longFolder)
         }, done: { window.leftEntry(named: longName) != nil && window.leftMaxScrollX > 0 }))
         steps.append(Step(name: "sidebar: scrollbar: swiped, it moves along", action: { window.swipeLeftSidebarForTest(by: 10_000) }, done: {
             window.leftScrollX == window.leftMaxScrollX && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\sidebar-sideways.png") } ?? true)
         }))
         steps.append(Step(name: "sidebar: scrollbar: and back", action: {
             window.swipeLeftSidebarForTest(by: -10_000)
-            pane.type("Remove-Item '\(longName)'")
-            pane.pressEnter()
+            window.pinLeftForTest(nil)
+            try? FileManager.default.removeItem(atPath: longFolder)
         }, done: { window.leftScrollX == 0 && window.leftEntry(named: longName) == nil }))
 
         // A new tab opens in the current tab's folder, which Settings makes the default.
