@@ -157,9 +157,9 @@ final class Canvas {
     /// the square doesn't center what shows.
     private static var artInk: [String: (x0: Float, y0: Float, x1: Float, y1: Float)] = [:]
 
-    private func inkBounds(_ name: String) -> (x0: Float, y0: Float, x1: Float, y1: Float) {
-        // The largest size, for the finest measure.
-        let art = "\(name)@4"
+    private func inkBounds(_ name: String, size: Int = 4) -> (x0: Float, y0: Float, x1: Float, y1: Float) {
+        // The size that's drawn: each is drawn on its own, so its margins round their own way.
+        let art = "\(name)@\(size)"
         if let known = Self.artInk[art] { return known }
         var bounds: (x0: Float, y0: Float, x1: Float, y1: Float) = (0, 0, 1, 1)
         if let encoded = ArtData.images[art], let png = Data(base64Encoded: encoded) {
@@ -184,11 +184,13 @@ final class Canvas {
     /// A picture in a button, as a glyph would be: scaled so what shows is `inkHeight` tall, and that (not the picture's
     /// square, whose margins differ) centered in `box`, on whole pixels so it stays sharp.
     func drawArtCentered(_ name: String, in box: UIRect, inkHeight: Float, scale: Float, alpha: Float = 1, tint: UInt32? = nil) {
-        let ink = inkBounds(name)
-        let side = (inkHeight / max(ink.y1 - ink.y0, 0.01)).rounded()
+        let fine = inkBounds(name)
+        let side = (inkHeight / max(fine.y1 - fine.y0, 0.01)).rounded()
+        // Placed by the margins of the size that's drawn (as `drawArt` picks it), not the finest's.
+        let picked = max(scale, side / 16), size = min(max(Int(picked.rounded(.up)), 1), 4), ink = inkBounds(name, size: size)
         let inkMidX = (ink.x0 + ink.x1) / 2 * side, inkMidY = (ink.y0 + ink.y1) / 2 * side
         let x = (box.x + box.width / 2 - inkMidX).rounded(), y = (box.y + box.height / 2 - inkMidY).rounded()
-        drawArt(name, UIRect(x: x, y: y, width: side, height: side), scale: max(scale, side / 16), alpha: alpha, tint: tint)
+        drawArt(name, UIRect(x: x, y: y, width: side, height: side), scale: picked, alpha: alpha, tint: tint)
     }
 
     /// A theme's planet (see Core/PlanetArt.swift), as its icon, filling the square `r`: rendered once for each size, at

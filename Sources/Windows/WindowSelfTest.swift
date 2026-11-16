@@ -8,6 +8,48 @@ import WinSDK
 enum WindowSelfTest {
     private static var snapshotDirectory: String? { ProcessInfo.processInfo.environment["SOLANUM_SNAPSHOT_DIR"] }
 
+    /// The status bar's buttons drawn at each display scale Windows offers, and where each icon's pixels land in its
+    /// button: centered both ways, within half a pixel (all an odd size can be in an even one), at every one.
+    private static func statusIconAlignment(_ results: CoreSelfTest.Results) {
+        var worst: [String] = []
+        for scale: Float in [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 3] {
+            let w = Int(900 * scale), h = Int(300 * scale)
+            guard let canvas = Canvas(width: w, height: h, fontPixels: 15 * scale) else { continue }
+            var layout = WindowLayout(width: Float(w), height: Float(h), scale: scale, tabCount: 1)
+            layout.hasShellButton = true
+            guard sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { continue }
+            WindowChrome(canvas: canvas, layout: layout, tabs: ["~"], activeTab: 0).draw()
+            guard sol_canvas_end(canvas.raw) >= 0 else { continue }
+            let path = NSTemporaryDirectory() + "solanum-icons-\(GetCurrentProcessId()).png"
+            defer { try? FileManager.default.removeItem(atPath: path) }
+            guard canvas.savePNG(to: path), let png = FileManager.default.contents(atPath: path) else { continue }
+            var pixels: UnsafeMutablePointer<UInt8>?
+            var pw: Int32 = 0, ph: Int32 = 0
+            let ok = png.withUnsafeBytes { sol_canvas_decode_png(canvas.raw, $0.bindMemory(to: UInt8.self).baseAddress, Int32(png.count), &pixels, &pw, &ph) }
+            guard ok == 0, let pixels else { continue }
+            defer { sol_canvas_free(pixels) }
+            func lum(_ x: Int, _ y: Int) -> Float {
+                let i = (y * Int(pw) + x) * 4
+                return 0.3 * Float(pixels[i]) + 0.59 * Float(pixels[i + 1]) + 0.11 * Float(pixels[i + 2])
+            }
+            var line = "  \(scale)x:"
+            for (name, r) in [("sidebar", layout.toggleLeft), ("ssh", layout.hostsButton), ("shell", layout.shellButton), ("cup", layout.keepAwakeButton)] {
+                let x0 = Int(r.x), y0 = Int(r.y), x1 = Int(r.maxX.rounded(.up)), y1 = Int(r.maxY.rounded(.up))
+                let bg = lum(x0, y0)
+                var minX = x1, maxX = x0 - 1, minY = y1, maxY = y0 - 1
+                for y in y0..<min(y1, Int(ph)) { for x in x0..<min(x1, Int(pw)) where abs(lum(x, y) - bg) > 35 {
+                    minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+                } }
+                guard maxX >= minX else { line += " \(name) none"; continue }
+                let dx = (Float(minX + maxX + 1) / 2 - (r.x + r.width / 2)), dy = (Float(minY + maxY + 1) / 2 - (r.y + r.height / 2))
+                line += " \(name) dx \(dx) dy \(dy) h \(maxY - minY + 1);"
+                if abs(dx) > 0.5 || abs(dy) > 0.5 { worst.append("\(name) at \(scale)x: \(dx), \(dy)") }
+            }
+            print(line)
+        }
+        results.check("status bar: each icon centered in its button, at every scale", worst.isEmpty, worst.joined(separator: "; "))
+    }
+
     private static func snapshot(_ terminal: Terminal, name: String, canvas: Canvas) -> Bool {
         let renderer = TerminalRenderer(canvas: canvas, terminal: terminal)
         guard renderer.draw() >= 0 else { return false }
@@ -681,6 +723,9 @@ enum WindowSelfTest {
         results.check("palette: centered, and stays put as it shrinks", paletteShape.panel.x == 190 && paletteShape.panel.y == PaletteLayout(windowWidth: 1000, windowHeight: 700, scale: 1, rowCount: 10).panel.y)
         results.check("palette: finds a row", paletteShape.visibleRow(atX: 500, y: paletteShape.row(1).midY) == 1 && paletteShape.visibleRow(atX: 10, y: 10) == nil)
         results.check("palette: fits a small window", PaletteLayout(windowWidth: 400, windowHeight: 300, scale: 1, rowCount: 3).panel.maxX <= 400)
+
+        print("Status bar icons, centered at every scale")
+        statusIconAlignment(results)
 
         guard let canvas = Canvas(width: 1200, height: 420, fontPixels: 15) else { return }
         let bars = WindowLayout(width: 1200, height: 420, scale: 1, tabCount: 5)

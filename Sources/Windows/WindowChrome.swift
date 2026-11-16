@@ -443,8 +443,10 @@ struct WindowChrome {
     /// in seconds, moves them), still otherwise (nil).
     static func drawCup(on canvas: Canvas, in r: UIRect, scale: Float, color: UInt32, alpha: Float, steam: Double?) {
         // 24 units across 15 pixels at 100% (as the Mac's).
-        let unit = 15 * scale / 24, side = 24 * unit
-        let x = (r.x + (r.width - side) / 2).rounded(), y = (r.y + (r.height - side) / 2).rounded()
+        // What's drawn (the saucer's left to the handle's right, the steam's top to the saucer's foot) isn't the middle of
+        // its 24 units, so that is what's centered in `r`, on whole pixels, the same at every scale.
+        let unit = 15 * scale / 24, inkMid = (x: Float(11.35), y: Float(11.7))
+        let x = (r.x + r.width / 2 - inkMid.x * unit).rounded(), y = (r.y + r.height / 2 - inkMid.y * unit).rounded()
         sol_canvas_fill_svg_path(canvas.raw, cupBody, x, y, unit, color, alpha * 0.3)
         sol_canvas_fill_svg_path(canvas.raw, saucer, x, y, unit, color, alpha * 0.3)
         // Outlines in a solid color, so where the handle and saucer meet the cup doesn't show darker, dimmed or not.
@@ -728,16 +730,12 @@ struct WindowChrome {
             // The shells: a terminal in outline, drawn as the icons beside it are (and as the Mac's console button).
             let b = layout.shellButton
             if hovered == .shell { sol_canvas_fill_rounded(canvas.raw, b.x, b.y, b.width, b.height, 4 * scale, fg, 0.10) }
-            // A pixel below the button's middle, which reads as level with the icons beside it.
-            EditorStrip.drawTerminalSymbol(on: canvas, centerX: b.x + b.width / 2, centerY: b.midY + (1 * scale).rounded(), scale: scale, color: fg, alpha: 0.75, thin: true)
+            EditorStrip.drawTerminalSymbol(on: canvas, centerX: b.x + b.width / 2, centerY: b.midY, scale: scale, color: fg, alpha: 0.75, thin: true)
         }
-        // Keep Awake's cup: in the accent color while it's on, grey while it's off. Its button sits as the others do; the
-        // cup alone is 1.5pt above its middle, so its body is level with the icons beside it (its steam would otherwise
-        // pull it low), as on the Mac.
-        let cupButton = layout.keepAwakeButton
-        if hovered == .keepAwake { sol_canvas_fill_rounded(canvas.raw, cupButton.x, cupButton.y, cupButton.width, cupButton.height, 4 * scale, fg, 0.10) }
-        var cup = cupButton
-        cup.y -= (1.5 * scale).rounded() - (1 * scale).rounded()
+        // Keep Awake's cup: in the accent color while it's on, grey while it's off. Centered in its button by what's drawn
+        // of it, as every icon here is, so it lines up the same on any display.
+        let cup = layout.keepAwakeButton
+        if hovered == .keepAwake { sol_canvas_fill_rounded(canvas.raw, cup.x, cup.y, cup.width, cup.height, 4 * scale, fg, 0.10) }
         let on = keepAwakeLeft != nil
         Self.drawCup(on: canvas, in: cup, scale: scale, color: on ? TerminalPalette.accent : fg,
                      alpha: on ? 1 : hovered == .keepAwake ? 0.7 : 0.45, steam: on ? (steamTime ?? 0) : nil)
