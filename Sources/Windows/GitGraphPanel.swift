@@ -302,6 +302,13 @@ final class GitGraphPanel: ColumnPanel {
             p.label(meta, UIRect(x: r.maxX - metaW - 12 * s, y: r.y, width: metaW + 2, height: r.height), pixels: 11.5, alpha: 0.45)
         }
         sol_canvas_pop_clip(canvas.raw)
+        // Its scrollbar, down the list's right.
+        let total = rows.count
+        ScrollBars.draw(id: "graph:\(ObjectIdentifier(self).hashValue)", on: canvas, track: l, axis: .vertical, total: Double(total + 2),
+                        visible: Double(visibleRows), offset: Double(scroll), scale: s) { [weak self] top in
+            self?.scroll = min(max(Int(top.rounded()), 0), max(total - 3, 0))
+            self?.invalidate()
+        }
         lastCard = nil
         if let row = cardRow, row >= scroll, row < scroll + visibleRows + 1 {
             lastCard = card(for: row, in: a, p, s)

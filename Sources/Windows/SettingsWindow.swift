@@ -145,6 +145,9 @@ final class SettingsWindow {
     private var justClosedPicker: String?
     /// Shows the draft in every window a moment after a burst of changes (dragging in the picker) settles.
     private static let draftTimer: UINT_PTR = 1
+    /// While its scrollbar shows or fades.
+    private static let scrollBarTimer: UINT_PTR = 2
+    private var scrollBarTicking = false
     /// The slider being dragged: where its track is, and what it sets.
     private var sliding: (track: UIRect, min: Double, max: Double, set: (Double) -> Void)?
 
@@ -227,10 +230,17 @@ final class SettingsWindow {
             _ = BeginPaint(hwnd, &ps)
             if sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 {
                 DrawnFields.clear(canvas)
+                ScrollBars.clear(canvas)
                 draw(on: canvas)
                 _ = sol_canvas_end(canvas.raw)
             }
             EndPaint(hwnd, &ps)
+            // While its scrollbar shows or fades, it's drawn about 30 times a second.
+            let fading = ScrollBars.isAnimating
+            if fading != scrollBarTicking {
+                scrollBarTicking = fading
+                if fading { _ = SetTimer(hwnd, Self.scrollBarTimer, 33, nil) } else { _ = KillTimer(hwnd, Self.scrollBarTimer) }
+            }
             return 0
         case Win.WM_ERASEBKGND:
             return 1
@@ -273,6 +283,16 @@ final class SettingsWindow {
                 }
                 return 0
             }
+            // Its scrollbar first, over the page.
+            var barsChanged = false
+            let wasDragging = ScrollBars.isDragging
+            if dialog == nil, picker?.dragging == nil, ScrollBars.mouse(message, x: x, y: y, on: canvas, redraw: &barsChanged) {
+                if !wasDragging && ScrollBars.isDragging { SetCapture(hwnd) }
+                if wasDragging && !ScrollBars.isDragging { ReleaseCapture() }
+                invalidate()
+                return 0
+            }
+            if barsChanged { invalidate() }
             mouse(message, x: x, y: y)
             return 0
         case Win.WM_SETCURSOR where LRESULT(lParam & 0xFFFF) == Win.HTCLIENT:
@@ -318,6 +338,9 @@ final class SettingsWindow {
         case Win.WM_TIMER where wParam == Self.draftTimer:
             KillTimer(hwnd, Self.draftTimer)
             publishDraft()
+            return 0
+        case Win.WM_TIMER where wParam == Self.scrollBarTimer:
+            invalidate()
             return 0
         case Win.WM_CLOSE where isDirty:
             // As on the Mac: save, don't save, or stay.
@@ -881,6 +904,13 @@ final class SettingsWindow {
         if let picker {
             let typing = editing?.id == "picker-hex" ? editing : nil
             picker.draw(on: target, hexText: typing?.state.text, caretX: typing.map { measure(target, $0.state.beforeCaret, pixels: 13 * s) })
+        }
+        // The page's scrollbar, down its right.
+        ScrollBars.draw(id: "settings", on: target, track: UIRect(x: sidebarWidth, y: 0, width: w - sidebarWidth, height: h - footerHeight), axis: .vertical,
+                        total: Double(contentHeight + 20 * s), visible: Double(h), offset: Double(scroll), scale: s) { [weak self] top in
+            self?.scroll = Float(top)
+            self?.clampScroll()
+            self?.invalidate()
         }
         sol_canvas_pop_clip(target.raw)
 

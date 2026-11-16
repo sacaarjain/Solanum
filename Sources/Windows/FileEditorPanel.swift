@@ -1405,6 +1405,34 @@ final class FileEditorPanel: ColumnPanel {
             let x = tx + Float(c.cell - (wraps ? 0 : scrollColumn)) * cellSize.width
             if x >= tx - 1 { p.fill(UIRect(x: x.rounded(), y: top + Float(c.row - scrollRow) * lh, width: max((1.5 * s).rounded(), 1), height: lh), focusedCaret, 1) }
         }
+        // Its scrollbars: down the right, and along the bottom while long lines run on unwrapped.
+        let id = "file:\(ObjectIdentifier(self).hashValue)", room = (12 * s).rounded()
+        let wide = !wraps ? widestCells : 0, across = !wraps && wide > columns
+        ScrollBars.draw(id: id + ":v", on: canvas, track: UIRect(x: b.x, y: b.y, width: b.width, height: b.height - (across ? room : 0)), axis: .vertical,
+                        total: Double(rowCount + visibleRows / 2), visible: Double(visibleRows), offset: Double(scrollRow), scale: s) { [weak self] top in
+            guard let self else { return }
+            self.scrollRow = min(max(Int(top.rounded()), 0), max(self.rowCount - 1, 0))
+            self.invalidate()
+        }
+        if across {
+            ScrollBars.draw(id: id + ":h", on: canvas, track: UIRect(x: tx, y: b.y, width: b.maxX - tx - room, height: b.height), axis: .horizontal,
+                            total: Double(wide + 8), visible: Double(columns), offset: Double(scrollColumn), scale: s) { [weak self] left in
+                self?.scrollColumn = max(Int(left.rounded()), 0)
+                self?.invalidate()
+            }
+        }
+    }
+
+    /// The longest line, about in cells (its UTF-16 length, quick to have, with the longest's tabs widened), for the bar
+    /// along the bottom; worked out once for each version of the text.
+    private var widest: (version: Int, cells: Int) = (-1, 0)
+    private var widestCells: Int {
+        if widest.version != version {
+            var longest = 0, n = 0
+            for (i, l) in lines.enumerated() where l.utf16.count > n { n = l.utf16.count; longest = i }
+            widest = (version, lines.isEmpty ? 0 : max(n, cells(longest, upTo: lines[longest].count)))
+        }
+        return widest.cells
     }
 
     private func drawImage(_ data: Data, on canvas: Canvas, in b: UIRect, _ p: PanelPaint, _ s: Float) {

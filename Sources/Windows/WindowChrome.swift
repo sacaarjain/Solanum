@@ -728,7 +728,8 @@ struct WindowChrome {
             // The shells: a terminal in outline, drawn as the icons beside it are (and as the Mac's console button).
             let b = layout.shellButton
             if hovered == .shell { sol_canvas_fill_rounded(canvas.raw, b.x, b.y, b.width, b.height, 4 * scale, fg, 0.10) }
-            EditorStrip.drawTerminalSymbol(on: canvas, centerX: b.x + b.width / 2, centerY: b.midY, scale: scale, color: fg, alpha: 0.75, thin: true)
+            // A pixel below the button's middle, which reads as level with the icons beside it.
+            EditorStrip.drawTerminalSymbol(on: canvas, centerX: b.x + b.width / 2, centerY: b.midY + (1 * scale).rounded(), scale: scale, color: fg, alpha: 0.75, thin: true)
         }
         // Keep Awake's cup: in the accent color while it's on, grey while it's off. Its button sits as the others do; the
         // cup alone is 1.5pt above its middle, so its body is level with the icons beside it (its steam would otherwise
@@ -736,7 +737,7 @@ struct WindowChrome {
         let cupButton = layout.keepAwakeButton
         if hovered == .keepAwake { sol_canvas_fill_rounded(canvas.raw, cupButton.x, cupButton.y, cupButton.width, cupButton.height, 4 * scale, fg, 0.10) }
         var cup = cupButton
-        cup.y -= (1.5 * scale).rounded()
+        cup.y -= (1.5 * scale).rounded() - (1 * scale).rounded()
         let on = keepAwakeLeft != nil
         Self.drawCup(on: canvas, in: cup, scale: scale, color: on ? TerminalPalette.accent : fg,
                      alpha: on ? 1 : hovered == .keepAwake ? 0.7 : 0.45, steam: on ? (steamTime ?? 0) : nil)

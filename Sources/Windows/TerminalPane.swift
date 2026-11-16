@@ -1628,6 +1628,18 @@ final class TerminalPane: TerminalDelegate, Groupable {
         invalidate()
     }
 
+    /// For its scrollbar: lines in all, how many show, and how far down from the top it's scrolled.
+    var scrollMetrics: (total: Double, visible: Double, top: Double) {
+        (Double(maxScroll + terminal.rows), Double(terminal.rows), Double(maxScroll - scrollOffset))
+    }
+
+    /// Its scrollbar dragged: `top` lines down from the top.
+    func scroll(toTop top: Double) {
+        updateHidden()
+        scrollOffset = min(max(maxScroll - Int(top.rounded()), 0), maxScroll)
+        invalidate()
+    }
+
     private func scroll(by lines: Int) {
         updateHidden()
         scrollOffset = min(max(scrollOffset + lines, 0), maxScroll)

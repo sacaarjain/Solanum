@@ -308,7 +308,6 @@ struct TerminalRenderer {
             if let line = terminal.line(abs: a) { draw(line, abs: a, row: row) }
         }
         drawCursor(top: top)
-        drawScrollPosition()
     }
 
     private func colors(_ cell: Cell, selected: Bool) -> (fg: UInt32, bg: UInt32) {
@@ -451,16 +450,4 @@ struct TerminalRenderer {
         }
     }
 
-    /// While scrolled back: how far, on the right edge.
-    private func drawScrollPosition() {
-        guard scrollOffset > 0 else { return }
-        let m = canvas.metrics
-        let height = Float(terminal.rows) * m.cellHeight
-        let range = scrollRange ?? terminal.scrollback.count
-        let total = Float(range + terminal.rows)
-        let thumb = max(height * Float(terminal.rows) / total, 16)
-        let position = 1 - Float(scrollOffset) / Float(max(range, 1))
-        let x = canvas.contentX + Float(terminal.cols) * m.cellWidth + 1
-        sol_canvas_fill_rect(canvas.raw, x, canvas.contentY + (height - thumb) * position, 3, thumb, TerminalPalette.foreground, 0.4)
-    }
 }

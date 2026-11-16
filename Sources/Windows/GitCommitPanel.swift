@@ -190,6 +190,14 @@ final class GitCommitPanel: ColumnPanel {
         }
         layoutRows(p, a, s)
         clampScroll(a)
+        // Its scrollbar, over what's drawn.
+        defer {
+            ScrollBars.draw(id: "commit:\(ObjectIdentifier(self).hashValue)", on: canvas, track: a, axis: .vertical, total: Double(contentHeight),
+                            visible: Double(a.height), offset: Double(scrollY), scale: s) { [weak self] top in
+                self?.scrollY = Float(top)
+                self?.invalidate()
+            }
+        }
         toggleAllRect = nil
         guard let first = row(atY: a.y, a) else { return }
         var i = first

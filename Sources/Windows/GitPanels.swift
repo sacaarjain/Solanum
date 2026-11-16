@@ -381,6 +381,19 @@ final class GitChangesPanel: ColumnPanel {
             p.mono(line.text, x: d.x + 10 * s, y: y, maxCells: cellsAcross, color: GitLook.diffColor(line.kind))
         }
         sol_canvas_pop_clip(canvas.raw)
+        // The list's scrollbar and the diff's.
+        let id = "changes:\(ObjectIdentifier(self).hashValue)", rowCount = rows.count, diffCount = diff.count
+        let listShows = Int((l.height - 4 * s) / rowHeight(s)), diffShows = Int((d.height - 6 * s) / max(cellSize.height, 1))
+        ScrollBars.draw(id: id + ":list", on: canvas, track: l, axis: .vertical, total: Double(rowCount + 2), visible: Double(listShows),
+                        offset: Double(listScroll), scale: s) { [weak self] top in
+            self?.listScroll = min(max(Int(top.rounded()), 0), max(rowCount - 3, 0))
+            self?.invalidate()
+        }
+        ScrollBars.draw(id: id + ":diff", on: canvas, track: d, axis: .vertical, total: Double(diffCount + 4), visible: Double(diffShows),
+                        offset: Double(diffScroll), scale: s) { [weak self] top in
+            self?.diffScroll = min(max(Int(top.rounded()), 0), max(diffCount - 5, 0))
+            self?.invalidate()
+        }
         // What it's doing, or what went wrong.
         if let note {
             let w = min(p.width(note) + 28 * s, a.width - 24 * s)

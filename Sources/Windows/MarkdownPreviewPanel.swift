@@ -319,6 +319,12 @@ final class MarkdownPreviewPanel: ColumnPanel {
                 }
             }
             sol_canvas_pop_clip(canvas.raw)
+            // Its scrollbar, down the right.
+            ScrollBars.draw(id: "preview:\(ObjectIdentifier(self).hashValue)", on: canvas, track: body, axis: .vertical,
+                            total: Double(content.height), visible: Double(body.height), offset: Double(scrollY), scale: s) { [weak self] top in
+                self?.scrollY = Float(top)
+                self?.invalidate()
+            }
             finder?.draw(on: canvas, in: body, scale: s)
         }
         // The header: what this is, and close.

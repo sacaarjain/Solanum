@@ -66,6 +66,12 @@ struct MenuView {
             guard r.maxY > rows.y, r.y < rows.maxY else { continue }
             drawRow(i, r)
         }
+        // Its scrollbar, when it's too tall for the window.
+        let menu = self.menu, shows = f.height - menu.top - menu.padding
+        ScrollBars.draw(id: "menu", on: canvas, track: UIRect(x: rows.x, y: rows.y + 4 * s, width: rows.width - 3 * s, height: rows.height - 8 * s),
+                        axis: .vertical, total: Double(menu.maxScroll + shows), visible: Double(shows), offset: Double(menu.scroll), scale: s) { top in
+            menu.scrollBy(Float(top) - menu.scroll)
+        }
     }
 
     private func label(_ text: String, _ r: UIRect, _ pixels: Float, semibold: Bool = false, color: UInt32? = nil, alpha: Float = 1) {

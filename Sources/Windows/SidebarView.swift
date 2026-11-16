@@ -176,10 +176,11 @@ struct SidebarView {
         for visible in 0..<showing where tree.scrollTop + visible < tree.rows.count {
             drawRow(tree.rows[tree.scrollTop + visible], in: layout.row(visible), visible: visible)
         }
-        if tree.rows.count > layout.rowsShowing, layout.rowsShowing > 0 {
-            let total = Float(tree.rows.count), thumb = max(list.height * Float(layout.rowsShowing) / total, 16 * scale)
-            let position = Float(tree.scrollTop) / max(total - Float(layout.rowsShowing), 1)
-            sol_canvas_fill_rounded(canvas.raw, a.maxX - 6 * scale, list.y + (list.height - thumb) * position, 3 * scale, thumb, 1.5 * scale, fg, 0.25)
+        // Its scrollbar, down the right, as everything that scrolls has.
+        let showingRows = layout.rowsShowing
+        ScrollBars.draw(id: "sidebar:\(ObjectIdentifier(tree).hashValue)", on: canvas, track: UIRect(x: list.x, y: list.y, width: a.maxX - list.x, height: list.height),
+                        axis: .vertical, total: Double(tree.rows.count), visible: Double(showingRows), offset: Double(tree.scrollTop), scale: scale) { top in
+            tree.scrollTop = min(max(Int(top.rounded()), 0), max(tree.rows.count - showingRows, 0))
         }
     }
 

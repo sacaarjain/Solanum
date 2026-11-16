@@ -39,6 +39,13 @@ struct PaletteView {
         for visible in 0..<model.visibleRowCount where model.scrollTop + visible < model.rows.count {
             drawRow(model.rows[model.scrollTop + visible], index: model.scrollTop + visible, in: layout.row(visible), visible: visible)
         }
+        // Its scrollbar, down the rows' right, inside the panel's edge.
+        let first = layout.row(0), last = layout.row(max(model.visibleRowCount - 1, 0)), model = self.model
+        let track = UIRect(x: first.x, y: first.y, width: first.width - 4 * scale, height: last.maxY - first.y)
+        ScrollBars.draw(id: "palette", on: canvas, track: track, axis: .vertical, total: Double(model.rows.count), visible: Double(model.visibleRowCount),
+                        offset: Double(model.scrollTop), scale: scale) { top in
+            model.scroll(by: Int(top.rounded()) - model.scrollTop)
+        }
     }
 
     private func drawField() {

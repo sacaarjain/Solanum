@@ -559,6 +559,17 @@ final class TerminalWindow {
     private static let steamTimer: UINT_PTR = 7
     private var steaming = false
 
+    /// While a scrollbar shows or fades: drawn about 30 times a second.
+    private static let scrollBarTimer: UINT_PTR = 11
+    private var scrollBarTicking = false
+
+    private func updateScrollBarTimer() {
+        let want = ScrollBars.isAnimating
+        guard want != scrollBarTicking else { return }
+        scrollBarTicking = want
+        if want { _ = SetTimer(hwnd, Self.scrollBarTimer, 33, nil) } else { _ = KillTimer(hwnd, Self.scrollBarTimer) }
+    }
+
     /// The steam moves while Keep Awake is on, the window's showing and Windows' animation effects are on; else it stands still.
     func updateSteam() {
         let want = KeepAwake.isOn && animatesSidebars && !IsIconic(hwnd)
@@ -1044,6 +1055,8 @@ final class TerminalWindow {
         defer { EndPaint(hwnd, &ps) }
         guard !panes.isEmpty, sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
         DrawnFields.clear(canvas)
+        ScrollBars.clear(canvas)
+        defer { updateScrollBarTimer() }
         chrome(on: canvas, layout: layout).draw()
         for pane in visiblePanes { drawColumn(pane, on: canvas, snapshot: false) }
         drawSidebars(on: canvas, layout: layout)
@@ -1228,6 +1241,8 @@ final class TerminalWindow {
         case Win.WM_NCMOUSELEAVE, Win.WM_MOUSELEAVE:
             tracking = false
             setHovered(nil, nonClient: false)
+            ScrollBars.mouseLeft()
+            invalidate()
             if !panes.isEmpty { leaveEditors() }
             return 0
         case Win.WM_NCLBUTTONDOWN:
@@ -1318,6 +1333,9 @@ final class TerminalWindow {
             } else if wParam == WPARAM(Self.steamTimer) {
                 updateSteam()
                 invalidate()
+            } else if wParam == WPARAM(Self.scrollBarTimer) {
+                invalidate()
+                updateScrollBarTimer()
             } else {
                 // An agent starting, stopping or changing what it's doing shows on its tab.
                 if panes.map({ $0.tick() }).contains(true) { invalidate() }
@@ -1910,6 +1928,16 @@ final class TerminalWindow {
             return
         }
         if fieldMouse(message, x: x, y: y) { return }
+        // The scrollbars, over whatever they scroll.
+        var barsChanged = false
+        let wasDragging = ScrollBars.isDragging
+        if ScrollBars.mouse(message, x: x, y: y, on: canvas, redraw: &barsChanged) {
+            if !wasDragging && ScrollBars.isDragging { SetCapture(hwnd) }
+            if wasDragging && !ScrollBars.isDragging { ReleaseCapture() }
+            invalidate()
+            return
+        }
+        if barsChanged { invalidate() }
         if menu == nil, palette == nil, !notices.isEmpty,
            notices.mouse(message, x: x, y: y, canvas: canvas, windowWidth: Float(clientWidth), top: layout.tabBarHeight, scale: scale) {
             invalidate()
@@ -3542,6 +3570,10 @@ final class TerminalWindow {
             } else {
                 pane.draw(cursorShown: pane === activePane ? cursorShown : true, style: cursorStyleCode)
             }
+            // Its scrollback's bar, down its right edge.
+            let m = pane.scrollMetrics
+            ScrollBars.draw(id: "terminal:\(pane.id)", on: target, track: area(for: pane), axis: .vertical, total: m.total, visible: m.visible,
+                            offset: m.top, scale: scale) { [weak pane] in pane?.scroll(toTop: $0) }
         }
         guard let editor = split.editor, let strip = editorStrip(for: pane, on: target) else { return }
         sol_canvas_backdrop_rect(target.raw, editor.x, editor.y, editor.width, editor.height, TerminalPalette.background)

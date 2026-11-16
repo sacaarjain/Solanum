@@ -1733,6 +1733,16 @@ enum WindowSelfTest {
             pane.type("echo after-sidebar")
             pane.pressEnter()
         }, done: { hasLine("after-sidebar") }))
+        // Scrolled, the terminal's scrollbar shows (and fades after); dragged, it scrolls.
+        steps.append(Step(name: "sidebar: scrollbar: output to scroll through", action: {
+            pane.type("1..80")
+            pane.pressEnter()
+        }, done: { hasLine("80") && pane.scrollMetrics.total > pane.scrollMetrics.visible }))
+        steps.append(Step(name: "sidebar: scrollbar: shows once it scrolls", action: { pane.scroll(toTop: 0) }, done: {
+            pane.scrollMetrics.top == 0 && ScrollBars.isAnimating
+                && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\scrollbar.png") } ?? true)
+        }))
+        steps.append(Step(name: "sidebar: scrollbar: back to the bottom", action: { pane.scrollToBottom() }, done: { pane.scrollOffset == 0 }))
 
         // A new tab opens in the current tab's folder, which Settings makes the default.
         steps.append(Step(name: "new tab: opens in the current tab's folder", action: { press(0x54) }, done: {
