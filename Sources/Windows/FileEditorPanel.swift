@@ -81,6 +81,8 @@ final class FileEditorPanel: ColumnPanel {
     private(set) var changedOnDisk = false
     /// Gone from disk: the header says so, and saving puts it back.
     private(set) var deletedOnDisk = false
+    /// Off for the dark half of the caret's blink (set by the window, which blinks it with the terminal's cursor).
+    static var caretShown = true
     private var syncing = false, saving = false
     private var lastSync = Date.distantPast
     /// Over ssh: whether the host is answering (a green "Live"), or not (a yellow "Not Updating"); nil on this PC, or
@@ -1398,7 +1400,7 @@ final class FileEditorPanel: ColumnPanel {
         }
         // The caret.
         let c = place(caret)
-        if c.row >= scrollRow && c.row < scrollRow + visibleRows + 1 && !readOnly {
+        if c.row >= scrollRow && c.row < scrollRow + visibleRows + 1 && !readOnly && Self.caretShown {
             let x = tx + Float(c.cell - (wraps ? 0 : scrollColumn)) * cellSize.width
             if x >= tx - 1 { p.fill(UIRect(x: x.rounded(), y: top + Float(c.row - scrollRow) * lh, width: max((1.5 * s).rounded(), 1), height: lh), focusedCaret, 1) }
         }
@@ -1459,6 +1461,12 @@ final class FileEditorPanel: ColumnPanel {
         let (l, sub) = line(ofRow: row)
         let cell = max(Int(((x - textX(a, s)) / cellSize.width).rounded()), 0) + (wraps ? sub * columns : scrollColumn)
         return Pos(line: l, col: col(l, atCell: cell))
+    }
+
+    /// Whether the pointer's over the text, where it shows the I-beam, as in any editor.
+    func wantsIBeam(x: Float, y: Float, in a: UIRect, scale s: Float) -> Bool {
+        guard case .text = content, compareRows == nil, body(a, s).contains(x, y) else { return false }
+        return !buttonRects(a, s).contains { $0.1.contains(x, y) }
     }
 
     func mouse(_ message: UINT, x: Float, y: Float, in a: UIRect, scale s: Float) -> Bool {

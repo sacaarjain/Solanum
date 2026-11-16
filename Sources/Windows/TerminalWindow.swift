@@ -1366,7 +1366,7 @@ final class TerminalWindow {
                 activePane.findTyped(UInt16(truncatingIfNeeded: wParam))
             } else if !panes.isEmpty, let panel = activePane.focusedPanel {
                 let unit = UInt16(truncatingIfNeeded: wParam)
-                if unit >= 0x20, unit != 0x7F, let scalar = Unicode.Scalar(unit) { panel.typed(String(Character(scalar))) }
+                if unit >= 0x20, unit != 0x7F, let scalar = Unicode.Scalar(unit) { panel.typed(String(Character(scalar))); restartBlink() }
             } else if !panes.isEmpty {
                 // Typing is for the terminal, wherever the keyboard was.
                 focusTerminal()
@@ -1553,6 +1553,15 @@ final class TerminalWindow {
         // A pointing hand over a pasted image's thumbnail, or its larger look, as on the Mac.
         let onImage = palette == nil && menu == nil && part == .terminal && !panes.isEmpty
             && (pane(atX: px).imageChips.isOver(x: px, y: py) || pane(atX: px).isOverCopyButton(x: px, y: py))
+        // The I-beam over an open file's text, as in any editor.
+        if palette == nil, menu == nil, part == .terminal, !panes.isEmpty, draggingEdge == nil {
+            let under = pane(atX: px)
+            if let page = editorSplit(for: under).page, page.contains(px, py), let file = under.panel as? FileEditorPanel,
+               file.wantsIBeam(x: px, y: py, in: page, scale: scale) {
+                SetCursor(LoadCursorW(nil, Win.ibeamCursor))
+                return 1
+            }
+        }
         let onTerminal = palette == nil && part == .terminal && !onLink && !onImage && (panes.isEmpty || area(for: pane(atX: px)).contains(px, py)
             && (editorSplit(for: pane(atX: px)).showsTerminal || pane(atX: px).editors.isEmpty))
         // A pointing hand over the flower, which opens Settings, as on the Mac.
@@ -3440,6 +3449,7 @@ final class TerminalWindow {
         }
         if let panel = under.panel, let page = split.page {
             _ = panel.mouse(message, x: x, y: y, in: page, scale: scale)
+            if message == Win.WM_LBUTTONDOWN { restartBlink() }
         }
         return true
     }
@@ -3463,6 +3473,8 @@ final class TerminalWindow {
         sol_canvas_backdrop_rect(target.raw, editor.x, editor.y, editor.width, editor.height, TerminalPalette.background)
         let held = stripPress.flatMap { $0.dragging && $0.pane === pane ? $0 : nil }
         if let page = split.page, let panel = pane.panel {
+            // The caret blinks with the terminal's cursor while the page has the keyboard (steady in a snapshot).
+            FileEditorPanel.caretShown = snapshot || !(pane === activePane && pane.editorFocused) || cursorShown
             panel.draw(on: target, in: page, scale: scale)
             // A rounded panel in the card, as on the Mac: the card shows outside its corners. Square at the top left while
             // the first sub-tab, active, runs straight down into it there.
@@ -6086,7 +6098,7 @@ final class TerminalWindow {
         }
         if let panel = activePane.focusedPanel {
             // Keys the app doesn't claim are the page's, while it has the keyboard.
-            if !alt && panel.key(key, shift: shift, ctrl: ctrl) { return true }
+            if !alt && panel.key(key, shift: shift, ctrl: ctrl) { restartBlink(); return true }
             return ctrl || alt
         }
         return activePane.keyDown(key, shift: shift, ctrl: ctrl, alt: alt)
