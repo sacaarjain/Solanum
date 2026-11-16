@@ -1561,6 +1561,12 @@ final class TerminalWindow {
                 SetCursor(LoadCursorW(nil, Win.ibeamCursor))
                 return 1
             }
+            // A Markdown preview: the I-beam over its text, the hand over a link, as in a browser.
+            if let page = editorSplit(for: under).page, page.contains(px, py), let preview = under.panel as? MarkdownPreviewPanel,
+               let text = preview.pointer(x: px, y: py, in: page, scale: scale) {
+                SetCursor(LoadCursorW(nil, text ? Win.ibeamCursor : Win.handCursor))
+                return 1
+            }
         }
         let onTerminal = palette == nil && part == .terminal && !onLink && !onImage && (panes.isEmpty || area(for: pane(atX: px)).contains(px, py)
             && (editorSplit(for: pane(atX: px)).showsTerminal || pane(atX: px).editors.isEmpty))

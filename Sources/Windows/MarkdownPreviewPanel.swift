@@ -397,6 +397,16 @@ final class MarkdownPreviewPanel: ColumnPanel {
         return content.links.first { $0.0.contains(px, py) }?.1
     }
 
+    /// The pointer over the page, as a browser shows it: the I-beam over text (and all through a drag selecting it), the
+    /// hand over a link, else the arrow (nil).
+    func pointer(x: Float, y: Float, in a: UIRect, scale s: Float) -> Bool? {
+        if selecting { return true }
+        guard y > header(a, s).maxY, !closeButton(a, s).contains(x, y) else { return nil }
+        if link(atX: x, y: y) != nil { return false }
+        let (cx, cy) = contentPoint(x, y)
+        return laidOut?.runs.contains { $0.rect.contains(cx, cy) } == true ? true : nil
+    }
+
     func mouse(_ message: UINT, x: Float, y: Float, in a: UIRect, scale s: Float) -> Bool {
         if findMouse(message, x: x, y: y) { return true }
         let before = (hoveredClose, hoveredLink)
