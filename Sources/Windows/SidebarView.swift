@@ -44,6 +44,18 @@ final class FileSidebar {
     var hoveredButton: SidebarButton?
     /// The pointer's on the heading (the tab's name), which a click renames.
     var hoveredTitle = false
+    /// Scrolled sideways, in pixels, to read names too long for its width; and how far it can go (from the last drawing).
+    var scrollX: Float = 0
+    var maxScrollX: Float = 0
+
+    /// A sideways swipe or Shift+wheel: true if it moved.
+    @discardableResult
+    func scrollSideways(by pixels: Float) -> Bool {
+        let next = min(max(scrollX + pixels, 0), maxScrollX)
+        guard next != scrollX else { return false }
+        scrollX = next
+        return true
+    }
     /// A file transfer under way (uploading, downloading), said in place of the path.
     var transfer: String?
     /// Where something dragged over it would go: a folder in it, or its root.
@@ -172,16 +184,48 @@ struct SidebarView {
         if let drop = sidebar.dropFolder, drop == tree.root {
             sol_canvas_stroke_rounded(canvas.raw, list.x + 3 * scale, list.y + scale, list.width - 6 * scale, list.height - 4 * scale, 6 * scale, TerminalPalette.accent, 0.8, 1.5 * scale)
         }
+        // How wide the widest row is: names too long for the sidebar scroll sideways, as in VS Code.
+        let first = layout.row(0), contentWidth = widestRow(first)
+        sidebar.maxScrollX = max(contentWidth - first.width, 0)
+        sidebar.scrollX = min(max(sidebar.scrollX, 0), sidebar.maxScrollX)
         let showing = layout.rowsShowing + 1
         for visible in 0..<showing where tree.scrollTop + visible < tree.rows.count {
             drawRow(tree.rows[tree.scrollTop + visible], in: layout.row(visible), visible: visible)
         }
-        // Its scrollbar, down the right, as everything that scrolls has.
-        let showingRows = layout.rowsShowing
-        ScrollBars.draw(id: "sidebar:\(ObjectIdentifier(tree).hashValue)", on: canvas, track: UIRect(x: list.x, y: list.y, width: a.maxX - list.x, height: list.height),
+        // Its scrollbars, as everything that scrolls has: down the right (kept clear of the edge that resizes it), and
+        // along the bottom while a name runs past the edge.
+        let showingRows = layout.rowsShowing, id = "sidebar:\(ObjectIdentifier(tree).hashValue)", edge = (6 * scale).rounded()
+        ScrollBars.draw(id: id, on: canvas, track: UIRect(x: list.x, y: list.y, width: a.maxX - list.x - edge, height: list.height),
                         axis: .vertical, total: Double(tree.rows.count), visible: Double(showingRows), offset: Double(tree.scrollTop), scale: scale) { top in
             tree.scrollTop = min(max(Int(top.rounded()), 0), max(tree.rows.count - showingRows, 0))
         }
+        let owner = sidebar
+        ScrollBars.draw(id: id + ":h", on: canvas, track: UIRect(x: list.x, y: list.y, width: a.maxX - list.x - edge - 12 * scale, height: list.height),
+                        axis: .horizontal, total: Double(contentWidth), visible: Double(first.width), offset: Double(owner.scrollX), scale: scale) { left in
+            owner.scrollX = min(max(Float(left), 0), owner.maxScrollX)
+        }
+    }
+
+    /// Names' widths, measured once each (at a scale).
+    private static var nameWidths: [String: Float] = [:]
+
+    /// The widest row: its indent, arrow and icon, its name, and room for git's letter at the end.
+    private func widestRow(_ r: UIRect) -> Float {
+        let tree = sidebar.tree, pixels = 12.5 * scale
+        var widest: Float = 0
+        for row in tree.rows {
+            let key = "\(pixels)|" + row.entry.name
+            var w = Self.nameWidths[key]
+            if w == nil {
+                let units = Array(row.entry.name.utf16)
+                w = sol_canvas_measure_label(canvas.raw, units, Int32(units.count), pixels, 0)
+                if Self.nameWidths.count > 20_000 { Self.nameWidths.removeAll() }
+                Self.nameWidths[key] = w
+            }
+            let textStart = layout.chevron(depth: row.depth, row: r).maxX + 25 * scale - r.x
+            widest = max(widest, textStart + w! + 30 * scale)
+        }
+        return widest.rounded(.up)
     }
 
     /// The heading: the tab's name (else the folder's), a soft box under it on hover to say a click renames the tab; while
@@ -228,7 +272,11 @@ struct SidebarView {
         } else if entry.path.lowercased() == terminalFolder?.lowercased() {
             sol_canvas_fill_rounded(canvas.raw, r.x + inset, r.y + scale / 2, r.width - inset * 2, r.height - scale, 5 * scale, TerminalPalette.accent, 0.08)
         }
-        let chevron = layout.chevron(depth: row.depth, row: r)
+        // Scrolled sideways: what's in the row moves left, its highlight stays; nothing's drawn past its left edge.
+        var chevron = layout.chevron(depth: row.depth, row: r)
+        chevron.x -= sidebar.scrollX
+        sol_canvas_push_clip(canvas.raw, r.x + inset, r.y, r.width - inset, r.height)
+        defer { sol_canvas_pop_clip(canvas.raw) }
         if entry.isDirectory {
             icon(tree.isExpanded(entry.path) ? 0xE70D : 0xE76C, chevron, pixels: 8 * scale, alpha: 0.7)
         }

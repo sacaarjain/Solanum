@@ -1743,6 +1743,20 @@ enum WindowSelfTest {
                 && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\scrollbar.png") } ?? true)
         }))
         steps.append(Step(name: "sidebar: scrollbar: back to the bottom", action: { pane.scrollToBottom() }, done: { pane.scrollOffset == 0 }))
+        // A name too long for the sidebar: it scrolls sideways to read it.
+        let longName = String(repeating: "a-very-long-name-", count: 6) + "end.txt"
+        steps.append(Step(name: "sidebar: scrollbar: a long name lets it scroll sideways", action: {
+            pane.type("New-Item -ItemType File '\(longName)' | Out-Null")
+            pane.pressEnter()
+        }, done: { window.leftEntry(named: longName) != nil && window.leftMaxScrollX > 0 }))
+        steps.append(Step(name: "sidebar: scrollbar: swiped, it moves along", action: { window.swipeLeftSidebarForTest(by: 10_000) }, done: {
+            window.leftScrollX == window.leftMaxScrollX && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\sidebar-sideways.png") } ?? true)
+        }))
+        steps.append(Step(name: "sidebar: scrollbar: and back", action: {
+            window.swipeLeftSidebarForTest(by: -10_000)
+            pane.type("Remove-Item '\(longName)'")
+            pane.pressEnter()
+        }, done: { window.leftScrollX == 0 && window.leftEntry(named: longName) == nil }))
 
         // A new tab opens in the current tab's folder, which Settings makes the default.
         steps.append(Step(name: "new tab: opens in the current tab's folder", action: { press(0x54) }, done: {

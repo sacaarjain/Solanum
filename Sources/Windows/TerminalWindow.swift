@@ -1420,10 +1420,19 @@ final class TerminalWindow {
             let point = screenPoint(lParam)
             guard !panes.isEmpty else { return 0 }
             let swiped = Float(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Float(Win.WHEEL_DELTA)
-            // Over a tab's file sub-tabs, it moves those along, as it does the tabs.
+            // Over a tab's file sub-tabs, it moves those along, as it does the tabs; over the sidebar or a file, they
+            // scroll sideways.
             if point.y >= layout.tabBarHeight {
+                let part = layout.part(atX: point.x, y: point.y)
+                if part == .leftSidebar || part == .rightSidebar {
+                    if (part == .leftSidebar ? left : right).scrollSideways(by: swiped * 40 * scale) { invalidate() }
+                    return 1
+                }
                 let under = pane(atX: point.x)
                 if let strip = editorStrip(for: under), strip.strip.contains(point.x, point.y) { scrollStrip(under, by: swiped * 80 * scale) }
+                else if let file = under.panel as? FileEditorPanel, editorSplit(for: under).page?.contains(point.x, point.y) == true {
+                    file.scrollSideways(columns: Int((swiped * 4).rounded()))
+                }
                 return 1
             }
             let column = isSplit && point.x >= layout.divider ? 1 : 0
@@ -1441,8 +1450,11 @@ final class TerminalWindow {
                 palette.scroll(by: Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF) > 0 ? -2 : 2)
                 invalidate()
             } else if part == .leftSidebar || part == .rightSidebar {
-                let sidebar = part == .leftSidebar ? left : right
-                sidebar.tree.scroll(by: Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF) > 0 ? -3 : 3, rowsShowing: sidebarLayout(sidebar).rowsShowing)
+                let sidebar = part == .leftSidebar ? left : right, up = Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF) > 0
+                // Shift+wheel scrolls sideways, as everywhere in Windows.
+                if isDown(Win.VK_SHIFT) { sidebar.scrollSideways(by: (up ? -40 : 40) * scale) } else {
+                    sidebar.tree.scroll(by: up ? -3 : 3, rowsShowing: sidebarLayout(sidebar).rowsShowing)
+                }
                 invalidate()
             } else if y < layout.tabBarHeight {
                 let notches = Float(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Float(Win.WHEEL_DELTA)
@@ -1540,8 +1552,9 @@ final class TerminalWindow {
             return 1
         }
         let px = Float(point.x), py = Float(point.y)
-        // A scrollbar is a control: the arrow over it, whatever it scrolls.
-        if ScrollBars.isOver(x: px, y: py, on: canvas) {
+        // A scrollbar is a control: the arrow over it, whatever it scrolls (but an edge that resizes wins).
+        let resizing = draggingEdge != nil || part == .leftEdge || part == .rightEdge || part == .columnDivider
+        if !resizing, ScrollBars.isOver(x: px, y: py, on: canvas) {
             SetCursor(LoadCursorW(nil, Win.arrowCursor))
             return 1
         }
@@ -1933,10 +1946,13 @@ final class TerminalWindow {
             return
         }
         if fieldMouse(message, x: x, y: y) { return }
-        // The scrollbars, over whatever they scroll.
+        // The scrollbars, over whatever they scroll; not over an edge that resizes (a sidebar's, the line between columns),
+        // which wins, nor while one's being dragged.
         var barsChanged = false
         let wasDragging = ScrollBars.isDragging
-        if ScrollBars.mouse(message, x: x, y: y, on: canvas, redraw: &barsChanged) {
+        let edgePart = layout.part(atX: x, y: y)
+        let onEdge = draggingEdge != nil || draggingEditorLine != nil || edgePart == .leftEdge || edgePart == .rightEdge || edgePart == .columnDivider
+        if (!onEdge || wasDragging), ScrollBars.mouse(message, x: x, y: y, on: canvas, redraw: &barsChanged) {
             if !wasDragging && ScrollBars.isDragging { SetCapture(hwnd) }
             if wasDragging && !ScrollBars.isDragging { ReleaseCapture() }
             invalidate()
@@ -6254,6 +6270,14 @@ final class TerminalWindow {
     var leftTitleForTesting: UIRect { sidebarLayout(left).title }
 
     /// Clicks a part of the tab bar, as the mouse would.
+    /// How far the left sidebar can scroll sideways, how far it has, and a swipe across it.
+    var leftMaxScrollX: Float { left.maxScrollX }
+    var leftScrollX: Float { left.scrollX }
+    func swipeLeftSidebarForTest(by pixels: Float) {
+        left.scrollSideways(by: pixels)
+        invalidate()
+    }
+
     /// Where the name being typed was drawn, and what's selected in it.
     var nameFieldRectForTesting: UIRect? { DrawnFields.named("name", on: canvas)?.rect }
     var nameSelectionForTesting: String? { naming?.field.selectedText }

@@ -1423,6 +1423,15 @@ final class FileEditorPanel: ColumnPanel {
         }
     }
 
+    /// A touchpad's sideways swipe: long lines move along while they run on unwrapped.
+    func scrollSideways(columns: Int) {
+        guard !wraps, columns != 0 else { return }
+        let next = min(max(scrollColumn + columns, 0), max(widestCells + 8 - self.columns, 0))
+        guard next != scrollColumn else { return }
+        scrollColumn = next
+        invalidate()
+    }
+
     /// The longest line, about in cells (its UTF-16 length, quick to have, with the longest's tabs widened), for the bar
     /// along the bottom; worked out once for each version of the text.
     private var widest: (version: Int, cells: Int) = (-1, 0)
