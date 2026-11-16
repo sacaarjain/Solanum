@@ -136,6 +136,11 @@ enum ScrollBars {
         return true
     }
 
+    /// Whether a point is on a bar's edge (where the pointer is the arrow, as over any control), or one is being dragged.
+    static func isOver(x: Float, y: Float, on canvas: Canvas) -> Bool {
+        dragging != nil || (bars[ObjectIdentifier(canvas)] ?? []).contains { zone($0).contains(x, y) }
+    }
+
     /// The pointer left the window: no bar is under it.
     static func mouseLeft() {
         if let was = hovered { activity[was] = Date() }

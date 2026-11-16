@@ -302,7 +302,7 @@ final class SettingsWindow {
             ScreenToClient(hwnd, &point)
             let x = Float(point.x), y = Float(point.y)
             var onField = false
-            if dialog != nil || footer?.contains(x, y) == true {
+            if dialog != nil || footer?.contains(x, y) == true || ScrollBars.isOver(x: x, y: y, on: canvas) {
                 onField = false
             } else if let picker, menu == nil, picker.frame.contains(x, y) {
                 if case .hexField = picker.part(atX: x, y: y) { onField = true }

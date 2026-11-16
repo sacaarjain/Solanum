@@ -1540,6 +1540,11 @@ final class TerminalWindow {
             return 1
         }
         let px = Float(point.x), py = Float(point.y)
+        // A scrollbar is a control: the arrow over it, whatever it scrolls.
+        if ScrollBars.isOver(x: px, y: py, on: canvas) {
+            SetCursor(LoadCursorW(nil, Win.arrowCursor))
+            return 1
+        }
         if menu == nil, palette == nil, !notices.isEmpty,
            let hand = notices.wantsHand(atX: px, y: py, canvas: canvas, windowWidth: Float(clientWidth), top: layout.tabBarHeight, scale: scale) {
             SetCursor(LoadCursorW(nil, hand ? Win.handCursor : Win.arrowCursor))
