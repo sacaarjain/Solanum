@@ -250,11 +250,10 @@ struct WindowChrome {
             let hover = hovered == .chip(first)
             if let editing = editingChip, editing.index == first {
                 sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 6 * scale, group.color, 1)
-                let text = editing.field.text, pixels = 11.5 * scale, ink = HexColor(rgb: group.color).luminance > 0.6 ? UInt32(0x1A1A1A) : 0xFFFFFF
+                let ink = HexColor(rgb: group.color).luminance > 0.6 ? UInt32(0x1A1A1A) : 0xFFFFFF
                 let inner = UIRect(x: r.x + 8 * scale, y: r.y, width: r.width - 16 * scale, height: r.height)
-                if text.isEmpty { label(editing.placeholder, inner, pixels: pixels, semibold: true, color: ink, alpha: 0.55) } else { label(text, inner, pixels: pixels, semibold: true, color: ink) }
-                let caretX = inner.x + width(of: editing.field.beforeCaret, pixels: pixels, semibold: true)
-                sol_canvas_fill_rect(canvas.raw, caretX.rounded(), r.y + 4 * scale, max(scale.rounded(), 1), r.height - 8 * scale, ink, 1)
+                FieldPainter(canvas: canvas, scale: scale, pixels: 11.5, semibold: true)
+                    .draw(editing.field, in: inner, focused: true, placeholder: editing.placeholder, color: ink, placeholderAlpha: 0.55, caretInset: 4, caretColor: ink)
                 continue
             }
             let ringed = dropChip == first || (group.collapsed && sendTarget.map { first <= $0 && $0 <= group.last } == true)
@@ -370,11 +369,9 @@ struct WindowChrome {
             let box = UIRect(x: titleX - 4 * scale, y: r.y + 6 * scale, width: max(room + 4 * scale, 60 * scale), height: r.height - 12 * scale)
             sol_canvas_fill_rounded(canvas.raw, box.x, box.y, box.width, box.height, 4 * scale, TerminalPalette.mix(0x000000, TerminalPalette.background, 0.3), 1)
             sol_canvas_stroke_rounded(canvas.raw, box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1, 4 * scale, TerminalPalette.accent, 0.9, 1)
-            let text = editing.field.text
-            let inner = UIRect(x: titleX, y: r.y, width: max(room - 4 * scale, 0), height: r.height)
-            if text.isEmpty { label(tabs[i], inner, pixels: 12.5 * scale, alpha: 0.4) } else { label(text, inner, pixels: 12.5 * scale) }
-            let caretX = titleX + width(of: editing.field.beforeCaret, pixels: 12.5 * scale)
-            sol_canvas_fill_rect(canvas.raw, caretX.rounded(), box.y + 4 * scale, max(scale.rounded(), 1), box.height - 8 * scale, TerminalPalette.accent, 1)
+            let inner = UIRect(x: titleX, y: box.y, width: max(room - 4 * scale, 0), height: box.height)
+            FieldPainter(canvas: canvas, scale: scale, pixels: 12.5)
+                .draw(editing.field, in: inner, focused: true, placeholder: tabs[i], placeholderAlpha: 0.4, caretInset: 4)
         } else {
             label(tabs[i], UIRect(x: titleX, y: r.y, width: max(room, 0), height: r.height), pixels: 12.5 * scale, color: fg, alpha: textAlpha)
         }

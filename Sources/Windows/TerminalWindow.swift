@@ -1011,14 +1011,21 @@ final class TerminalWindow {
 
     func restartBlink() {
         blinkStart = Date()
-        if !cursorShown { cursorShown = true; invalidate() }
+        if !cursorShown || !CaretBlink.shown { cursorShown = true; CaretBlink.shown = true; invalidate() }
     }
 
     private func updateBlink() {
+        let phase = Int(Date().timeIntervalSince(blinkStart) / 0.53) % 2 == 0
         let blinking = AppSettings.shared.cursorBlink && isFocused && palette == nil && !sidebarHasFocus
-        let shown = !blinking || Int(Date().timeIntervalSince(blinkStart) / 0.53) % 2 == 0
+        let shown = !blinking || phase
         if shown != cursorShown {
             cursorShown = shown
+            invalidate()
+        }
+        // A field's caret (the palette's, a find bar's, a name being typed) blinks whenever the window has the keyboard.
+        let fieldShown = !(AppSettings.shared.cursorBlink && isFocused) || phase
+        if fieldShown != CaretBlink.shown {
+            CaretBlink.shown = fieldShown
             invalidate()
         }
     }
@@ -1334,6 +1341,7 @@ final class TerminalWindow {
             }
             return 0
         case Win.WM_CHAR:
+            restartBlink()
             if let menu, menu.search != nil {
                 // Typed into a dropdown's search box.
                 let unit = UInt16(truncatingIfNeeded: wParam)
@@ -3962,20 +3970,17 @@ final class TerminalWindow {
     }
 
     /// Keys while a name's typed in a sidebar. Characters come as WM_CHAR.
-    private func sidebarEditKey(_ key: Int32, ctrl: Bool) -> Bool {
+    private func sidebarEditKey(_ key: Int32, shift: Bool, ctrl: Bool) -> Bool {
         guard let sidebar = editingSidebar else { return false }
         switch key {
         case Win.VK_RETURN: finishSidebarEdit(commit: true)
         case Win.VK_ESCAPE: finishSidebarEdit(commit: false)
-        case Win.VK_BACK: sidebar.tree.updateEditing { $0.deleteBackward(word: ctrl) }
-        case Win.VK_DELETE: sidebar.tree.updateEditing { $0.deleteForward() }
-        case Win.VK_LEFT: sidebar.tree.updateEditing { $0.move(by: -1) }
-        case Win.VK_RIGHT: sidebar.tree.updateEditing { $0.move(by: 1) }
-        case Win.VK_HOME: sidebar.tree.updateEditing { $0.move(to: 0) }
-        case Win.VK_END: sidebar.tree.updateEditing { $0.move(to: $0.text.count) }
-        case 0x56 where ctrl:
-            if let text = activePane.clipboardText() { sidebar.tree.updateEditing { $0.insert(text.filter { !$0.isNewline }) } }
-        default: return !ctrl ? false : true
+        default:
+            // The keys of any text field; characters come as WM_CHAR, and other Ctrl keys are kept from the app meanwhile.
+            let pane = activePane
+            var result = FieldKeyResult.pass
+            sidebar.tree.updateEditing { result = $0.key(key, shift: shift, ctrl: ctrl, paste: { pane.clipboardText() }, copy: { pane.setClipboard($0) }) }
+            if result == .pass { return ctrl }
         }
         invalidate()
         return true
@@ -4475,13 +4480,15 @@ final class TerminalWindow {
         case Win.VK_DOWN: menu.moveHighlight(by: 1)
         case Win.VK_RETURN:
             if let i = menu.highlighted { pickMenuItem(i) }
-        // The search box's own keys; what's typed comes as WM_CHAR.
-        case Win.VK_BACK where menu.search != nil: menu.deleteBackward(word: isDown(Win.VK_CONTROL))
-        case Win.VK_LEFT where menu.search != nil: menu.moveCaret(by: -1)
-        case Win.VK_RIGHT where menu.search != nil: menu.moveCaret(by: 1)
         case Win.VK_F4: return false
-        // With a search box, other keys go on to become characters (WM_CHAR), which are typed into it.
-        default: if menu.search != nil && !isDown(Win.VK_CONTROL) { return false }
+        default:
+            // The search box's keys, as any text field's; what's typed comes as WM_CHAR.
+            guard menu.search != nil else { break }
+            let ctrl = isDown(Win.VK_CONTROL), pane = activePane
+            var result = FieldKeyResult.pass
+            menu.editSearch { result = $0.key(key, shift: isDown(Win.VK_SHIFT), ctrl: ctrl, paste: { pane.clipboardText() }, copy: { pane.setClipboard($0) }) }
+            // Other keys go on to become characters (WM_CHAR), which are typed into it.
+            if result == .pass && !ctrl { return false }
         }
         invalidate()
         return true
@@ -5357,19 +5364,18 @@ final class TerminalWindow {
     }
 
     /// A key while a name is being typed. Characters come through as WM_CHAR.
-    private func namingKey(_ key: Int32, ctrl: Bool) -> Bool {
+    private func namingKey(_ key: Int32, shift: Bool, ctrl: Bool) -> Bool {
         guard var current = naming else { return false }
         switch key {
         case Win.VK_RETURN, Win.VK_TAB: finishNaming(commit: true); return true
         case Win.VK_ESCAPE: finishNaming(commit: false); return true
-        case Win.VK_BACK: current.field.deleteBackward(word: ctrl)
-        case Win.VK_DELETE: current.field.deleteForward()
-        case Win.VK_LEFT: current.field.move(by: -1)
-        case Win.VK_RIGHT: current.field.move(by: 1)
-        case Win.VK_HOME: current.field.move(to: 0)
-        case Win.VK_END: current.field.move(to: current.field.text.count)
-        // Everything else goes on to become a character (WM_CHAR), which is what's typed.
-        default: return false
+        default:
+            // The keys of any text field. Everything else goes on to become a character (WM_CHAR), which is what's
+            // typed; other Ctrl keys are kept from the app while a name's being typed.
+            let pane = activePane
+            if current.field.key(key, shift: shift, ctrl: ctrl, paste: { pane.clipboardText() }, copy: { pane.setClipboard($0) }) == .pass {
+                return ctrl
+            }
         }
         naming = current
         invalidate()
@@ -5808,9 +5814,12 @@ final class TerminalWindow {
         // In a path, Ctrl+Backspace clears the field for typing one afresh, as ⌘⌫ does on the Mac.
         case Win.VK_BACK where ctrl && palette.isLive: palette.deleteToStart()
         case Win.VK_BACK: palette.deleteBackward(word: ctrl)
-        case Win.VK_DELETE: palette.deleteForward()
+        case Win.VK_DELETE: palette.deleteForward(word: ctrl)
         case 0x56 where ctrl:
             if let text = activePane.clipboardText() { palette.insert(text) }
+        // Undo and redo in the field, as any text field's.
+        case 0x5A where ctrl && !shift: palette.undo()
+        case 0x59 where ctrl, 0x5A where ctrl && shift: palette.redo()
         case Win.VK_F4: return false
         default:
             // Characters come through as WM_CHAR. With Ctrl they'd be control codes, which have no place in the field.
@@ -5946,6 +5955,8 @@ final class TerminalWindow {
     }
 
     func keyDown(_ key: Int32, shift: Bool, ctrl: Bool, alt: Bool) -> Bool {
+        // Any key holds the carets steady for a moment, as in any editor.
+        if ![Win.VK_SHIFT, Win.VK_CONTROL, Win.VK_MENU].contains(key) { restartBlink() }
         if dialog != nil { return dialogKey(key) }
         if menu != nil { return menuKey(key) }
         if notices.hasFocusedField {
@@ -5954,7 +5965,7 @@ final class TerminalWindow {
             if used { return true }
         }
         if !panes.isEmpty, activePane.hasQuestion { return activePane.questionKey(key, ctrl: ctrl) }
-        if naming != nil { return namingKey(key, ctrl: ctrl) }
+        if naming != nil { return namingKey(key, shift: shift, ctrl: ctrl) }
         // Find's toggles, as VS Code's (Alt+C case, Alt+W whole words, Alt+R regular expressions), in whichever bar is open
         // where the keyboard is: the terminal's, or the Markdown preview's (the file editor's is below).
         if alt && !ctrl && !shift && palette == nil && !panes.isEmpty && editingSidebar == nil {
@@ -5986,7 +5997,7 @@ final class TerminalWindow {
             invalidate()
             return true
         }
-        if editingSidebar != nil { return sidebarEditKey(key, ctrl: ctrl) }
+        if editingSidebar != nil { return sidebarEditKey(key, shift: shift, ctrl: ctrl) }
         // Ctrl+Alt+T and Ctrl+Alt+G, as the Mac's Command-Option-T and G: a new tab in this group, and a new group.
         if ctrl && alt && !shift && key == 0x54 { newTabInGroup(); return true }
         if ctrl && alt && !shift && key == 0x47 { addToNewGroup(pickedPanes.isEmpty ? [activePane] : pickedPanes); return true }

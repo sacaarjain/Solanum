@@ -61,8 +61,8 @@ struct PaletteView {
             label(model.query, UIRect(x: f.x - shift, y: f.y, width: max(full, f.width + shift), height: f.height), pixels: pixels)
             sol_canvas_pop_clip(canvas.raw)
         }
-        // No caret while there's a selection, as in Windows' own fields.
-        guard model.selection == nil else { return }
+        // No caret while there's a selection, as in Windows' own fields; else it blinks, as every field's.
+        guard model.selection == nil, CaretBlink.shown else { return }
         let caretX = f.x + beforeCaret - shift
         let height = 20 * scale
         sol_canvas_fill_rect(canvas.raw, caretX.rounded(), (f.midY - height / 2).rounded(), max(scale.rounded(), 1), height, TerminalPalette.accent, 1)

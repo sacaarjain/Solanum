@@ -328,13 +328,8 @@ final class GitChangesPanel: ColumnPanel {
         p.fill(f, TerminalPalette.background, 1, radius: 5)
         sol_canvas_stroke_rounded(canvas.raw, f.x + 0.5, f.y + 0.5, f.width - 1, f.height - 1, 5 * s, TerminalPalette.accent, 0.6, 1)
         let inner = UIRect(x: f.x + 8 * s, y: f.y, width: f.width - 16 * s, height: f.height)
-        if message.text.isEmpty {
-            p.label("Message (Ctrl+Enter commits)", inner, pixels: 12.5, alpha: 0.4)
-        } else {
-            p.label(message.text, inner, pixels: 12.5)
-        }
-        let caretX = inner.x + (message.beforeCaret.isEmpty ? 0 : p.width(message.beforeCaret, pixels: 12.5))
-        p.fill(UIRect(x: min(caretX, inner.maxX).rounded(), y: f.y + 6 * s, width: max(s.rounded(), 1), height: f.height - 12 * s), TerminalPalette.accent, 1)
+        FieldPainter(canvas: canvas, scale: s, pixels: 12.5)
+            .draw(message, in: inner, focused: true, placeholder: "Message (Ctrl+Enter commits)", placeholderAlpha: 0.4, caretInset: 6)
         p.textButton("Commit", commitButton(a, s), hovered: hoveredPart == "commit", primary: true, enabled: !(info?.changes.isEmpty ?? true))
         p.button(0xE72C, refreshButton(a, s), hovered: hoveredPart == "refresh")
         p.button(0xE8BB, closeButton(a, s), hovered: hoveredPart == "close")
@@ -445,13 +440,8 @@ final class GitChangesPanel: ColumnPanel {
             let at = selected.flatMap { files.firstIndex(of: $0) } ?? -1
             selected = files[min(max(at + (key == Win.VK_UP ? -1 : 1), 0), files.count - 1)]
             loadDiff()
-        case Win.VK_BACK: message.deleteBackward(word: ctrl)
-        case Win.VK_DELETE: message.deleteForward()
-        case Win.VK_LEFT: message.move(by: -1)
-        case Win.VK_RIGHT: message.move(by: 1)
-        case Win.VK_HOME: message.move(to: 0)
-        case Win.VK_END: message.move(to: message.text.count)
-        default: return ctrl
+        // The message's keys, as any text field's: selecting, by word, cut, copy and paste, undo and redo.
+        default: if message.key(key, shift: shift, ctrl: ctrl) == .pass { return ctrl }
         }
         invalidate()
         return true

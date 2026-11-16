@@ -163,9 +163,10 @@ final class MenuModel {
     func deleteBackward(word: Bool = false) { editSearch { $0.deleteBackward(word: word) } }
     func moveCaret(by delta: Int) { editSearch { $0.move(by: delta) } }
     /// A row that fills the search box was picked: its text goes there, caret at the end, and the list follows.
-    func fillSearch(_ text: String) { editSearch { $0 = TextFieldState(text) } }
+    func fillSearch(_ text: String) { editSearch { $0.setText(text) } }
 
-    private func editSearch(_ edit: (inout TextFieldState) -> Void) {
+    /// Any change to the search box (a key of any text field's, say); the rows follow what it says.
+    func editSearch(_ edit: (inout TextFieldState) -> Void) {
         guard var field = search else { return }
         let before = field.text
         edit(&field)

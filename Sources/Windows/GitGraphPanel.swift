@@ -378,15 +378,13 @@ final class GitGraphPanel: ColumnPanel {
             case Win.VK_ESCAPE, Win.VK_RETURN, Win.VK_DOWN:
                 // Back to the commits; Esc with something typed clears it first.
                 if key == Win.VK_ESCAPE && !search.text.isEmpty { search = TextFieldState(""); searchChanged() } else { searchFocused = false }
-            case Win.VK_BACK: search.deleteBackward(word: ctrl); searchChanged()
-            case Win.VK_DELETE: search.deleteForward(); searchChanged()
-            case Win.VK_LEFT: search.move(by: -1)
-            case Win.VK_RIGHT: search.move(by: 1)
-            case Win.VK_HOME: search.move(to: 0)
-            case Win.VK_END: search.move(to: search.text.count)
-            case 0x56 where ctrl:
-                if let text = paste()?.split(whereSeparator: \.isNewline).first { search.insert(String(text)); searchChanged() }
-            default: return ctrl ? false : false
+            default:
+                // The box's keys, as any text field's; anything else becomes a character (WM_CHAR) or is the app's.
+                switch search.key(key, shift: shift, ctrl: ctrl, paste: paste) {
+                case .changed: searchChanged()
+                case .moved: break
+                case .pass: return false
+                }
             }
             invalidate()
             return true
@@ -580,16 +578,8 @@ final class GitGraphPanel: ColumnPanel {
         if searchFocused { sol_canvas_stroke_rounded(p.canvas.raw, field.x + 0.5, field.y + 0.5, field.width - 1, field.height - 1, 5 * s, accent, 0.8, 1) }
         p.icon(0xE721, UIRect(x: field.x + 4 * s, y: field.y, width: 18 * s, height: h), pixels: 10, alpha: 0.5)
         let inner = UIRect(x: field.x + 24 * s, y: field.y, width: field.width - 80 * s, height: h)
-        if search.text.isEmpty {
-            p.label("Text or hash", inner, pixels: 12, alpha: 0.4)
-        } else {
-            sol_canvas_push_clip(p.canvas.raw, inner.x, inner.y, inner.width, inner.height)
-            let caretX = p.width(search.beforeCaret, pixels: 12), shift = max(0, caretX - inner.width + 4 * s)
-            p.label(search.text, UIRect(x: inner.x - shift, y: inner.y, width: p.width(search.text, pixels: 12) + 4, height: h), pixels: 12)
-            if searchFocused { p.fill(UIRect(x: (inner.x - shift + caretX).rounded(), y: field.y + 5 * s, width: max((1.5 * s).rounded(), 1), height: h - 10 * s), accent, 1) }
-            sol_canvas_pop_clip(p.canvas.raw)
-        }
-        if search.text.isEmpty && searchFocused { p.fill(UIRect(x: inner.x, y: field.y + 5 * s, width: max((1.5 * s).rounded(), 1), height: h - 10 * s), accent, 1) }
+        FieldPainter(canvas: p.canvas, scale: s, pixels: 12)
+            .draw(search, in: inner, focused: searchFocused, placeholder: "Text or hash", placeholderAlpha: 0.4, caretInset: 5)
         toolbarParts.append(("search", UIRect(x: field.x, y: field.y, width: field.width - 52 * s, height: h)))
         // .* and Aa inside the field's right end.
         for (id, title, on) in [("regex", ".*", filter.regex), ("case", "Aa", filter.matchCase)] {

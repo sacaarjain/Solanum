@@ -95,9 +95,10 @@ final class FileTree {
 
     /// Starts renaming an item, with its name selected up to the extension, as in Explorer.
     func beginRename(_ entry: FileEntry) {
-        var field = TextFieldState(entry.name)
+        var field = TextFieldState(entry.name, selected: true)
         if !entry.isDirectory, let dot = entry.name.lastIndex(of: "."), dot != entry.name.startIndex {
-            field.move(to: entry.name.distance(from: entry.name.startIndex, to: dot))
+            field.move(to: 0)
+            field.move(to: entry.name.distance(from: entry.name.startIndex, to: dot), extend: true)
         }
         editing = Editing(kind: .rename(entry), field: field)
         selection = entry.path

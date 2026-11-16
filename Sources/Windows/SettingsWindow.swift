@@ -1049,14 +1049,17 @@ final class SettingsWindow {
         sol_canvas_fill_rounded(target.raw, r.x, r.y, r.width, r.height, 5 * s, TerminalPalette.mix(0x000000, TerminalPalette.background, 0.25), alpha)
         sol_canvas_stroke_rounded(target.raw, r.x + 0.5, r.y + 0.5, r.width - 1, r.height - 1, 5 * s, editingThis ? TerminalPalette.accent : fg, editingThis ? 0.9 : 0.12 * alpha, 1)
         if editingThis { sol_canvas_fill_rect(target.raw, r.x + 4 * s, r.maxY - 2 * s, r.width - 8 * s, 2 * s, TerminalPalette.accent, 1) }
-        let text = editingThis ? editing!.state.text : shown
-        let inner = UIRect(x: r.x + 9 * s, y: r.y, width: r.width - 18 * s, height: r.height)
-        if text.isEmpty { label(target, placeholder, inner, pixels: 13 * s, alpha: 0.35 * alpha) } else { label(target, text, inner, pixels: 13 * s, alpha: alpha) }
+        let inner = Self.fieldInner(r, s)
         if editingThis {
-            let caretX = inner.x + measure(target, editing!.state.beforeCaret, pixels: 13 * s)
-            sol_canvas_fill_rect(target.raw, caretX.rounded(), r.y + 7 * s, max(s.rounded(), 1), r.height - 14 * s, TerminalPalette.accent, 1)
+            FieldPainter(canvas: target, scale: s).draw(editing!.state, in: inner, focused: true, placeholder: placeholder, placeholderAlpha: 0.35, caretInset: 7)
+        } else if shown.isEmpty {
+            label(target, placeholder, inner, pixels: 13 * s, alpha: 0.35 * alpha)
+        } else {
+            label(target, shown, inner, pixels: 13 * s, alpha: alpha)
         }
     }
+
+    private static func fieldInner(_ r: UIRect, _ s: Float) -> UIRect { UIRect(x: r.x + 9 * s, y: r.y, width: r.width - 18 * s, height: r.height) }
 
     private static let sliderWidth: Float = 210
 
@@ -1090,10 +1093,11 @@ final class SettingsWindow {
                                   editingThis ? 0.9 : (isHovered(r) ? 0.25 : 0.1), 1)
         let text = editingThis ? editing!.state.text : shown, px = 10.5 * s
         let tw = measure(target, text, pixels: px), x = r.x + max((r.width - tw) / 2, 4 * s)
-        label(target, text, UIRect(x: x, y: r.y, width: r.maxX - x - 2 * s, height: r.height), pixels: px, alpha: editingThis ? 1 : 0.75)
+        let inner = UIRect(x: x, y: r.y, width: r.maxX - x - 2 * s, height: r.height)
         if editingThis {
-            let caretX = x + measure(target, editing!.state.beforeCaret, pixels: px)
-            sol_canvas_fill_rect(c, caretX.rounded(), r.y + 4 * s, max(s.rounded(), 1), r.height - 8 * s, TerminalPalette.accent, 1)
+            FieldPainter(canvas: target, scale: s, pixels: 10.5).draw(editing!.state, in: inner, focused: true, caretInset: 4)
+        } else {
+            label(target, text, inner, pixels: px, alpha: 0.75)
         }
     }
 
@@ -1767,17 +1771,12 @@ final class SettingsWindow {
             }
             return
         }
-        let ctrl = GetKeyState(Win.VK_CONTROL) < 0
+        let ctrl = GetKeyState(Win.VK_CONTROL) < 0, shift = GetKeyState(Win.VK_SHIFT) < 0
         switch key {
         case Win.VK_RETURN, Win.VK_TAB: commitEditing(); return
         case Win.VK_ESCAPE: editing = nil; invalidate(); return
-        case Win.VK_BACK: field.state.deleteBackward(word: ctrl)
-        case Win.VK_DELETE: field.state.deleteForward()
-        case Win.VK_LEFT: field.state.move(by: -1)
-        case Win.VK_RIGHT: field.state.move(by: 1)
-        case Win.VK_HOME: field.state.move(to: 0)
-        case Win.VK_END: field.state.move(to: field.state.text.count)
-        default: return
+        // The keys of any text field: selecting, by word, cut, copy and paste, undo and redo.
+        default: if field.state.key(key, shift: shift, ctrl: ctrl) == .pass { return }
         }
         editing = field
         invalidate()

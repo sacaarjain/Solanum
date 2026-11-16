@@ -191,14 +191,8 @@ struct SidebarView {
             let box = UIRect(x: t.x - pad, y: t.y - 1 * scale, width: t.width + pad * 2, height: t.height + 2 * scale)
             sol_canvas_fill_rounded(canvas.raw, box.x, box.y, box.width, box.height, 5 * scale, TerminalPalette.background, 1)
             sol_canvas_stroke_rounded(canvas.raw, box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1, 5 * scale, TerminalPalette.accent, 0.9, 1)
-            if field.text.isEmpty {
-                label(placeholder, t, pixels: pixels, semibold: true, alpha: 0.35)
-            } else {
-                label(field.text, t, pixels: pixels, semibold: true, alpha: 0.95)
-            }
-            let before = Array(field.beforeCaret.utf16)
-            let caretX = t.x + sol_canvas_measure_label(canvas.raw, before, Int32(before.count), pixels, 1)
-            sol_canvas_fill_rect(canvas.raw, caretX.rounded(), t.y + 3 * scale, max(scale.rounded(), 1), t.height - 6 * scale, TerminalPalette.accent, 1)
+            FieldPainter(canvas: canvas, scale: scale, pixels: 13.5, semibold: true)
+                .draw(field, in: t, focused: true, placeholder: placeholder, alpha: 0.95, placeholderAlpha: 0.35)
             return
         }
         if sidebar.hoveredTitle {
@@ -207,6 +201,11 @@ struct SidebarView {
             sol_canvas_fill_rounded(canvas.raw, t.x - pad, t.y - 1 * scale, w + pad * 2, t.height + 2 * scale, 5 * scale, fg, 0.08)
         }
         label(title, t, pixels: pixels, semibold: true, alpha: 0.95)
+    }
+
+    /// Where a name being typed in a row goes, inside its box.
+    static func renameField(textX: Float, box: UIRect, scale: Float) -> UIRect {
+        UIRect(x: textX, y: box.y, width: max(box.maxX - textX - 4 * scale, 0), height: box.height)
     }
 
     private func drawRow(_ row: FileTree.Row, in r: UIRect, visible: Int) {
@@ -245,11 +244,8 @@ struct SidebarView {
             let box = UIRect(x: textX - 4 * scale, y: r.y + 2 * scale, width: max(r.maxX - textX - 4 * scale, 40 * scale), height: r.height - 4 * scale)
             sol_canvas_fill_rounded(canvas.raw, box.x, box.y, box.width, box.height, 4 * scale, TerminalPalette.background, 1)
             sol_canvas_stroke_rounded(canvas.raw, box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1, 4 * scale, TerminalPalette.accent, 0.9, 1)
-            let pixels = 12.5 * scale
-            label(editing.field.text, UIRect(x: textX, y: r.y, width: box.width - 8 * scale, height: r.height), pixels: pixels)
-            let before = Array(editing.field.beforeCaret.utf16)
-            let caretX = textX + sol_canvas_measure_label(canvas.raw, before, Int32(before.count), pixels, 0)
-            sol_canvas_fill_rect(canvas.raw, caretX.rounded(), box.y + 3 * scale, max(scale.rounded(), 1), box.height - 6 * scale, TerminalPalette.accent, 1)
+            FieldPainter(canvas: canvas, scale: scale, pixels: 12.5)
+                .draw(editing.field, in: Self.renameField(textX: textX, box: box, scale: scale), focused: true)
             return
         }
         let dim: Float = entry.isDeleted || tree.cutPaths.contains(entry.path) ? 0.45 : entry.isHidden ? 0.5 : 0.9

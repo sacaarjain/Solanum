@@ -12,9 +12,11 @@ final class FindBar {
     enum KeyResult { case handled, changed, step(Int), close, pass }
 
     let showsScope: Bool
+    /// Opened with its text all selected, so typing replaces it.
     var field = TextFieldState("")
-    /// The field's text all selected, as on opening: typing replaces it.
-    var fieldSelected = true
+    private var mouse = FieldMouse()
+    /// The canvas and scale it was last drawn with, for where a click lands in the field.
+    private var drawnWith: (canvas: Canvas, scale: Float)?
     /// It has the keyboard (else what's under it has, the bar staying open).
     var focused = true
     var scope: SearchScope = .all
@@ -36,8 +38,11 @@ final class FindBar {
 
     init(showsScope: Bool) {
         self.showsScope = showsScope
-        field = TextFieldState(Self.lastQuery)
+        field = TextFieldState(Self.lastQuery, selected: true)
     }
+
+    /// Ctrl+F again: its text all selected, to type over.
+    func selectAll() { field.selectAll() }
 
     func step(_ d: Int) {
         guard total > 0 else { return }
@@ -152,23 +157,8 @@ final class FindBar {
 
     private func drawField(_ r: UIRect, canvas: Canvas, scale s: Float, label: (String, UIRect, Float, Bool, UInt32?, Float) -> Void,
                            width: (String, Float, Bool) -> Float) {
-        let c = canvas.raw
-        guard !field.text.isEmpty else {
-            label(placeholder, r, 13, false, nil, 0.45)
-            if focused { sol_canvas_fill_rect(c, r.x, r.y + 3 * s, max((1.5 * s).rounded(), 1), r.height - 6 * s, TerminalPalette.accent, 1) }
-            return
-        }
-        let whole = width(field.text, 13, false), caretX = width(field.beforeCaret, 13, false)
-        let shift = max(0, min(caretX - r.width + 4 * s, whole - r.width + 4 * s))
-        sol_canvas_push_clip(c, r.x, r.y, r.width, r.height)
-        if focused && fieldSelected {
-            sol_canvas_fill_rect(c, r.x - shift, r.y + 2 * s, min(whole, r.width + shift), r.height - 4 * s, TerminalPalette.accent, 0.3)
-        }
-        label(field.text, UIRect(x: r.x - shift, y: r.y, width: whole + 4, height: r.height), 13, false, nil, 1)
-        if focused && !fieldSelected {
-            sol_canvas_fill_rect(c, (r.x - shift + caretX).rounded(), r.y + 3 * s, max((1.5 * s).rounded(), 1), r.height - 6 * s, TerminalPalette.accent, 1)
-        }
-        sol_canvas_pop_clip(c)
+        drawnWith = (canvas, s)
+        FieldPainter(canvas: canvas, scale: s).draw(field, in: r, focused: focused, placeholder: placeholder)
     }
 
     // MARK: Keys and the mouse
@@ -180,37 +170,24 @@ final class FindBar {
         case Win.VK_ESCAPE: return .close
         case Win.VK_RETURN, 0x72: return .step(shift ? -1 : 1)
         case Win.VK_UP, Win.VK_DOWN, Win.VK_PRIOR, Win.VK_NEXT, Win.VK_TAB: return .handled
-        case 0x41 where ctrl, 0x46 where ctrl:
-            fieldSelected = true
+        case 0x46 where ctrl && !shift:
+            field.selectAll()
             return .handled
-        case 0x43 where ctrl:
-            copy(field.text)
-            return .handled
-        case 0x56 where ctrl:
-            guard let text = paste()?.split(whereSeparator: \.isNewline).first.map(String.init) else { return .handled }
-            type(text)
-            return .changed
+        // Ctrl+C with nothing selected copies nothing, rather than reaching the terminal (where it would stop a program).
+        case 0x43 where ctrl && !shift && field.selection == nil: return .handled
         default:
-            if ctrl && key != Win.VK_BACK && key != Win.VK_DELETE { return .pass }
-            let before = field.text, all = fieldSelected
-            switch key {
-            case Win.VK_BACK: if all { field = TextFieldState("") } else { field.deleteBackward(word: ctrl) }
-            case Win.VK_DELETE: if all { field = TextFieldState("") } else { field.deleteForward() }
-            case Win.VK_LEFT: field.move(to: all ? 0 : field.caret - 1)
-            case Win.VK_RIGHT: field.move(to: all ? field.text.count : field.caret + 1)
-            case Win.VK_HOME: field.move(to: 0)
-            case Win.VK_END: field.move(to: field.text.count)
-            // Anything else becomes a character (WM_CHAR): not taken here.
-            default: return .pass
+            switch field.key(key, shift: shift, ctrl: ctrl, paste: paste, copy: copy) {
+            case .changed:
+                Self.lastQuery = field.text
+                return .changed
+            case .moved: return .handled
+            // Anything else becomes a character (WM_CHAR), or is the app's (its Ctrl keys).
+            case .pass: return .pass
             }
-            fieldSelected = false
-            return field.text != before ? .changed : .handled
         }
     }
 
     func type(_ text: String) {
-        if fieldSelected { field = TextFieldState("") }
-        fieldSelected = false
         field.insert(text)
         Self.lastQuery = field.text
     }
@@ -229,12 +206,21 @@ final class FindBar {
     /// What a click on a part does, for its owner; the field and toggles are dealt with here.
     enum Click { case none, changed, step(Int), close, scope }
 
-    func press(_ part: Part, double: Bool) {
+    /// A press on a part; on the field, the caret where it lands (Shift selecting to it, a double-click a word).
+    func press(_ part: Part, x: Float, y: Float, shift: Bool) {
         focused = true
-        if part == .field {
-            if double { fieldSelected = true } else { fieldSelected = false; field.move(to: field.text.count) }
+        if part == .field, let r = rect(.field), let drawn = drawnWith {
+            mouse.press(&field, x: x, y: y, in: r, painter: FieldPainter(canvas: drawn.canvas, scale: drawn.scale), shift: shift)
         }
     }
+
+    /// The pointer moving with the button held after a press in the field: the selection follows. True while dragging.
+    func drag(x: Float) -> Bool {
+        guard let r = rect(.field), let drawn = drawnWith else { return false }
+        return mouse.drag(&field, x: x, in: r, painter: FieldPainter(canvas: drawn.canvas, scale: drawn.scale))
+    }
+
+    func releaseMouse() { mouse.release() }
 
     func release(_ part: Part) -> Click {
         switch part {

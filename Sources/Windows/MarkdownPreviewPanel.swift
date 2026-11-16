@@ -518,11 +518,11 @@ extension MarkdownPreviewPanel {
         if finder == nil {
             finder = FindBar(showsScope: false)
             let picked = selectedText
-            if !picked.isEmpty, !picked.contains("\n"), picked.count < 200 { finder?.field = TextFieldState(picked) }
+            if !picked.isEmpty, !picked.contains("\n"), picked.count < 200 { finder?.field = TextFieldState(picked, selected: true) }
             runFind(fromTop: true)
         }
         finder?.focused = true
-        finder?.fieldSelected = true
+        finder?.selectAll()
         invalidate()
     }
 
@@ -626,6 +626,9 @@ extension MarkdownPreviewPanel {
     /// The pointer over the bar: true when it's taken. A press elsewhere on the page gives the page the keyboard.
     func findMouse(_ message: UINT, x: Float, y: Float) -> Bool {
         guard let finder else { return false }
+        // Selecting in the field by dragging, wherever the pointer goes meanwhile.
+        if message == Win.WM_MOUSEMOVE, finder.drag(x: x) { invalidate(); return true }
+        if message == Win.WM_LBUTTONUP { finder.releaseMouse() }
         let part = finder.part(atX: x, y: y)
         if part != finder.hovered { finder.hovered = part; invalidate() }
         guard let part else {
@@ -633,7 +636,7 @@ extension MarkdownPreviewPanel {
             return false
         }
         if message == Win.WM_LBUTTONDOWN || message == Win.WM_LBUTTONDBLCLK {
-            finder.press(part, double: message == Win.WM_LBUTTONDBLCLK)
+            finder.press(part, x: x, y: y, shift: GetKeyState(Win.VK_SHIFT) < 0)
             invalidate()
         }
         if message == Win.WM_LBUTTONUP {

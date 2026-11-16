@@ -235,7 +235,8 @@ enum WindowSelfTest {
         results.check("find: a regular expression that doesn't parse says so", found.findStateForTesting?.hasSuffix(" bad") == true, found.findStateForTesting ?? "")
         _ = found.key(Win.VK_BACK, shift: false, ctrl: false)
         _ = found.findAltKey(0x52)
-        _ = found.key(Win.VK_BACK, shift: false, ctrl: true)
+        _ = found.key(0x41, shift: false, ctrl: true)
+        _ = found.key(Win.VK_BACK, shift: false, ctrl: false)
         "cat".forEach { found.typed(String($0)) }
         // Ctrl+F again starts from the caret, at the top.
         _ = found.key(0x46, shift: false, ctrl: true)
@@ -245,6 +246,8 @@ enum WindowSelfTest {
                       && found.findStateForTesting == "1 of 4 current='cat'", "\(found.textLines?.first ?? "") \(found.findStateForTesting ?? "")")
         found.replaceForTesting(all: true)
         results.check("find: Replace All", found.textLines == ["dog dog condog", "dog.dog (dog)", "line three", ""], "\(found.textLines ?? [])")
+        // In the find field, Ctrl+Z is the field's own, as in VS Code; back in the text, it's the file's.
+        found.focusTextForTesting()
         _ = found.key(0x5A, shift: false, ctrl: true)
         results.check("find: Ctrl+Z undoes Replace All in one step", found.textLines?.first == "dog cat concat", found.textLines?.first ?? "")
         _ = found.key(Win.VK_ESCAPE, shift: false, ctrl: false)
@@ -285,6 +288,29 @@ enum WindowSelfTest {
         picker.drag(.alpha, toX: picker.alphaBar!.x + picker.alphaBar!.width / 2, y: picker.alphaBar!.midY)
         picker.drag(.swatch(0), toX: 0, y: 0)
         results.check("theme editor: the picker's square, opacity and the theme's colors set the color", white == "#FFFFFF" && picker.color.hex == "#00FF0080")
+
+        print("Text fields")
+        var tf = TextFieldState("")
+        for ch in "hello world" { tf.insert(String(ch)) }
+        results.check("field: typing undoes a word at a time", { var u = tf; u.undo(); return u.text == "hello" }(), tf.text)
+        tf.move(by: -1, extend: true, word: true)
+        results.check("field: Ctrl+Shift+Left selects the word before", tf.selectedText == "world", tf.selectedText ?? "nothing")
+        tf.insert("there")
+        results.check("field: typing replaces the selection, and that undoes as one step",
+                      tf.text == "hello there" && { var u = tf; u.undo(); return u.text == "hello world" && u.selectedText == "world" }(), tf.text)
+        _ = tf.key(Win.VK_BACK, shift: false, ctrl: true, paste: { nil }, copy: { _ in })
+        results.check("field: Ctrl+Backspace deletes a word, Ctrl+Z brings it back, Ctrl+Y takes it again",
+                      tf.text == "hello " && { var u = tf; u.undo(); let back = u.text == "hello there"; u.redo(); return back && u.text == "hello " }(), tf.text)
+        var copied = ""
+        tf.selectAll()
+        _ = tf.key(0x58, shift: false, ctrl: true, paste: { nil }, copy: { copied = $0 })
+        _ = tf.key(0x56, shift: false, ctrl: true, paste: { "pasted\nsecond" }, copy: { _ in })
+        results.check("field: Ctrl+A, Ctrl+X cuts it all, Ctrl+V pastes the first line", copied == "hello " && tf.text == "pasted", "\(copied)|\(tf.text)")
+        var words = TextFieldState("a path/to-file.txt")
+        words.selectWord(at: 7)
+        results.check("field: a double-click takes a word, not the punctuation round it", words.selectedText == "to", words.selectedText ?? "nothing")
+        results.check("field: Ctrl+C with nothing selected is the app's", words.key(0x43, shift: false, ctrl: true, paste: { nil }, copy: { _ in }) == .moved
+                      && { var n = TextFieldState("x"); return n.key(0x43, shift: false, ctrl: true, paste: { nil }, copy: { _ in }) == .pass }())
 
         print("Diagnostics logs kept")
         results.check("diagnostics: logs from before the cutoff go, the rest and other files stay",

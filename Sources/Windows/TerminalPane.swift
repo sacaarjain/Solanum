@@ -882,7 +882,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
             runFind()
         }
         findBar?.bar.focused = true
-        findBar?.bar.fieldSelected = true
+        findBar?.bar.selectAll()
         invalidate()
     }
 
@@ -954,6 +954,9 @@ final class TerminalPane: TerminalDelegate, Groupable {
     func findMouse(_ message: UINT, x: Float, y: Float) -> Bool {
         guard let findBar else { return false }
         let bar = findBar.bar
+        // Selecting in the field by dragging, wherever the pointer goes meanwhile.
+        if message == Win.WM_MOUSEMOVE, bar.drag(x: x) { invalidate(); return true }
+        if message == Win.WM_LBUTTONUP { bar.releaseMouse() }
         let part = bar.part(atX: x, y: y)
         if part != bar.hovered { bar.hovered = part; invalidate() }
         guard let part else {
@@ -961,7 +964,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
             return false
         }
         if message == Win.WM_LBUTTONDOWN || message == Win.WM_LBUTTONDBLCLK {
-            bar.press(part, double: message == Win.WM_LBUTTONDBLCLK)
+            bar.press(part, x: x, y: y, shift: GetKeyState(Win.VK_SHIFT) < 0)
             invalidate()
         }
         if message == Win.WM_LBUTTONUP {

@@ -80,20 +80,12 @@ struct MenuView {
         sol_canvas_fill_rounded(c, b.x, b.y, b.width, b.height, 6 * s, fg, 0.06)
         sol_canvas_stroke_rounded(c, b.x + 0.5, b.y + 0.5, b.width - 1, b.height - 1, 6 * s, fg, 0.12, 1)
         sol_canvas_draw_icon(c, b.x + 6 * s, b.y, 16 * s, b.height, 0xE721, 11 * s, fg, 0.5)
-        let inner = UIRect(x: b.x + 26 * s, y: b.y, width: b.width - 32 * s, height: b.height)
-        let field = menu.search ?? TextFieldState("")
-        sol_canvas_push_clip(c, inner.x, inner.y, inner.width, inner.height)
-        let caretX = MenuView.measure(field.beforeCaret, MenuView.textPixels * s, canvas: canvas)
-        let shift = max(0, caretX - inner.width + 4 * s)
-        if field.text.isEmpty {
-            label(menu.placeholder, inner, MenuView.textPixels, alpha: 0.45)
-        } else {
-            label(field.text, UIRect(x: inner.x - shift, y: inner.y, width: MenuView.measure(field.text, MenuView.textPixels * s, canvas: canvas) + 4, height: inner.height),
-                  MenuView.textPixels)
-        }
-        sol_canvas_fill_rect(c, (inner.x - shift + caretX).rounded(), b.y + 7 * s, max((1.5 * s).rounded(), 1), b.height - 14 * s, TerminalPalette.accent, 1)
-        sol_canvas_pop_clip(c)
+        FieldPainter(canvas: canvas, scale: s, pixels: MenuView.textPixels)
+            .draw(menu.search ?? TextFieldState(""), in: Self.searchField(b, s), focused: true, placeholder: menu.placeholder, caretInset: 7)
     }
+
+    /// Where the search box's text goes: after the magnifying glass.
+    static func searchField(_ b: UIRect, _ s: Float) -> UIRect { UIRect(x: b.x + 26 * s, y: b.y, width: b.width - 32 * s, height: b.height) }
 
     private func drawRow(_ i: Int, _ r: UIRect) {
         let item = menu.items[i], s = menu.scale, c = canvas.raw, fg = TerminalPalette.foreground, accent = TerminalPalette.accent

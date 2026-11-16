@@ -136,8 +136,6 @@ final class FileEditorPanel: ColumnPanel {
     private struct Find {
         var field = TextFieldState("")
         var replace = TextFieldState("")
-        /// A field's text all selected, as on opening: typing replaces it.
-        var fieldSelected = false, replaceSelected = false
         var showsReplace = false
         /// The replace field has the keyboard, rather than the find field.
         var inReplace = false
@@ -161,6 +159,8 @@ final class FileEditorPanel: ColumnPanel {
     private var findParts: [(FindPart, UIRect)] = []
     private var findBox: UIRect?
     private var hoveredFind: FindPart?
+    /// A press in one of the bar's fields, dragged to select.
+    private var findFieldMouse = FieldMouse()
     /// Below this a plain search runs as the key is typed; it takes less than a frame.
     private static let instantFindLength = 2_000_000
     private static let instantRegexLength = 200_000
@@ -1400,7 +1400,8 @@ final class FileEditorPanel: ColumnPanel {
         }
         // The caret.
         let c = place(caret)
-        if c.row >= scrollRow && c.row < scrollRow + visibleRows + 1 && !readOnly && Self.caretShown {
+        // Not while the find bar has the keyboard: one caret at a time, so it's clear where typing goes.
+        if c.row >= scrollRow && c.row < scrollRow + visibleRows + 1 && !readOnly && Self.caretShown && !(find != nil && findFocused) {
             let x = tx + Float(c.cell - (wraps ? 0 : scrollColumn)) * cellSize.width
             if x >= tx - 1 { p.fill(UIRect(x: x.rounded(), y: top + Float(c.row - scrollRow) * lh, width: max((1.5 * s).rounded(), 1), height: lh), focusedCaret, 1) }
         }
@@ -1678,6 +1679,8 @@ final class FileEditorPanel: ColumnPanel {
         find = f
     }
     func replaceForTesting(all: Bool) { if all { replaceAll() } else { replaceCurrent() } }
+    /// The keyboard back to the text, the bar staying open (a click in the text).
+    func focusTextForTesting() { findFocused = false }
     func caretForTesting() -> Pos { caret }
 }
 
@@ -1872,14 +1875,14 @@ extension FileEditorPanel {
         let starts = findSource().starts
         var f = find ?? Find()
         f.anchor = offset(of: selection?.0 ?? caret, starts)
-        if let t = selectedText, !t.contains("\n"), t.count < 200 { f.field = TextFieldState(t) }
-        f.fieldSelected = true
+        if let t = selectedText, !t.contains("\n"), t.count < 200 { f.field.setText(t) }
+        f.field.selectAll()
         f.inReplace = false
         if replace && !readOnly {
             // Opened for replacing with something to find already: straight to what to put instead.
             if f.showsReplace || !f.field.text.isEmpty { f.inReplace = find != nil || !f.field.text.isEmpty }
             f.showsReplace = true
-            f.replaceSelected = true
+            f.replace.selectAll()
         }
         find = f
         findFocused = true
@@ -2058,9 +2061,9 @@ extension FileEditorPanel {
     }
 
     /// The field with the keyboard, changed.
-    private func editField(_ change: (inout TextFieldState, inout Bool) -> Void) {
+    private func editField(_ change: (inout TextFieldState) -> Void) {
         guard var f = find else { return }
-        if f.inReplace { change(&f.replace, &f.replaceSelected) } else { change(&f.field, &f.fieldSelected) }
+        if f.inReplace { change(&f.replace) } else { change(&f.field) }
         let searchChanged = !f.inReplace && f.field.text != find?.field.text
         find = f
         if searchChanged { runFind(select: true) }
@@ -2068,10 +2071,7 @@ extension FileEditorPanel {
     }
 
     private func findTyped(_ text: String) {
-        editField { field, selected in
-            if selected { field = TextFieldState(""); selected = false }
-            field.insert(text)
-        }
+        editField { $0.insert(text) }
     }
 
     /// Keys while the bar has the keyboard; nil for those the editor takes as usual (Ctrl+S, Ctrl+Z…).
@@ -2085,46 +2085,25 @@ extension FileEditorPanel {
         case Win.VK_TAB:
             guard f.showsReplace else { return true }
             find?.inReplace.toggle()
-            if find?.inReplace == true { find?.replaceSelected = true } else { find?.fieldSelected = true }
+            if find?.inReplace == true { find?.replace.selectAll() } else { find?.field.selectAll() }
             invalidate()
-        case Win.VK_BACK:
-            editField { field, selected in
-                if selected { field = TextFieldState(""); selected = false } else { field.deleteBackward(word: ctrl) }
-            }
-        case Win.VK_DELETE:
-            editField { field, selected in
-                if selected { field = TextFieldState(""); selected = false } else { field.deleteForward() }
-            }
-        case Win.VK_LEFT, Win.VK_RIGHT, Win.VK_HOME, Win.VK_END:
-            editField { field, selected in
-                let all = selected
-                selected = false
-                switch key {
-                case Win.VK_HOME: field.move(to: 0)
-                case Win.VK_END: field.move(to: field.text.count)
-                case Win.VK_LEFT: field.move(to: all ? 0 : field.caret - 1)
-                default: field.move(to: all ? field.text.count : field.caret + 1)
-                }
-            }
         case Win.VK_UP, Win.VK_DOWN, Win.VK_PRIOR, Win.VK_NEXT: break
-        case 0x41 where ctrl: editField { _, selected in selected = true }
-        case 0x43 where ctrl: copy(f.inReplace ? f.replace.text : f.field.text)
-        case 0x58 where ctrl:
-            copy(f.inReplace ? f.replace.text : f.field.text)
-            editField { field, selected in field = TextFieldState(""); selected = false }
-        case 0x56 where ctrl:
-            guard let pasted = paste()?.split(whereSeparator: \.isNewline).first.map(String.init) else { return true }
-            findTyped(pasted)
         case 0x46 where ctrl && !shift: showFind(replace: false)
         case 0x48 where ctrl && !shift:
             guard !readOnly else { return true }
             find?.showsReplace.toggle()
             find?.inReplace = find?.showsReplace == true
-            find?.replaceSelected = true
+            find?.replace.selectAll()
             invalidate()
+        // Ctrl+C with nothing selected copies nothing (the text's selection isn't the field's).
+        case 0x43 where ctrl && !shift && (f.inReplace ? f.replace : f.field).selection == nil: break
         default:
-            // The editor's own Ctrl keys (save, undo, wrap…) still work. Any other key isn't taken here, so Windows makes
-            // its character, which `typed` sends to the field (taking it here kept every letter out of the field).
+            // The field's own keys, as any text field's: selecting, by word, cut, copy and paste, undo and redo.
+            var result = FieldKeyResult.pass
+            editField { field in result = field.key(key, shift: shift, ctrl: ctrl, paste: paste, copy: copy) }
+            if result != .pass { return true }
+            // The editor's own Ctrl keys (save, wrap…) still work. Any other key isn't taken here, so Windows makes its
+            // character, which `typed` sends to the field.
             return ctrl ? nil : false
         }
         return true
@@ -2200,8 +2179,7 @@ extension FileEditorPanel {
             case .field, .replaceField:
                 let replacing = part == .replaceField
                 let focused = findFocused && f.inReplace == replacing
-                drawField(replacing ? f.replace : f.field, selected: replacing ? f.replaceSelected : f.fieldSelected,
-                          placeholder: replacing ? "Replace" : "Find", focused: focused, r, p, s)
+                drawField(replacing ? f.replace : f.field, placeholder: replacing ? "Replace" : "Find", focused: focused, r, p, s)
             case .matchCase, .wholeWord, .regex:
                 let on = part == .matchCase ? Self.findOptions.matchCase : part == .wholeWord ? Self.findOptions.wholeWord : Self.findOptions.regex
                 if on || hovered { p.fill(r, accent, on ? 0.24 : 0.13, radius: 5) }
@@ -2231,52 +2209,43 @@ extension FileEditorPanel {
     }
 
     /// A field: its text (scrolled to keep the caret in view), the caret while it has the keyboard, or its placeholder.
-    private func drawField(_ field: TextFieldState, selected: Bool, placeholder: String, focused: Bool, _ r: UIRect, _ p: PanelPaint, _ s: Float) {
-        // Plain text on the bar, as the Mac's fields are: the caret shows which has the keyboard.
-        let inner = UIRect(x: r.x + 2 * s, y: r.y, width: r.width - 4 * s, height: r.height)
-        guard !field.text.isEmpty else {
-            p.label(placeholder, inner, pixels: 12.5, alpha: 0.4)
-            if focused { p.fill(UIRect(x: inner.x, y: r.y + 5 * s, width: max((1.5 * s).rounded(), 1), height: r.height - 10 * s), TerminalPalette.accent, 1) }
-            return
-        }
-        let caretX = p.width(field.beforeCaret, pixels: 12.5), whole = p.width(field.text, pixels: 12.5)
-        let shift = max(0, min(caretX - inner.width + 4 * s, whole - inner.width + 4 * s))
-        sol_canvas_push_clip(p.canvas.raw, inner.x, inner.y, inner.width, inner.height)
-        if selected && focused { p.fill(UIRect(x: inner.x - shift, y: r.y + 4 * s, width: min(whole, inner.width + shift), height: r.height - 8 * s), TerminalPalette.accent, 0.3) }
-        p.label(field.text, UIRect(x: inner.x - shift, y: r.y, width: whole + 4, height: r.height), pixels: 12.5)
-        if focused && !selected {
-            p.fill(UIRect(x: (inner.x - shift + caretX).rounded(), y: r.y + 5 * s, width: max((1.5 * s).rounded(), 1), height: r.height - 10 * s), TerminalPalette.accent, 1)
-        }
-        sol_canvas_pop_clip(p.canvas.raw)
+    /// A field: plain text on the bar, as the Mac's fields are (the caret shows which has the keyboard), as every field
+    /// in the app draws.
+    private func drawField(_ field: TextFieldState, placeholder: String, focused: Bool, _ r: UIRect, _ p: PanelPaint, _ s: Float) {
+        findFieldPainter(p.canvas, s).draw(field, in: Self.fieldInner(r, s), focused: focused, placeholder: placeholder,
+                                           placeholderAlpha: 0.4, caretInset: 5)
     }
+
+    private func findFieldPainter(_ canvas: Canvas, _ s: Float) -> FieldPainter { FieldPainter(canvas: canvas, scale: s, pixels: 12.5) }
+    private static func fieldInner(_ r: UIRect, _ s: Float) -> UIRect { UIRect(x: r.x + 2 * s, y: r.y, width: r.width - 4 * s, height: r.height) }
 
     // MARK: The bar's mouse
 
     /// True when the pointer's on the bar (it takes the click).
     private func findMouse(_ message: UINT, x: Float, y: Float) -> Bool {
         guard find != nil, let box = findBox else { return false }
+        // Selecting in a field by dragging, wherever the pointer goes meanwhile.
+        if message == Win.WM_MOUSEMOVE, findFieldMouse.dragging, let canvas = barCanvas,
+           let r = findRect(find!.inReplace ? .replaceField : .field) {
+            let painter = findFieldPainter(canvas, lastScale), inner = Self.fieldInner(r, lastScale)
+            var dragged = false
+            editField { dragged = findFieldMouse.drag(&$0, x: x, in: inner, painter: painter) }
+            if dragged { return true }
+        }
+        if message == Win.WM_LBUTTONUP { findFieldMouse.release() }
         let part = box.contains(x, y) ? (findParts.first { $0.1.contains(x, y) }?.0 ?? .bar) : nil
         if part != hoveredFind { hoveredFind = part; invalidate() }
         guard let part else { return false }
         if message == Win.WM_LBUTTONDOWN || message == Win.WM_LBUTTONDBLCLK {
             switch part {
             case .field, .replaceField:
-                let replacing = part == .replaceField
+                // The caret where the click lands, Shift selecting to it, two clicks a word, as any field.
                 findFocused = true
-                find?.inReplace = replacing
-                if message == Win.WM_LBUTTONDBLCLK {
-                    if replacing { find?.replaceSelected = true } else { find?.fieldSelected = true }
-                } else if let r = findRect(part), let canvas = barCanvas {
-                    // The caret at the character nearest the click.
-                    let p = PanelPaint(canvas: canvas, scale: lastScale)
-                    var field = replacing ? find!.replace : find!.field
-                    let chars = Array(field.text), inner = r.x + 2 * lastScale
-                    let whole = p.width(field.text, pixels: 12.5), caretX = p.width(field.beforeCaret, pixels: 12.5)
-                    let shift = max(0, min(caretX - (r.width - 4 * lastScale) + 4 * lastScale, whole - (r.width - 4 * lastScale) + 4 * lastScale))
-                    var best = chars.count
-                    for i in 0...chars.count where p.width(String(chars[..<i]), pixels: 12.5) - shift + inner >= x - 3 * lastScale { best = i; break }
-                    field.move(to: best)
-                    if replacing { find?.replace = field; find?.replaceSelected = false } else { find?.field = field; find?.fieldSelected = false }
+                find?.inReplace = part == .replaceField
+                if let r = findRect(part), let canvas = barCanvas {
+                    let painter = findFieldPainter(canvas, lastScale), inner = Self.fieldInner(r, lastScale)
+                    let shift = GetKeyState(Win.VK_SHIFT) < 0
+                    editField { findFieldMouse.press(&$0, x: x, y: y, in: inner, painter: painter, shift: shift) }
                 }
                 invalidate()
             default:
@@ -2288,7 +2257,7 @@ extension FileEditorPanel {
             case .chevron:
                 find?.showsReplace.toggle()
                 find?.inReplace = find?.showsReplace == true
-                find?.replaceSelected = true
+                find?.replace.selectAll()
             case .matchCase: Self.findOptions.matchCase.toggle(); runFind(select: true)
             case .wholeWord: Self.findOptions.wholeWord.toggle(); runFind(select: true)
             case .regex: Self.findOptions.regex.toggle(); runFind(select: true)
