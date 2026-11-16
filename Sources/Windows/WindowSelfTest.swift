@@ -1166,6 +1166,16 @@ enum WindowSelfTest {
         steps.append(Step(name: "sidebar: a click on its heading types the tab's name there", action: { window.click(window.leftTitleForTesting) },
                           done: { window.isNaming && window.paneNameField == "" }))
         steps.append(Step(name: "sidebar: typed into the heading", action: { window.typeIntoWindow("Work") }, done: { window.paneNameField == "Work" }))
+        // The heading's field is a text field as any other: the mouse selects in it, and Ctrl+Z undoes.
+        steps.append(Step(name: "sidebar: field: more typed", action: { window.typeIntoWindow(" day") }, done: { window.paneNameField == "Work day" }))
+        steps.append(Step(name: "sidebar: field: a double-click selects the word under it", action: {
+            guard let r = window.nameFieldRectForTesting else { return }
+            let at = UIRect(x: r.x + 4, y: r.midY, width: 0, height: 0)
+            window.click(at)
+            window.click(at)
+        }, done: { window.nameSelectionForTesting == "Work" }))
+        steps.append(Step(name: "sidebar: field: Ctrl+Z takes back what was typed last", action: { _ = window.keyDown(0x5A, shift: false, ctrl: true, alt: false) },
+                          done: { window.paneNameField == "Work" }))
         steps.append(Step(name: "sidebar: Enter names the tab, and the heading shows it", action: { _ = window.keyDown(Int32(0x0D), shift: false, ctrl: false, alt: false) },
                           done: { !window.isNaming && pane.customTitle == "Work" }))
         steps.append(Step(name: "sidebar: emptied, the tab's name goes back to the default", action: {

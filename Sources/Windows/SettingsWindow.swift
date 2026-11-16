@@ -226,6 +226,7 @@ final class SettingsWindow {
             var ps = PAINTSTRUCT()
             _ = BeginPaint(hwnd, &ps)
             if sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 {
+                DrawnFields.clear(canvas)
                 draw(on: canvas)
                 _ = sol_canvas_end(canvas.raw)
             }
@@ -1051,7 +1052,7 @@ final class SettingsWindow {
         if editingThis { sol_canvas_fill_rect(target.raw, r.x + 4 * s, r.maxY - 2 * s, r.width - 8 * s, 2 * s, TerminalPalette.accent, 1) }
         let inner = Self.fieldInner(r, s)
         if editingThis {
-            FieldPainter(canvas: target, scale: s).draw(editing!.state, in: inner, focused: true, placeholder: placeholder, placeholderAlpha: 0.35, caretInset: 7)
+            FieldPainter(canvas: target, scale: s).draw(editing!.state, in: inner, focused: true, placeholder: placeholder, placeholderAlpha: 0.35, caretInset: 7, id: id)
         } else if shown.isEmpty {
             label(target, placeholder, inner, pixels: 13 * s, alpha: 0.35 * alpha)
         } else {
@@ -1095,7 +1096,7 @@ final class SettingsWindow {
         let tw = measure(target, text, pixels: px), x = r.x + max((r.width - tw) / 2, 4 * s)
         let inner = UIRect(x: x, y: r.y, width: r.maxX - x - 2 * s, height: r.height)
         if editingThis {
-            FieldPainter(canvas: target, scale: s, pixels: 10.5).draw(editing!.state, in: inner, focused: true, caretInset: 4)
+            FieldPainter(canvas: target, scale: s, pixels: 10.5).draw(editing!.state, in: inner, focused: true, caretInset: 4, id: id)
         } else {
             label(target, text, inner, pixels: px, alpha: 0.75)
         }
@@ -1287,9 +1288,38 @@ final class SettingsWindow {
 
     // MARK: Mouse and keys
 
+    /// A press in the field being typed in, and the drag from it, as in any text field.
+    private var fieldPress = FieldMouse()
+    private var fieldDragging = false
+
+    private func fieldMouse(_ message: UINT, x: Float, y: Float) -> Bool {
+        guard var current = editing else { return false }
+        switch message {
+        case Win.WM_LBUTTONDOWN, Win.WM_LBUTTONDBLCLK:
+            guard let canvas, let field = DrawnFields.at(x: x, y: y, on: canvas), field.id == current.id else { return false }
+            fieldPress.press(&current.state, x: x, y: y, in: field.rect, painter: field.painter, shift: GetKeyState(Win.VK_SHIFT) < 0)
+            fieldDragging = true
+            SetCapture(hwnd)
+        case Win.WM_MOUSEMOVE:
+            guard fieldDragging, let canvas, let field = DrawnFields.named(current.id, on: canvas) else { return false }
+            if !fieldPress.drag(&current.state, x: x, in: field.rect, painter: field.painter) { fieldDragging = false; return false }
+        case Win.WM_LBUTTONUP:
+            guard fieldDragging else { return false }
+            fieldDragging = false
+            fieldPress.release()
+            ReleaseCapture()
+            return true
+        default: return false
+        }
+        editing = current
+        invalidate()
+        return true
+    }
+
     private func mouse(_ message: UINT, x: Float, y: Float) {
         // A question asked takes every click until it's answered.
         if dialog != nil { return dialogMouse(message, x: x, y: y) }
+        if fieldMouse(message, x: x, y: y) { return }
         // The save bar: Reset and Save Changes, and nothing under it.
         if let bar = footer, bar.contains(x, y), sliding == nil, picker?.dragging == nil, menu == nil {
             if message == Win.WM_MOUSEMOVE { hovered = (x, y); invalidate() }

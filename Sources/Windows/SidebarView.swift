@@ -192,7 +192,7 @@ struct SidebarView {
             sol_canvas_fill_rounded(canvas.raw, box.x, box.y, box.width, box.height, 5 * scale, TerminalPalette.background, 1)
             sol_canvas_stroke_rounded(canvas.raw, box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1, 5 * scale, TerminalPalette.accent, 0.9, 1)
             FieldPainter(canvas: canvas, scale: scale, pixels: 13.5, semibold: true)
-                .draw(field, in: t, focused: true, placeholder: placeholder, alpha: 0.95, placeholderAlpha: 0.35)
+                .draw(field, in: t, focused: true, placeholder: placeholder, alpha: 0.95, placeholderAlpha: 0.35, id: "name")
             return
         }
         if sidebar.hoveredTitle {
@@ -245,7 +245,7 @@ struct SidebarView {
             sol_canvas_fill_rounded(canvas.raw, box.x, box.y, box.width, box.height, 4 * scale, TerminalPalette.background, 1)
             sol_canvas_stroke_rounded(canvas.raw, box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1, 4 * scale, TerminalPalette.accent, 0.9, 1)
             FieldPainter(canvas: canvas, scale: scale, pixels: 12.5)
-                .draw(editing.field, in: Self.renameField(textX: textX, box: box, scale: scale), focused: true)
+                .draw(editing.field, in: Self.renameField(textX: textX, box: box, scale: scale), focused: true, id: "rename")
             return
         }
         let dim: Float = entry.isDeleted || tree.cutPaths.contains(entry.path) ? 0.45 : entry.isHidden ? 0.5 : 0.9

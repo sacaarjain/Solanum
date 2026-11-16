@@ -153,6 +153,44 @@ final class Canvas {
         sol_canvas_draw_image(raw, image ?? -1, r.x, r.y, r.width, r.height, alpha)
     }
 
+    /// Where a picture's drawn part is inside its square, as fractions (0 to 1): its margins aren't even, so centering
+    /// the square doesn't center what shows.
+    private static var artInk: [String: (x0: Float, y0: Float, x1: Float, y1: Float)] = [:]
+
+    private func inkBounds(_ name: String) -> (x0: Float, y0: Float, x1: Float, y1: Float) {
+        // The largest size, for the finest measure.
+        let art = "\(name)@4"
+        if let known = Self.artInk[art] { return known }
+        var bounds: (x0: Float, y0: Float, x1: Float, y1: Float) = (0, 0, 1, 1)
+        if let encoded = ArtData.images[art], let png = Data(base64Encoded: encoded) {
+            var pixels: UnsafeMutablePointer<UInt8>?
+            var w: Int32 = 0, h: Int32 = 0
+            let decoded = png.withUnsafeBytes { sol_canvas_decode_png(raw, $0.bindMemory(to: UInt8.self).baseAddress, Int32(png.count), &pixels, &w, &h) }
+            if decoded == 0, let pixels {
+                var minX = Int(w), minY = Int(h), maxX = -1, maxY = -1
+                for y in 0..<Int(h) { for x in 0..<Int(w) where pixels[(y * Int(w) + x) * 4 + 3] > 40 {
+                    minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+                } }
+                if maxX >= minX, maxY >= minY {
+                    bounds = (Float(minX) / Float(w), Float(minY) / Float(h), Float(maxX + 1) / Float(w), Float(maxY + 1) / Float(h))
+                }
+                sol_canvas_free(pixels)
+            }
+        }
+        Self.artInk[art] = bounds
+        return bounds
+    }
+
+    /// A picture in a button, as a glyph would be: scaled so what shows is `inkHeight` tall, and that (not the picture's
+    /// square, whose margins differ) centered in `box`, on whole pixels so it stays sharp.
+    func drawArtCentered(_ name: String, in box: UIRect, inkHeight: Float, scale: Float, alpha: Float = 1, tint: UInt32? = nil) {
+        let ink = inkBounds(name)
+        let side = (inkHeight / max(ink.y1 - ink.y0, 0.01)).rounded()
+        let inkMidX = (ink.x0 + ink.x1) / 2 * side, inkMidY = (ink.y0 + ink.y1) / 2 * side
+        let x = (box.x + box.width / 2 - inkMidX).rounded(), y = (box.y + box.height / 2 - inkMidY).rounded()
+        drawArt(name, UIRect(x: x, y: y, width: side, height: side), scale: max(scale, side / 16), alpha: alpha, tint: tint)
+    }
+
     /// A theme's planet (see Core/PlanetArt.swift), as its icon, filling the square `r`: rendered once for each size, at
     /// the exact pixel size, so it stays sharp.
     func drawPlanet(_ planet: PlanetArt.Planet, _ r: UIRect, alpha: Float = 1) {

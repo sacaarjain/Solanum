@@ -579,7 +579,8 @@ final class GitGraphPanel: ColumnPanel {
         p.icon(0xE721, UIRect(x: field.x + 4 * s, y: field.y, width: 18 * s, height: h), pixels: 10, alpha: 0.5)
         let inner = UIRect(x: field.x + 24 * s, y: field.y, width: field.width - 80 * s, height: h)
         FieldPainter(canvas: p.canvas, scale: s, pixels: 12)
-            .draw(search, in: inner, focused: searchFocused, placeholder: "Text or hash", placeholderAlpha: 0.4, caretInset: 5)
+            .draw(search, in: inner, focused: searchFocused, placeholder: "Text or hash", placeholderAlpha: 0.4, caretInset: 5,
+                  id: searchFocused ? "git-search" : nil)
         toolbarParts.append(("search", UIRect(x: field.x, y: field.y, width: field.width - 52 * s, height: h)))
         // .* and Aa inside the field's right end.
         for (id, title, on) in [("regex", ".*", filter.regex), ("case", "Aa", filter.matchCase)] {
@@ -628,4 +629,11 @@ final class GitGraphPanel: ColumnPanel {
     func setFilterForTesting(_ edit: (inout GraphFilter) -> Void) { change(edit) }
     /// The toolbar part's place, for tests: "branch", "user", "date", "paths", "search", "clear".
     func toolbarRect(_ id: String) -> UIRect? { toolbarParts.first { $0.id == id }?.rect }
+
+    /// The window's mouse in the search box, while it has the keyboard (see `DrawnFields`).
+    func editField(_ id: String, _ change: (inout TextFieldState) -> Void) -> Bool {
+        guard id == "git-search" else { return false }
+        change(&search)
+        return true
+    }
 }

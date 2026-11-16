@@ -1043,6 +1043,7 @@ final class TerminalWindow {
         _ = BeginPaint(hwnd, &ps)
         defer { EndPaint(hwnd, &ps) }
         guard !panes.isEmpty, sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
+        DrawnFields.clear(canvas)
         chrome(on: canvas, layout: layout).draw()
         for pane in visiblePanes { drawColumn(pane, on: canvas, snapshot: false) }
         drawSidebars(on: canvas, layout: layout)
@@ -1847,6 +1848,59 @@ final class TerminalWindow {
         return (under.lineHeight, { [weak under] in under?.touchScroll(lines: $0, at: lParam) })
     }
 
+    /// A press in a field the window owns (a name being typed, a rename in the sidebar, a dropdown's search box) and the
+    /// drag from it: the caret where it lands, selecting as it's dragged, as in any text field. True when it's taken.
+    private var windowFieldMouse = FieldMouse()
+    private var windowFieldDragging: String?
+
+    private func fieldMouse(_ message: UINT, x: Float, y: Float) -> Bool {
+        func edit(_ id: String, _ change: (inout TextFieldState) -> Void) {
+            switch id {
+            case "name":
+                guard var current = naming else { return }
+                change(&current.field)
+                naming = current
+            case "rename": editingSidebar?.tree.updateEditing(change)
+            case "menu": menu?.editSearch(change)
+            default:
+                // A page's own field: git's commit message or its graph's search.
+                for pane in visiblePanes {
+                    let taken = (pane.panel as? GitChangesPanel)?.editField(id, change) ?? (pane.panel as? GitGraphPanel)?.editField(id, change) ?? false
+                    guard taken else { continue }
+                    // Its page takes the keyboard, as a press on it would.
+                    if pane !== activePane, let i = panes.firstIndex(where: { $0 === pane }) { activate(i) }
+                    if !pane.editorFocused { setEditorFocus(true, in: pane) }
+                    break
+                }
+            }
+            invalidate()
+        }
+        switch message {
+        case Win.WM_LBUTTONDOWN, Win.WM_LBUTTONDBLCLK:
+            guard let field = DrawnFields.at(x: x, y: y, on: canvas) else { return false }
+            let shift = isDown(Win.VK_SHIFT)
+            edit(field.id) { windowFieldMouse.press(&$0, x: x, y: y, in: field.rect, painter: field.painter, shift: shift) }
+            windowFieldDragging = field.id
+            SetCapture(hwnd)
+            restartBlink()
+            return true
+        case Win.WM_MOUSEMOVE:
+            guard let id = windowFieldDragging, let field = DrawnFields.named(id, on: canvas) else { return false }
+            var dragged = false
+            edit(id) { dragged = windowFieldMouse.drag(&$0, x: x, in: field.rect, painter: field.painter) }
+            if !dragged { windowFieldDragging = nil }
+            return dragged
+        case Win.WM_LBUTTONUP:
+            guard windowFieldDragging != nil else { return false }
+            windowFieldDragging = nil
+            windowFieldMouse.release()
+            ReleaseCapture()
+            return true
+        default:
+            return false
+        }
+    }
+
     private func clientMouse(_ message: UINT, _ wParam: WPARAM, _ lParam: LPARAM) {
         guard !panes.isEmpty else { return }
         let (x, y) = clientPoint(lParam)
@@ -1855,6 +1909,7 @@ final class TerminalWindow {
             dialogMouse(message, x: x, y: y)
             return
         }
+        if fieldMouse(message, x: x, y: y) { return }
         if menu == nil, palette == nil, !notices.isEmpty,
            notices.mouse(message, x: x, y: y, canvas: canvas, windowWidth: Float(clientWidth), top: layout.tabBarHeight, scale: scale) {
             invalidate()
@@ -6162,6 +6217,10 @@ final class TerminalWindow {
     var leftTitleForTesting: UIRect { sidebarLayout(left).title }
 
     /// Clicks a part of the tab bar, as the mouse would.
+    /// Where the name being typed was drawn, and what's selected in it.
+    var nameFieldRectForTesting: UIRect? { DrawnFields.named("name", on: canvas)?.rect }
+    var nameSelectionForTesting: String? { naming?.field.selectedText }
+
     func click(_ rect: UIRect) {
         let position = LPARAM(Int(rect.x + rect.width / 2) & 0xFFFF) | (LPARAM(Int(rect.y + rect.height / 2) & 0xFFFF) << 16)
         _ = SendMessageW(hwnd, Win.WM_LBUTTONDOWN, 1, position)

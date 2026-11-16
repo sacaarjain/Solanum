@@ -253,7 +253,8 @@ struct WindowChrome {
                 let ink = HexColor(rgb: group.color).luminance > 0.6 ? UInt32(0x1A1A1A) : 0xFFFFFF
                 let inner = UIRect(x: r.x + 8 * scale, y: r.y, width: r.width - 16 * scale, height: r.height)
                 FieldPainter(canvas: canvas, scale: scale, pixels: 11.5, semibold: true)
-                    .draw(editing.field, in: inner, focused: true, placeholder: editing.placeholder, color: ink, placeholderAlpha: 0.55, caretInset: 4, caretColor: ink)
+                    .draw(editing.field, in: inner, focused: true, placeholder: editing.placeholder, color: ink, placeholderAlpha: 0.55, caretInset: 4,
+                          caretColor: ink, id: "name")
                 continue
             }
             let ringed = dropChip == first || (group.collapsed && sendTarget.map { first <= $0 && $0 <= group.last } == true)
@@ -371,7 +372,7 @@ struct WindowChrome {
             sol_canvas_stroke_rounded(canvas.raw, box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1, 4 * scale, TerminalPalette.accent, 0.9, 1)
             let inner = UIRect(x: titleX, y: box.y, width: max(room - 4 * scale, 0), height: box.height)
             FieldPainter(canvas: canvas, scale: scale, pixels: 12.5)
-                .draw(editing.field, in: inner, focused: true, placeholder: tabs[i], placeholderAlpha: 0.4, caretInset: 4)
+                .draw(editing.field, in: inner, focused: true, placeholder: tabs[i], placeholderAlpha: 0.4, caretInset: 4, id: "name")
         } else {
             label(tabs[i], UIRect(x: titleX, y: r.y, width: max(room, 0), height: r.height), pixels: 12.5 * scale, color: fg, alpha: textAlpha)
         }
@@ -718,22 +719,24 @@ struct WindowChrome {
             if hovered == part { sol_canvas_fill_rounded(canvas.raw, r.x, r.y, r.width, r.height, 4 * scale, fg, 0.10) }
             icon(glyph, r, pixels: 12 * scale, color: on ? TerminalPalette.accent : nil, alpha: on ? 1 : 0.75)
         }
-        let hosts = layout.hostsButton, art = (16 * scale).rounded()
+        let hosts = layout.hostsButton
         if hovered == .hosts { sol_canvas_fill_rounded(canvas.raw, hosts.x, hosts.y, hosts.width, hosts.height, 4 * scale, fg, 0.10) }
         // In the theme's text color, full strength (the picture's own lines are partly see-through, so less looks grey).
-        canvas.drawArt("serverRack", UIRect(x: hosts.x + ((hosts.width - art) / 2).rounded(), y: (hosts.midY - art / 2 - 0.5 * scale).rounded() + 1, width: art, height: art),
-                       scale: scale, alpha: 1, tint: fg)
+        // As tall as the glyphs beside it, and what shows of it centered in its button, as theirs is.
+        canvas.drawArtCentered("serverRack", in: hosts, inkHeight: (9.6 * scale).rounded(), scale: scale, tint: fg)
         if layout.hasShellButton {
             // The shells: a terminal in outline, drawn as the icons beside it are (and as the Mac's console button).
             let b = layout.shellButton
             if hovered == .shell { sol_canvas_fill_rounded(canvas.raw, b.x, b.y, b.width, b.height, 4 * scale, fg, 0.10) }
             EditorStrip.drawTerminalSymbol(on: canvas, centerX: b.x + b.width / 2, centerY: b.midY, scale: scale, color: fg, alpha: 0.75, thin: true)
         }
-        // Keep Awake's cup: in the accent color while it's on, grey while it's off. It and its highlight sit 1.5pt above
-        // the bar's middle, level with the icons beside it (its steam would otherwise pull it low), as on the Mac.
-        var cup = layout.keepAwakeButton
+        // Keep Awake's cup: in the accent color while it's on, grey while it's off. Its button sits as the others do; the
+        // cup alone is 1.5pt above its middle, so its body is level with the icons beside it (its steam would otherwise
+        // pull it low), as on the Mac.
+        let cupButton = layout.keepAwakeButton
+        if hovered == .keepAwake { sol_canvas_fill_rounded(canvas.raw, cupButton.x, cupButton.y, cupButton.width, cupButton.height, 4 * scale, fg, 0.10) }
+        var cup = cupButton
         cup.y -= (1.5 * scale).rounded()
-        if hovered == .keepAwake { sol_canvas_fill_rounded(canvas.raw, cup.x, cup.y, cup.width, cup.height, 4 * scale, fg, 0.10) }
         let on = keepAwakeLeft != nil
         Self.drawCup(on: canvas, in: cup, scale: scale, color: on ? TerminalPalette.accent : fg,
                      alpha: on ? 1 : hovered == .keepAwake ? 0.7 : 0.45, steam: on ? (steamTime ?? 0) : nil)

@@ -81,7 +81,7 @@ struct MenuView {
         sol_canvas_stroke_rounded(c, b.x + 0.5, b.y + 0.5, b.width - 1, b.height - 1, 6 * s, fg, 0.12, 1)
         sol_canvas_draw_icon(c, b.x + 6 * s, b.y, 16 * s, b.height, 0xE721, 11 * s, fg, 0.5)
         FieldPainter(canvas: canvas, scale: s, pixels: MenuView.textPixels)
-            .draw(menu.search ?? TextFieldState(""), in: Self.searchField(b, s), focused: true, placeholder: menu.placeholder, caretInset: 7)
+            .draw(menu.search ?? TextFieldState(""), in: Self.searchField(b, s), focused: true, placeholder: menu.placeholder, caretInset: 7, id: "menu")
     }
 
     /// Where the search box's text goes: after the magnifying glass.

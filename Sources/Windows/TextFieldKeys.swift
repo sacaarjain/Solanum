@@ -111,8 +111,10 @@ struct FieldPainter {
         return max(0, min(caretX - r.width + 4 * scale, whole - r.width + 4 * scale))
     }
 
+    /// `id`: where the window finds this field again for the mouse (see `DrawnFields`), for fields the window owns.
     func draw(_ state: TextFieldState, in r: UIRect, focused: Bool, placeholder: String = "", color: UInt32 = TerminalPalette.foreground,
-              alpha: Float = 1, placeholderAlpha: Float = 0.45, caretInset: Float = 3, caretColor: UInt32? = nil) {
+              alpha: Float = 1, placeholderAlpha: Float = 0.45, caretInset: Float = 3, caretColor: UInt32? = nil, id: String? = nil) {
+        if let id { DrawnFields.note(id, r, self) }
         let c = canvas.raw, caretW = max((1.5 * scale).rounded(), 1), accent = caretColor ?? TerminalPalette.accent
         let caretY = r.y + caretInset * scale, caretH = r.height - 2 * caretInset * scale
         guard !state.text.isEmpty else {
@@ -149,6 +151,24 @@ struct FieldPainter {
             previous = w
         }
         return chars.count
+    }
+}
+
+/// The fields drawn in the last frame, by canvas: where each is, and how it was drawn, so a press there finds the
+/// character under it. Cleared as each frame starts.
+enum DrawnFields {
+    private static var fields: [ObjectIdentifier: [(id: String, rect: UIRect, painter: FieldPainter)]] = [:]
+
+    static func clear(_ canvas: Canvas) { fields[ObjectIdentifier(canvas)] = [] }
+    static func note(_ id: String, _ rect: UIRect, _ painter: FieldPainter) {
+        fields[ObjectIdentifier(painter.canvas), default: []].append((id, rect, painter))
+    }
+    /// The field under a point, if one is.
+    static func at(x: Float, y: Float, on canvas: Canvas) -> (id: String, rect: UIRect, painter: FieldPainter)? {
+        fields[ObjectIdentifier(canvas)]?.last { $0.rect.contains(x, y) }
+    }
+    static func named(_ id: String, on canvas: Canvas) -> (id: String, rect: UIRect, painter: FieldPainter)? {
+        fields[ObjectIdentifier(canvas)]?.last { $0.id == id }
     }
 }
 

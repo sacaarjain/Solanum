@@ -329,7 +329,7 @@ final class GitChangesPanel: ColumnPanel {
         sol_canvas_stroke_rounded(canvas.raw, f.x + 0.5, f.y + 0.5, f.width - 1, f.height - 1, 5 * s, TerminalPalette.accent, 0.6, 1)
         let inner = UIRect(x: f.x + 8 * s, y: f.y, width: f.width - 16 * s, height: f.height)
         FieldPainter(canvas: canvas, scale: s, pixels: 12.5)
-            .draw(message, in: inner, focused: true, placeholder: "Message (Ctrl+Enter commits)", placeholderAlpha: 0.4, caretInset: 6)
+            .draw(message, in: inner, focused: true, placeholder: "Message (Ctrl+Enter commits)", placeholderAlpha: 0.4, caretInset: 6, id: "git-message")
         p.textButton("Commit", commitButton(a, s), hovered: hoveredPart == "commit", primary: true, enabled: !(info?.changes.isEmpty ?? true))
         p.button(0xE72C, refreshButton(a, s), hovered: hoveredPart == "refresh")
         p.button(0xE8BB, closeButton(a, s), hovered: hoveredPart == "close")
@@ -450,6 +450,13 @@ final class GitChangesPanel: ColumnPanel {
     func typed(_ text: String) {
         message.insert(text.filter { !$0.isNewline })
         invalidate()
+    }
+
+    /// The window's mouse in the message (see `DrawnFields`).
+    func editField(_ id: String, _ change: (inout TextFieldState) -> Void) -> Bool {
+        guard id == "git-message" else { return false }
+        change(&message)
+        return true
     }
 
     // For tests
