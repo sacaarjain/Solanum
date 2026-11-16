@@ -103,9 +103,27 @@ enum Diagnostics {
 
     private static func started() {
         log("diagnostics on: Solanum for Windows, pid \(GetCurrentProcessId()), until \(until.map { "\($0)" } ?? "this run ends")")
+        removeOldLogs()
         lastSessionCheck()
         installCrashFilter()
         startWatchdog()
+    }
+
+    /// Only the last 14 days' logs are kept: older days' files go, by the day in their names.
+    static let daysKept = 14
+
+    static func removeOldLogs(now: Date = Date()) {
+        let cutoff = dayFormat.string(from: now.addingTimeInterval(-Double(daysKept - 1) * 86_400))
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? [] where isExpired(name, cutoff: cutoff) {
+            try? FileManager.default.removeItem(atPath: folder + "\\" + name)
+        }
+    }
+
+    /// A day's log from before `cutoff` (yyyy-MM-dd, which sorts as dates do).
+    static func isExpired(_ name: String, cutoff: String) -> Bool {
+        guard name.hasPrefix("diagnostics-"), name.hasSuffix(".log") else { return false }
+        let day = name.dropFirst("diagnostics-".count).dropLast(".log".count)
+        return day.count == 10 && day < cutoff
     }
 
     /// At a normal quit: the next launch doesn't take it for a crash.

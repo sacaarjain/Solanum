@@ -286,6 +286,12 @@ enum WindowSelfTest {
         picker.drag(.swatch(0), toX: 0, y: 0)
         results.check("theme editor: the picker's square, opacity and the theme's colors set the color", white == "#FFFFFF" && picker.color.hex == "#00FF0080")
 
+        print("Diagnostics logs kept")
+        results.check("diagnostics: logs from before the cutoff go, the rest and other files stay",
+                      Diagnostics.isExpired("diagnostics-2026-10-31.log", cutoff: "2026-11-02")
+                      && !Diagnostics.isExpired("diagnostics-2026-11-02.log", cutoff: "2026-11-02")
+                      && !Diagnostics.isExpired(".running", cutoff: "2026-11-02") && !Diagnostics.isExpired("notes.log", cutoff: "2026-11-02"))
+
         print("Sidebar git letters")
         // The sidebar shows C:\Repo\Sub; git's paths are the repository's.
         let porcelain = "sub/\n1 .M N... 100644 100644 100644 a b sub/lib/a.txt\u{0}1 D. N... 100644 000000 000000 a b sub/gone.txt\u{0}? sub/new/\u{0}? other.txt\u{0}"
@@ -548,6 +554,13 @@ enum WindowSelfTest {
                       && pc.field(#"C:\Users\me\proj"#) == #"~\proj\"# && pc.field(#"C:\"#) == #"C:\"#)
         results.check("go to: what's typed splits at the last slash", pc.typedParent(#"~\Pro"#) == #"~\"# && pc.lastPart("~/Pro") == "Pro"
                       && pc.endsInSeparator("C:/") && pc.cleaned(#""C:\a b""#) == #"C:\a b"#)
+        var withVars = pc
+        withVars.variables = ["AppData": #"C:\Users\me\AppData\Roaming"#]
+        results.check("go to: %APPDATA% and $env:APPDATA are worked out, an unset one is left",
+                      withVars.resolve(#"%APPDATA%\Solanum\config"#) == #"C:\Users\me\AppData\Roaming\Solanum\config"#
+                      && withVars.resolve(#"$env:appdata\Solanum"#) == #"C:\Users\me\AppData\Roaming\Solanum"#
+                      && withVars.resolve(#"%NOPE%\x"#) == #"C:\Users\me\proj\%NOPE%\x"#, withVars.resolve(#"%APPDATA%\Solanum\config"#))
+
         let host = GoToPaths(unix: true, base: "/home/u/p", home: "/home/u")
         results.check("go to: on a host", host.resolve("~/x") == "/home/u/x" && host.resolve("../..") == "/home" && host.resolve("/") == "/"
                       && host.parent("/") == nil && host.shown("/home/u/p") == "~/p" && host.cleaned(#"a\ b"#) == "a b" && host.lastPart(#"a\b"#) == #"a\b"#)

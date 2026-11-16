@@ -5446,8 +5446,10 @@ final class TerminalWindow {
             guard let remote = pane.remote, remote.state == .ready, let home = remote.home else { return nil }
             return (GoToPaths(unix: true, base: pane.remoteFolder ?? home, home: home), remote)
         }
-        let home = ProcessInfo.processInfo.environment["USERPROFILE"] ?? #"C:\"#
-        return (GoToPaths(unix: false, base: pane.terminal.cwd ?? home, home: home), nil)
+        let environment = ProcessInfo.processInfo.environment, home = environment["USERPROFILE"] ?? #"C:\"#
+        var paths = GoToPaths(unix: false, base: pane.terminal.cwd ?? home, home: home)
+        paths.variables = environment
+        return (paths, nil)
     }
 
     /// Ctrl+Shift+O: a palette whose field is just a path, starting at the terminal's folder. Ctrl+Backspace clears it
@@ -5524,6 +5526,16 @@ final class TerminalWindow {
             } else {
                 out.append(.header("A program is running here: go once it's done"))
             }
+        } else if remote == nil, !typed.isEmpty, !paths.endsInSeparator(typed), FileManager.default.fileExists(atPath: target) {
+            // A file: opened above this tab's terminal, as a click in the sidebar opens it; Ctrl+Enter, in a tab of its own.
+            let column = activePane.column
+            var item = PaletteItem(title: "Open \(shown(target))", category: "File", shortcut: "Enter") { [weak self] in
+                guard let self else { return }
+                self.showFile(target, in: self.activePane, focus: true)
+            }
+            item.alternate = { [weak self] in self?.openFileTab(target, column: column) }
+            out.append(item)
+            out.append(PaletteItem(title: "Open \(shown(target)) in a New Tab", shortcut: "Ctrl+Enter") { [weak self] in self?.openFileTab(target, column: column) })
         }
         let inside = typed.isEmpty || paths.endsInSeparator(typed) || (isFolder == true && typed.hasSuffix("."))
         let parent = inside ? target : paths.parent(target) ?? target

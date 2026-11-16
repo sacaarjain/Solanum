@@ -7,6 +7,9 @@ struct GoToPaths {
     /// The terminal's folder, where a relative path starts.
     let base: String
     let home: String
+    /// Environment variables a path on this PC can name, as %APPDATA% or $env:APPDATA (names in any case, as Windows
+    /// takes them). Empty: none are worked out.
+    var variables: [String: String] = [:]
 
     var separator: String { unix ? "/" : "\\" }
 
@@ -24,7 +27,7 @@ struct GoToPaths {
 
     /// Where what's typed leads: ~ is home, a relative path starts at the terminal's folder, and . and .. are worked out.
     func resolve(_ typed: String) -> String {
-        let t = unix ? typed : typed.replacingOccurrences(of: "/", with: "\\")
+        let t = unix ? typed : expandingVariables(typed).replacingOccurrences(of: "/", with: "\\")
         let sep = separator
         let expanded = t == "~" ? home : t.hasPrefix("~" + sep) ? home + t.dropFirst(1) : t
         if unix { return normalized(expanded.hasPrefix("/") ? expanded : base + "/" + expanded) }
@@ -34,6 +37,36 @@ struct GoToPaths {
         // From the top of the terminal's drive.
         if expanded.hasPrefix("\\") { return normalized(String(base.prefix(2)) + expanded) }
         return normalized(base + "\\" + expanded)
+    }
+
+    /// %NAME% and $env:NAME replaced by the variable's value, as cmd and PowerShell do; a name that isn't set is left as
+    /// typed.
+    func expandingVariables(_ typed: String) -> String {
+        guard !variables.isEmpty, typed.contains("%") || typed.lowercased().contains("$env:") else { return typed }
+        func value(_ name: Substring) -> String? {
+            let wanted = name.lowercased()
+            return variables.first { $0.key.lowercased() == wanted }?.value
+        }
+        var out = "", rest = Substring(typed)
+        while let c = rest.first {
+            if c == "%", let close = rest.dropFirst().firstIndex(of: "%"), let v = value(rest[rest.index(after: rest.startIndex)..<close]) {
+                out += v
+                rest = rest[rest.index(after: close)...]
+            } else if rest.lowercased().hasPrefix("$env:") {
+                let name = rest.dropFirst(5).prefix { $0.isLetter || $0.isNumber || $0 == "_" }
+                if !name.isEmpty, let v = value(name) {
+                    out += v
+                    rest = rest.dropFirst(5 + name.count)
+                } else {
+                    out.append(c)
+                    rest = rest.dropFirst()
+                }
+            } else {
+                out.append(c)
+                rest = rest.dropFirst()
+            }
+        }
+        return out
     }
 
     /// An absolute path with . and .. worked out, never going above the top.
