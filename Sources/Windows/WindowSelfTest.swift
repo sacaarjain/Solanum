@@ -1801,11 +1801,16 @@ enum WindowSelfTest {
         steps.append(Step(name: "sidebar: scrollbar: swiped, it moves along", action: { window.swipeLeftSidebarForTest(by: 10_000) }, done: {
             window.leftScrollX == window.leftMaxScrollX && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\sidebar-sideways.png") } ?? true)
         }))
+        // Gone while it's still showing (a hidden sidebar doesn't look again), then let go, as it was.
         steps.append(Step(name: "sidebar: scrollbar: and back", action: {
             window.swipeLeftSidebarForTest(by: -10_000)
+            try? FileManager.default.removeItem(atPath: longFolder + "\\" + longName)
+            window.pinLeftForTest(longFolder)
+        }, done: { window.leftScrollX == 0 && window.leftEntry(named: longName) == nil }))
+        steps.append(Step(name: "sidebar: scrollbar: the sidebar as it was", action: {
             window.pinLeftForTest(nil)
             try? FileManager.default.removeItem(atPath: longFolder)
-        }, done: { window.leftScrollX == 0 && window.leftEntry(named: longName) == nil }))
+        }, done: { window.leftPinned == nil }))
 
         // A new tab opens in the current tab's folder, which Settings makes the default.
         steps.append(Step(name: "new tab: opens in the current tab's folder", action: { press(0x54) }, done: {

@@ -23,7 +23,9 @@ struct GitPlace {
     func run(_ script: String, timeout: TimeInterval = 30, errors: Bool = false, _ done: @escaping (Int32, Data, String) -> Void) {
         let full = "cd \(RemoteConnection.quote(Self.shPath(dir))) || exit 128\nexport GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0\n" + script
         if let remote {
-            remote.run("{ \(full)\n} \(errors ? "2>&1" : "2>/dev/null")", timeout: timeout) { text, code in
+            // In a subshell: the connection's one shell runs every command in turn, so the script's `exit` (a folder
+            // that isn't a repository, or can't be entered) must end only the script, not the connection.
+            remote.run("( \(full)\n) \(errors ? "2>&1" : "2>/dev/null")", timeout: timeout) { text, code in
                 done(text == nil ? 124 : code, Data((text ?? "").utf8), errors ? (text ?? "") : "")
             }
             return
