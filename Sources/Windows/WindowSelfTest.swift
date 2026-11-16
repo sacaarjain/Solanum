@@ -1383,12 +1383,23 @@ enum WindowSelfTest {
             if let row = window.leftRow(named: "box") { window.click(row) }
             _ = window.keyDown(0x56, shift: false, ctrl: true, alt: false)
         }, done: { exists("box\\renamed.txt") && exists("renamed.txt") }))
-        steps.append(Step(name: "files: cut and paste moves it", action: {
+        // Cut, then pasted once the clipboard's known to have it: another program (clipboard history, say) can hold the
+        // clipboard a moment, so a paste that found it busy is tried again, which is harmless once it's moved.
+        steps.append(Step(name: "files: Ctrl+X puts it on the clipboard to move", action: {
             if let row = window.leftRow(named: "renamed - Copy.txt") { window.click(row) }
             _ = window.keyDown(0x58, shift: false, ctrl: true, alt: false)
+        }, done: { FileOps.clipboardFiles(owner: nil)?.paths.map { $0.lowercased() } == [WindowsPath.join(alphaFolder, "renamed - Copy.txt").lowercased()] }))
+        var lastPaste = Date.distantPast
+        func pasteIntoBox() {
+            lastPaste = Date()
             if let row = window.leftRow(named: "box") { window.click(row) }
             _ = window.keyDown(0x56, shift: false, ctrl: true, alt: false)
-        }, done: { exists("box\\renamed - Copy.txt") && !exists("renamed - Copy.txt") }))
+        }
+        steps.append(Step(name: "files: cut and paste moves it", action: { pasteIntoBox() }, done: {
+            let moved = exists("box\\renamed - Copy.txt") && !exists("renamed - Copy.txt")
+            if !moved, exists("renamed - Copy.txt"), Date().timeIntervalSince(lastPaste) > 2 { pasteIntoBox() }
+            return moved
+        }))
         steps.append(Step(name: "files: dragging a file onto a folder moves it", action: {
             window.dragLeftRow("renamed.txt", onto: "box")
         }, done: { exists("box\\renamed (2).txt") && !exists("renamed.txt") }))
