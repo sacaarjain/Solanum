@@ -66,16 +66,31 @@ final class FileSidebar {
     }
 
     /// Lists a folder off the message loop, since a slow or disconnected drive can take a long time to answer.
+    /// Straight from Windows (FindFirstFileW), names and attributes together: Foundation's `resourceValues` crashed
+    /// (an illegal-instruction trap inside it) listing a folder.
     static func list(_ folder: String) -> [FileEntry]? {
-        let manager = FileManager.default
-        guard let names = try? manager.contentsOfDirectory(atPath: folder) else { return nil }
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isHiddenKey]
-        return names.compactMap { name in
-            let path = WindowsPath.join(folder, name)
-            let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: Set(keys))
-            return FileEntry(name: name, path: path, isDirectory: values?.isDirectory ?? false,
-                             isHidden: (values?.isHidden ?? false) || name.hasPrefix("."))
+        let pattern = WindowsPath.join(folder, "*")
+        var data = WIN32_FIND_DATAW()
+        let found = wide(pattern).withUnsafeBufferPointer { FindFirstFileW($0.baseAddress, &data) }
+        guard let found, found != INVALID_HANDLE_VALUE else {
+            // An empty folder still lists (as nothing); one that can't be read doesn't.
+            return GetLastError() == DWORD(ERROR_FILE_NOT_FOUND) ? [] : nil
         }
+        defer { FindClose(found) }
+        var entries: [FileEntry] = []
+        repeat {
+            let name = withUnsafeBytes(of: data.cFileName) { raw -> String in
+                let units = raw.bindMemory(to: UInt16.self)
+                let end = units.firstIndex(of: 0) ?? units.count
+                return String(decoding: units[..<end], as: UTF16.self)
+            }
+            guard name != ".", name != ".." else { continue }
+            let attributes = data.dwFileAttributes
+            entries.append(FileEntry(name: name, path: WindowsPath.join(folder, name),
+                                     isDirectory: attributes & DWORD(FILE_ATTRIBUTE_DIRECTORY) != 0,
+                                     isHidden: attributes & DWORD(FILE_ATTRIBUTE_HIDDEN) != 0 || name.hasPrefix(".")))
+        } while FindNextFileW(found, &data)
+        return entries
     }
 }
 
