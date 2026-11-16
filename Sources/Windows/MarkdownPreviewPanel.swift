@@ -401,6 +401,8 @@ final class MarkdownPreviewPanel: ColumnPanel {
     /// hand over a link, else the arrow (nil).
     func pointer(x: Float, y: Float, in a: UIRect, scale s: Float) -> Bool? {
         if selecting { return true }
+        // On the find bar: the I-beam over its field, the arrow over its buttons.
+        if let part = finder?.part(atX: x, y: y) { return part == .field ? true : nil }
         guard y > header(a, s).maxY, !closeButton(a, s).contains(x, y) else { return nil }
         if link(atX: x, y: y) != nil { return false }
         let (cx, cy) = contentPoint(x, y)

@@ -1466,6 +1466,11 @@ final class FileEditorPanel: ColumnPanel {
     /// Whether the pointer's over the text, where it shows the I-beam, as in any editor.
     func wantsIBeam(x: Float, y: Float, in a: UIRect, scale s: Float) -> Bool {
         guard case .text = content, compareRows == nil, body(a, s).contains(x, y) else { return false }
+        // On the find bar, only over its fields: the arrow over its buttons.
+        if find != nil, let box = findBox, box.contains(x, y) {
+            let part = findParts.first { $0.1.contains(x, y) }?.0
+            return part == .field || part == .replaceField
+        }
         return !buttonRects(a, s).contains { $0.1.contains(x, y) }
     }
 
@@ -2118,8 +2123,9 @@ extension FileEditorPanel {
             find?.replaceSelected = true
             invalidate()
         default:
-            // The editor's own Ctrl keys (save, undo, wrap…) still work; nothing else reaches the text.
-            return ctrl ? nil : true
+            // The editor's own Ctrl keys (save, undo, wrap…) still work. Any other key isn't taken here, so Windows makes
+            // its character, which `typed` sends to the field (taking it here kept every letter out of the field).
+            return ctrl ? nil : false
         }
         return true
     }

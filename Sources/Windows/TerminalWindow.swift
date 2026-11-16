@@ -1556,6 +1556,11 @@ final class TerminalWindow {
         // The I-beam over an open file's text, as in any editor.
         if palette == nil, menu == nil, part == .terminal, !panes.isEmpty, draggingEdge == nil {
             let under = pane(atX: px)
+            // The terminal's find bar: the I-beam over its field, the arrow over its buttons.
+            if editorSplit(for: under).showsTerminal || under.editors.isEmpty, let findPart = under.findPart(atX: px, y: py) {
+                SetCursor(LoadCursorW(nil, findPart == .field ? Win.ibeamCursor : Win.arrowCursor))
+                return 1
+            }
             if let page = editorSplit(for: under).page, page.contains(px, py), let file = under.panel as? FileEditorPanel,
                file.wantsIBeam(x: px, y: py, in: page, scale: scale) {
                 SetCursor(LoadCursorW(nil, Win.ibeamCursor))

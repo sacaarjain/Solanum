@@ -1474,7 +1474,25 @@ enum WindowSelfTest {
         steps.append(Step(name: "search: Ctrl+F finds in that file", action: {
             _ = window.keyDown(0x46, shift: false, ctrl: true, alt: false)
         }, done: { (window.activePanel as? FileEditorPanel)?.findStateForTesting == "1 of 1 current='solanum'" }))
+        steps.append(Step(name: "search: typing goes into the find field", action: {
+            window.typeIntoWindow("hello")
+        }, done: { (window.activePanel as? FileEditorPanel)?.findStateForTesting == "1 of 1 current='hello'" }))
         steps.append(Step(name: "search: Esc closes find, then Ctrl+W the file", action: {
+            _ = window.keyDown(Win.VK_ESCAPE, shift: false, ctrl: false, alt: false)
+            _ = window.keyDown(0x57, shift: false, ctrl: true, alt: false)
+        }, done: { window.activePanel == nil && !window.isPaletteOpen }))
+        steps.append(Step(name: "search: Go to Folder opens a file it's given", action: {
+            window.showGoToFolder(path: "tracked.txt")
+            window.pressPaletteEnterForTest()
+        }, done: { (window.activePanel as? FileEditorPanel)?.path.hasSuffix("tracked.txt") == true && !window.isPaletteOpen }))
+        var letterKeyTaken = true
+        steps.append(Step(name: "search: and Ctrl+F there takes typing", action: {
+            _ = window.keyDown(0x46, shift: false, ctrl: true, alt: false)
+            // A letter's key isn't taken ahead of Windows, which would then make no character of it.
+            letterKeyTaken = window.keyDown(0x48, shift: false, ctrl: false, alt: false)
+            window.typeIntoWindow("hello")
+        }, done: { !letterKeyTaken && (window.activePanel as? FileEditorPanel)?.findStateForTesting == "1 of 1 current='hello'" }))
+        steps.append(Step(name: "search: Esc closes find, then Ctrl+W the file (again)", action: {
             _ = window.keyDown(Win.VK_ESCAPE, shift: false, ctrl: false, alt: false)
             _ = window.keyDown(0x57, shift: false, ctrl: true, alt: false)
         }, done: { window.activePanel == nil && !window.isPaletteOpen }))

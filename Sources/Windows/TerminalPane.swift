@@ -948,6 +948,9 @@ final class TerminalPane: TerminalDelegate, Groupable {
     }
 
     /// The pointer over the bar: true when it's taken. A press elsewhere in the terminal gives it the keyboard back.
+    /// The part of the find bar under the pointer, if it's on the bar (for the pointer's look).
+    func findPart(atX x: Float, y: Float) -> FindBar.Part? { findBar?.bar.part(atX: x, y: y) }
+
     func findMouse(_ message: UINT, x: Float, y: Float) -> Bool {
         guard let findBar else { return false }
         let bar = findBar.bar
