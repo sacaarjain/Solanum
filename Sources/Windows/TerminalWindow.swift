@@ -1996,10 +1996,16 @@ final class TerminalWindow {
         if stripDragMouse(message, x: x, y: y) { return }
         if chipDragMouse(message, x: x, y: y) { return }
         if part == .statusBar && !terminalHasMouse && statusBarMouse(message, x: x, y: y) { return }
-        if part != .statusBar && hoveredCrumb != nil {
+        // Off the status bar, nothing on it is hovered any more; and whatever was (a button there, a tab) lets go as the
+        // pointer moves on, before the sidebar or a page takes the move and returns, as they do.
+        if part != .statusBar && (hoveredCrumb != nil || hoveredGit != nil || themeHovered || extensionsHovered) {
             hoveredCrumb = nil
+            hoveredGit = nil
+            themeHovered = false
+            extensionsHovered = false
             invalidate()
         }
+        if message == Win.WM_MOUSEMOVE { setHovered(part, nonClient: false) }
         if sidebarMouse(message, part: part, x: x, y: y) { return }
         if part == .terminal && !terminalHasMouse && lostBarMouse(message, x: x, y: y) { return }
         if part == .terminal && !terminalHasMouse && pane(atX: x).findMouse(message, x: x, y: y) {
