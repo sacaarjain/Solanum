@@ -559,6 +559,23 @@ final class TerminalWindow {
     private static let steamTimer: UINT_PTR = 7
     private var steaming = false
 
+    /// Redraw Terminal (Ctrl+Shift+L): the tab's program repaints its whole screen, as after a resize, and the window's
+    /// drawn afresh. For when output that came during a resize (Claude Code's, say) is left garbled.
+    private static let redrawTimer: UINT_PTR = 12
+    private weak var redrawing: TerminalPane?
+    /// For tests: the size is still nudged.
+    var isRedrawingTerminal: Bool { redrawing != nil }
+
+    func redrawTerminal() {
+        guard !panes.isEmpty else { return }
+        if let earlier = redrawing { earlier.endRedraw() }
+        redrawing = activePane
+        activePane.beginRedraw()
+        // Long enough for the program to have seen the narrower size, then back to its own.
+        _ = SetTimer(hwnd, Self.redrawTimer, 150, nil)
+        invalidate()
+    }
+
     /// While a scrollbar shows or fades: drawn about 30 times a second.
     private static let scrollBarTimer: UINT_PTR = 11
     private var scrollBarTicking = false
@@ -1342,6 +1359,11 @@ final class TerminalWindow {
                 readingTick()
             } else if wParam == WPARAM(Self.steamTimer) {
                 updateSteam()
+                invalidate()
+            } else if wParam == WPARAM(Self.redrawTimer) {
+                KillTimer(hwnd, Self.redrawTimer)
+                redrawing?.endRedraw()
+                redrawing = nil
                 invalidate()
             } else if wParam == WPARAM(Self.scrollBarTimer) {
                 invalidate()
@@ -5713,7 +5735,8 @@ final class TerminalWindow {
         ("Tabs", [("Pick another tab", "Ctrl+Click"), ("Pick the tabs between", "Shift+Click"), ("Collapse or expand a group", "Click its chip"),
                   ("Move a group", "Drag its chip")]),
         ("Commands", [("Previous Command or Prompt", "Ctrl+Up"), ("Next Command or Prompt", "Ctrl+Down"), ("Jump to Prompt…", "Ctrl+J"),
-                      ("Copy Command (nothing selected)", "Ctrl+Shift+C"), ("Copy Command and Output", "Ctrl+Alt+C"), ("Run Command Again", "Ctrl+Alt+R")]),
+                      ("Copy Command (nothing selected)", "Ctrl+Shift+C"), ("Copy Command and Output", "Ctrl+Alt+C"), ("Run Command Again", "Ctrl+Alt+R"),
+                      ("Redraw Terminal (a garbled screen)", "Ctrl+Shift+L")]),
         ("Edit", [("Copy (with something selected)", "Ctrl+C"), ("Stop the program (with nothing selected)", "Ctrl+C"), ("Cut (in the line being typed)", "Ctrl+X"),
                   ("Paste", "Ctrl+V"), ("Paste (also)", "Shift+Insert"), ("Undo (PowerShell and Claude Code)", "Ctrl+Z")]),
         ("Prompts", [("New Line (shells and Claude Code)", "Shift+Enter"), ("Paste an Image (Claude Code)", "Ctrl+V"), ("Jump to Prompt…", "Ctrl+J")]),
@@ -5786,6 +5809,7 @@ final class TerminalWindow {
                 guard let self, !self.panes.isEmpty else { return }
                 if !self.activePane.clearBuffer() { self.fileProblem() }
             },
+            PaletteItem(title: "Redraw Terminal", category: "Commands", shortcut: "Ctrl+Shift+L") { [weak self] in self?.redrawTerminal() },
             PaletteItem(title: "Command History\u{2026}", category: "Commands", shortcut: "Ctrl+Shift+H") { [weak self] in self?.showCommandHistory() },
             PaletteItem(title: "Send to Chat\u{2026}", category: "Commands", shortcut: "Ctrl+Alt+S") { [weak self] in self?.showSendToChat() },
             PaletteItem(title: "Collapse / Expand Output", category: "Commands", shortcut: "Ctrl+Shift+E") { [weak self] in
@@ -6165,6 +6189,11 @@ final class TerminalWindow {
         if ctrl && shift && !alt && key == 0x4B && palette == nil && !panes.isEmpty {
             if !activePane.clearBuffer() { fileProblem() }
             invalidate()
+            return true
+        }
+        // Redraw Terminal: the program repaints its screen, as after a resize.
+        if ctrl && shift && !alt && key == 0x4C && palette == nil && !panes.isEmpty {
+            redrawTerminal()
             return true
         }
         if ctrl && shift && !alt && key == 0x48 && !panes.isEmpty {

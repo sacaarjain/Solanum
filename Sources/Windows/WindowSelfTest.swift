@@ -1702,6 +1702,14 @@ enum WindowSelfTest {
             pane.type("echo after-clear")
             pane.pressEnter()
         }, done: { hasLine("after-clear") }))
+        // Redraw Terminal nudges the program's size and puts it back: the shell ends at the terminal's own width.
+        steps.append(Step(name: "clear: Ctrl+Shift+L redraws, the shell's width as it was", action: {
+            _ = window.keyDown(0x4C, shift: true, ctrl: true, alt: false)
+        }, done: { !window.isRedrawingTerminal && pane.atPrompt }))
+        steps.append(Step(name: "clear: and the shell still answers, at its width", action: {
+            pane.type("echo ('redrawn=' + $Host.UI.RawUI.WindowSize.Width)")
+            pane.pressEnter()
+        }, done: { hasLine("redrawn=\(pane.terminal.cols)") }))
         var sizeBefore = 0.0
         steps.append(Step(name: "text size: Ctrl+= makes it bigger", action: {
             sizeBefore = AppSettings.shared.fontSize

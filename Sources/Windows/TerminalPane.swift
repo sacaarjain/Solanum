@@ -197,6 +197,19 @@ final class TerminalPane: TerminalDelegate, Groupable {
         if shorter || lastResize != nil { lastResize = Date() }
     }
 
+    /// Redraw Terminal, its first half: the program is told the window got a column narrower (its own size here stays as
+    /// it is), so that when `endRedraw` puts it back, it paints the whole screen again, as after any resize. What a
+    /// resize mid-output left garbled (Claude Code's, say) comes out whole.
+    func beginRedraw() {
+        guard terminal.cols > 2 else { return }
+        pty?.resize(cols: terminal.cols - 1, rows: terminal.rows)
+    }
+
+    func endRedraw() {
+        pty?.resize(cols: terminal.cols, rows: terminal.rows)
+        invalidate()
+    }
+
     func setFocused(_ on: Bool) {
         guard on != focused else { return }
         focused = on
