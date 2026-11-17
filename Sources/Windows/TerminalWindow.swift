@@ -1780,7 +1780,7 @@ final class TerminalWindow {
                 return true
             }
             guard let (stepPixels, apply) = touchTarget(x: x, y: y, lParam: lParam) else { return false }
-            touch = TouchScroll(at: lParam, stepPixels: stepPixels, apply: apply)
+            touch = TouchScroll(at: lParam, stepPixels: stepPixels, apply: apply, sideways: touchSideways(x: x, y: y))
             SetCapture(hwnd)
             return true
         case Win.WM_MOUSEMOVE:
@@ -1884,6 +1884,24 @@ final class TerminalWindow {
 
     /// What a finger at a point would scroll: how far it moves per step, and the step. Nil where nothing scrolls (the tab
     /// bar, the status bar, a question, a strip of sub-tabs), so a finger there presses and drags as a mouse would.
+    /// What a finger moving across scrolls, where something does: a file's long lines (unwrapped), a column at a time,
+    /// and the sidebar's long names, a pixel at a time.
+    private func touchSideways(x: Float, y: Float) -> TouchScroll.Axis? {
+        guard !panes.isEmpty, dialog == nil, menu == nil, palette == nil else { return nil }
+        let part = layout.part(atX: x, y: y)
+        if part == .leftSidebar || part == .rightSidebar {
+            let isLeft = part == .leftSidebar
+            return TouchScroll.Axis(stepPixels: 1) { [weak self] steps in
+                guard let self else { return }
+                if (isLeft ? self.left : self.right).scrollSideways(by: -Float(steps)) { self.invalidate() }
+            }
+        }
+        guard part == .terminal else { return nil }
+        let under = pane(atX: x)
+        guard let page = editorSplit(for: under).page, page.contains(x, y), let file = under.panel as? FileEditorPanel else { return nil }
+        return TouchScroll.Axis(stepPixels: canvas.metrics.cellWidth) { [weak file] steps in file?.scrollSideways(columns: -steps) }
+    }
+
     private func touchTarget(x: Float, y: Float, lParam: LPARAM) -> (Float, (Int) -> Void)? {
         guard !panes.isEmpty, dialog == nil else { return nil }
         if let menu {
