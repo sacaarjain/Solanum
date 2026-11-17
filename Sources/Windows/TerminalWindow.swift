@@ -5787,7 +5787,8 @@ final class TerminalWindow {
         ("Prompts", [("New Line (shells and Claude Code)", "Shift+Enter"), ("Paste an Image (Claude Code)", "Ctrl+V"), ("Jump to Prompt…", "Ctrl+J")]),
         ("Find and Git", [("Search in Project Folder…", "Ctrl+Shift+F"), ("Show Git Graph", "Ctrl+Shift+G"), ("Extensions", "Ctrl+Shift+X"), ("Show Git Changes", "Ctrl+Shift+S"),
                           ("Open a Link", "Ctrl+Click")]),
-        ("Pages", [("Close the page with the keyboard", "Ctrl+W"), ("Back to the terminal", "Click it")]),
+        ("Pages", [("Close the page with the keyboard", "Ctrl+W"), ("Back to the terminal", "Click it"),
+                   ("Next sub-tab", "Alt+Right"), ("Previous sub-tab", "Alt+Left")]),
         ("View", [("Toggle File Sidebar", "Ctrl+B"), ("Toggle Right Sidebar (split)", "Ctrl+Alt+B"), ("Pin Sidebar Folder", "Ctrl+Shift+B"), ("Scroll Back a Page", "Shift+PageUp"), ("Scroll Forward a Page", "Shift+PageDown")]),
         ("Window", [("Next Tab", "Ctrl+Tab"), ("Previous Tab", "Ctrl+Shift+Tab"), ("Go to Tab 1 to 9", "Ctrl+1"), ("Close Window", "Alt+F4")]),
     ]
@@ -6161,6 +6162,16 @@ final class TerminalWindow {
         if naming != nil { return namingKey(key, shift: shift, ctrl: ctrl) }
         // Find's toggles, as VS Code's (Alt+C case, Alt+W whole words, Alt+R regular expressions), in whichever bar is open
         // where the keyboard is: the terminal's, or the Markdown preview's (the file editor's is below).
+        // Alt+← and Alt+→: the tab's previous and next sub-tab, round from either end. With fewer than two, they're the
+        // program's (some take Alt+arrows to jump a word).
+        if alt && !ctrl && !shift && (key == Win.VK_LEFT || key == Win.VK_RIGHT) && palette == nil && naming == nil
+            && editingSidebar == nil && !panes.isEmpty && activePane.editors.count >= 2 {
+            let pane = activePane, count = pane.editors.count
+            pane.activeEditor = (pane.activeEditor + (key == Win.VK_RIGHT ? 1 : -1) + count) % count
+            revealActiveSubTab(pane)
+            invalidate()
+            return true
+        }
         if alt && !ctrl && !shift && palette == nil && !panes.isEmpty && editingSidebar == nil {
             if let preview = activePane.focusedPanel as? MarkdownPreviewPanel, preview.findAltKey(key) { return true }
             if !activePane.editorFocused, activePane.findAltKey(key) { return true }

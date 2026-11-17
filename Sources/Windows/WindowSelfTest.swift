@@ -1646,6 +1646,15 @@ enum WindowSelfTest {
             subTabScroll = window.subTabStrip(for: pane)?.scroll ?? 0
             if let s = window.subTabStrip(for: pane) { window.swipe(at: s.rect, delta: subTabScroll > 0 ? -240 : 240) }
         }, done: { (window.subTabStrip(for: pane)?.scroll).map { $0 != subTabScroll } ?? false }))
+        // Alt+→ and Alt+← go along the sub-tabs, round from either end.
+        var subTabBefore = 0
+        steps.append(Step(name: "subtabs: Alt+Right goes to the next, round from the last", action: {
+            pane.activeEditor = pane.editors.count - 1
+            subTabBefore = pane.activeEditor
+            _ = window.keyDown(Win.VK_RIGHT, shift: false, ctrl: false, alt: true)
+        }, done: { subTabBefore == pane.editors.count - 1 && pane.activeEditor == 0 }))
+        steps.append(Step(name: "subtabs: Alt+Left goes back, round to the last", action: { _ = window.keyDown(Win.VK_LEFT, shift: false, ctrl: false, alt: true) },
+                          done: { pane.activeEditor == pane.editors.count - 1 }))
         steps.append(Step(name: "subtabs: closed again", action: { window.closeAllEditors(in: pane) }, done: { pane.editors.isEmpty }))
         // A command's buttons, and picking several, as on the Mac.
         steps.append(Step(name: "blocks: two commands", action: {
