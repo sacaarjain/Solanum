@@ -217,13 +217,41 @@ final class MarkdownPreviewPanel: ColumnPanel {
             case .table(let headerCells, let rows):
                 let columnCount = max(headerCells.count, rows.map(\.count).max() ?? 0)
                 guard columnCount > 0 else { continue }
-                func plain(_ spans: [MarkdownDoc.Span]) -> String { spans.map(\.text).joined() }
                 let cellPad = 13 * s
-                // Each column as wide as its widest cell. Too wide for the page, those that fit a fair share keep their
-                // width, and the rest share what's left by how wide they'd be; their text wraps, as GitHub's does.
-                var widths = [Float](repeating: 40 * s, count: columnCount)
-                for (i, cell) in headerCells.enumerated() { widths[i] = max(widths[i], measure(canvas, plain(cell), 14 * s, 1) + cellPad * 2) }
-                for row in rows { for (i, cell) in row.enumerated() where i < columnCount { widths[i] = max(widths[i], measure(canvas, plain(cell), 14 * s, 0) + cellPad * 2) } }
+                // A cell's width on one line, and its widest piece that can't be broken (a word, or code, which never
+                // wraps), measured as `flow` draws them: code in the terminal's font with its padding.
+                func extent(_ spans: [MarkdownDoc.Span], bold: Bool) -> (whole: Float, piece: Float) {
+                    var whole: Float = 0, piece: Float = 0
+                    for span in spans {
+                        if span.style == .code {
+                            let w = Float(span.text.count) * cellSize.width + 8 * s
+                            whole += w
+                            piece = max(piece, w)
+                            continue
+                        }
+                        var flags: Int32 = bold ? 1 : 0
+                        switch span.style {
+                        case .bold: flags |= 1
+                        case .italic: flags |= 2
+                        case .boldItalic: flags |= 3
+                        default: break
+                        }
+                        whole += measure(canvas, span.text, 14 * s, flags)
+                        for word in span.text.split(separator: " ") { piece = max(piece, measure(canvas, String(word), 14 * s, flags)) }
+                    }
+                    return (whole.rounded(.up), piece.rounded(.up))
+                }
+                // Each column as wide as its widest cell, and never narrower than its widest unbreakable piece. Too wide
+                // for the page, those that fit a fair share keep their width, and the rest share what's left by how wide
+                // they'd be, down to that piece; their text wraps, as GitHub's does.
+                var widths = [Float](repeating: 40 * s, count: columnCount), floors = [Float](repeating: 40 * s, count: columnCount)
+                for (r, row) in ([headerCells] + rows).enumerated() {
+                    for (i, cell) in row.enumerated() where i < columnCount {
+                        let e = extent(cell, bold: r == 0)
+                        widths[i] = max(widths[i], e.whole + cellPad * 2)
+                        floors[i] = max(floors[i], e.piece + cellPad * 2)
+                    }
+                }
                 if widths.reduce(0, +) > width {
                     var fixed = Set<Int>(), room = width
                     // Settled one at a time, narrowest first, as each that fits leaves the others more.
@@ -233,8 +261,21 @@ final class MarkdownPreviewPanel: ColumnPanel {
                         fixed.insert(i)
                         room -= widths[i]
                     }
-                    let open = (0..<columnCount).filter { !fixed.contains($0) }, wanted = open.reduce(Float(0)) { $0 + widths[$1] }
-                    for i in open { widths[i] = max((room * widths[i] / max(wanted, 1)).rounded(.down), 60 * s) }
+                    // The rest share what's left by how wide they'd be; one that would go below its widest piece stays
+                    // at that, and the others share what's left after it, again.
+                    while true {
+                        let open = (0..<columnCount).filter { !fixed.contains($0) }, wanted = open.reduce(Float(0)) { $0 + widths[$1] }
+                        guard !open.isEmpty else { break }
+                        let share = { (i: Int) in (room * widths[i] / max(wanted, 1)).rounded(.down) }
+                        if let pinned = open.first(where: { share($0) < floors[$0] }) {
+                            widths[pinned] = floors[pinned]
+                            fixed.insert(pinned)
+                            room -= floors[pinned]
+                            continue
+                        }
+                        for i in open { widths[i] = share(i) }
+                        break
+                    }
                 }
                 let total = widths.reduce(0, +), line = max(1, s.rounded()), padY = 6 * s
                 for (r, row) in ([headerCells] + rows).enumerated() {
