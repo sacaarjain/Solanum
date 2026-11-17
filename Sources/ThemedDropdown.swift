@@ -190,6 +190,13 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
         devLastItems.first { $0.kind == .item && $0.title == title }?.action?()
     }
 
+    /// Dev aid (DevTools dropdown-png): draws the open dropdown to a PNG.
+    static func devPNG(_ path: String) {
+        guard let d = current, let rep = d.bitmapImageRepForCachingDisplay(in: d.bounds) else { return }
+        d.cacheDisplay(in: d.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+
     private init(_ items: [DropdownItem], searchable: Bool, placeholder: String, previous: NSResponder?) {
         all = items
         self.searchable = searchable

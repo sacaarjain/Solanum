@@ -371,14 +371,18 @@ final class TabColumn: NSObject, TabOwner {
         // Local files that are still there; files on an ssh host, waiting for a connection to it (one per host and
         // way of reaching it, shared by the tab's files).
         var waiting: [String: RemoteSession] = [:]
-        let files: [(fs: FileSystem, path: String)] = (ts.files ?? []).enumerated().compactMap { i, path in
+        // Extension pages (and the marketplace), where they were among the files.
+        let files: [(fs: FileSystem, path: String, mode: EditorMode)] = (ts.files ?? []).enumerated().compactMap { i, path in
+            if let name = ts.pages.flatMap({ $0.indices.contains(i) ? $0[i] : nil }) {
+                return TabState.pageMode(name).map { (LocalFileSystem.shared, NSHomeDirectory(), $0) }
+            }
             let host = ts.fileHosts.flatMap { $0.indices.contains(i) ? $0[i] : nil }
             let ssh = ts.fileSSH.flatMap { $0.indices.contains(i) ? $0[i] : nil }
-            guard let host, let ssh else { return FileManager.default.fileExists(atPath: path) ? (LocalFileSystem.shared, path) : nil }
+            guard let host, let ssh else { return FileManager.default.fileExists(atPath: path) ? (LocalFileSystem.shared, path, .file) : nil }
             let key = host + "\n" + ssh
             let session = waiting[key] ?? RemoteSession(awaiting: host, sshArgs: ssh)
             waiting[key] = session
-            return (session, path)
+            return (session, path, .file)
         }
         // The pinned folder: on this Mac, or on an ssh host, waiting (with the tab's files there) for a connection to
         // it; once the tab's logged in there, the pin moves to that session (see `repinAfterReconnect`).
@@ -393,11 +397,11 @@ final class TabColumn: NSObject, TabOwner {
             }
         }
         if ts.terminalHidden == true, let first = files.first {
-            t.fileOrigin = (first.fs, FilePaths.parent(first.path))
-            t.showFileOnly(FileEditorView(fs: first.fs, path: first.path))
-            files.dropFirst().forEach { t.openFile($0.fs, $0.path, focus: false) }
+            t.fileOrigin = (first.fs, first.mode == .file ? FilePaths.parent(first.path) : first.path)
+            t.showFileOnly(FileEditorView(fs: first.fs, path: first.path, mode: first.mode))
+            files.dropFirst().forEach { t.openFile($0.fs, $0.path, mode: $0.mode, focus: false) }
         } else {
-            files.forEach { t.openFile($0.fs, $0.path, focus: false) }
+            files.forEach { t.openFile($0.fs, $0.path, mode: $0.mode, focus: false) }
         }
         if let a = ts.activeFile { t.activateEditor(a, focus: false) }
         return t

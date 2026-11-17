@@ -419,7 +419,7 @@ final class FileTabStrip: NSView {
         case .preview: return "doc.richtext"
         case .file: return FileSidebarView.symbol(for: name)
         case .extensions: return "puzzlepiece.extension"
-        case .extensionPage(let id): return id == SleeperExtension.id ? "football" : "puzzlepiece.extension"
+        case .extensionPage(let id): return id == SleeperExtension.id ? "football" : id == AtlassianExtension.id ? "rectangle.split.3x1" : "puzzlepiece.extension"
         }
     }
 

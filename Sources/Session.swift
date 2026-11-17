@@ -39,12 +39,32 @@ struct TabState: Codable {
     var fileHosts: [String?]?
     var fileSSH: [String?]?
     var activeFile: Int?
+    /// For each of `files`, the page it is instead of a file: "extensions" (the marketplace) or an extension's id.
+    /// Its entry in `files` is empty, so a build from before pages were kept skips it.
+    var pages: [String?]?
     var terminalHidden: Bool?
     /// The sidebar's pinned folder for this tab, and for one on an ssh host, the host and how it was reached (as for
     /// `fileHosts`): restored waiting for a connection to that host, and pinned there again once logged in.
     var pinnedFolder: String?
     var pinnedHost: String?
     var pinnedSSH: String?
+}
+
+extension TabState {
+    /// How a page is saved in `pages`: nil for a file, or a mode that isn't kept (a diff, a graph).
+    static func pageName(_ mode: EditorMode) -> String? {
+        switch mode {
+        case .extensions: return "extensions"
+        case .extensionPage(let id): return id
+        default: return nil
+        }
+    }
+
+    /// The page saved as `name`, if it can still be shown: an extension that's gone or was uninstalled isn't.
+    static func pageMode(_ name: String) -> EditorMode? {
+        if name == "extensions" { return .extensions }
+        return Extensions.find(name) != nil && Extensions.isInstalled(name) ? .extensionPage(name) : nil
+    }
 }
 
 struct GroupState: Codable {
@@ -166,19 +186,23 @@ extension TabSession {
         // Diffs and graphs aren't files to reopen. Files on an ssh host come back waiting for a connection to it,
         // which needs to know how it was reached.
         func remote(_ ed: FileEditorView) -> RemoteSession? { ed.fs as? RemoteSession }
+        // Extension pages (and the marketplace) come back too.
         let kept = editors.filter { ed in
-            ed.mode == .file && (!ed.fs.isRemote || (remote(ed)?.hostLabel != nil && remote(ed)?.sshArgs?.isEmpty == false))
+            TabState.pageName(ed.mode) != nil
+                || ed.mode == .file && (!ed.fs.isRemote || (remote(ed)?.hostLabel != nil && remote(ed)?.sshArgs?.isEmpty == false))
         }
         let anyRemote = kept.contains { $0.fs.isRemote }
+        let pages = kept.map { TabState.pageName($0.mode) }
         // A pin on an ssh host: kept with the host (matched by its user@host once logged in again).
         let pinHost = pinnedFolder?.fs as? RemoteSession
         return TabState(title: customTitle, group: group,
                  focused: panes.firstIndex(of: focusedPane) ?? 0,
                  layout: root.subviews.first.flatMap(TabSession.node) ?? .pane(PaneState()),
-                 files: kept.isEmpty ? nil : kept.map(\.path),
+                 files: kept.isEmpty ? nil : kept.map { TabState.pageName($0.mode) == nil ? $0.path : "" },
                  fileHosts: anyRemote ? kept.map { remote($0)?.hostLabel } : nil,
                  fileSSH: anyRemote ? kept.map { remote($0)?.sshArgs } : nil,
                  activeFile: kept.isEmpty ? nil : editor.flatMap { kept.firstIndex(of: $0) } ?? 0,
+                 pages: pages.contains { $0 != nil } ? pages : nil,
                  terminalHidden: showsTerminal ? nil : true,
                  pinnedFolder: pinnedFolder.flatMap { $0.fs.isRemote && pinHost?.hostLabel == nil ? nil : $0.path },
                  pinnedHost: pinHost?.hostLabel,

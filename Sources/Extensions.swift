@@ -49,7 +49,7 @@ protocol ExtensionPage: AnyObject {
 }
 
 enum Extensions {
-    static let catalog: [SolanumExtension] = [SleeperExtension.info]
+    static let catalog: [SolanumExtension] = [AtlassianExtension.info, SleeperExtension.info]
 
     static func find(_ id: String) -> SolanumExtension? { catalog.first { $0.id == id } }
 
@@ -361,6 +361,9 @@ final class RemoteImages {
 /// A flipped view drawn in one pass that also lays it out: `render()` draws (or, while `measuring`, only works out
 /// how tall it is), and registers clickable spots as it goes. Hover and clicks are handled here.
 class PageCanvas: NSView {
+    /// Solanum's one corner radius, the same as its panes' cards (Cards.radius): every surface an extension page draws
+    /// (cards, rows, panels, forms, buttons, fields) uses it. Only circles, pills, checkboxes and icons differ.
+    static let radius: CGFloat = Cards.radius
     struct Hit {
         let rect: NSRect
         let id: String
@@ -427,6 +430,9 @@ class PageCanvas: NSView {
     }
 
     override func mouseMoved(with e: NSEvent) {
+        // Tracking areas fire under whatever covers this view (the ticket panel over the board, a form over the page):
+        // only the view a click would reach shows hover and sets the pointer.
+        guard isTopmost(at: e.locationInWindow) else { hover = nil; return }
         let h = hitAt(e)
         hover = h?.id
         (h == nil ? NSCursor.arrow : NSCursor.pointingHand).set()
@@ -434,7 +440,14 @@ class PageCanvas: NSView {
 
     override func mouseExited(with e: NSEvent) {
         hover = nil
-        NSCursor.arrow.set()
+        if isTopmost(at: e.locationInWindow) { NSCursor.arrow.set() }
+    }
+
+    /// Whether a click at `p` (in window coordinates) would come to this view (or something in it).
+    private func isTopmost(at p: NSPoint) -> Bool {
+        guard let root = window?.contentView?.superview ?? window?.contentView,
+              let v = root.hitTest(root.convert(p, from: nil)) else { return true }
+        return v === self || v.isDescendant(of: self)
     }
 
     override func mouseDown(with e: NSEvent) {
@@ -575,17 +588,17 @@ class PageCanvas: NSView {
         let fg: NSColor
         switch style {
         case .primary:
-            fill(r, th.accent.withAlphaComponent(enabled ? (down ? 0.75 : hot ? 0.9 : 1) : 0.4), radius: 7)
+            fill(r, th.accent.withAlphaComponent(enabled ? (down ? 0.75 : hot ? 0.9 : 1) : 0.4), radius: PageCanvas.radius)
             fg = th.accent.luminance > 0.55 ? NSColor.black.withAlphaComponent(0.85) : .white
         case .secondary:
-            fill(r, th.foreground.withAlphaComponent(down ? 0.16 : hot ? 0.12 : 0.07), radius: 7)
-            stroke(r, th.border, radius: 7)
+            fill(r, th.foreground.withAlphaComponent(down ? 0.16 : hot ? 0.12 : 0.07), radius: PageCanvas.radius)
+            stroke(r, th.border, radius: PageCanvas.radius)
             fg = enabled ? th.foreground : th.dimText
         case .plain:
-            if hot { fill(r, th.foreground.withAlphaComponent(down ? 0.12 : 0.07), radius: 7) }
+            if hot { fill(r, th.foreground.withAlphaComponent(down ? 0.12 : 0.07), radius: PageCanvas.radius) }
             fg = enabled ? th.accent : th.dimText
         case .danger:
-            fill(r, th.red.withAlphaComponent(down ? 0.3 : hot ? 0.22 : 0.14), radius: 7)
+            fill(r, th.red.withAlphaComponent(down ? 0.3 : hot ? 0.22 : 0.14), radius: PageCanvas.radius)
             fg = th.isDark ? th.red : th.red.mix(.black, 0.25)
         }
         var tx = r.minX + 12
@@ -789,8 +802,8 @@ final class MarketplaceCanvas: PageCanvas {
         let h: CGFloat = 78
         let r = NSRect(x: x, y: y, width: width, height: h)
         let sel = ext.id == selected
-        fill(r, sel ? th.accent.withAlphaComponent(0.12) : hover == "card." + ext.id ? th.foreground.withAlphaComponent(0.05) : th.surface.withAlphaComponent(0.5), radius: 10)
-        if sel { stroke(r, th.accent.withAlphaComponent(0.5), radius: 10) }
+        fill(r, sel ? th.accent.withAlphaComponent(0.12) : hover == "card." + ext.id ? th.foreground.withAlphaComponent(0.05) : th.surface.withAlphaComponent(0.5), radius: PageCanvas.radius)
+        if sel { stroke(r, th.accent.withAlphaComponent(0.5), radius: PageCanvas.radius) }
         hit(r, "card." + ext.id) { [weak self] in self?.selected = ext.id; self?.onChange?() }
         let icon = NSRect(x: x + 12, y: y + 14, width: 46, height: 46)
         if visible(icon) { ext.drawIcon(icon) }
@@ -841,7 +854,7 @@ final class MarketplaceCanvas: PageCanvas {
         if let (msg, good) = messages[ext.id] {
             let mh = paragraphHeight(msg, width: width - 44)
             let box = NSRect(x: x, y: y, width: width, height: mh + 20)
-            fill(box, (good ? th.green : th.red).withAlphaComponent(0.12), radius: 8)
+            fill(box, (good ? th.green : th.red).withAlphaComponent(0.12), radius: PageCanvas.radius)
             symbol(good ? "checkmark.circle.fill" : "exclamationmark.triangle.fill", NSRect(x: x + 8, y: y + 10, width: 16, height: 16), good ? th.green : th.red)
             paragraph(msg, .systemFont(ofSize: 12), th.foreground, x: x + 30, y: y + 10, width: width - 44)
             y += mh + 32
@@ -867,7 +880,7 @@ final class MarketplaceCanvas: PageCanvas {
             }()
             let lh = paragraphHeight(line, width: width - 60)
             let boxH = 12 + max(18, lh) + 12 + 22 + 12 + (installed && status != .registered ? 34 : 0)
-            fill(NSRect(x: box.minX, y: y, width: width, height: boxH), th.surface.withAlphaComponent(0.6), radius: 10)
+            fill(NSRect(x: box.minX, y: y, width: width, height: boxH), th.surface.withAlphaComponent(0.6), radius: PageCanvas.radius)
             symbol(sym, NSRect(x: x + 12, y: by, width: 18, height: 18), color, size: 14)
             paragraph(line, .systemFont(ofSize: 12), th.foreground, x: x + 40, y: by, width: width - 60)
             by += max(18, lh) + 12

@@ -853,8 +853,8 @@ final class StatusBarView: NSView {
     /// clicking it lists the themes.
     var showsThemeName = false { didSet { needsDisplay = true } }
     var onThemeMenu: ((NSRect) -> Void)?
-    /// The Extensions button, left of the theme name: opens the Extensions tab.
-    var onExtensions: (() -> Void)?
+    /// The Extensions button, left of the theme name: lists the installed extensions (and the marketplace).
+    var onExtensions: ((NSRect) -> Void)?
     /// The right sidebar's toggle, at the far right while the window is split.
     var showsRightSidebarToggle = false { didSet { needsDisplay = true } }
     var rightSidebarVisible = false { didSet { needsDisplay = true } }
@@ -980,6 +980,7 @@ final class StatusBarView: NSView {
 
     /// The cup's rect, for its menu to open from.
     var keepAwakeRect: NSRect? { buttons.first { $0.kind == .keepAwake }?.rect }
+    var extensionsRect: NSRect? { buttons.first { $0.kind == .extensions }?.rect }
 
     private func watchKeepAwake() {
         if let o = keepAwakeObserver { NotificationCenter.default.removeObserver(o) }
@@ -1416,7 +1417,7 @@ final class StatusBarView: NSView {
             case .theme:
                 hideThemeCard()
                 onThemeMenu?(b.rect)
-            case .extensions: onExtensions?()
+            case .extensions: onExtensions?(b.rect)
             case .hosts: onShowHosts?(at)
             case .keepAwake: onKeepAwake?(b.rect)
             case .branch: onBranch?()
@@ -2245,7 +2246,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         bar.showsKeepAwake = true
         bar.onKeepAwake = { [weak self] rect in self?.keepAwakeClicked(rect) }
         bar.showsThemeName = true
-        bar.onExtensions = { [weak self] in self?.showExtensions(nil) }
+        bar.onExtensions = { [weak self] rect in self?.extensionsClicked(rect) }
         bar.onThemeMenu = { [weak bar] rect in
             guard let bar else { return }
             let menu = NSMenu()
@@ -2588,9 +2589,35 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     /// ⇧⌘X: the extensions marketplace, above the focused tab's terminal.
     @objc func showExtensions(_ sender: Any?) { Extensions.showMarketplace(in: self) }
 
-    /// An installed extension's page (the menu item's represented object is its id).
+    /// An installed extension's page (the menu item's represented object is its id), in a new tab.
     @objc func showExtensionPage(_ sender: Any?) {
-        guard let id = (sender as? NSMenuItem)?.representedObject as? String, Extensions.showPage(id, in: activeTab) != nil else { return NSSound.beep() }
+        guard let id = (sender as? NSMenuItem)?.representedObject as? String, openExtensionInNewTab(id) else { return NSSound.beep() }
+    }
+
+    /// The status bar's Extensions button: the installed extensions, each opening in a new tab, and Add More (the
+    /// marketplace).
+    private func extensionsClicked(_ rect: NSRect) {
+        let installed = Extensions.catalog.filter { Extensions.isInstalled($0.id) }
+        var items: [DropdownItem] = installed.isEmpty ? [.header("No extensions yet")] : [.header("Extensions")]
+        for ext in installed {
+            var item = DropdownItem.item(ext.name) { [weak self] in _ = self?.openExtensionInNewTab(ext.id) }
+            item.image = NSImage(size: NSSize(width: 14, height: 14), flipped: true) { r in ext.drawIcon(r); return true }
+            items.append(item)
+        }
+        items += [.separator, .item("Add More…", symbol: "bag", detail: "⇧⌘X") { [weak self] in self?.showExtensions(nil) }]
+        ThemedDropdown.show(items, under: rootView.statusBar, rect: rect, minWidth: 240, searchable: false)
+    }
+
+    /// Dev aid (DevTools extensions-menu): clicks the Extensions button.
+    func devClickExtensions() { rootView.statusBar.extensionsRect.map(extensionsClicked) }
+
+    /// An installed extension's page in a new tab, in the folder the current tab's terminal is in (on the same ssh
+    /// host, as ⌃⌘T does). Its terminal sits under the page, as in any tab.
+    @discardableResult
+    func openExtensionInNewTab(_ id: String) -> Bool {
+        guard Extensions.isInstalled(id) else { return false }
+        let tab = focused.newTabOnSameHost()
+        return Extensions.showPage(id, in: tab) != nil
     }
 
     // MARK: Reopening closed tabs

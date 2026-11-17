@@ -725,6 +725,64 @@ enum CoreSelfTest {
             let diff = GitPageLine.parse(Data("diff --git a/x b/x\n@@ -4,2 +4,3 @@ func\r\n same\n-gone\n+new\n+more\n\\ No newline at end of file\n".utf8))
             check("commit: a file's lines, numbered", diff.map(\.kind) == [.hunk, .context, .removed, .added, .added] && diff[1].old == 4 && diff[1].new == 4
                   && diff[2].old == 5 && diff[3].new == 5 && diff[4].new == 6 && diff[0].text == "@@ -4,2 +4,3 @@ func", diff.description)
+            atlassian(results)
         }
+    }
+
+    /// Jira and Bitbucket records, rich text, branch names and pull request diffs (Atlassian.swift).
+    static func atlassian(_ results: Results) {
+        func check(_ name: String, _ cond: Bool, _ detail: @autoclosure () -> String = "") { results.check(name, cond, detail()) }
+        func json(_ s: String) -> Any? { try? JSONSerialization.jsonObject(with: Data(s.utf8)) }
+        check("jira: branch name from a ticket", BranchNames.forIssue(key: "EZ-569", summary: "Add login page (OAuth) — v2!") == "EZ-569-add-login-page-oauth-v2"
+              && BranchNames.forIssue(key: "EZ-1", summary: "Fix it", prefix: "feature/") == "feature/EZ-1-fix-it"
+              && BranchNames.forIssue(key: "EZ-2", summary: String(repeating: "word ", count: 30)).count <= 60, "")
+        check("jira: a team's branch prefix from its branches", BranchNames.prefix(usedIn: ["EZ-1-a", "EZ-2-b", "QA", "remotes/origin/EZ-3-c"]) == nil
+              && BranchNames.prefix(usedIn: ["feature/EZ-1-a", "feature/EZ-2-b", "bugfix/EZ-3"]) == "feature", "")
+        let dev = JiraBranch.parse(devStatus: json(#"{"detail":[{"branches":[{"name":"EZ-5-a","url":"https://bitbucket.org/ws/repo/branch/EZ-5-a","repository":{"name":"repo","url":"https://bitbucket.org/ws/repo"}},{"name":"EZ-5-b","repository":{"name":"Other"}}]}]}"#))
+        let linked = JiraBranch.merged(dev, key: "EZ-5", local: ["main", "EZ-5-a", "origin/EZ-5-c", "origin/EZ-50-x", "ez-5-d"], repo: "ws/repo")
+        check("jira: a ticket's branches, from Jira and the repository", dev.map(\.repository) == ["ws/repo", "Other"]
+              && linked.map(\.name) == ["EZ-5-a", "EZ-5-c", "ez-5-d", "EZ-5-b"] && linked.map(\.inRepo) == [true, true, true, false],
+              linked.map { "\($0.name)@\($0.repository ?? "-")\($0.inRepo)" }.joined(separator: " "))
+        let byID = JiraBranch.parse(devStatus: json(#"{"detail":[{"branches":[{"name":"EZ-7-x","repository":{"name":"Web App","url":"https://bitbucket.org/{}/{e945b092-acfe}"}},{"name":"EZ-7-y","repository":{"name":"other","url":"https://bitbucket.org/{}/{aa}"}}]}]}"#))
+        let once = JiraBranch.merged(byID, key: "EZ-7", local: ["origin/EZ-7-x"], repo: "ws/web-app")
+        check("jira: a branch Jira knows by its repository's id isn't listed twice, nor labeled with the id",
+              byID.map(\.repository) == ["Web App", "other"] && once.map(\.name) == ["EZ-7-x", "EZ-7-y"] && once.map(\.inRepo) == [true, false],
+              once.map { "\($0.name)@\($0.repository ?? "-")\($0.inRepo)" }.joined(separator: " "))
+        let types = BranchType.parse(model: json(#"{"branch_types":[{"kind":"feature","prefix":"feature/","enabled":true},{"kind":"bugfix","prefix":"bugfix/","enabled":true},{"kind":"release","prefix":"release/","enabled":false}]}"#))
+        check("jira: a repository's branch types, and a ticket's by default", types.map(\.prefix) == ["feature/", "bugfix/"]
+              && BranchType.suggested(for: "Bug", from: types)?.kind == "bugfix" && BranchType.suggested(for: "Story", from: types)?.kind == "feature"
+              && BranchType.suggested(for: "Task", from: []) == nil, "")
+        check("jira: branch names git takes", BranchNames.isValid("EZ-1-a/b") && !BranchNames.isValid("a..b") && !BranchNames.isValid("a b")
+              && !BranchNames.isValid("x.lock") && !BranchNames.isValid("-x"), "")
+        check("jira: issue keys in text", IssueKeys.all(in: "EZ-569-login and ez-12, not AB-x or 1EZ-3 or EZ-4a") == ["EZ-569", "EZ-12"]
+              && IssueKeys.first(in: "feature/PATH2-77-x") == "PATH2-77", String(describing: IssueKeys.all(in: "EZ-569-login and ez-12, not AB-x or 1EZ-3 or EZ-4a")))
+        let issue = JiraIssue(json(#"{"id":"1","key":"EZ-5","fields":{"summary":"S","status":{"id":"11023","name":"In Progress","statusCategory":{"key":"indeterminate"}},"issuetype":{"name":"Improvement ","subtask":false},"priority":{"name":"High"},"assignee":{"accountId":"a1","displayName":"Ann","avatarUrls":{"48x48":"https://x/a.png"}},"parent":{"key":"EZ-1","fields":{"summary":"Epic"}},"customfield_10704":3,"updated":"2026-11-12T17:14:03.123-0800","description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Hi "},{"type":"mention","attrs":{"text":"@Bo"}}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"one"}]},{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"deep"}]}]}]}]}]},{"type":"codeBlock","content":[{"type":"text","text":"x = 1"}]}]}}}"#),
+                              storyPointsField: "customfield_10704")
+        check("jira: an issue from the API", issue?.type == "Improvement" && issue?.status.category == "indeterminate" && issue?.assignee?.avatarURL == "https://x/a.png"
+              && issue?.parentSummary == "Epic" && issue?.storyPoints == 3 && issue?.updated != nil && issue?.projectKey == "EZ", String(describing: issue))
+        check("jira: rich text as blocks", issue?.description == [DocBlock(kind: .paragraph, text: "Hi @Bo"), DocBlock(kind: .item(depth: 0, number: nil), text: "one"),
+                                                                   DocBlock(kind: .item(depth: 1, number: nil), text: "deep"), DocBlock(kind: .code, text: "x = 1")],
+              String(describing: issue?.description))
+        let typed = "First line\nsecond\n\n- a\n- b\n\n1. x\n\n```\ncode\n```"
+        let round = ADF.blocks(ADF.document(typed))
+        check("jira: typed text to rich text and back", round.map(\.kind) == [.paragraph, .item(depth: 0, number: nil), .item(depth: 0, number: nil), .item(depth: 0, number: 1), .code]
+              && round[0].text == "First line\nsecond" && ADF.plainText(round) == "First line\nsecond\n\n- a\n- b\n\n1. x\n\n```\ncode\n```", ADF.plainText(round))
+        let config = JiraBoardConfig(json(#"{"columnConfig":{"columns":[{"name":"Backlog","statuses":[]},{"name":"To Do","statuses":[{"id":"1"}]},{"name":"Doing","statuses":[{"id":"2"},{"id":"3"}]}]},"estimation":{"field":{"fieldId":"customfield_9"}}}"#))
+        check("jira: a board's columns (empty ones left out)", config?.columns.map(\.name) == ["To Do", "Doing"] && config?.storyPointsField == "customfield_9"
+              && config?.column(of: JiraStatus(id: "3", name: "", category: "")) == 1, String(describing: config))
+        let ts = [JiraTransition(id: "21", name: "Start", to: JiraStatus(id: "3", name: "Review", category: "indeterminate")),
+                  JiraTransition(id: "31", name: "Done", to: JiraStatus(id: "9", name: "Done", category: "done"))]
+        check("jira: the transition into a column", JiraTransition.into(["2", "3"], from: ts)?.id == "21" && JiraTransition.into(["7"], from: ts) == nil, "")
+        check("bitbucket: a repository from its remote", BitbucketRepo(remote: "git@bitbucket.org:acme/web-app.git")?.path == "acme/web-app"
+              && BitbucketRepo(remote: "https://me@bitbucket.org/ws/repo-x")?.slug == "repo-x" && BitbucketRepo(remote: "ssh://git@bitbucket.org/ws/r.git/")?.slug == "r"
+              && BitbucketRepo(remote: "git@github.com:a/b.git") == nil, "")
+        let pr = BitbucketPullRequest(json(#"{"id":7,"title":"EZ-9: Thing","state":"OPEN","source":{"branch":{"name":"EZ-9-thing"},"commit":{"hash":"abc"}},"destination":{"branch":{"name":"QA"},"repository":{"full_name":"ws/r"}},"participants":[{"user":{"uuid":"{u1}","display_name":"Ann"},"role":"REVIEWER","approved":true,"state":"approved"},{"user":{"uuid":"{u2}","display_name":"Bo"},"role":"PARTICIPANT","approved":false,"state":"changes_requested"}],"comment_count":2,"links":{"html":{"href":"https://bitbucket.org/ws/r/pull-requests/7"}}}"#))
+        check("bitbucket: a pull request", pr?.issueKey == "EZ-9" && pr?.approvals == 1 && pr?.changesRequested == true && pr?.approved(by: "{u1}") == true
+              && pr?.repo?.path == "ws/r" && pr?.destination == "QA", String(describing: pr))
+        let files = DiffFile.parse("diff --git a/a.txt b/a.txt\nindex 1..2 100644\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n"
+                                   + "diff --git a/new.bin b/new.bin\nnew file mode 100644\nBinary files /dev/null and b/new.bin differ\n"
+                                   + "diff --git a/x.txt b/x.txt\ndeleted file mode 100644\n--- a/x.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n")
+        check("bitbucket: a pull request's diff, file by file", files.count == 3 && files[0].added == 1 && files[0].removed == 1 && files[0].lines[1].old == 1
+              && files[0].lines[3].new == 2 && files[1].isBinary && files[2].newPath == nil && files[2].path == "x.txt" && files[2].removed == 1, String(describing: files))
     }
 }

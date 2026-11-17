@@ -799,7 +799,7 @@ final class ThemedField: NSTextField, NSTextFieldDelegate {
         let th = Config.shared.theme
         stringValue = text
         placeholderAttributedString = NSAttributedString(string: placeholder, attributes: [.foregroundColor: th.dimText.withAlphaComponent(0.6),
-                                                                                           .font: NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)])
+                                                                                           .font: mono ? NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular) : NSFont.systemFont(ofSize: 13)])
         font = mono ? .monospacedSystemFont(ofSize: 12.5, weight: .regular) : .systemFont(ofSize: 13)
         textColor = th.foreground
         isBordered = false
@@ -818,6 +818,12 @@ final class ThemedField: NSTextField, NSTextFieldDelegate {
 
     private var hovering = false { didSet { updateBorder() } }
     private var editing = false { didSet { updateBorder() } }
+
+    // Focused before it had its size (a page's first field), its text kept the old place: moved with the field.
+    override func setFrameSize(_ s: NSSize) {
+        super.setFrameSize(s)
+        recenterEditor()
+    }
 
     private func updateBorder() {
         let th = Config.shared.theme
@@ -2208,4 +2214,14 @@ final class NewAliasButton: NSView {
     override func mouseExited(with e: NSEvent) { hovering = false }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
     override func mouseDown(with e: NSEvent) { onCreate?() }
+}
+
+extension NSTextField {
+    /// Puts the text being typed where the cell draws it now: AppKit places the field editor once, when editing
+    /// begins, and leaves it there if the field is then resized (or first laid out).
+    func recenterEditor() {
+        guard let editor = currentEditor(), let clip = editor.superview, clip !== self, let cell else { return }
+        let r = cell.titleRect(forBounds: bounds)
+        if clip.frame != r { clip.frame = r }
+    }
 }
