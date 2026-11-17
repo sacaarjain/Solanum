@@ -185,6 +185,19 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-find"), CommandLine.a
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }
 
+// A Markdown file's preview, as its page shows it: --draw-markdown <file.md> <png> [width]
+if let flag = CommandLine.arguments.firstIndex(of: "--draw-markdown"), CommandLine.arguments.indices.contains(flag + 2) {
+    let args = CommandLine.arguments, width = args.indices.contains(flag + 3) ? Int(args[flag + 3]) ?? 900 : 900, height = 700
+    guard let text = FileManager.default.contents(atPath: args[flag + 1]), let canvas = Canvas(width: width, height: height, fontPixels: 15) else { exit(1) }
+    let preview = MarkdownPreviewPanel(path: args[flag + 1], name: WindowsPath.name(args[flag + 1])) { _, done in done(text, false) }
+    preview.cellSize = (canvas.metrics.cellWidth, canvas.metrics.cellHeight)
+    preview.reload()
+    guard sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { exit(1) }
+    preview.draw(on: canvas, in: UIRect(x: 0, y: 0, width: Float(width), height: Float(height)), scale: 1)
+    guard sol_canvas_end(canvas.raw) >= 0 else { exit(1) }
+    exit(canvas.savePNG(to: args[flag + 2]) ? 0 : 1)
+}
+
 // Git Graph with its filters, on the repository in the folder given, at 200%: --draw-graph <png> <folder>
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-graph"), CommandLine.arguments.indices.contains(flag + 2) {
     let width: Float = 1500, height: Float = 640, s: Float = 2

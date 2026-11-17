@@ -218,31 +218,55 @@ final class MarkdownPreviewPanel: ColumnPanel {
                 let columnCount = max(headerCells.count, rows.map(\.count).max() ?? 0)
                 guard columnCount > 0 else { continue }
                 func plain(_ spans: [MarkdownDoc.Span]) -> String { spans.map(\.text).joined() }
+                let cellPad = 13 * s
+                // Each column as wide as its widest cell. Too wide for the page, those that fit a fair share keep their
+                // width, and the rest share what's left by how wide they'd be; their text wraps, as GitHub's does.
                 var widths = [Float](repeating: 40 * s, count: columnCount)
-                for (i, cell) in headerCells.enumerated() { widths[i] = max(widths[i], measure(canvas, plain(cell), 14 * s, 1) + 26 * s) }
-                for row in rows { for (i, cell) in row.enumerated() where i < columnCount { widths[i] = max(widths[i], measure(canvas, plain(cell), 14 * s, 0) + 26 * s) } }
-                let total = widths.reduce(0, +)
-                if total > width { widths = widths.map { $0 * width / total } }
-                let rh = 34 * s
+                for (i, cell) in headerCells.enumerated() { widths[i] = max(widths[i], measure(canvas, plain(cell), 14 * s, 1) + cellPad * 2) }
+                for row in rows { for (i, cell) in row.enumerated() where i < columnCount { widths[i] = max(widths[i], measure(canvas, plain(cell), 14 * s, 0) + cellPad * 2) } }
+                if widths.reduce(0, +) > width {
+                    var fixed = Set<Int>(), room = width
+                    // Settled one at a time, narrowest first, as each that fits leaves the others more.
+                    while true {
+                        let open = (0..<columnCount).filter { !fixed.contains($0) }
+                        guard !open.isEmpty, let i = open.min(by: { widths[$0] < widths[$1] }), widths[i] <= room / Float(open.count) else { break }
+                        fixed.insert(i)
+                        room -= widths[i]
+                    }
+                    let open = (0..<columnCount).filter { !fixed.contains($0) }, wanted = open.reduce(Float(0)) { $0 + widths[$1] }
+                    for i in open { widths[i] = max((room * widths[i] / max(wanted, 1)).rounded(.down), 60 * s) }
+                }
+                let total = widths.reduce(0, +), line = max(1, s.rounded()), padY = 6 * s
                 for (r, row) in ([headerCells] + rows).enumerated() {
-                    var x = x0
-                    if r == 0 { items.append(.rect(UIRect(x: x0, y: y, width: min(total, width), height: rh), color: fg, alpha: 0.06, radius: 0)) }
-                    else if r % 2 == 0 { items.append(.rect(UIRect(x: x0, y: y, width: min(total, width), height: rh), color: fg, alpha: 0.03, radius: 0)) }
                     layoutBlock += 1
+                    // The row's cells laid out first, to know how tall the row is: as tall as its tallest cell.
+                    var cellItems: [Item] = [], bottom = y + 34 * s
+                    var x = x0
                     for i in 0..<columnCount {
-                        let text = i < row.count ? plain(row[i]) : ""
-                        items.append(.text(text, x: x + 13 * s, y: y, width: max(widths[i] - 26 * s, 0), height: rh, pixels: 14 * s, flags: r == 0 ? 1 : 0, color: fg, alpha: 1))
-                        var run = Run(text: text, rect: UIRect(x: x + 13 * s, y: y, width: min(measure(canvas, text, 14 * s, r == 0 ? 1 : 0), max(widths[i] - 26 * s, 0)), height: rh),
-                                      pixels: 14 * s, flags: r == 0 ? 1 : 0, mono: false, block: layoutBlock)
-                        run.cell = true
-                        layoutRuns.append(run)
-                        items.append(.rect(UIRect(x: x, y: y, width: max(1, s.rounded()), height: rh), color: fg, alpha: 0.15, radius: 0))
+                        let spans = i < row.count ? row[i] : [], firstRun = layoutRuns.count
+                        let end = flow(spans, x0: x + cellPad, width: max(widths[i] - cellPad * 2, 1), y: y + padY, pixels: 14 * s, bold: r == 0, color: fg,
+                                       canvas: canvas, s: s, into: &cellItems, links: &links)
+                        bottom = max(bottom, end + padY)
+                        // Its first run starts the cell (copied with a tab before it); an empty cell still has one.
+                        if layoutRuns.count == firstRun {
+                            layoutRuns.append(Run(text: "", rect: UIRect(x: x + cellPad, y: y + padY, width: 0, height: 20 * s), pixels: 14 * s,
+                                                  flags: r == 0 ? 1 : 0, mono: false, block: layoutBlock))
+                        }
+                        layoutRuns[firstRun].cell = true
                         x += widths[i]
                     }
-                    items.append(.rect(UIRect(x: x, y: y, width: max(1, s.rounded()), height: rh), color: fg, alpha: 0.15, radius: 0))
-                    items.append(.rect(UIRect(x: x0, y: y, width: x - x0, height: max(1, s.rounded())), color: fg, alpha: 0.15, radius: 0))
+                    let rh = bottom - y
+                    if r == 0 { items.append(.rect(UIRect(x: x0, y: y, width: total, height: rh), color: fg, alpha: 0.06, radius: 0)) }
+                    else if r % 2 == 0 { items.append(.rect(UIRect(x: x0, y: y, width: total, height: rh), color: fg, alpha: 0.03, radius: 0)) }
+                    items += cellItems
+                    x = x0
+                    for i in 0...columnCount {
+                        items.append(.rect(UIRect(x: x, y: y, width: line, height: rh), color: fg, alpha: 0.15, radius: 0))
+                        if i < columnCount { x += widths[i] }
+                    }
+                    items.append(.rect(UIRect(x: x0, y: y, width: total, height: line), color: fg, alpha: 0.15, radius: 0))
                     y += rh
-                    if r == rows.count { items.append(.rect(UIRect(x: x0, y: y, width: x - x0, height: max(1, s.rounded())), color: fg, alpha: 0.15, radius: 0)) }
+                    if r == rows.count { items.append(.rect(UIRect(x: x0, y: y, width: total, height: line), color: fg, alpha: 0.15, radius: 0)) }
                 }
                 y += 14 * s
             case .rule:
