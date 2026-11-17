@@ -2974,6 +2974,21 @@ final class TerminalWindow {
     }
 
     /// The Extensions page in a sub-tab of its own (Ctrl+Shift+X), as on the Mac.
+    /// The status bar's Extensions button, as the Mac's: the installed extensions, each opening in a new tab, and Add More
+    /// (the marketplace). None can be installed on Windows yet, so it says so above Add More.
+    private func extensionsClicked(_ r: UIRect) {
+        var items: [MenuItem] = [.header("No extensions yet")]
+        items += [.separator, MenuItem(title: "Add More\u{2026}", icon: 0xE719, shortcut: "Ctrl+Shift+X", run: { [weak self] in self?.showExtensions() })]
+        openMenu(items, x: r.x, y: r.y - 4 * scale, above: true, minWidth: 240 * scale)
+    }
+
+    /// For tests: what a tab's saved session keeps of its pages (a page's kind, else its path).
+    func savedPagesForTest(of tab: Int) -> [String] {
+        let tabs = currentSession().tabs
+        guard tabs.indices.contains(tab) else { return [] }
+        return (tabs[tab].pages ?? []).map { $0.page ?? $0.path }
+    }
+
     func showExtensions() {
         let pane = activePane, key = "extensions"
         if focusEditor(key, in: pane) { return }
@@ -3045,9 +3060,15 @@ final class TerminalWindow {
                                        resume: pane.resumeCommand ?? pane.resumeOnShow)
             if let shell = pane.shell, shell != Shells.defaultShell { tab.shell = shell.id }
             tab.history = pane.historyID
-            // Its files on this PC, and their previews, as on the Mac (an ssh host's, and git's pages, aren't kept).
+            // Its files on this PC, and their previews, and the Extensions page, as on the Mac (an ssh host's, and git's
+            // pages, aren't kept).
             var pages: [SavedSession.Page] = [], active: Int?
             for (i, item) in pane.editors.enumerated() {
+                if item.key == "extensions" {
+                    if i == pane.activeEditor { active = pages.count }
+                    pages.append(SavedSession.Page(path: "", page: "extensions"))
+                    continue
+                }
                 let parts = item.key.split(separator: "\n", maxSplits: 2, omittingEmptySubsequences: false)
                 guard parts.count == 3, parts[1] == "local", parts[0] == "file" || parts[0] == "preview" else { continue }
                 if i == pane.activeEditor { active = pages.count }
@@ -3101,8 +3122,9 @@ final class TerminalWindow {
             let pane = activePane
             let pages = tab.pages ?? tab.file.map { [SavedSession.Page(path: $0, preview: nil)] } ?? []
             var shown: Int?
-            for (i, page) in pages.enumerated() where FileManager.default.fileExists(atPath: page.path) {
-                if page.preview == true { showPreview(page.path, in: pane) } else { showFile(page.path, in: pane, focus: false) }
+            for (i, page) in pages.enumerated() where page.page == "extensions" || FileManager.default.fileExists(atPath: page.path) {
+                if page.page == "extensions" { showExtensions() }
+                else if page.preview == true { showPreview(page.path, in: pane) } else { showFile(page.path, in: pane, focus: false) }
                 if i == tab.activePage { shown = pane.editors.count - 1 }
             }
             if !pane.editors.isEmpty {
@@ -4758,7 +4780,7 @@ final class TerminalWindow {
             }
             return false
         case Win.WM_LBUTTONUP where onExtensions:
-            showExtensions()
+            extensionsClicked(bar.extensionsSpot())
             return true
         case Win.WM_LBUTTONUP where onTheme:
             showThemeMenu(above: bar.themeSpot())

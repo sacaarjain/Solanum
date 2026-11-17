@@ -35,6 +35,9 @@ struct SavedSession: Codable {
         var path: String
         /// A Markdown file's preview, rather than the file.
         var preview: Bool?
+        /// A page that isn't a file, as on the Mac: "extensions" (the marketplace), or an extension's id. Its path is
+        /// empty, so a build from before pages were kept skips it.
+        var page: String?
     }
     struct Group: Codable {
         var name: String

@@ -25,8 +25,9 @@ final class ExtensionsPanel: ColumnPanel {
             y += 22 * s
             // An empty card where the extensions would be listed.
             let card = UIRect(x: a.x + pad, y: y, width: min(width, 320 * s), height: 56 * s)
-            sol_canvas_fill_rounded(canvas.raw, card.x, card.y, card.width, card.height, 10 * s, TerminalPalette.foreground, 0.04)
-            sol_canvas_stroke_rounded(canvas.raw, card.x + 0.5, card.y + 0.5, card.width - 1, card.height - 1, 10 * s, TerminalPalette.foreground, 0.08, 1)
+            // Solanum's one corner radius, its panes' cards', as every surface an extension page draws has on the Mac.
+            sol_canvas_fill_rounded(canvas.raw, card.x, card.y, card.width, card.height, 8 * s, TerminalPalette.foreground, 0.04)
+            sol_canvas_stroke_rounded(canvas.raw, card.x + 0.5, card.y + 0.5, card.width - 1, card.height - 1, 8 * s, TerminalPalette.foreground, 0.08, 1)
             p.icon(0xEA86, UIRect(x: card.x + 12 * s, y: card.y, width: 24 * s, height: card.height), pixels: 14, alpha: 0.35)
             let text = Array(empty.utf16)
             _ = sol_canvas_paragraph(canvas.raw, card.x + 44 * s, card.y + (title == "Installed" ? 19 : 11) * s, card.width - 56 * s, text, Int32(text.count), 12 * s, 0,

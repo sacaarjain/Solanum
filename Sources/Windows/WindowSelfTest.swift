@@ -1837,10 +1837,19 @@ enum WindowSelfTest {
         }))
         steps.append(Step(name: "new tab: closes", action: { press(0x57) }, done: { window.panes.count == 2 }))
         // Themes.
-        // Extensions, as on the Mac: the puzzle piece left of the theme's name opens its page; Ctrl+Shift+X closes it.
-        steps.append(Step(name: "themes: the Extensions button opens its page", action: { window.click(window.extensionsSpotRect) }, done: {
-            guard pane.panel is ExtensionsPanel else { return false }
+        // Extensions, as on the Mac: the puzzle piece left of the theme's name lists what's installed and Add More, which
+        // opens the page; the page is kept with the tab's session; Ctrl+Shift+X closes it.
+        steps.append(Step(name: "themes: the Extensions button lists them, and Add More", action: { window.click(window.extensionsSpotRect) }, done: {
+            window.menuTitles.contains("No extensions yet") && window.menuTitles.contains("Add More\u{2026}")
+        }))
+        steps.append(Step(name: "themes: Add More opens the Extensions page", action: {
+            if let row = window.menuRow("Add More\u{2026}") { window.click(row) }
+        }, done: {
+            guard pane.panel is ExtensionsPanel, !window.isMenuOpen else { return false }
             return snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\extensions.png") } ?? true
+        }))
+        steps.append(Step(name: "themes: the Extensions page is kept with the tab", action: {}, done: {
+            window.savedPagesForTest(of: window.activeIndex).contains("extensions")
         }))
         steps.append(Step(name: "themes: Ctrl+Shift+X closes it", action: { press(0x58, shift: true) }, done: { !(pane.panel is ExtensionsPanel) }))
         steps.append(Step(name: "themes: the status bar's theme opens the menu", action: { window.click(window.themeSpotRect) },
