@@ -309,11 +309,21 @@ enum ExtensionChat {
 // MARK: Pictures from the web
 
 /// Player photos, team logos and avatars: fetched once, kept in memory and on disk (~/Library/Caches).
+///
+/// A picture that doesn't come is tried again, sooner after a network error (10s, doubling to 5 minutes) than after
+/// a 403 or 404 (an hour), and the page is redrawn when it's due, so it comes back by itself. A fetch that never
+/// finishes is given up on after a minute and tried again. Each of these goes to ~/Library/Logs/Solanum/images.log
+/// (what failed, why, and how many are loading and failing), to say why a page shows initials instead of photos.
 final class RemoteImages {
     static let shared = RemoteImages()
     private let cache = NSCache<NSURL, NSImage>()
-    private var loading: Set<URL> = []
-    private var failed: [URL: Date] = [:]
+    /// Fetches under way, and when each began.
+    private var loading: [URL: Date] = [:]
+    /// Pictures that didn't come: when to try again, how many tries so far, and why the last one failed.
+    private var failed: [URL: (retry: Date, attempts: Int, problem: String)] = [:]
+    private var retryTimer: Timer?
+    /// A fetch taking longer than this is taken to be stuck.
+    static let stuckAfter: TimeInterval = 60
     private lazy var dir: URL = {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let d = base.appendingPathComponent((Bundle.main.bundleIdentifier ?? "local.solanum.terminal") + "/images", isDirectory: true)
@@ -330,29 +340,124 @@ final class RemoteImages {
     func image(_ url: URL?) -> NSImage? {
         guard let url else { return nil }
         if let img = cache.object(forKey: url as NSURL) { return img }
-        if loading.contains(url) { return nil }
-        if let f = failed[url], Date().timeIntervalSince(f) < 600 { return nil }
-        loading.insert(url)
+        let now = Date()
+        if let started = loading[url] {
+            guard now.timeIntervalSince(started) > Self.stuckAfter else { return nil }
+            Self.log("stuck \(Int(now.timeIntervalSince(started)))s, trying again: \(url.absoluteString)\(state)")
+        }
+        if let f = failed[url], now < f.retry { return nil }
+        loading[url] = now
         let path = file(for: url)
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            var data = try? Data(contentsOf: path)
-            if data == nil, !Headless.active || ProcessInfo.processInfo.environment["SOLANUM_SNAPSHOT_NET"] != nil {
-                data = try? Sleeper.fetch(url)
-                if let d = data, NSImage(data: d) != nil { try? d.write(to: path, options: .atomic) }
-            }
-            let img = data.flatMap(NSImage.init(data:))
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.loading.remove(url)
-                if let img {
-                    self.cache.setObject(img, forKey: url as NSURL)
-                    NotificationCenter.default.post(name: .solanumRemoteImageLoaded, object: url)
-                } else {
-                    self.failed[url] = Date()
-                }
-            }
+        let attempts = failed[url]?.attempts ?? 0
+        DispatchQueue.global(qos: .utility).async {
+            let (img, problem, permanent) = Self.load(url, from: path)
+            DispatchQueue.main.async { self.finished(url, img, problem: problem, permanent: permanent, attempts: attempts) }
         }
         return nil
+    }
+
+    /// From disk, or else from the web (and then kept on disk): the picture, or why there isn't one and whether
+    /// trying again soon would help.
+    private static func load(_ url: URL, from path: URL) -> (NSImage?, String, Bool) {
+        var problem = "not cached"
+        do {
+            let d = try Data(contentsOf: path)
+            if let img = NSImage(data: d) { return (img, "", false) }
+            // A bad copy: fetched again below.
+            try? FileManager.default.removeItem(at: path)
+            problem = "cached copy (\(d.count) bytes) didn't decode, removed"
+        } catch CocoaError.fileReadNoSuchFile {
+        } catch {
+            problem = "cached copy unreadable: \(error.localizedDescription)"
+        }
+        guard !Headless.active || ProcessInfo.processInfo.environment["SOLANUM_SNAPSHOT_NET"] != nil else {
+            return (nil, problem + " (headless, no network)", false)
+        }
+        do {
+            let d = try Sleeper.fetch(url)
+            guard let img = NSImage(data: d) else { return (nil, problem + "; fetched \(d.count) bytes that didn't decode", false) }
+            try? d.write(to: path, options: .atomic)
+            return (img, "", false)
+        } catch SleeperError.http(let code, _) where code == 403 || code == 404 {
+            return (nil, problem + "; HTTP \(code)", true)
+        } catch {
+            return (nil, problem + "; " + error.localizedDescription, false)
+        }
+    }
+
+    private func finished(_ url: URL, _ img: NSImage?, problem: String, permanent: Bool, attempts: Int) {
+        loading[url] = nil
+        if let img {
+            cache.setObject(img, forKey: url as NSURL)
+            if let f = failed.removeValue(forKey: url) {
+                Self.log("loaded after \(f.attempts) failed tries: \(url.absoluteString)")
+            }
+            NotificationCenter.default.post(name: .solanumRemoteImageLoaded, object: url)
+            return
+        }
+        let n = attempts + 1
+        let wait: TimeInterval = permanent ? 3600 : min(300, 10 * pow(2, Double(min(n, 6) - 1)))
+        failed[url] = (Date().addingTimeInterval(wait), n, problem)
+        // The first few tries, then now and then, so a long outage doesn't fill the log.
+        if n <= 3 || n % 12 == 0 {
+            Self.log("failed (try \(n), again in \(Int(wait))s): \(problem): \(url.absoluteString)\(state)")
+        }
+        scheduleRetry()
+    }
+
+    /// Redraws the pages when the next failed picture is due, so it's tried again without waiting for a click.
+    private func scheduleRetry() {
+        let now = Date()
+        guard let next = failed.values.map(\.retry).filter({ $0 > now }).min() else { return }
+        if let t = retryTimer, t.isValid, t.fireDate <= next { return }
+        retryTimer?.invalidate()
+        let t = Timer(fire: next.addingTimeInterval(0.1), interval: 0, repeats: false) { [weak self] _ in
+            self?.retryTimer = nil
+            NotificationCenter.default.post(name: .solanumRemoteImageLoaded, object: nil)
+        }
+        RunLoop.main.add(t, forMode: .common)
+        retryTimer = t
+    }
+
+    /// How many are loading (and the oldest) and failing, for the log.
+    private var state: String {
+        let oldest = loading.values.min().map { " (oldest \(Int(Date().timeIntervalSince($0)))s)" } ?? ""
+        return " [loading \(loading.count)\(oldest), failed \(failed.count), pid \(getpid())]"
+    }
+
+    // MARK: The log
+
+    private static let logQueue = DispatchQueue(label: "solanum.images.log")
+    private static let logPath: String? = {
+        if let p = ProcessInfo.processInfo.environment["SOLANUM_IMAGES_LOG"] { return p }
+        return Headless.active ? nil : NSHomeDirectory() + "/Library/Logs/Solanum/images.log"
+    }()
+    private static let stamp: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return f
+    }()
+
+    /// Appends a line; past 512 KB the log moves to images.old.log and starts again.
+    static func log(_ text: String) {
+        guard let path = logPath else { return }
+        let line = stamp.string(from: Date()) + " " + text + "\n"
+        logQueue.async {
+            let fm = FileManager.default
+            if let size = (try? fm.attributesOfItem(atPath: path))?[.size] as? Int, size > 512 * 1024 {
+                let old = (path as NSString).deletingPathExtension + ".old.log"
+                try? fm.removeItem(atPath: old)
+                try? fm.moveItem(atPath: path, toPath: old)
+            }
+            if !fm.fileExists(atPath: path) {
+                try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+                fm.createFile(atPath: path, contents: nil)
+            }
+            guard let h = FileHandle(forWritingAtPath: path) else { return }
+            h.seekToEndOfFile()
+            h.write(line.data(using: .utf8)!)
+            h.closeFile()
+        }
     }
 }
 
