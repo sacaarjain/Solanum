@@ -476,6 +476,16 @@ enum CoreSelfTest {
             check("images: a sent prompt's attachments", listed?.map(\.number) == [3, 12], "\(String(describing: listed))")
             check("images: an image mentioned in a line isn't an attachment", im.line(abs: im.screenTopAbs).flatMap(ImageTokens.attachments) == nil
                   && im.line(abs: im.screenTopAbs + 2).flatMap(ImageTokens.attachments) == nil)
+            // A resumed session numbers from 1 again in the same folder: its new "1.jpg" beside the old "1.png" wins.
+            let imageDir = NSTemporaryDirectory() + "solanum-images-\(UUID().uuidString)/"
+            try? FileManager.default.createDirectory(atPath: imageDir, withIntermediateDirectories: true)
+            _ = FileManager.default.createFile(atPath: imageDir + "1.png", contents: Data([1]),
+                                               attributes: [.modificationDate: Date(timeIntervalSinceNow: -3600)])
+            _ = FileManager.default.createFile(atPath: imageDir + "1.jpg", contents: Data([2]))
+            let newest = ImageTokens.newestFile(1, in: imageDir)?.path
+            check("images: a resumed session's new image beats the old one with its number", newest?.hasSuffix("1.jpg") == true
+                  && ImageTokens.newestFile(2, in: imageDir) == nil, "\(String(describing: newest))")
+            try? FileManager.default.removeItem(atPath: imageDir)
             let laid = ImageTokens.wrap([(1600, 900), (400, 400)], in: ImageTokens.Rect(x: 10, y: 0, width: 300, height: 40), bottom: false, minHeight: 12)
             check("images: thumbnails share a row, one height, in order", laid.count == 2 && laid[0].height == laid[1].height
                   && laid[0].x == 10 && laid[1].x > laid[0].maxX && laid[1].maxX <= 310, "\(laid)")

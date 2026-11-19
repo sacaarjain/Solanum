@@ -13,6 +13,20 @@ enum ImageTokens {
         let number: Int
     }
 
+    static let fileExtensions = ["png", "jpg", "jpeg", "gif", "webp"]
+
+    /// Claude Code's file for image `n` in a session's images folder (`dir` ending in a separator), and when it was
+    /// written. A resumed session keeps its folder but numbers its images from 1 again, so "1.png" from before can sit
+    /// beside the new "1.jpg", or be written over: the newest is the one meant.
+    static func newestFile(_ n: Int, in dir: String) -> (path: String, modified: Date)? {
+        let fm = FileManager.default
+        return fileExtensions.compactMap { ext -> (String, Date)? in
+            let path = dir + "\(n).\(ext)"
+            guard let date = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date else { return nil }
+            return (path, date)
+        }.max { $0.1 < $1.1 }
+    }
+
     /// Blank in Claude Code's output, which lays out with no-break spaces.
     static func isSpace(_ ch: UInt32) -> Bool { ch == 0 || ch == 0x20 || ch == 0xA0 }
 
