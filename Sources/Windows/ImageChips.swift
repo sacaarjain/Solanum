@@ -16,12 +16,14 @@ enum ClaudeImages {
         let path: String
         let width: Int32
         let height: Int32
+        /// When the file was written: a resumed session's new "1.png" replaces the old one under the same name.
+        var modified = Date.distantPast
     }
 
-    private static var found: [String: Found] = [:]
+    /// Files found, and when last looked at again (a resumed session reuses numbers, so a found file can be replaced).
+    private static var found: [String: (found: Found, checked: Date)] = [:]
     /// Lookups that came up empty: when first and last tried (Claude may still be writing the file).
     private static var missing: [String: (first: Date, last: Date)] = [:]
-    private static let extensions = ["png", "jpg", "jpeg", "gif", "webp"]
     /// The Claude under each shell and its session, looked at again every couple of seconds (/clear and /resume
     /// change the session).
     private static var sessions: [DWORD: (id: String?, checked: Date)] = [:]
@@ -74,18 +76,24 @@ enum ClaudeImages {
     /// way (the caller draws again soon to look).
     static func lookup(_ n: Int, session: String, canvas: Canvas, retry: inout Bool) -> Found? {
         let key = "\(session)|\(n)"
-        if let f = found[key] { return f }
         let now = Date()
+        if let f = found[key], now.timeIntervalSince(f.checked) < 1 { return f.found }
         if let m = missing[key], now.timeIntervalSince(m.last) < 0.25 {
             if now.timeIntervalSince(m.first) < 10 { retry = true }
             return nil
         }
         let dir = folder(for: session)
-        guard let dir, let path = extensions.lazy.map({ dir + "\\\(n).\($0)" }).first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+        guard let dir, let newest = ImageTokens.newestFile(n, in: dir + "\\") else {
+            if let f = found[key] { return f.found }
             let first = missing[key]?.first ?? now
             missing[key] = (first, now)
             if now.timeIntervalSince(first) < 10 { retry = true }
             return nil
+        }
+        let path = newest.path, modified = newest.modified
+        if let f = found[key], f.found.path == path, f.found.modified == modified {
+            found[key] = (f.found, now)
+            return f.found
         }
         var w: Int32 = 0, h: Int32 = 0
         guard wide(path).withUnsafeBufferPointer({ sol_image_file_size(canvas.raw, $0.baseAddress, &w, &h) }) >= 0, w > 0, h > 0 else {
@@ -93,17 +101,17 @@ enum ClaudeImages {
             retry = true
             return nil
         }
-        let f = Found(path: path, width: w, height: h)
-        found[key] = f
+        let f = Found(path: path, width: w, height: h, modified: modified)
+        found[key] = (f, now)
         missing[key] = nil
         return f
     }
 
-    /// Images to draw, by canvas and file, made no bigger than they're shown.
+    /// Images to draw, by canvas, file and when it was written, made no bigger than they're shown.
     private static var images: [String: Int32] = [:]
 
     static func image(_ f: Found, on canvas: Canvas) -> Int32? {
-        let key = "\(ObjectIdentifier(canvas))|\(f.path)"
+        let key = "\(ObjectIdentifier(canvas))|\(f.path)|\(f.modified.timeIntervalSince1970)"
         if let known = images[key] { return known >= 0 ? known : nil }
         let made = wide(f.path).withUnsafeBufferPointer { sol_canvas_load_image_file(canvas.raw, $0.baseAddress, 900) }
         images[key] = made
