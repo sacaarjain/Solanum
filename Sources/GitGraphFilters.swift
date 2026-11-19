@@ -66,7 +66,7 @@ final class GraphBranchList: NSView, NSTextFieldDelegate {
 
     override func draw(_ dirtyRect: NSRect) {
         let th = Config.shared.theme
-        let box = NSBezierPath(roundedRect: field.frame, xRadius: 6, yRadius: 6)
+        let box = NSBezierPath(roundedRect: pixelAligned(field.frame), xRadius: 6, yRadius: 6)
         th.foreground.withAlphaComponent(0.06).setFill()
         box.fill()
         th.border.setStroke()
@@ -419,7 +419,7 @@ final class GraphToolbar: NSView, NSTextFieldDelegate {
 
     override func draw(_ dirtyRect: NSRect) {
         let th = Config.shared.theme
-        let box = NSBezierPath(roundedRect: field.frame, xRadius: 6, yRadius: 6)
+        let box = NSBezierPath(roundedRect: pixelAligned(field.frame), xRadius: 6, yRadius: 6)
         th.foreground.withAlphaComponent(0.06).setFill()
         box.fill()
         (filter.text.isEmpty ? th.border : th.accent.withAlphaComponent(0.6)).setStroke()

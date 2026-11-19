@@ -442,7 +442,7 @@ final class DropdownTint: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let f = searchField?.frame else { return }
         let th = Config.shared.theme
-        let box = NSBezierPath(roundedRect: f, xRadius: 6, yRadius: 6)
+        let box = NSBezierPath(roundedRect: pixelAligned(f), xRadius: 6, yRadius: 6)
         th.foreground.withAlphaComponent(0.06).setFill()
         box.fill()
         th.border.setStroke()

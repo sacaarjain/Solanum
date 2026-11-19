@@ -1510,16 +1510,15 @@ final class TerminalView: NSView, TerminalDelegate {
             }
             if left >= 0 { x = max(x, min(padX + CGFloat(left + 1) * fonts.cellW + 3, padX + CGFloat(b.indent) * fonts.cellW - 3)) }
             let pad = codeBoxPadding(b, rows: r0, r1)
-            let rect = CGRect(x: x, y: rowY(r0) - pad.top, width: bounds.width - padX + 6 - x,
-                              height: CGFloat(r1 - r0 + 1) * fonts.cellH + pad.top + pad.bottom)
+            // Its left edge follows the cells (fractional points): on whole pixels, so the border is one crisp line.
+            let rect = ctx.pixelAligned(CGRect(x: x, y: rowY(r0) - pad.top, width: bounds.width - padX + 6 - x,
+                                               height: CGFloat(r1 - r0 + 1) * fonts.cellH + pad.top + pad.bottom))
             let path = CGPath(roundedRect: rect, cornerWidth: 6, cornerHeight: 6, transform: nil)
             ctx.setFillColor(th.foreground.withAlphaComponent(0.045).cgColor)
             ctx.addPath(path)
             ctx.fillPath()
             ctx.setStrokeColor(th.border.cgColor)
-            ctx.setLineWidth(1)
-            ctx.addPath(path)
-            ctx.strokePath()
+            ctx.strokeInside(rect, radius: 6)
             drawBoxSelection(b, in: rect, rows: r0...r1, ctx)
         }
     }
@@ -1553,15 +1552,13 @@ final class TerminalView: NSView, TerminalDelegate {
             // set the whole turn apart (a box of its own was a second accent border a point from the outline's).
             if let sel = selected, sel.first >= r0, sel.first <= r1 { continue }
             let x = max(2, padX - 6), right = min(padX + CGFloat(terminal.cols) * fonts.cellW + 4, bounds.width - 4)
-            let rect = CGRect(x: x, y: rowY(r0) - 2, width: right - x, height: CGFloat(r1 - r0 + 1) * fonts.cellH + 4)
+            let rect = ctx.pixelAligned(CGRect(x: x, y: rowY(r0) - 2, width: right - x, height: CGFloat(r1 - r0 + 1) * fonts.cellH + 4))
             let path = CGPath(roundedRect: rect, cornerWidth: 8, cornerHeight: 8, transform: nil)
             ctx.setFillColor(th.accent.withAlphaComponent(th.isDark ? 0.10 : 0.08).cgColor)
             ctx.addPath(path)
             ctx.fillPath()
             ctx.setStrokeColor(th.accent.withAlphaComponent(0.45).cgColor)
-            ctx.setLineWidth(1)
-            ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 7.5, cornerHeight: 7.5, transform: nil))
-            ctx.strokePath()
+            ctx.strokeInside(rect, radius: 8)
         }
     }
 
@@ -1688,7 +1685,9 @@ final class TerminalView: NSView, TerminalDelegate {
         let size = label.size()
         let w = size.width + 16 + (icon.map { $0.size.width + 4 } ?? 0)
         let h = size.height + 4
-        let rect = CGRect(x: rightX - w, y: top(h), width: w, height: h)
+        // On whole device pixels, with the border just inside the edge, so it's one crisp line rather than smeared
+        // across two or three (the box and row positions it's measured from are rarely whole).
+        let rect = ctx.pixelAligned(CGRect(x: rightX - w, y: top(h), width: w, height: h))
         let pill = CGPath(roundedRect: rect, cornerWidth: 5, cornerHeight: 5, transform: nil)
         ctx.setFillColor(th.surface.cgColor)
         ctx.addPath(pill)
@@ -1699,20 +1698,23 @@ final class TerminalView: NSView, TerminalDelegate {
             ctx.fillPath()
         }
         ctx.setStrokeColor(th.border.cgColor)
-        ctx.addPath(pill)
-        ctx.strokePath()
+        ctx.strokeInside(rect, radius: 5)
         var tx = rect.minX + 8
         if let icon {
             NSGraphicsContext.saveGraphicsState()
             let flipped = NSGraphicsContext(cgContext: ctx, flipped: true)
             NSGraphicsContext.current = flipped
-            icon.draw(in: CGRect(x: tx, y: rect.midY - icon.size.height / 2, width: icon.size.width, height: icon.size.height))
+            let at = ctx.pixelAligned(CGPoint(x: tx, y: rect.midY - icon.size.height / 2))
+            icon.draw(in: CGRect(origin: at, size: icon.size))
             NSGraphicsContext.restoreGraphicsState()
             tx += icon.size.width + 4
         }
-        drawLabel(label, at: CGPoint(x: tx, y: rect.minY + 2), ctx)
+        // The baseline on a whole pixel too, so the text's stems and edges are as sharp as the terminal's.
+        let baseline = ctx.pixelAligned(CGPoint(x: tx, y: rect.minY + 2 + font.ascender))
+        drawLabel(label, at: CGPoint(x: baseline.x, y: baseline.y - font.ascender), ctx)
         return rect
     }
+
 
     /// Copies a command and its output (as ⌘⌥C does) and shows "Copied" on its button for a moment.
     func copyOutput(of b: Block) {
@@ -1741,6 +1743,13 @@ final class TerminalView: NSView, TerminalDelegate {
     /// The rounded outline around a selected block or prompt, whose tint fills exactly this shape.
     func selectionOutline(top: CGFloat, height: CGFloat) -> CGPath {
         CGPath(roundedRect: CGRect(x: 3, y: top + 1, width: bounds.width - 6, height: height - 2), cornerWidth: 6, cornerHeight: 6, transform: nil)
+    }
+
+    /// That outline's 1.5pt line, on whole pixels so it's crisp (centered on the outline's edge, give or take a quarter
+    /// point).
+    func strokeSelectionOutline(top: CGFloat, height: CGFloat, _ ctx: CGContext) {
+        ctx.strokeInside(CGRect(x: 3, y: top + 1, width: bounds.width - 6, height: height - 2).insetBy(dx: -0.75, dy: -0.75),
+                         radius: 6.75, width: 1.5)
     }
 
     private func drawBlockBackgrounds(_ ctx: CGContext, _ spans: [(block: Block, first: Int, last: Int)]) {
@@ -2051,13 +2060,11 @@ final class TerminalView: NSView, TerminalDelegate {
 
             if startsHere && s.first > 0 {
                 ctx.setFillColor(th.border.cgColor)
-                ctx.fill(CGRect(x: 0, y: top - 0.5, width: bounds.width, height: 1))
+                ctx.fill(ctx.pixelAligned(CGRect(x: 0, y: top - 0.5, width: bounds.width, height: 1)))
             }
             if isSelected(b) {
                 ctx.setStrokeColor(th.accent.withAlphaComponent(0.85).cgColor)
-                ctx.setLineWidth(1.5)
-                ctx.addPath(selectionOutline(top: top, height: height))
-                ctx.strokePath()
+                strokeSelectionOutline(top: top, height: height, ctx)
             } else if b.failed {
                 ctx.setFillColor(th.red.cgColor)
                 ctx.addPath(CGPath(roundedRect: CGRect(x: 3, y: top + 3, width: 3, height: height - 6), cornerWidth: 1.5, cornerHeight: 1.5, transform: nil))
@@ -2140,7 +2147,7 @@ final class TerminalView: NSView, TerminalDelegate {
         let font = NSFont.systemFont(ofSize: max(10, fonts.size - 2.5), weight: .medium)
         let attr = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
         let size = attr.size()
-        let rect = CGRect(x: rightX - size.width - 14, y: centerY - size.height / 2 - 2, width: size.width + 14, height: size.height + 4)
+        let rect = ctx.pixelAligned(CGRect(x: rightX - size.width - 14, y: centerY - size.height / 2 - 2, width: size.width + 14, height: size.height + 4))
         ctx.setFillColor(palette.theme.background.withAlphaComponent(0.85).cgColor)
         ctx.addPath(CGPath(roundedRect: rect, cornerWidth: rect.height / 2, cornerHeight: rect.height / 2, transform: nil))
         ctx.fillPath()
@@ -2156,7 +2163,7 @@ final class TerminalView: NSView, TerminalDelegate {
         let font = NSFont.systemFont(ofSize: max(10, fonts.size - 2.5), weight: .medium)
         let attr = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: th.dimText])
         let size = attr.size()
-        let rect = CGRect(x: x, y: centerY - size.height / 2 - 2, width: size.width + 14, height: size.height + 4)
+        let rect = ctx.pixelAligned(CGRect(x: x, y: centerY - size.height / 2 - 2, width: size.width + 14, height: size.height + 4))
         ctx.setFillColor(th.surface.cgColor)
         ctx.addPath(CGPath(roundedRect: rect, cornerWidth: 5, cornerHeight: 5, transform: nil))
         ctx.fillPath()

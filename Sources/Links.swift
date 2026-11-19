@@ -407,7 +407,7 @@ extension TerminalView {
         let x = max(4, min(linkX - 6, bounds.width - w - 8))
         let above = rowY(r) - scrollPixelShift - height - 2
         let y = above >= 2 ? above : rowY(r) - scrollPixelShift + fonts.cellH + 2
-        let rect = CGRect(x: x, y: y, width: w, height: height)
+        let rect = ctx.pixelAligned(CGRect(x: x, y: y, width: w, height: height))
         linkCardRect = rect
 
         let path = CGPath(roundedRect: rect, cornerWidth: 6, cornerHeight: 6, transform: nil)
@@ -423,14 +423,12 @@ extension TerminalView {
             ctx.fillPath()
         }
         ctx.setStrokeColor(th.border.cgColor)
-        ctx.setLineWidth(1)
-        ctx.addPath(path)
-        ctx.strokePath()
+        ctx.strokeInside(rect, radius: 6)
 
         func drawImage(_ img: NSImage, _ frame: CGRect) {
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
-            img.draw(in: frame)
+            img.draw(in: CGRect(origin: ctx.pixelAligned(frame.origin), size: frame.size))
             NSGraphicsContext.restoreGraphicsState()
         }
         var tx = rect.minX + 10

@@ -1103,7 +1103,7 @@ final class ToastView: NSView {
         th.surface.mix(th.foreground, 0.06).setFill()
         NSBezierPath(roundedRect: r, xRadius: PageCanvas.radius, yRadius: PageCanvas.radius).fill()
         (ok ? th.green : th.red).withAlphaComponent(0.6).setStroke()
-        NSBezierPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), xRadius: PageCanvas.radius, yRadius: PageCanvas.radius).stroke()
+        NSBezierPath(roundedRect: pixelAligned(r).insetBy(dx: 0.5, dy: 0.5), xRadius: PageCanvas.radius, yRadius: PageCanvas.radius).stroke()
         let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold).applying(.init(paletteColors: [ok ? th.green : th.red]))
         NSImage(systemSymbolName: ok ? "checkmark.circle" : "exclamationmark.triangle", accessibilityDescription: nil)?
             .withSymbolConfiguration(cfg)?.draw(in: NSRect(x: 12, y: (bounds.height - 14) / 2, width: 14, height: 14), from: .zero, operation: .sourceOver,

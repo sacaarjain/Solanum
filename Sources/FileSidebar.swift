@@ -233,7 +233,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         let renaming = !titleEditor.isHidden
         if hoverTitle || renaming {
             let r = renaming ? NSRect(x: titleBox.minX, y: titleBox.minY, width: titleLabel.frame.maxX + 6 - titleBox.minX, height: titleBox.height) : titleBox
-            let box = NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5)
+            let box = NSBezierPath(roundedRect: pixelAligned(r), xRadius: 5, yRadius: 5)
             th.background.withAlphaComponent(0.5).setFill()
             box.fill()
             (renaming ? th.accent.withAlphaComponent(0.8) : th.border).setStroke()

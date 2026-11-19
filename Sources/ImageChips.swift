@@ -319,6 +319,7 @@ extension TerminalView {
 
     /// A thumbnail with rounded corners, a hairline border (the accent while hovered or open) and its number.
     private func drawThumb(_ rect: CGRect, n: Int, image: NSImage, hovered: Bool, open: Bool, th: Theme, _ ctx: CGContext) {
+        let rect = ctx.pixelAligned(rect)
         let path = CGPath(roundedRect: rect, cornerWidth: 4, cornerHeight: 4, transform: nil)
         ctx.saveGState()
         ctx.setFillColor(th.background.mix(th.foreground, 0.06).cgColor)
@@ -351,9 +352,7 @@ extension TerminalView {
         }
         ctx.restoreGState()
         ctx.setStrokeColor((hovered || open ? th.accent : th.foreground.withAlphaComponent(0.25)).cgColor)
-        ctx.setLineWidth(hovered || open ? 1.5 : 1)
-        ctx.addPath(path)
-        ctx.strokePath()
+        ctx.strokeInside(rect, radius: 4, width: hovered || open ? 1.5 : 1)
     }
 
     /// The clicked image, larger, in a card above its thumbnail (below when there's no room).
@@ -376,7 +375,7 @@ extension TerminalView {
         var y = chip.rect.minY - h - 6
         if y < 4 { y = chip.rect.maxY + 6 }
         let x = max(8, min(chip.rect.minX, bounds.width - w - 8))
-        let card = CGRect(x: x, y: y, width: w, height: h)
+        let card = ctx.pixelAligned(CGRect(x: x, y: y, width: w, height: h))
         st.popupRect = card
         let path = CGPath(roundedRect: card, cornerWidth: 8, cornerHeight: 8, transform: nil)
         ctx.saveGState()
@@ -386,9 +385,8 @@ extension TerminalView {
         ctx.fillPath()
         ctx.restoreGState()
         ctx.setStrokeColor(th.border.cgColor)
-        ctx.addPath(path)
-        ctx.strokePath()
-        let imageRect = CGRect(x: card.midX - iw / 2, y: card.minY + pad, width: iw, height: ih)
+        ctx.strokeInside(card, radius: 8)
+        let imageRect = ctx.pixelAligned(CGRect(x: card.midX - iw / 2, y: card.minY + pad, width: iw, height: ih))
         ctx.saveGState()
         ctx.addPath(CGPath(roundedRect: imageRect, cornerWidth: 5, cornerHeight: 5, transform: nil))
         ctx.clip()

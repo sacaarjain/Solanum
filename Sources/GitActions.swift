@@ -168,7 +168,7 @@ final class GitCommitBox: NSView, NSTextViewDelegate {
 
     override func draw(_ dirtyRect: NSRect) {
         let th = Config.shared.theme
-        let box = NSBezierPath(roundedRect: scroll.frame.insetBy(dx: -1, dy: -1), xRadius: 8, yRadius: 8)
+        let box = NSBezierPath(roundedRect: pixelAligned(scroll.frame.insetBy(dx: -1, dy: -1)), xRadius: 8, yRadius: 8)
         th.foreground.withAlphaComponent(0.05).setFill()
         box.fill()
         (text.window?.firstResponder === text ? th.accent.withAlphaComponent(0.7) : th.border).setStroke()

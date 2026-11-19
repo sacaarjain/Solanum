@@ -203,7 +203,7 @@ final class ReleaseTimelineView: NSView {
             let isRunning = i == running
             let isNew = running.map { i < $0 } ?? false
             // The card.
-            let card = NSBezierPath(roundedRect: f, xRadius: 10, yRadius: 10)
+            let card = NSBezierPath(roundedRect: pixelAligned(f), xRadius: 10, yRadius: 10)
             th.surface.withAlphaComponent(hovered == i ? 0.85 : isRunning ? 0.75 : 0.5).setFill()
             card.fill()
             (isRunning ? th.accent.withAlphaComponent(0.6) : th.border).setStroke()

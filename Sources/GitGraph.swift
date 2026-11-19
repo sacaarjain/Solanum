@@ -471,7 +471,7 @@ final class GraphRowsView: NSView {
     }
 
     private func drawPill(_ l: Label, x: CGFloat, midY: CGFloat, color: NSColor, th: Theme) {
-        let r = NSRect(x: x, y: midY - 9, width: pillWidth(l), height: 18)
+        let r = pixelAligned(NSRect(x: x, y: midY - 9, width: pillWidth(l), height: 18))
         let solid = l.kind == .branch || l.kind == .head
         let path = NSBezierPath(roundedRect: r, xRadius: 9, yRadius: 9)
         if solid {

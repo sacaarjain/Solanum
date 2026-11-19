@@ -617,7 +617,7 @@ class PageCanvas: NSView {
     func stroke(_ r: NSRect, _ color: NSColor, radius: CGFloat = 0, width: CGFloat = 1) {
         guard visible(r.insetBy(dx: -1, dy: -1)) else { return }
         color.setStroke()
-        let path = NSBezierPath(roundedRect: r.insetBy(dx: width / 2, dy: width / 2), xRadius: radius, yRadius: radius)
+        let path = NSBezierPath(roundedRect: pixelAligned(r).insetBy(dx: width / 2, dy: width / 2), xRadius: radius, yRadius: radius)
         path.lineWidth = width
         path.stroke()
     }

@@ -111,15 +111,13 @@ extension TerminalView {
                 drawLabel(place.text, at: CGPoint(x: bounds.width - padX - size.width, y: y - size.height / 2), ctx)
             }
             ctx.setFillColor(th.border.cgColor)
-            ctx.fill(CGRect(x: padX, y: y - 0.5, width: right - padX, height: 1))
+            ctx.fill(ctx.pixelAligned(CGRect(x: padX, y: y - 0.5, width: right - padX, height: 1)))
         }
         if let t = selectedTurn, let (first, last) = visibleRows(t) {
             let top = rowY(first) - 2
             let height = CGFloat(last - first + 1) * fonts.cellH + 4
             ctx.setStrokeColor(th.accent.withAlphaComponent(0.85).cgColor)
-            ctx.setLineWidth(1.5)
-            ctx.addPath(selectionOutline(top: top, height: height))
-            ctx.strokePath()
+            strokeSelectionOutline(top: top, height: height, ctx)
         }
         for p in collapsedTurns {
             guard let t = terminal.agentTurn(at: p), t.hasResponse,

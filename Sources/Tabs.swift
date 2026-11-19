@@ -65,6 +65,11 @@ final class PaneSplitView: NSSplitView {
         return length > 0 ? dividerPositions.map { $0 / length } : []
     }
 
+    /// On whole points, so each pane's card sits on whole pixels and its border is crisp.
+    override func setPosition(_ position: CGFloat, ofDividerAt dividerIndex: Int) {
+        super.setPosition(position.rounded(), ofDividerAt: dividerIndex)
+    }
+
     func equalize() {
         let n = arrangedSubviews.count
         guard n > 1 else { return }
@@ -737,7 +742,7 @@ enum Cards {
     /// A card's outline, just outside it (concentric with its corners). A card along the top leaves out its top edge
     /// between the corners, which the tab bar draws as its bottom line (gapped where the active tab opens onto it).
     static func outline(_ card: Card) -> NSBezierPath {
-        let p = path(card.rect.insetBy(dx: -0.5, dy: -0.5), radius: radius + 0.5, squareTopLeft: card.squareTopLeft,
+        let p = path(pixelAligned(card.rect).insetBy(dx: -0.5, dy: -0.5), radius: radius + 0.5, squareTopLeft: card.squareTopLeft,
                      openTop: card.top)
         p.lineWidth = 1
         return p
@@ -1707,7 +1712,7 @@ final class WindowRootView: NSView {
         didSet { statusBar.sidebarVisible = sidebarVisible; slideSidebars() }
     }
     var sidebarWidth: CGFloat = 240 {
-        didSet { sidebarWidth = min(max(sidebarWidth, 160), 640) }
+        didSet { sidebarWidth = min(max(sidebarWidth, 160), 640).rounded() }
     }
     var rightSidebarVisible = false {
         didSet { rightStatusBar.rightSidebarVisible = rightSidebarVisible; slideSidebars() }
@@ -1759,7 +1764,7 @@ final class WindowRootView: NSView {
         layoutSubtreeIfNeeded()
     }
     var rightSidebarWidth: CGFloat = 240 {
-        didSet { rightSidebarWidth = min(max(rightSidebarWidth, 160), 640) }
+        didSet { rightSidebarWidth = min(max(rightSidebarWidth, 160), 640).rounded() }
     }
     /// The left column's share of the space between the sidebars.
     var splitFraction: CGFloat = 0.5 {
@@ -1962,8 +1967,9 @@ final class WindowRootView: NSView {
         let split = columns.count > 1
         // Leave the terminals at least ~300pt however wide the sidebars were dragged.
         // Full widths, then how much of each is on screen (sliding) and how much the terminals give up.
-        let fullW = min(sidebarWidth, max(160, bounds.width - 300))
-        let fullRW = min(rightSidebarWidth, max(160, bounds.width - fullW * leftTarget - 300))
+        // In whole points (as are the window's), so every card and its border sits on whole pixels.
+        let fullW = min(sidebarWidth, max(160, bounds.width - 300)).rounded()
+        let fullRW = min(rightSidebarWidth, max(160, bounds.width - fullW * leftTarget - 300)).rounded()
         let sw = (fullW * leftShown).rounded()
         let rsw = (fullRW * rightShown).rounded()
         let contentSW = leftShown > 0 || leftTarget > 0 ? fullW : 0
@@ -3788,7 +3794,8 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     /// What's dragged in, docked in the gap the tabs slid apart for: a tab as it will be, its icon and title, on a
     /// tint of the accent (or of the group it would join), edged in it. It opens out from nothing as the gap does.
     private func drawIncoming(_ c: TabColumn) {
-        guard let what = incoming, let i = incomingIndex, let r = shownRect(Self.incomingKey), r.width > 8 else { return }
+        guard let what = incoming, let i = incomingIndex, let shown = shownRect(Self.incomingKey), shown.width > 8 else { return }
+        let r = pixelAligned(shown)
         let th = Config.shared.theme
         let at = min(i, c.tabs.count)
         let left = at > 0 ? c.tabs[at - 1].group : nil, right = at < c.tabs.count ? c.tabs[at].group : nil
@@ -3985,6 +3992,8 @@ final class TabBarView: NSView, NSTextFieldDelegate {
     /// otherwise (dragged, lifted with its group) it's a raised pill.
     private func drawTab(_ tab: TabSession, at i: Int, in r: CGRect, active: Bool, hovered: Bool, picked: Bool = false,
                          keyWindow: Bool, docked: Bool = false) {
+        // Tabs share the bar's width (and slide) by fractions of a point: on whole pixels, the active tab's border is crisp.
+        let r = pixelAligned(r)
         let th = Config.shared.theme
         let groupColor = tab.group?.color.color
         let path = NSBezierPath(roundedRect: r, xRadius: 7, yRadius: 7)
@@ -4117,7 +4126,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
         for chip in chips where chip.group !== lifted && (dropChip === chip.group || (chip.group.collapsed && sendTarget?.group === chip.group)) {
             let r = shownRect(ObjectIdentifier(chip.group)) ?? chip.rect
             Config.shared.theme.foreground.withAlphaComponent(0.85).setStroke()
-            let ring = NSBezierPath(roundedRect: r.insetBy(dx: -2.5, dy: -2.5), xRadius: 8, yRadius: 8)
+            let ring = NSBezierPath(roundedRect: pixelAligned(r).insetBy(dx: -2.25, dy: -2.25), xRadius: 8, yRadius: 8)
             ring.lineWidth = 1.5
             ring.stroke()
         }
@@ -4125,7 +4134,7 @@ final class TabBarView: NSView, NSTextFieldDelegate {
             guard let r = shownRect(ObjectIdentifier(c.tabs[i])) ?? (tabRects[i].isNull ? nil : tabRects[i]), r.width > 2,
                   !underChip(c.tabs[i], r) else { continue }
             (c.tabs[i].group?.color.color ?? Config.shared.theme.accent).setStroke()
-            let outline = NSBezierPath(roundedRect: r, xRadius: 7, yRadius: 7)
+            let outline = NSBezierPath(roundedRect: pixelAligned(r).insetBy(dx: 0.75, dy: 0.75), xRadius: 6.25, yRadius: 6.25)
             outline.lineWidth = 1.5
             outline.stroke()
         }
