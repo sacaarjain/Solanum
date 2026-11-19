@@ -543,7 +543,7 @@ extension AtlassianSheet {
     static func createIssue(on page: AtlassianPageView) {
         let m = page.model
         let project = m.board?.projectKey ?? m.detail?.projectKey ?? m.issues.first?.projectKey ?? ""
-        let sheet = AtlassianSheet("Create issue", subtitle: m.board.map { "On \($0.name)" }, rows: [
+        let sheet = AtlassianSheet("Create issue", subtitle: m.board.map { "On \($0.title)" }, rows: [
             .field("project", label: "Project", value: project, placeholder: "ABC", mono: true),
             .choice("type", label: "Type"),
             .field("summary", label: "Summary", value: "", placeholder: "What needs doing", mono: false),

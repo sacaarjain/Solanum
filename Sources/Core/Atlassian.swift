@@ -124,13 +124,24 @@ struct JiraBoard: Equatable {
     /// "scrum", "kanban" or "simple" (team-managed).
     let type: String
     let projectKey: String?
+    /// The project's own name ("Acme Web"), as Jira's sidebar shows it.
+    let projectName: String?
+
+    /// What to call it: its own name, unless that's the one Jira gave it ("EZ board", as a team-managed project's board is
+    /// named): then the project's.
+    var title: String {
+        guard let projectName, !projectName.isEmpty, let key = projectKey, name.caseInsensitiveCompare("\(key) board") == .orderedSame else { return name }
+        return projectName
+    }
 
     init?(_ j: Any?) {
         guard let j = j as? [String: Any], let id = (j["id"] as? NSNumber)?.intValue else { return nil }
         self.id = id
         name = j["name"] as? String ?? "Board \(id)"
         type = j["type"] as? String ?? "kanban"
-        projectKey = (j["location"] as? [String: Any])?["projectKey"] as? String
+        let loc = j["location"] as? [String: Any]
+        projectKey = loc?["projectKey"] as? String
+        projectName = (loc?["projectName"] as? String ?? loc?["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -756,7 +767,10 @@ struct DiffFile: Equatable {
             if p == "/dev/null" { return nil }
             return p.hasPrefix("a/") || p.hasPrefix("b/") ? String(p.dropFirst(2)) : p
         }
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        var rows = text.split(separator: "\n", omittingEmptySubsequences: false)
+        // The line break ending the output isn't one more (empty) line.
+        if rows.last?.isEmpty == true { rows.removeLast() }
+        for raw in rows {
             let l = raw.hasSuffix("\r") ? raw.dropLast() : raw
             if l.hasPrefix("diff --git ") {
                 if let c = cur { files.append(c) }

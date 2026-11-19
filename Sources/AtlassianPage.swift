@@ -36,7 +36,7 @@ final class AtlassianPageView: NSView, ExtensionPage {
     var subtitle: String {
         guard model.connected else { return "Jira & Bitbucket · connect your account" }
         switch section {
-        case .board: return "Jira · " + (model.board?.name ?? "Board") + (model.sprintName.map { " · " + $0 } ?? "")
+        case .board: return "Jira · " + (model.board?.title ?? "Board") + (model.sprintName.map { " · " + $0 } ?? "")
         case .mine: return "Jira · My Issues"
         case .prs: return "Bitbucket · " + (model.repo?.path ?? "Pull Requests")
         }
@@ -376,7 +376,7 @@ final class AtlassianHeader: PageCanvas, DropdownAnchor {
         let section = page.section
         var title: String
         switch section {
-        case .board: title = model.board?.name ?? (model.loadingBoard ? "Loading…" : "Board")
+        case .board: title = model.board?.title ?? (model.loadingBoard ? "Loading…" : "Board")
         case .mine: title = "My Issues"
         case .prs: title = model.repo?.slug ?? "Pull Requests"
         }
@@ -507,10 +507,31 @@ final class AtlassianHeader: PageCanvas, DropdownAnchor {
     private func showBoards() {
         guard let page else { return }
         let m = page.model
-        let items = m.boards.map { b in
-            DropdownItem.item(b.name, checked: b.id == m.board?.id, symbol: "rectangle.split.3x1", detail: b.projectKey) { [weak page] in page?.model.selectBoard(b.id) }
+        func item(_ b: JiraBoard) -> DropdownItem {
+            .item(b.title, checked: b.id == m.board?.id, symbol: "rectangle.split.3x1", detail: [b.projectKey, b.title == b.name ? nil : b.name].compactMap { $0 }.joined(separator: " · ")) { [weak page] in page?.model.selectBoard(b.id) }
         }
-        ThemedDropdown.show(items, under: self, rect: NSRect(x: 58, y: 10, width: 200, height: 24), minWidth: 280, placeholder: "Boards")
+        // Your projects' boards first, then everyone's.
+        let mine = m.yourProjects
+        let yours = m.boards.filter { $0.projectKey.map(mine.contains) ?? false }
+        let rest = m.boards.filter { !($0.projectKey.map(mine.contains) ?? false) }
+        var items: [DropdownItem] = []
+        if !yours.isEmpty { items += [.header("Your projects")] + yours.map(item) + [.header("All boards")] }
+        items += rest.map(item)
+        // A board's address or number, typed or pasted: that board, listed here or not.
+        let byAddress = { [weak page] (q: String) -> [DropdownItem] in
+            guard let id = AtlassianHeader.boardNumber(in: q) else { return [] }
+            return [.item("Open board \(id)", symbol: "arrow.right.circle") { page?.model.selectBoard(id) }]
+        }
+        ThemedDropdown.show(items, under: self, rect: NSRect(x: 58, y: 10, width: 200, height: 24), minWidth: 300,
+                            placeholder: "Boards, or paste a board's link", extra: byAddress)
+    }
+
+    /// The board in "…/boards/466…" or "466".
+    static func boardNumber(in s: String) -> Int? {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let n = Int(t), n > 0 { return n }
+        guard let r = t.range(of: "/boards/") else { return nil }
+        return Int(t[r.upperBound...].prefix { $0.isNumber })
     }
 
     private func showAccount() {

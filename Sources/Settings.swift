@@ -1756,6 +1756,13 @@ enum SettingsPages {
         v.add(agentsButtons, height: 20, gap: 30)
         refreshAgents()
 
+        v.add(sectionHeader("Claude Code"), height: 16, gap: 10)
+        card(v, [
+            SettingRow(icon: "doc.text.magnifyingglass", title: "Show edits in the files-changed pill",
+                       detail: "Claude's diffs stay out of the terminal; the edit's line and summary still show. The pill over the pane opens them.",
+                       accessory: toggle(c.hideAgentEditDiffs) { [weak ctl] on in Config.shared.hideAgentEditDiffs = on; ctl?.commit() }),
+        ])
+
         v.add(sectionHeader("Window Size"), height: 16, gap: 10)
         let picker = WindowSizePicker(columns: c.windowColumns, rows: c.windowRows)
         picker.onChange = { [weak ctl] cols, rows in

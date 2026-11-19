@@ -571,6 +571,47 @@ class PageCanvas: NSView {
 
     // MARK: Drawing helpers
 
+    static let diffLineH: CGFloat = 18
+    static let diffFont = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
+
+    /// A file's diff, line by line: old and new line numbers, then the text on its color (green added, red removed,
+    /// the hunk's header tinted). `after` draws what goes under a line (a comment on it), given where the text starts,
+    /// and says where it ended. The height used.
+    @discardableResult
+    func diffLines(_ f: DiffFile, x: CGFloat, y y0: CGFloat, width: CGFloat,
+                   after: ((DiffFile.Line, CGFloat, CGFloat) -> CGFloat)? = nil) -> CGFloat {
+        let lineH = Self.diffLineH, mono = Self.diffFont
+        // Room for the numbers the file goes up to.
+        let biggest = f.lines.compactMap { max($0.old ?? 0, $0.new ?? 0) }.max() ?? 0
+        let numW = max(28, PageCanvas.textWidth(String(biggest), mono) + 10)
+        let textX = x + numW * 2 + 12
+        var y = y0
+        for l in f.lines {
+            let r = NSRect(x: x, y: y, width: width, height: lineH)
+            if visible(r) {
+                switch l.kind {
+                case .added: fill(r, th.green.withAlphaComponent(th.isDark ? 0.16 : 0.14))
+                case .removed: fill(r, th.red.withAlphaComponent(th.isDark ? 0.16 : 0.12))
+                case .hunk: fill(r, th.accent.withAlphaComponent(0.08))
+                default: break
+                }
+                if l.kind == .hunk {
+                    text(l.text, mono, th.dimText, x: x + numW * 2 + 10, y: y + 1, width: width - numW * 2 - 14)
+                } else {
+                    if let o = l.old { text("\(o)", mono, th.dimText.withAlphaComponent(0.6), x: x, y: y + 1, width: numW - 6, align: .right) }
+                    if let n = l.new { text("\(n)", mono, th.dimText.withAlphaComponent(0.6), x: x + numW, y: y + 1, width: numW - 6, align: .right) }
+                    let mark = l.kind == .added ? "+" : l.kind == .removed ? "−" : " "
+                    text(mark, mono, l.kind == .added ? th.green : l.kind == .removed ? th.red : th.dimText, x: x + numW * 2, y: y + 1, width: 10)
+                    text(l.text.replacingOccurrences(of: "\t", with: "    "), mono, l.kind == .note ? th.dimText : th.foreground,
+                         x: textX, y: y + 1, width: width - (textX - x) - 4)
+                }
+            }
+            y += lineH
+            if let after { y = after(l, y, textX) }
+        }
+        return y
+    }
+
     var th: Theme { Config.shared.theme }
 
     static func para(_ align: NSTextAlignment = .left, _ mode: NSLineBreakMode = .byTruncatingTail) -> NSParagraphStyle {

@@ -267,9 +267,29 @@ final class AtlassianClient {
         call(.jira, "/rest/api/3/myself") { r in done(r.flatMap { JiraUser($0).map(Result.success) ?? .failure(.invalid("No user in the answer.")) }) }
     }
 
+    /// Every board you can see: Jira gives them 50 at a time, so this asks page after page (up to 2,000).
     func boards(done: @escaping (Result<[JiraBoard], AtlassianError>) -> Void) {
-        call(.jira, "/rest/agile/1.0/board", query: ["maxResults": "100"]) { r in
-            done(r.map { (($0 as? [String: Any])?["values"] as? [Any] ?? []).compactMap(JiraBoard.init) })
+        var all: [JiraBoard] = []
+        func page(_ start: Int) {
+            call(.jira, "/rest/agile/1.0/board", query: ["startAt": "\(start)", "maxResults": "50"]) { r in
+                switch r {
+                case .failure(let e): all.isEmpty ? done(.failure(e)) : done(.success(all))
+                case .success(let j):
+                    let d = j as? [String: Any] ?? [:]
+                    let got = (d["values"] as? [Any] ?? []).compactMap(JiraBoard.init)
+                    all += got
+                    let last = d["isLast"] as? Bool ?? (got.count < 50)
+                    if last || got.isEmpty || all.count >= 2000 { done(.success(all)) } else { page(start + got.count) }
+                }
+            }
+        }
+        page(0)
+    }
+
+    /// One board, by its number (from its address: …/boards/466).
+    func board(_ id: Int, done: @escaping (Result<JiraBoard, AtlassianError>) -> Void) {
+        call(.jira, "/rest/agile/1.0/board/\(id)") { r in
+            done(r.flatMap { JiraBoard($0).map(Result.success) ?? .failure(.invalid("Jira has no board \(id).")) })
         }
     }
 
@@ -537,11 +557,12 @@ enum LocalGit {
         }
     }
 
-    static func runNow(_ dir: String, _ args: [String]) -> Output {
+    /// `extra`: added to git's environment (GIT_INDEX_FILE, say).
+    static func runNow(_ dir: String, _ args: [String], env extra: [String: String] = [:]) -> Output {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         p.arguments = ["-C", dir] + args
-        var env = ProcessInfo.processInfo.environment
+        var env = ProcessInfo.processInfo.environment.merging(extra) { $1 }
         // Never stop to ask for a password or passphrase on a terminal nobody's watching.
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GIT_SSH_COMMAND"] = env["GIT_SSH_COMMAND"] ?? "ssh -o BatchMode=yes"

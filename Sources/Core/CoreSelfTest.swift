@@ -309,6 +309,19 @@ enum CoreSelfTest {
             check("ED 2 keeps running block", t.currentBlock?.state == .running && t.currentBlock?.command == "claude")
         }
         do {
+            // Claude Code's finished edits: the diff under "⎿ Added …" is what's hidden; the header and summary stay, and
+            // an edit still asking for approval (no "⎿") keeps its diff.
+            let (t, _) = make(60, 40)
+            let rule = String(repeating: "─", count: 60)
+            feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}claude\r\n\u{1b}]133;C\u{07}")
+            feed(t, "⏺ Update(README.md)\r\n  ⎿  Added 2 lines\r\n       7\r\n       8 +(Demo line)\r\n       9 +\r\n      10  ## Features\r\n\r\n")
+            feed(t, "⏺ Write(a/Example.swift)\r\n  ⎿  Wrote 3 lines to a/Example.swift\r\n       1 struct A {}\r\n       2 \r\n       … +1 line (ctrl+o to expand)\r\n\r\n")
+            feed(t, "⏺ Done, both edited.\r\n\r\n⏺ Update(b.swift)\r\n\r\n Do you want to make this edit to b.swift?\r\n       1 -x\r\n       1 +y\r\n\r\n")
+            feed(t, "\(rule)\r\n❯ \r\n\(rule)")
+            let hidden = t.blocks.last.map { t.agentEditDiffRanges(in: $0) } ?? []
+            check("agent edits: the diffs under finished edits", hidden == [3...6, 10...12], hidden.map { "\($0)" }.joined(separator: " "))
+        }
+        do {
             // The text being typed, a stop at a time from the keyboard (⇧ and the arrows).
             let (t, _) = make(20, 6)
             feed(t, "\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}echo hello world and")
@@ -736,10 +749,44 @@ enum CoreSelfTest {
             check("commit: a file's lines, numbered", diff.map(\.kind) == [.hunk, .context, .removed, .added, .added] && diff[1].old == 4 && diff[1].new == 4
                   && diff[2].old == 5 && diff[3].new == 5 && diff[4].new == 6 && diff[0].text == "@@ -4,2 +4,3 @@ func", diff.description)
             atlassian(results)
+            promptChanges(results)
         }
     }
 
     /// Jira and Bitbucket records, rich text, branch names and pull request diffs (Atlassian.swift).
+    static func promptChanges(_ results: Results) {
+        func check(_ name: String, _ cond: Bool, _ detail: @autoclosure () -> String = "") { results.check(name, cond, detail()) }
+        let lines = [
+            #"{"type":"user","promptId":"p1","message":{"role":"user","content":"fix the drawer"}}"#,
+            #"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit"}]}}"#,
+            #"{"type":"user","promptId":"p1","message":{"content":[{"type":"tool_result"}]},"toolUseResult":{"filePath":"/r/a.swift","structuredPatch":[{"oldStart":3,"oldLines":2,"newStart":3,"newLines":3,"lines":[" keep","-old","+new","+more"]}]}}"#,
+            #"{"type":"user","promptId":"p1","message":{"content":[{"type":"tool_result"}]},"toolUseResult":{"filePath":"/r/a.swift","structuredPatch":[{"oldStart":20,"oldLines":1,"newStart":21,"newLines":1,"lines":["-x","+y"]}]}}"#,
+            #"{"type":"user","promptId":"p1","message":{"content":[{"type":"tool_result"}]},"toolUseResult":{"type":"create","filePath":"/r/new.md","content":"one\ntwo\n","structuredPatch":[]}}"#,
+            #"{"type":"user","isMeta":true,"promptId":"m","message":{"content":"<local-command-caveat>"}}"#,
+            #"{"type":"user","promptId":"p2","message":{"content":[{"type":"text","text":"<command-name>/clear</command-name>"}]}}"#,
+            #"{"type":"user","promptId":"p3","message":{"content":[{"type":"text","text":"now the tests"},{"type":"image"}]}}"#,
+        ]
+        var scan = PromptChanges.Scan()
+        PromptChanges.scan(Data(lines.joined(separator: "\n").utf8), into: &scan)
+        let a = scan.edits["p1"]?.first
+        check("prompt changes: prompts from a transcript, not tool results, notes or commands", scan.prompts.map(\.text) == ["fix the drawer", "now the tests"]
+              && scan.latest?.id == "p3", scan.prompts.map(\.text).joined(separator: " | "))
+        check("prompt changes: a prompt's edits, a file's together, and a file written whole",
+              scan.edits["p1"]?.map(\.path) == ["/r/a.swift", "/r/new.md"] && a?.added == 3 && a?.removed == 2
+              && a?.lines.filter { $0.kind == .hunk }.count == 2 && a?.lines.first { $0.kind == .added }?.new == 4
+              && scan.edits["p1"]?.last?.added == 2 && scan.edits["p1"]?.last?.oldPath == nil && scan.edits["p3"] == nil, "")
+        let files = PromptChanges.files(raw: ":100644 100644 aaa bbb M\0Sources/a b.swift\0:000000 100644 000 ccc A\0new.md\0:100644 000000 ddd 000 D\0gone.txt\0",
+                                        numstat: "3\t1\tSources/a b.swift\0" + "2\t0\tnew.md\0" + "-\t-\tgone.txt\0")
+        check("prompt changes: git's files and counts", files == [
+            ChangedFile(path: "Sources/a b.swift", change: .modified, added: 3, removed: 1),
+            ChangedFile(path: "new.md", change: .added, added: 2, removed: 0),
+            ChangedFile(path: "gone.txt", change: .deleted, added: 0, removed: 0, binary: true)], String(describing: files))
+        let tail = DiffFile.parse("diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1,2 @@\n hi\n+two\n")
+        check("diff: the output's last line break isn't a line", tail.first?.lines.count == 3, String(describing: tail.first?.lines))
+        check("prompt changes: paths from the repository's top", PromptChanges.relative("/r/x/a.swift", to: "/r") == "x/a.swift"
+              && PromptChanges.relative("/elsewhere/a", to: "/r") == "/elsewhere/a", "")
+    }
+
     static func atlassian(_ results: Results) {
         func check(_ name: String, _ cond: Bool, _ detail: @autoclosure () -> String = "") { results.check(name, cond, detail()) }
         func json(_ s: String) -> Any? { try? JSONSerialization.jsonObject(with: Data(s.utf8)) }
@@ -762,6 +809,9 @@ enum CoreSelfTest {
         check("jira: a repository's branch types, and a ticket's by default", types.map(\.prefix) == ["feature/", "bugfix/"]
               && BranchType.suggested(for: "Bug", from: types)?.kind == "bugfix" && BranchType.suggested(for: "Story", from: types)?.kind == "feature"
               && BranchType.suggested(for: "Task", from: []) == nil, "")
+        let named = JiraBoard(json(#"{"id":466,"name":"ABC board","type":"simple","location":{"projectKey":"ABC","projectName":"Acme Web "}}"#))
+        let own = JiraBoard(json(#"{"id":7,"name":"Release train","type":"scrum","location":{"projectKey":"ABC","projectName":"Acme Web"}}"#))
+        check("jira: a board Jira named for its project's key goes by the project's name", named?.title == "Acme Web" && own?.title == "Release train", "")
         check("jira: branch names git takes", BranchNames.isValid("EZ-1-a/b") && !BranchNames.isValid("a..b") && !BranchNames.isValid("a b")
               && !BranchNames.isValid("x.lock") && !BranchNames.isValid("-x"), "")
         check("jira: issue keys in text", IssueKeys.all(in: "EZ-569-login and ez-12, not AB-x or 1EZ-3 or EZ-4a") == ["EZ-569", "EZ-12"]

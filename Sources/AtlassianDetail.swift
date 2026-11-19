@@ -72,17 +72,16 @@ extension PageCanvas {
 
 // MARK: A ticket
 
-final class IssueDrawer: NSView {
-    weak var page: AtlassianPageView? { didSet { canvas.page = page } }
-    let canvas = IssueDrawerCanvas()
-    private let scroll: CanvasScroll
-    /// Frosted glass over what's behind (the board), tinted with the theme so it still reads as Solanum's.
+/// A card floating over a page: frosted glass over what's behind it, tinted with the theme so it still reads as
+/// Solanum's, rounded as Solanum's cards are, with a soft shadow. What it shows goes in `body`.
+class FrostedCard: NSView {
     private let frost = NSVisualEffectView()
     private let tint = NSView()
+    /// Where the card's content goes (clipped to its rounded corners).
+    let body = FlippedView()
     static let radius: CGFloat = PageCanvas.radius
 
     override init(frame: NSRect) {
-        scroll = CanvasScroll(canvas)
         super.init(frame: frame)
         wantsLayer = true
         frost.material = .popover
@@ -96,11 +95,11 @@ final class IssueDrawer: NSView {
         tint.wantsLayer = true
         addSubview(frost)
         frost.addSubview(tint)
-        frost.addSubview(scroll)
-        // A soft shadow under the card, so it floats over the board.
+        frost.addSubview(body)
         layer?.shadowOpacity = 1
         layer?.shadowRadius = 22
         layer?.shadowOffset = CGSize(width: 0, height: -8)
+        refreshCard()
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -110,18 +109,43 @@ final class IssueDrawer: NSView {
         super.layout()
         frost.frame = bounds
         tint.frame = frost.bounds
-        // Inset from the rounded edge, so the scroller and the content keep clear of the corners.
-        scroll.frame = frost.bounds.insetBy(dx: 0, dy: 6)
+        body.frame = frost.bounds
         layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: Self.radius, cornerHeight: Self.radius, transform: nil)
-        scroll.refit()
     }
 
-    func refresh() {
+    /// The card's colors, from the theme.
+    func refreshCard() {
         let th = Config.shared.theme
         frost.appearance = NSAppearance(named: th.isDark ? .darkAqua : .aqua)
         tint.layer?.backgroundColor = th.background.mix(th.surface, 0.5).withAlphaComponent(0.68).cgColor
         frost.layer?.borderColor = th.foreground.withAlphaComponent(th.isDark ? 0.12 : 0.1).cgColor
         layer?.shadowColor = NSColor.black.withAlphaComponent(th.isDark ? 0.45 : 0.22).cgColor
+    }
+}
+
+/// The ticket's panel: a frosted card over the right of the board.
+final class IssueDrawer: FrostedCard {
+    weak var page: AtlassianPageView? { didSet { canvas.page = page } }
+    let canvas = IssueDrawerCanvas()
+    private let scroll: CanvasScroll
+
+    override init(frame: NSRect) {
+        scroll = CanvasScroll(canvas)
+        super.init(frame: frame)
+        body.addSubview(scroll)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        // Inset from the rounded edge, so the scroller and the content keep clear of the corners.
+        scroll.frame = body.bounds.insetBy(dx: 0, dy: 6)
+        scroll.refit()
+    }
+
+    func refresh() {
+        refreshCard()
         scroll.refit()
     }
 
@@ -625,36 +649,15 @@ final class PRCanvas: PageCanvas {
                 y += paragraph("Binary file.", .systemFont(ofSize: 12), th.dimText, x: x + 12, y: y + 4, width: width) + 14
                 continue
             }
-            // Lines: old and new numbers, then the text on its color.
-            let numW: CGFloat = 40
+            // Its lines, with comments on a line under it.
             let comments = inline[f.path] ?? []
-            for l in f.lines {
-                let r = NSRect(x: x, y: y, width: width, height: Self.lineH)
-                if visible(r) {
-                    switch l.kind {
-                    case .added: fill(r, th.green.withAlphaComponent(th.isDark ? 0.16 : 0.14))
-                    case .removed: fill(r, th.red.withAlphaComponent(th.isDark ? 0.16 : 0.12))
-                    case .hunk: fill(r, th.accent.withAlphaComponent(0.08))
-                    default: break
-                    }
-                    if l.kind == .hunk {
-                        text(l.text, Self.mono, th.dimText, x: x + numW * 2 + 10, y: y + 1, width: width - numW * 2 - 14)
-                    } else {
-                        if let o = l.old { text("\(o)", Self.mono, th.dimText.withAlphaComponent(0.6), x: x, y: y + 1, width: numW - 6, align: .right) }
-                        if let n = l.new { text("\(n)", Self.mono, th.dimText.withAlphaComponent(0.6), x: x + numW, y: y + 1, width: numW - 6, align: .right) }
-                        let mark = l.kind == .added ? "+" : l.kind == .removed ? "−" : " "
-                        text(mark, Self.mono, l.kind == .added ? th.green : l.kind == .removed ? th.red : th.dimText, x: x + numW * 2, y: y + 1, width: 10)
-                        text(l.text.replacingOccurrences(of: "\t", with: "    "), Self.mono, l.kind == .note ? th.dimText : th.foreground,
-                             x: x + numW * 2 + 12, y: y + 1, width: width - numW * 2 - 16)
-                    }
+            y = diffLines(f, x: x, y: y, width: width) { [unowned self] l, y, textX in
+                guard let n = l.new ?? l.old else { return y }
+                var y = y
+                for c in comments where c.line == n && c.parent == nil && (l.kind != .removed || l.new == nil) {
+                    y = self.inlineComment(c, replies: m.prComments.filter { $0.parent == c.id }, x: textX, y: y + 4, width: width - (textX - x) - 12) + 6
                 }
-                y += Self.lineH
-                // Comments on this line, under it.
-                if let n = l.new ?? l.old {
-                    for c in comments where c.line == n && c.parent == nil && (l.kind != .removed || l.new == nil) {
-                        y = inlineComment(c, replies: m.prComments.filter { $0.parent == c.id }, x: x + numW * 2 + 12, y: y + 4, width: width - numW * 2 - 24) + 6
-                    }
-                }
+                return y
             }
             y += 16
         }

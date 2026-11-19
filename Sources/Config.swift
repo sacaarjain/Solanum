@@ -66,6 +66,8 @@ final class Config {
     var restoreSession = true
     /// Restoring a session continues the agents that were running in it.
     var continueAgents = true
+    /// The diffs Claude Code prints under its edits are folded out of the terminal (the "files changed" pill shows them).
+    var hideAgentEditDiffs = true
     /// By an agent's command, what continues it where that's not the default; empty for not at all.
     var continueCommands: [String: String] = [:]
 
@@ -158,6 +160,7 @@ final class Config {
         case "restore-session": restoreSession = bool()
         case "restore-scrollback": restoreScrollback = bool()
         case "continue-agents": continueAgents = bool()
+        case "hide-agent-edit-diffs": hideAgentEditDiffs = bool()
         case "new-tab-folder": newTabFolder = value.lowercased() == "home" ? "home" : "current"
         case "check-for-updates": checkForUpdates = bool()
         case "transfer-folder": transferFolder = value
@@ -233,6 +236,10 @@ final class Config {
         # Restoring a session continues the coding agents that were running in it. Solanum knows each one's command;
         # continue-command-<agent> = <command> replaces it, and left empty skips that agent.
         continue-agents = \(continueAgents)
+
+        # The diffs Claude Code prints under its edits stay out of the terminal: the "files changed" pill over the pane
+        # shows them. The edit's own line and summary still show.
+        hide-agent-edit-diffs = \(hideAgentEditDiffs)
         \(continueCommands.sorted { $0.key < $1.key }.map { "continue-command-\($0.key) = \($0.value)" }.joined(separator: "\n"))
 
         # Where ⌘T opens a new tab: current (the focused terminal's folder) | home

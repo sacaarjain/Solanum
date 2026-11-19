@@ -200,6 +200,13 @@ final class TerminalView: NSView, TerminalDelegate {
     var searchQuery = ""
     var searchScope = SearchScope.all
     var searchBar: SearchBar?
+    /// "Files changed this prompt" (PromptChangesPanel), once Claude Code has run here.
+    private(set) var promptChanges: PromptChangesController?
+    /// Claude Code's session here, looked up again every few seconds (/clear starts a new one), and the process it was
+    /// looked up for.
+    private var claudeSession: (pid: pid_t, id: String?, at: Date)?
+    /// DevTools: the pane follows a transcript of the test's own, as if Claude Code ran here.
+    var devPromptChanges = false
     var dimmed = false { didSet { if dimmed != oldValue { needsDisplay = true } } }
     var blinkOn = true
     private var blinkTimer: Timer?
@@ -765,6 +772,34 @@ final class TerminalView: NSView, TerminalDelegate {
             tab?.paneTitleChanged(self)
         }
         refreshCodeBoxes()
+        updatePromptChanges()
+    }
+
+    /// Claude Code on this Mac: what its latest prompt has changed, followed (see PromptChangesPanel).
+    private func updatePromptChanges() {
+        if devPromptChanges {
+            promptChanges?.active = true
+            promptChanges?.tracker.tick(session: "dev", cwd: currentDirectory, working: true)
+            return
+        }
+        guard !exited, pty?.foregroundAgent == .claude, let pid = pty?.foregroundPID else {
+            promptChanges?.active = false
+            return
+        }
+        if promptChanges == nil { promptChanges = PromptChangesController(pane: self) }
+        if claudeSession?.pid != pid || Date().timeIntervalSince(claudeSession?.at ?? .distantPast) > 5 {
+            claudeSession = (pid, ClaudeSessions.id(group: pid), Date())
+        }
+        promptChanges?.active = true
+        promptChanges?.tracker.tick(session: claudeSession?.id, cwd: currentDirectory, working: agent?.status == .working)
+    }
+
+    /// DevTools: shows the pill and panel for `transcript`, as if Claude Code ran here.
+    func devFollowPromptChanges(_ transcript: String) {
+        devPromptChanges = true
+        if promptChanges == nil { promptChanges = PromptChangesController(pane: self) }
+        promptChanges?.active = true
+        promptChanges?.tracker.follow(transcript: transcript, cwd: currentDirectory)
     }
 
     /// An agent that worked at least "Notify after" seconds and then stopped (done, or waiting on you) in a tab
@@ -887,6 +922,7 @@ final class TerminalView: NSView, TerminalDelegate {
         if let sb = searchBar {
             sb.frame = NSRect(x: bounds.width - sb.frame.width - 12, y: 8, width: sb.frame.width, height: sb.frame.height)
         }
+        promptChanges?.layout(in: bounds, top: searchBar.map { $0.frame.maxY } ?? 0)
         if let bar = lostBar {
             let w = min(bar.preferredWidth, bounds.width - 16)
             bar.frame = NSRect(x: max(8, bounds.width - w - 12), y: bounds.height - ConnectionLostBar.height - 10, width: w, height: ConnectionLostBar.height)
@@ -1266,6 +1302,10 @@ final class TerminalView: NSView, TerminalDelegate {
             ranges.append(lo...e)
         }
         ranges += collapsedTurnRanges()
+        // Claude Code's edit diffs, shown in the files-changed pill's panel instead.
+        if Config.shared.hideAgentEditDiffs {
+            for b in terminal.blocks where isClaudeBlock(b) { ranges += terminal.agentEditDiffRanges(in: b) }
+        }
         ranges = ranges.filter { $0.upperBound >= first }.map { max($0.lowerBound, first)...$0.upperBound }.sorted { $0.lowerBound < $1.lowerBound }
         var merged: [ClosedRange<Int>] = []
         for r in ranges {
@@ -1283,6 +1323,15 @@ final class TerminalView: NSView, TerminalDelegate {
             let d = top + r
             rowMap[r] = d < total ? displayToAbs(d) : -1
         }
+    }
+
+    /// A block that's a Claude Code session: its command names claude, or one of your aliases for it ("c --resume …",
+    /// as a restored session continues), or it's running and Claude Code is what's in the foreground.
+    private func isClaudeBlock(_ b: Block) -> Bool {
+        if b.isAgentSession { return true }
+        if b.state == .running, runningAgent == .claude, !exited { return true }
+        let first = b.command.split(separator: " ").first.map(String.init) ?? ""
+        return !first.isEmpty && AliasStore.shared.aliases.contains { $0.name == first && Block.namesAgentSession($0.command) }
     }
 
     var totalDisplayLines: Int {

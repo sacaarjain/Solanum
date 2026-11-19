@@ -98,6 +98,8 @@ final class AtlassianModel {
 
     // Board
     var boards: [JiraBoard] = []
+    /// The projects your assigned tickets are in, as found when choosing a first board.
+    var myProjects: Set<String> = []
     var board: JiraBoard? { boards.first { $0.id == settings.boardId } ?? boards.first }
     var config: JiraBoardConfig?
     var sprintName: String?
@@ -271,12 +273,25 @@ final class AtlassianModel {
             api.boards { [weak self] r in
                 switch r {
                 case .success(let list):
-                    self?.boards = list
-                    // The board you last had, else one in a project you work in (your branches' keys), else the first.
-                    if let id = self?.settings.boardId, list.contains(where: { $0.id == id }) {} else if let first = list.first {
-                        self?.settings.boardId = first.id
+                    guard let self else { return }
+                    self.boards = list
+                    // The board you last had (looked up by itself when it's not among them), else one in the project
+                    // your tickets are mostly in, else the first.
+                    if let id = self.settings.boardId {
+                        if list.contains(where: { $0.id == id }) { return go() }
+                        return self.api.board(id) { r in
+                            if case .success(let b) = r { self.boards.append(b) } else { self.settings.boardId = list.first?.id }
+                            go()
+                        }
                     }
-                    go()
+                    self.api.search("assignee = currentUser() ORDER BY updated DESC", max: 30) { r in
+                        let keys = ((try? r.get()) ?? []).map(\.projectKey)
+                        let counts = Dictionary(keys.map { ($0, 1) }, uniquingKeysWith: +)
+                        self.myProjects = Set(keys)
+                        let pick = counts.sorted { $0.value > $1.value }.lazy.compactMap { k in list.first { $0.projectKey == k.key } }.first
+                        self.settings.boardId = (pick ?? list.first)?.id
+                        go()
+                    }
                 case .failure(let e):
                     self?.loadingBoard = false
                     self?.boardError = e.message
@@ -287,10 +302,24 @@ final class AtlassianModel {
     }
 
     func selectBoard(_ id: Int) {
+        // A board not among those listed (one opened by its number or address): looked up first.
+        guard boards.contains(where: { $0.id == id }) else {
+            return api.board(id) { [weak self] r in
+                switch r {
+                case .success(let b): self?.boards.append(b); self?.selectBoard(id)
+                case .failure(let e): self?.say("Couldn't open board \(id): \(e.message)", ok: false)
+                }
+            }
+        }
         settings.boardId = id
         issues = []
         config = nil
         loadBoard()
+    }
+
+    /// The projects you have tickets in (yours, the ones you've opened, the board's), for the board list to put first.
+    var yourProjects: Set<String> {
+        myProjects.union(mine.map(\.projectKey)).union(recent.map(\.projectKey))
     }
 
     func loadMine() {
