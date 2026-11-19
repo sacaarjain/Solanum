@@ -279,11 +279,11 @@ extension TerminalView {
     }
 
     @objc override func selectAll(_ sender: Any?) {
-        // ⌘A in the text being typed selects just that, as in a text field. In a Claude chat it's never the whole
-        // conversation, even with nothing typed yet.
-        if let text = editableInput() {
-            if !text.isEmpty { return showInputSelection(text, anchor: 0, head: text.stops.count - 1) }
-            if inAgentInput { return }
+        // ⌘A in Claude Code's input box selects just what's typed there, as in a text field, and never the whole
+        // conversation, even with nothing typed yet. At a shell's prompt it selects the whole terminal, as usual.
+        if inAgentInput {
+            if let text = editableInput(), !text.isEmpty { showInputSelection(text, anchor: 0, head: text.stops.count - 1) }
+            return
         }
         let first = terminal.firstAbs
         var last = terminal.lastAbs
