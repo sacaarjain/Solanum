@@ -16,14 +16,16 @@ enum ClaudeImages {
         let image: NSImage
         /// The file Claude Code saved it as; nil when only the clipboard copy is known.
         let url: URL?
+        /// When Claude Code wrote it: a resumed session's new "1.png" replaces the old one under the same name.
+        var modified = Date.distantPast
     }
 
-    private static var found: [String: Found] = [:]
+    /// Files found, and when last looked at again (a resumed session reuses numbers, so a found file can be replaced).
+    private static var found: [String: (found: Found, checked: Date)] = [:]
     /// Clipboard copies of images pasted here, by "session|N": used until Claude Code's file is there.
     private static var pasted: [String: NSImage] = [:]
     /// Lookups that came up empty: when first and last tried (Claude may still be writing the file).
     private static var missing: [String: (first: Date, last: Date)] = [:]
-    private static let extensions = ["png", "jpg", "jpeg", "gif", "webp"]
     /// Each Claude process's session, re-read every couple of seconds (/clear and /resume change it).
     private static var sessions: [pid_t: (id: String?, checked: Date)] = [:]
 
@@ -57,23 +59,28 @@ enum ClaudeImages {
     static func lookup(_ n: Int, pid: pid_t, cwd: String, retry: inout Bool) -> Found? {
         guard let s = session(pid, cwd: cwd) else { return nil }
         let key = "\(s)|\(n)"
-        if let f = found[key] { return f }
         let now = Date()
+        if let f = found[key], now.timeIntervalSince(f.checked) < 1 { return f.found }
         let fallback = pasted[key].map { Found(image: $0, url: nil) }
         if let m = missing[key], now.timeIntervalSince(m.last) < 0.25 {
             if now.timeIntervalSince(m.first) < 10 { retry = true }
             return fallback
         }
         let dir = "/private/tmp/claude-\(getuid())/\(slug(cwd))/\(s)/images/"
-        guard let path = extensions.lazy.map({ dir + "\(n).\($0)" }).first(where: { FileManager.default.fileExists(atPath: $0) }),
-              let image = NSImage(contentsOfFile: path) else {
+        let newest = ImageTokens.newestFile(n, in: dir)
+        if let f = found[key], let newest, f.found.url?.path == newest.path, f.found.modified == newest.modified {
+            found[key] = (f.found, now)
+            return f.found
+        }
+        guard let file = newest, let image = NSImage(contentsOfFile: file.path) else {
+            if let f = found[key] { return f.found }
             let first = missing[key]?.first ?? now
             missing[key] = (first, now)
             if now.timeIntervalSince(first) < 10 { retry = true }
             return fallback
         }
-        let f = Found(image: image, url: URL(fileURLWithPath: path))
-        found[key] = f
+        let f = Found(image: image, url: URL(fileURLWithPath: file.path), modified: file.modified)
+        found[key] = (f, now)
         missing[key] = nil
         pasted[key] = nil
         return f
