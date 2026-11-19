@@ -93,6 +93,8 @@ class FrostedCard: NSView {
         frost.layer?.masksToBounds = true
         frost.layer?.borderWidth = 1
         tint.wantsLayer = true
+        // They follow the card's size as it's animated, not only when it's laid out.
+        for v in [frost, tint, body] as [NSView] { v.autoresizingMask = [.width, .height] }
         addSubview(frost)
         frost.addSubview(tint)
         frost.addSubview(body)

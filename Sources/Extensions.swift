@@ -501,8 +501,9 @@ class PageCanvas: NSView {
 
     /// The height `render()` needs at the current width.
     func measure() -> CGFloat {
+        // The spots stay as last drawn: measuring adds none, and clearing them left nothing to hover or click until the
+        // next draw (the files-changed panel measures itself every layout, without redrawing).
         measuring = true
-        hits = []
         let h = render()
         measuring = false
         return h
@@ -513,7 +514,27 @@ class PageCanvas: NSView {
         dirty = dirtyRect
         _ = render()
         dirty = .infinite
+        if usesCursorRects { window?.invalidateCursorRects(for: self) }
     }
+
+    /// The pointer's shape from cursor rects, which AppKit keeps to by itself (a hand on each spot, an arrow elsewhere),
+    /// not only from mouse-moved events: for a canvas over the terminal (the files-changed pill and panel), which may
+    /// come up under a pointer that hasn't moved, among views that set the pointer their own way.
+    var usesCursorRects = false
+
+    override func resetCursorRects() {
+        guard usesCursorRects else { return super.resetCursorRects() }
+        let shown = visibleRect
+        addCursorRect(shown, cursor: .arrow)
+        for h in hits {
+            let r = h.rect.intersection(shown)
+            if !r.isEmpty { addCursorRect(r, cursor: .pointingHand) }
+        }
+    }
+
+    /// The pointer's move, from the window when this canvas's own tracking may not have caught up (see
+    /// PromptChangesController).
+    func pointerMoved(to windowPoint: NSPoint) { pointer(at: windowPoint) }
 
     /// Whether `r` needs drawing now (it's being drawn, not measured, and it's in the part being redrawn).
     func visible(_ r: NSRect) -> Bool { !measuring && r.intersects(dirty) }
@@ -531,16 +552,39 @@ class PageCanvas: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+        // Cursor updates too: over the terminal (the files-changed panel), it hands the pointer to what's on top of it.
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow, .inVisibleRect],
+                                       owner: self))
     }
 
-    override func mouseMoved(with e: NSEvent) {
+    override func mouseMoved(with e: NSEvent) { pointer(at: e.locationInWindow) }
+
+    override func cursorUpdate(with e: NSEvent) { pointer(at: e.locationInWindow) }
+
+    /// What's under the pointer, looked at again where it is now (after this view's appeared or grown under it, with
+    /// no move to say so): hover, the pointer's shape and the tooltip.
+    func refreshPointer() {
+        guard let w = window else { return }
+        updateTrackingAreas()
+        pointer(at: w.mouseLocationOutsideOfEventStream)
+    }
+
+    /// The tooltip for a spot, by its id (none, unless a canvas says).
+    func tip(for id: String) -> String? { nil }
+
+    /// The pointer's shape at `p` (in this view) where there's no spot: an arrow, unless a canvas says (an I-beam over
+    /// text that can be selected).
+    func cursor(at p: NSPoint) -> NSCursor? { nil }
+
+    private func pointer(at windowPoint: NSPoint) {
         // Tracking areas fire under whatever covers this view (the ticket panel over the board, a form over the page):
         // only the view a click would reach shows hover and sets the pointer.
-        guard isTopmost(at: e.locationInWindow) else { hover = nil; return }
-        let h = hitAt(e)
+        guard isTopmost(at: windowPoint) else { hover = nil; toolTip = nil; return }
+        let p = convert(windowPoint, from: nil)
+        let h = hits.last { $0.rect.contains(p) }
         hover = h?.id
-        (h == nil ? NSCursor.arrow : NSCursor.pointingHand).set()
+        toolTip = h.flatMap { tip(for: $0.id) }
+        (h == nil ? cursor(at: p) ?? .arrow : NSCursor.pointingHand).set()
     }
 
     override func mouseExited(with e: NSEvent) {

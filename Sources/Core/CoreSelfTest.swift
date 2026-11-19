@@ -317,9 +317,14 @@ enum CoreSelfTest {
             feed(t, "⏺ Update(README.md)\r\n  ⎿  Added 2 lines\r\n       7\r\n       8 +(Demo line)\r\n       9 +\r\n      10  ## Features\r\n\r\n")
             feed(t, "⏺ Write(a/Example.swift)\r\n  ⎿  Wrote 3 lines to a/Example.swift\r\n       1 struct A {}\r\n       2 \r\n       … +1 line (ctrl+o to expand)\r\n\r\n")
             feed(t, "⏺ Done, both edited.\r\n\r\n⏺ Update(b.swift)\r\n\r\n Do you want to make this edit to b.swift?\r\n       1 -x\r\n       1 +y\r\n\r\n")
+            // A shell command's output, then what it changed (the diff folds), then one whose output says "Added" (it stays).
+            feed(t, "⏺ Bash(python3 edit.py)\r\n  ⎿  ✓ Built\r\n     ✓ tests\r\n  ⎿  Updated a.swift +1 -1\r\n      141 let a = 1\r\n      142 -old\r\n      142 +new\r\n\r\n")
+            feed(t, "⏺ Bash(git add .)\r\n  ⎿  Added 3 files\r\n     done\r\n\r\n")
+            feed(t, "⏺ Bash(rm one.swift)\r\n  ⎿  Deleted one.swift -2\r\n       1 -struct One {\r\n       2 -}\r\n  ⎿  Allowed by auto mode\r\n\r\n")
             feed(t, "\(rule)\r\n❯ \r\n\(rule)")
             let hidden = t.blocks.last.map { t.agentEditDiffRanges(in: $0) } ?? []
-            check("agent edits: the diffs under finished edits", hidden == [3...6, 10...12], hidden.map { "\($0)" }.joined(separator: " "))
+            check("agent edits: the diffs under finished edits and under a command's changes", hidden == [3...6, 10...12, 26...28, 36...37],
+                  hidden.map { "\($0)" }.joined(separator: " "))
         }
         do {
             // The text being typed, a stop at a time from the keyboard (⇧ and the arrows).
@@ -783,6 +788,17 @@ enum CoreSelfTest {
             ChangedFile(path: "gone.txt", change: .deleted, added: 0, removed: 0, binary: true)], String(describing: files))
         let tail = DiffFile.parse("diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1,2 @@\n hi\n+two\n")
         check("diff: the output's last line break isn't a line", tail.first?.lines.count == 3, String(describing: tail.first?.lines))
+        let one = DiffFile.parse("diff --git a/a.swift b/a.swift\n--- a/a.swift\n+++ b/a.swift\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n").first
+        let asked = PromptChanges.ask(about: [(ChangedFile(path: "a.swift", added: 1, removed: 1), one)])
+        check("prompt changes: asking about one change, by where it is", asked == "About your change to a.swift (line 2, +1 −1): ", asked)
+        let spread = DiffFile.parse("diff --git a/b b/b\n--- a/b\n+++ b/b\n@@ -1,3 +1,4 @@\n x\n+a\n+b\n y\n@@ -20,2 +21,3 @@\n z\n+c\n w\n@@ -40 +42 @@\n-q\n+r\n@@ -60 +62 @@\n-s\n+t\n").first
+        let gone = DiffFile.parse("diff --git a/c b/c\n--- a/c\n+++ b/c\n@@ -5,2 +4,0 @@\n-one\n-two\n").first
+        let many = PromptChanges.ask(about: [(ChangedFile(path: "src/a.swift", added: 1, removed: 1), one),
+                                             (ChangedFile(path: "b.png", change: .added, added: 0, removed: 0, binary: true), nil),
+                                             (ChangedFile(path: "b", added: 5, removed: 2), spread),
+                                             (ChangedFile(path: "c", added: 0, removed: 2), gone)])
+        check("prompt changes: asking about them all, in a line", many == "About the changes you made for my last prompt (a.swift: line 2, +1 −1; "
+              + "b.png: new file, +0; b: lines 2–3, 22, 42 and more, +5 −2; c: removed at lines 5–6, +0 −2): ", many)
         check("prompt changes: paths from the repository's top", PromptChanges.relative("/r/x/a.swift", to: "/r") == "x/a.swift"
               && PromptChanges.relative("/elsewhere/a", to: "/r") == "/elsewhere/a", "")
     }

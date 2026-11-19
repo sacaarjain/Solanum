@@ -993,8 +993,11 @@ extension TerminalView {
         }
         // Normal arrow over the scrollbar and the jump-to-bottom button; a hand over copy buttons and links.
         if scrollbarHover || scrollbarGrab != nil || hoverJumpPill { return NSCursor.arrow.set() }
-        let overPopup = window.map { imageChipState.popupRect.contains(convert($0.mouseLocationOutsideOfEventStream, from: nil)) } ?? false
-        (hoverCopyButton != nil || hoverBlockCopy || hoverBlockSend || hoverURL != nil || imageChipState.hover != nil || overPopup
+        let mouse = window.map { convert($0.mouseLocationOutsideOfEventStream, from: nil) }
+        let overPopup = mouse.map { imageChipState.popupRect.contains($0) } ?? false
+        // The chips drawn on the terminal ("⋯ 12 lines hidden", a prompt's "✎ 3 files changed") take a click.
+        let overChip = mouse.map { m in collapseChips.contains { $0.0.contains(m) } } ?? false
+        (hoverCopyButton != nil || hoverBlockCopy || hoverBlockSend || hoverURL != nil || imageChipState.hover != nil || overPopup || overChip
             ? NSCursor.pointingHand : NSCursor.iBeam).set()
     }
 

@@ -25,6 +25,9 @@ struct DropdownItem {
     var fill: String?
     /// A picture where the check mark goes (an agent's mark, a group's swatch), from a menu item's image.
     var image: NSImage?
+    /// The menu item it was made from, for the menu's delegate to hear it's highlighted (the send menu marks the tab
+    /// the text would go to).
+    var menuItem: NSMenuItem?
 
     static func item(_ title: String, checked: Bool = false, symbol: String? = nil, detail: String? = nil, color: NSColor? = nil,
                      option: (() -> Void)? = nil, optionDetail: String? = nil, _ action: @escaping () -> Void) -> DropdownItem {
@@ -184,6 +187,12 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
     deinit { if let m = flagsMonitor { NSEvent.removeMonitor(m) } }
 
     /// Dev aid: picks the last dropdown's item called `title`.
+    /// Dev aid: highlights the open dropdown's row whose title ends in `title`, as the pointer would.
+    static func devHighlight(_ title: String) {
+        guard let d = current, let i = d.list.items.firstIndex(where: { $0.kind == .item && $0.title.hasSuffix(title) }) else { return }
+        d.list.highlighted = i
+    }
+
     static func devRun(_ title: String) {
         // As a click would: through the open dropdown (closing it first), else straight from its items.
         if let d = current, let i = d.list.items.firstIndex(where: { $0.kind == .item && $0.title == title }) { return d.pick(i) }
@@ -291,7 +300,12 @@ final class ThemedDropdown: NSView, NSTextFieldDelegate, WindowOverlay {
 
     private var optionHeld: Bool { NSApp.currentEvent?.modifierFlags.contains(.option) ?? false }
 
+    /// Called once, as it closes.
+    var onClose: (() -> Void)?
+
     func dismiss() {
+        onClose?()
+        onClose = nil
         if let m = flagsMonitor { NSEvent.removeMonitor(m); flagsMonitor = nil }
         let w = window, root = superview
         (anchor as? DropdownAnchor)?.dropdownOpen = false
@@ -456,7 +470,15 @@ final class DropdownTint: NSView {
 
 final class DropdownListView: NSView {
     var items: [DropdownItem] = [] { didSet { needsDisplay = true } }
-    var highlighted: Int? { didSet { if highlighted != oldValue { needsDisplay = true } } }
+    var highlighted: Int? {
+        didSet {
+            guard highlighted != oldValue else { return }
+            needsDisplay = true
+            onHighlight?(highlighted.flatMap { items.indices.contains($0) ? items[$0] : nil })
+        }
+    }
+    /// Told the row highlighted (by the pointer or the arrows), or nil.
+    var onHighlight: ((DropdownItem?) -> Void)?
     /// ⌥ is down: rows with an `optionDetail` say it instead of their detail.
     var optionHeld = false { didSet { if optionHeld != oldValue { needsDisplay = true } } }
     /// The row, and whether ⌥ was held.
@@ -654,6 +676,7 @@ extension ThemedDropdown {
             }
             var row = DropdownItem.item(item.title, checked: item.state == .on, detail: shortcut(item), color: item.representedObject as? NSColor, run)
             if row.color == nil { row.image = item.image }
+            row.menuItem = item
             out.append(row)
         }
         while out.last?.kind == .separator { out.removeLast() }
@@ -695,5 +718,12 @@ extension ThemedDropdown {
         if let back { rows.insert(contentsOf: [.item("Back", symbol: "chevron.left", back), .separator], at: 0) }
         guard !rows.isEmpty else { return }
         show(rows, under: view, rect: rect, minWidth: minWidth, searchable: rows.filter { $0.kind == .item }.count > 12)
+        // As an NSMenu would: its delegate hears which item's highlighted and when it closes (the send menu marks the
+        // tab the text would go to by these).
+        guard let d = current, let delegate = menu.delegate else { return }
+        // The menu itself is let go once it's converted: these hold it (and its delegate) for as long as the dropdown's up.
+        d.list.onHighlight = { row in delegate.menu?(menu, willHighlight: row?.menuItem) }
+        d.onClose = { delegate.menuDidClose?(menu) }
+        if let i = d.list.highlighted, d.list.items.indices.contains(i) { delegate.menu?(menu, willHighlight: d.list.items[i].menuItem) }
     }
 }

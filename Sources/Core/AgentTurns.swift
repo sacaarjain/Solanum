@@ -118,40 +118,42 @@ extension Terminal {
 // MARK: - Edit diffs
 
 extension Terminal {
-    /// The diff Claude Code prints under each finished edit in an agent session's block: after "⏺ Update(a.swift)" and
-    /// "  ⎿  Added 2 lines", the file's changed lines, numbered. Hidden when Settings says so (the pill's panel, "Files
-    /// changed this prompt", shows them instead); the edit's own two lines stay. An edit waiting for your approval has no
-    /// "⎿" line yet, so its diff stays, and nothing in the live input box at the bottom is touched.
+    /// The diffs Claude Code prints under finished changes to files in an agent session's block: after an edit's
+    /// "⏺ Update(a.swift)" and "  ⎿  Added 2 lines", or a shell command's "  ⎿  Updated a.swift +1 −1" (what its commands
+    /// changed, inside its output), the changed lines, numbered. Hidden when Settings says so (the pill's panel, "Files
+    /// changed this prompt", shows them instead); the summary lines stay. An edit waiting for your approval has no "⎿"
+    /// line yet, so its diff stays, and nothing in the live input box at the bottom is touched.
     func agentEditDiffRanges(in b: Block) -> [ClosedRange<Int>] {
         guard b.state != .prompt, let range = scanRange(b) else { return [] }
         var limit = range.upperBound
         if let top = agentInputBoxTop(b) { limit = min(limit, top - 1) }
         var out: [ClosedRange<Int>] = []
         var a = range.lowerBound
-        while a + 1 < limit {
-            guard isAgentEditHeader(a), isAgentEditSummary(a + 1) else { a += 1; continue }
+        while a < limit {
+            // The summary, then numbered lines: a command's own output under a "⎿ Added …" isn't numbered, so it stays.
+            guard isAgentEditSummary(a), isAgentEditNumbered(a + 1) else { a += 1; continue }
             var e = a + 1
             while e + 1 <= limit, isAgentEditBody(e + 1) { e += 1 }
-            if e > a + 1 { out.append((a + 2)...e) }
+            out.append((a + 1)...e)
             a = e + 1
         }
         return out
     }
 
-    /// "⏺ Update(path)", "⏺ Write(path)" and the like (⏺ or ●, as fonts differ).
-    private func isAgentEditHeader(_ a: Int) -> Bool {
-        guard let l = line(abs: a), let c = l.cells.first?.ch, c == 0x23FA || c == 0x25CF else { return false }
-        let t = l.text(from: 2)
-        return ["Update(", "Write(", "Edit(", "MultiEdit(", "Create(", "NotebookEdit("].contains { t.hasPrefix($0) }
-    }
-
-    /// "  ⎿  Added 2 lines", "  ⎿  Wrote 7 lines to …": the edit went through.
+    /// "  ⎿  Added 2 lines", "  ⎿  Wrote 7 lines to …", "  ⎿  Updated a.swift +1 −1", "  ⎿  Deleted a.swift -11": a change to
+    /// a file went through.
     private func isAgentEditSummary(_ a: Int) -> Bool {
         guard let l = line(abs: a) else { return false }
         let t = l.text().trimmingCharacters(in: .whitespaces)
-        guard t.hasPrefix("⎿") else { return false }
+        guard t.hasPrefix("⎿"), l.cells.prefix(2).allSatisfy({ $0.ch == 0x20 || $0.ch == 0 }) else { return false }
         let rest = t.dropFirst().trimmingCharacters(in: .whitespaces)
-        return ["Added", "Removed", "Wrote", "Updated", "Created"].contains { rest.hasPrefix($0) }
+        return ["Added", "Removed", "Wrote", "Updated", "Created", "Deleted", "Renamed", "Moved"].contains { rest.hasPrefix($0) }
+    }
+
+    /// A numbered line of a diff ("      12 +let x = 1").
+    private func isAgentEditNumbered(_ a: Int) -> Bool {
+        guard isAgentEditBody(a), let t = line(abs: a)?.text().trimmingCharacters(in: .whitespaces) else { return false }
+        return t.first?.isNumber == true
     }
 
     /// A line of the diff: indented past the "⎿" (numbered lines, their wrapped rest, "… +12 lines"), not blank.

@@ -145,3 +145,50 @@ enum PromptChanges {
         }
     }
 }
+
+// MARK: - Asking the agent
+
+extension PromptChanges {
+    /// What "Ask about this change" pastes into the agent's input box (not sent: you write the question after it): a line
+    /// saying which change, where in the file and how big, not the diff itself (the agent can read the files and git).
+    /// `scope` says which prompt's ("for my last prompt", "in this chat").
+    static func ask(about changes: [(file: ChangedFile, diff: DiffFile?)], scope: String = "for my last prompt") -> String {
+        func place(_ c: (file: ChangedFile, diff: DiffFile?)) -> String {
+            var parts: [String] = []
+            if c.file.change == .modified, let d = c.diff, let lines = where_(d) { parts.append(lines) }
+            parts.append(summary(c.file))
+            return parts.joined(separator: ", ")
+        }
+        if changes.count == 1, let c = changes.first { return "About your change to \(c.file.path) (\(place(c))): " }
+        let list = changes.map { "\(($0.file.path as NSString).lastPathComponent): \(place($0))" }
+        return "About the changes you made \(scope) (\(list.joined(separator: "; "))): "
+    }
+
+    /// Where a file's change is, by its lines now ("line 6", "lines 3–4 and 20"; a few, then "and more"), or where lines
+    /// were taken out when none were added.
+    static func where_(_ d: DiffFile) -> String? {
+        var nums = d.lines.compactMap { $0.kind == .added ? $0.new : nil }
+        var removedOnly = false
+        if nums.isEmpty { nums = d.lines.compactMap { $0.kind == .removed ? $0.old : nil }; removedOnly = true }
+        guard !nums.isEmpty else { return nil }
+        var ranges: [ClosedRange<Int>] = []
+        for n in nums.sorted() {
+            if let last = ranges.last, n <= last.upperBound + 1 { ranges[ranges.count - 1] = last.lowerBound...max(last.upperBound, n) }
+            else { ranges.append(n...n) }
+        }
+        let shown = ranges.prefix(3).map { $0.count == 1 ? "\($0.lowerBound)" : "\($0.lowerBound)–\($0.upperBound)" }
+        let single = ranges.count == 1 && ranges[0].count == 1
+        let list = ranges.count > 3 ? shown.joined(separator: ", ") + " and more"
+            : shown.count > 1 ? shown.dropLast().joined(separator: ", ") + " and " + shown.last! : shown[0]
+        let text = (single ? "line " : "lines ") + list
+        return removedOnly ? "removed at " + text : text
+    }
+
+    private static func summary(_ f: ChangedFile) -> String {
+        switch f.change {
+        case .added: return "new file, +\(f.added)"
+        case .deleted: return "deleted, −\(f.removed)"
+        case .modified: return "+\(f.added) −\(f.removed)"
+        }
+    }
+}

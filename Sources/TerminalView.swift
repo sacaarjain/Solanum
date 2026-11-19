@@ -374,6 +374,7 @@ final class TerminalView: NSView, TerminalDelegate {
         palette = RenderPalette(theme: Config.shared.theme, boldIsBright: Config.shared.boldIsBright)
         terminal.setScrollbackLimit(Config.shared.scrollback)
         updateBlinkTimer()
+        promptChanges?.applyTheme()
         needsLayout = true
         needsDisplay = true
     }
@@ -1355,7 +1356,7 @@ final class TerminalView: NSView, TerminalDelegate {
 
     /// The strip along the right edge where the pointer works the scrollbar.
     func inScrollbarZone(_ p: NSPoint) -> Bool {
-        scrollbarGeometry() != nil && p.x >= bounds.width - 14 && p.x <= bounds.width && p.y >= 4 && p.y <= bounds.height - 4
+        scrollbarGeometry() != nil && p.x >= bounds.width - Self.scrollbarStrip && p.x <= bounds.width && p.y >= 4 && p.y <= bounds.height - 4
     }
 
     /// Scrolls so the thumb, held at `scrollbarGrab`, sits under the pointer's `y`.
@@ -1464,6 +1465,7 @@ final class TerminalView: NSView, TerminalDelegate {
         drawBlockChrome(ctx, spans)
         drawCopyButtons(ctx)
         drawTurnChrome(ctx)
+        drawPromptChangeChips(ctx)
         ctx.restoreGState()
         drawLinkCard(ctx)
         drawOverlays(ctx)
@@ -1600,7 +1602,7 @@ final class TerminalView: NSView, TerminalDelegate {
             // The prompt of the selected turn: nothing of its own inside the selection's outline and fill, which already
             // set the whole turn apart (a box of its own was a second accent border a point from the outline's).
             if let sel = selected, sel.first >= r0, sel.first <= r1 { continue }
-            let x = max(2, padX - 6), right = min(padX + CGFloat(terminal.cols) * fonts.cellW + 4, bounds.width - 4)
+            let x = max(2, padX - 6), right = min(padX + CGFloat(terminal.cols) * fonts.cellW + 4, contentRight)
             let rect = ctx.pixelAligned(CGRect(x: x, y: rowY(r0) - 2, width: right - x, height: CGFloat(r1 - r0 + 1) * fonts.cellH + 4))
             let path = CGPath(roundedRect: rect, cornerWidth: 8, cornerHeight: 8, transform: nil)
             ctx.setFillColor(th.accent.withAlphaComponent(th.isDark ? 0.10 : 0.08).cgColor)
@@ -1608,6 +1610,27 @@ final class TerminalView: NSView, TerminalDelegate {
             ctx.fillPath()
             ctx.setStrokeColor(th.accent.withAlphaComponent(0.45).cgColor)
             ctx.strokeInside(rect, radius: 8)
+        }
+    }
+
+    /// On the box of a prompt you sent that changed files (see PromptChangesPanel): a chip at its right saying how many,
+    /// which opens the files-changed panel at that prompt.
+    private func drawPromptChangeChips(_ ctx: CGContext) {
+        guard let pc = promptChanges, pc.active, !terminal.usingAlt, let top = rowMap.first(where: { $0 >= 0 }),
+              let bottom = rowMap.last(where: { $0 >= 0 }) else { return }
+        let bands = PromptBands.find({ self.terminal.line(abs: $0) }, from: max(top - 40, terminal.firstAbs), through: bottom)
+        let font = NSFont.systemFont(ofSize: max(10, fonts.size - 2.5), weight: .medium)
+        let right = min(padX + CGFloat(terminal.cols) * fonts.cellW + 4, contentRight)
+        for b in bands {
+            guard let r0 = rowMap.firstIndex(where: { $0 >= b.first && $0 <= b.last }) else { continue }
+            let typed = (b.first...b.last).compactMap { terminal.line(abs: $0)?.text() }.joined(separator: " ")
+            guard let entry = pc.tracker.entry(matching: typed), !entry.files.isEmpty else { continue }
+            let n = entry.files.count
+            let label = "✎ \(n) file\(n == 1 ? "" : "s") changed"
+            let w = ceil((label as NSString).size(withAttributes: [.font: font]).width) + 14
+            let rect = drawChip(label, x: right - w - 8, centerY: rowY(r0) + fonts.cellH / 2, ctx)
+            let id = entry.prompt.id
+            collapseChips.append((rect, { [weak pc] in pc?.show(prompt: id) }))
         }
     }
 
@@ -1790,14 +1813,20 @@ final class TerminalView: NSView, TerminalDelegate {
     }
 
     /// The rounded outline around a selected block or prompt, whose tint fills exactly this shape.
+    /// The strip along the right edge the scrollbar works in. What's drawn over the text (a selection's outline, a
+    /// prompt's box, the files-changed pill) stops short of it, so they all end at one line.
+    static let scrollbarStrip: CGFloat = 14
+    /// That line.
+    var contentRight: CGFloat { bounds.width - Self.scrollbarStrip }
+
     func selectionOutline(top: CGFloat, height: CGFloat) -> CGPath {
-        CGPath(roundedRect: CGRect(x: 3, y: top + 1, width: bounds.width - 6, height: height - 2), cornerWidth: 6, cornerHeight: 6, transform: nil)
+        CGPath(roundedRect: CGRect(x: 3, y: top + 1, width: contentRight - 3, height: height - 2), cornerWidth: 6, cornerHeight: 6, transform: nil)
     }
 
     /// That outline's 1.5pt line, on whole pixels so it's crisp (centered on the outline's edge, give or take a quarter
     /// point).
     func strokeSelectionOutline(top: CGFloat, height: CGFloat, _ ctx: CGContext) {
-        ctx.strokeInside(CGRect(x: 3, y: top + 1, width: bounds.width - 6, height: height - 2).insetBy(dx: -0.75, dy: -0.75),
+        ctx.strokeInside(CGRect(x: 3, y: top + 1, width: contentRight - 3, height: height - 2).insetBy(dx: -0.75, dy: -0.75),
                          radius: 6.75, width: 1.5)
     }
 
