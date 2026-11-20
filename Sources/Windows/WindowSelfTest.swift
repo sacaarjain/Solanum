@@ -1190,13 +1190,38 @@ enum WindowSelfTest {
             _ = FileManager.default.createFile(atPath: array, contents: Data([0x93] + Array("NUMPY".utf8) + [1, 0, UInt8(h.utf8.count), 0] + Array(h.utf8) + values))
             window.showFile(array, in: pane)
         }, done: {
-            guard let e = editor(), e.path.hasSuffix("grid.npy"), let lines = e.textLines else { return false }
-            return e.readOnly && lines.last == "1   3.0   4.0"
+            guard let e = editor(), e.path.hasSuffix("grid.npy"), case .numpy = e.content, let v = e.numpyViewer else { return false }
+            return e.readOnly && v.modeForTesting == .plot && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\numpy.png") } ?? true)
         }))
-        steps.append(Step(name: "editor: and a picture of them", action: { editor()?.press(button: .picture) }, done: {
-            guard let e = editor(), e.showingPicture, case .image = e.content else { return false }
-            return snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\numpy.png") } ?? true
+        steps.append(Step(name: "editor: its values, in a grid", action: { editor()?.numpyViewer?.pressForTesting(mode: .values) }, done: {
+            editor()?.numpyViewer?.modeForTesting == .values && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\numpy-values.png") } ?? true)
         }))
+        steps.append(Step(name: "editor: and as text", action: { editor()?.press(button: .numpyText) }, done: {
+            guard let e = editor(), let lines = e.textLines else { return false }
+            return e.showingNumpyText && lines.last == "1   3.0   4.0"
+        }))
+        // A movie (frames of a grid): → steps to the next frame, Space plays, the wheel zooms in.
+        let movie = scratch + "\\movie.npy"
+        steps.append(Step(name: "editor: a NumPy movie steps frame by frame", action: {
+            var h = "{'descr': '<f8', 'fortran_order': False, 'shape': (3, 4, 5), }"
+            h += String(repeating: " ", count: (64 - (11 + h.utf8.count) % 64) % 64) + "\n"
+            let values = (0..<60).flatMap { i in (0..<8).map { UInt8(truncatingIfNeeded: Double(i).bitPattern >> ($0 * 8)) } }
+            _ = FileManager.default.createFile(atPath: movie, contents: Data([0x93] + Array("NUMPY".utf8) + [1, 0, UInt8(h.utf8.count), 0] + Array(h.utf8) + values))
+            window.showFile(movie, in: pane)
+        }, done: {
+            guard let e = editor(), e.path.hasSuffix("movie.npy"), case .numpy = e.content, let v = e.numpyViewer, v.indexForTesting == [0] else { return false }
+            return e.key(Win.VK_RIGHT, shift: false, ctrl: false) && v.indexForTesting == [1]
+        }))
+        steps.append(Step(name: "editor: plays, round from its end", action: { _ = editor()?.key(0x20, shift: false, ctrl: false) }, done: {
+            guard let v = editor()?.numpyViewer else { return false }
+            return v.playing == 0 && v.indexForTesting == [0]
+        }))
+        steps.append(Step(name: "editor: and zooms in with the wheel", action: {
+            _ = editor()?.key(0x20, shift: false, ctrl: false)
+            editor()?.numpyViewer?.zoomForTesting()
+        }, done: { editor()?.numpyViewer.map { $0.zoomedForTesting && $0.playing == nil } ?? false }))
+        steps.append(Step(name: "editor: the NumPy movie closes", action: { editor()?.press(button: .close) },
+                          done: { editor()?.path.hasSuffix("movie.npy") != true }))
         steps.append(Step(name: "editor: the NumPy array closes", action: { editor()?.press(button: .close) },
                           done: { editor()?.path.hasSuffix("grid.npy") != true }))
         // Where the files' line meets the sidebar's edge, a drag moves both, as in VS Code.

@@ -537,6 +537,14 @@ enum CoreSelfTest {
                 let s = packed.index(packed.startIndex, offsetBy: i)
                 return UInt8(packed[s..<packed.index(s, offsetBy: 2)], radix: 16) ?? 0
             }
+            // The viewer's summary, contrast and axes.
+            if case .success(let grid)? = fortranFile.arrays.first?.array, let st = NumpyStats(grid) {
+                check("numpy: an array's summary", st.min == 0 && st.max == 12 && st.mean == 6 && st.nan == 0 && st.autoRange == (0, 12),
+                      "\(st.min) \(st.max) \(st.mean) \(st.autoRange)")
+            } else { check("numpy: an array's summary", false) }
+            check("numpy: an axis's ticks are round numbers", NumpyRender.ticks(0, 3, count: 10) == [0, 0.2, 0.4, 0.6, 0.8, 1, 1.2, 1.4, 1.6, 1.8, 2, 2.2, 2.4, 2.6, 2.8, 3]
+                  && NumpyRender.ticks(0, 3, count: 10, whole: true) == [0, 1, 2, 3] && NumpyRender.ticks(-7, 103, count: 4) == [0, 20, 40, 60, 80, 100],
+                  "\(NumpyRender.ticks(0, 3, count: 10)) \(NumpyRender.ticks(-7, 103, count: 4))")
             let unpacked = Inflate.inflate(packedBytes[...])
             check("numpy: deflate unpacks as zlib packed it",
                   unpacked == Array(String(repeating: "numpy numpy numpy! ", count: 40).utf8) + (0...255).map { UInt8($0) }, "\(unpacked.count) bytes")

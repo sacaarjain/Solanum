@@ -22,6 +22,10 @@ struct NumpyArray {
 
     var count: Int { shape.reduce(1, *) }
     var available: Int { min(count, values.count / max(itemSize, 1)) }
+    /// Plain numbers (not text, dates or complex): what can be plotted.
+    var isNumeric: Bool { kind == .bool || kind == .int || kind == .uint || kind == .float }
+    /// Height × width × 3 or 4, of bytes or of floats: a picture's own colors.
+    var isImage: Bool { shape.count == 3 && (shape[2] == 3 || shape[2] == 4) && (kind == .uint && itemSize == 1 || kind == .float) }
 
     /// NumPy's name for the type: "float64", "<U10", "datetime64[ns]".
     var typeName: String {
@@ -190,6 +194,21 @@ struct NumpyArray {
     /// The value stored at `i`, as a number (for the picture). Nil for text, dates and complex numbers.
     func number(_ i: Int) -> Double? {
         let o = i * itemSize
+        // The usual types, stored in this computer's own byte order: read straight off (a view reads millions).
+        if !bigEndian {
+            switch (kind, itemSize) {
+            case (.float, 4): return Double(values.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: Float.self) })
+            case (.float, 8): return values.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: Double.self) }
+            case (.uint, 1): return Double(values[o])
+            case (.int, 1): return Double(Int8(bitPattern: values[o]))
+            case (.uint, 2): return Double(values.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: UInt16.self) })
+            case (.int, 2): return Double(values.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: Int16.self) })
+            case (.uint, 4): return Double(values.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: UInt32.self) })
+            case (.int, 4): return Double(values.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: Int32.self) })
+            case (.int, 8): return Double(values.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: Int64.self) })
+            default: break
+            }
+        }
         switch kind {
         case .bool: return values[o] != 0 ? 1 : 0
         case .int: return Double(signed(o, itemSize))
@@ -206,7 +225,10 @@ struct NumpyArray {
         case .bool: return values[o] != 0 ? "True" : "False"
         case .int: return String(signed(o, itemSize))
         case .uint: return String(raw(o, itemSize))
-        case .float: return Self.format(real(o, itemSize), half: itemSize == 2)
+        case .float:
+            // A float32 to its own precision (0.1, not 0.10000000149011612).
+            if itemSize == 4 { let v = Float(real(o, 4)); return v.isFinite ? "\(v)" : Self.format(Double(v), half: false) }
+            return Self.format(real(o, itemSize), half: itemSize == 2)
         case .complex:
             let h = itemSize / 2, re = real(o, h), im = real(o + h, h)
             let imText = Self.format(abs(im), half: false)
