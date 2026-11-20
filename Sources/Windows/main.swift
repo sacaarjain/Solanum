@@ -186,7 +186,8 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-find"), CommandLine.a
 }
 
 // A NumPy file as the editor shows it: its text on stdout, and, with a PNG, its viewer drawn there (in Values with
-// "values"; "hover" points at the middle of the plot). --numpy <file.npy|.npz> [png] [values] [hover]
+// "values"; "lines" turns stacked lines on or off; "hover" points at the middle of the plot).
+// --numpy <file.npy|.npz> [png] [values] [lines] [hover]
 if let flag = CommandLine.arguments.firstIndex(of: "--numpy"), CommandLine.arguments.indices.contains(flag + 1) {
     let args = CommandLine.arguments
     guard let data = FileManager.default.contents(atPath: args[flag + 1]) else { exit(1) }
@@ -206,6 +207,7 @@ if let flag = CommandLine.arguments.firstIndex(of: "--numpy"), CommandLine.argum
     }
     guard frame() else { exit(1) }
     if args.contains("values") { panel.numpyViewer?.pressForTesting(mode: .values); _ = frame() }
+    if args.contains("lines") { panel.numpyViewer?.toggleLinesForTesting(); _ = frame() }
     if args.contains("hover") { panel.numpyViewer?.pointForTesting(); _ = frame() }
     guard frame() else { exit(1) }
     exit(canvas.savePNG(to: args[flag + 2]) ? 0 : 1)

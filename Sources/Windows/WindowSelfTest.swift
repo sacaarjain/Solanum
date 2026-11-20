@@ -1220,6 +1220,21 @@ enum WindowSelfTest {
             _ = editor()?.key(0x20, shift: false, ctrl: false)
             editor()?.numpyViewer?.zoomForTesting()
         }, done: { editor()?.numpyViewer.map { $0.zoomedForTesting && $0.playing == nil } ?? false }))
+        // Traces (a few rows over many columns): stacked lines at first, a heatmap a click away.
+        let traces = scratch + "\\traces.npy"
+        steps.append(Step(name: "editor: NumPy traces show as stacked lines", action: {
+            var h = "{'descr': '<f8', 'fortran_order': False, 'shape': (3, 40), }"
+            h += String(repeating: " ", count: (64 - (11 + h.utf8.count) % 64) % 64) + "\n"
+            let values = (0..<120).flatMap { i in (0..<8).map { UInt8(truncatingIfNeeded: sin(Double(i) / 4).bitPattern >> ($0 * 8)) } }
+            _ = FileManager.default.createFile(atPath: traces, contents: Data([0x93] + Array("NUMPY".utf8) + [1, 0, UInt8(h.utf8.count), 0] + Array(h.utf8) + values))
+            window.showFile(traces, in: pane)
+        }, done: {
+            guard let e = editor(), e.path.hasSuffix("traces.npy"), let v = e.numpyViewer, v.showsLinesForTesting else { return false }
+            v.toggleLinesForTesting()
+            return !v.showsLinesForTesting
+        }))
+        steps.append(Step(name: "editor: the NumPy traces close", action: { editor()?.press(button: .close) },
+                          done: { editor()?.path.hasSuffix("traces.npy") != true }))
         steps.append(Step(name: "editor: the NumPy movie closes", action: { editor()?.press(button: .close) },
                           done: { editor()?.path.hasSuffix("movie.npy") != true }))
         steps.append(Step(name: "editor: the NumPy array closes", action: { editor()?.press(button: .close) },

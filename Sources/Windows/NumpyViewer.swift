@@ -23,12 +23,14 @@ final class NumpyViewer {
         var hi: Double
         var log = false
         var map = NumpyColormap.viridis
+        /// A grid of a few rows over many columns (traces) as stacked lines, not a heatmap; nil for what its shape suggests.
+        var lines: Bool?
         var gridTop = 0
         var gridLeft = 0
     }
 
     private enum Hit: Equatable {
-        case array(Int), mode(Mode), colormap, log, auto, reset, play(Int), slider(Int), frames, histogram, plot, grid
+        case array(Int), mode(Mode), colormap, log, auto, reset, lines, play(Int), slider(Int), frames, histogram, plot, grid
 
         var isSlider: Bool {
             switch self {
@@ -198,6 +200,7 @@ final class NumpyViewer {
         } else {
             switch shape {
             case .line: readout = drawLine(a, st, main, p, s)
+            case .heatmap where showsLines(a, st): readout = drawTraces(a, st, main, p, s)
             case .heatmap, .image: readout = drawHeatmap(a, st, shape == .image, main, p, s)
             case .scalar:
                 let v = a.text(0)
@@ -253,7 +256,7 @@ final class NumpyViewer {
         guard histW > 0, let stats, stats.finite > 0 else { return r.maxY }
         let h = UIRect(x: (r.maxX - histW - 14 * s).rounded(), y: r.y + 12 * s, width: histW.rounded(), height: r.height - 34 * s)
         histRect = h
-        let contrast = shape == .heatmap
+        let contrast = shape == .heatmap && !(st.mode == .plot && showsLines(a, st))
         let bars = max(8, min(128, Int(h.width / (2.5 * s))))
         var counts = [Int](repeating: 0, count: bars)
         for (i, c) in stats.bins.enumerated() { counts[i * bars / stats.bins.count] += c }
@@ -320,12 +323,13 @@ final class NumpyViewer {
             hits.append((hit, b))
             right -= 6 * s
         }
-        let usesColors = shape == .heatmap && (st.mode == .plot || a.isNumeric)
+        let usesColors = shape == .heatmap && (st.mode == .plot ? !showsLines(a, st) : a.isNumeric)
         if usesColors {
             button(.auto, "Auto Contrast")
             button(.log, "Log", on: st.log)
             button(.colormap, st.map.name + "  \u{25BE}")
         }
+        if st.mode == .plot && shape == .heatmap && a.shape.count == 2 { button(.lines, "Lines", on: showsLines(a, st)) }
         if st.mode == .plot && (st.view != nil || st.span != nil) { button(.reset, "Show All") }
         return r.maxY
     }
@@ -424,14 +428,123 @@ final class NumpyViewer {
         return "[\(i)]  =  " + a.text(i)
     }
 
+    /// Few rows over many columns, as a set of traces is (neurons × time): up to 32 rows, at least eight columns each.
+    private func isTraces(_ a: NumpyArray) -> Bool {
+        a.shape.count == 2 && a.shape[0] >= 1 && a.shape[0] <= 32 && a.shape[1] >= 8 * a.shape[0]
+    }
+
+    private func showsLines(_ a: NumpyArray, _ st: State) -> Bool {
+        a.shape.count == 2 && plotShape(a) == .heatmap && (st.lines ?? isTraces(a))
+    }
+
+    /// Zoomed along its last axis (a line plot's, or stacked lines'), rather than as a picture.
+    private func usesSpan(_ a: NumpyArray, _ st: State) -> Bool { plotShape(a) == .line || showsLines(a, st) }
+
+    private var envelopes: [String: (points: [Float], low: Double, high: Double)] = [:]
+
+    /// A line's points for a window on it `w` pixels wide: (index, value) pairs, one per value when they fit, else
+    /// each pixel's lowest and highest.
+    private func envelope(_ key: String, n: Int, from: Double, to: Double, w: Int, value: (Int) -> Double?) -> (points: [Float], low: Double, high: Double) {
+        let full = "\(key)|\(from)|\(to)|\(w)"
+        if let known = envelopes[full] { return known }
+        var points: [Float] = []
+        var low = Double.infinity, high = -Double.infinity
+        let span = to - from
+        let first = max(0, Int(from.rounded(.down))), last = min(n - 1, Int(to.rounded(.up)))
+        if span <= Double(w) * 1.5 {
+            if first <= last {
+                for i in first...last {
+                    guard let v = value(i), v.isFinite else { continue }
+                    points += [Float(i), Float(v)]
+                    low = min(low, v); high = max(high, v)
+                }
+            }
+        } else {
+            for px in 0..<max(w, 1) {
+                let i0 = max(0, Int(from + span * Double(px) / Double(w)))
+                let i1 = min(n, max(i0 + 1, Int(from + span * Double(px + 1) / Double(w))))
+                var lo = Double.infinity, hi = -Double.infinity
+                for i in i0..<max(i1, i0) {
+                    if let v = value(i), v.isFinite { lo = min(lo, v); hi = max(hi, v) }
+                }
+                guard lo <= hi else { continue }
+                let at = Float(from + span * (Double(px) + 0.5) / Double(w))
+                points += [at, Float(lo), at, Float(hi)]
+                low = min(low, lo); high = max(high, hi)
+            }
+        }
+        if envelopes.count > 256 { envelopes = [:] }
+        envelopes[full] = (points, low, high)
+        return (points, low, high)
+    }
+
+    /// Each row as its own line, one above the next, all on the same scale (so their sizes compare), numbered down the
+    /// left, the shared index along the bottom.
+    private func drawTraces(_ a: NumpyArray, _ st: State, _ area: UIRect, _ p: PanelPaint, _ s: Float) -> String? {
+        let rows = a.shape[0], n = a.shape[1]
+        let left = 44 * s, below = 22 * s
+        let plot = UIRect(x: (area.x + left).rounded(), y: area.y + 2 * s, width: max(area.width - left - 8 * s, 10), height: max(area.height - below - 2 * s, 10))
+        plotRect = plot
+        hits.append((.plot, plot))
+        let from = st.span?.from ?? 0, to = st.span?.to ?? Double(max(n - 1, 1))
+        let sl = slice(a, st)
+        let lines = (0..<rows).map { r in envelope("\(selected)|row\(r)", n: n, from: from, to: to, w: Int(plot.width)) { i in sl.value(r, i) } }
+        // One scale for all: the lowest and highest in view.
+        var lo = lines.map(\.low).min() ?? 0, hi = lines.map(\.high).max() ?? 1
+        if !(lo <= hi) { lo = 0; hi = 1 }
+        if hi == lo { lo -= 1; hi += 1 }
+        let laneH = plot.height / Float(rows)
+        func px(_ i: Double) -> Float { plot.x + Float((i - from) / max(to - from, 1e-9)) * plot.width }
+        for t in NumpyRender.ticks(from, to, count: max(2, Int(plot.width / (90 * s))), whole: true) {
+            let xx = px(t).rounded()
+            p.fill(UIRect(x: xx, y: plot.y, width: 1, height: plot.height), p.fg, 0.05)
+            let text = NumpyRender.short(t), tw = p.width(text, pixels: 10.5)
+            p.label(text, UIRect(x: xx - tw / 2, y: plot.maxY + 4 * s, width: tw + 2, height: 16 * s), pixels: 10.5, alpha: 0.5)
+        }
+        var hoverRow: Int?
+        if let ptr = pointer, plot.contains(ptr.x, ptr.y), drag == nil { hoverRow = min(rows - 1, Int((ptr.y - plot.y) / laneH)) }
+        let labelEvery = max(1, Int((16 * s) / max(laneH, 1)) + 1)
+        for (r, line) in lines.enumerated() {
+            let top = plot.y + Float(r) * laneH
+            if r % 2 == 1 { p.fill(UIRect(x: plot.x, y: top, width: plot.width, height: laneH), p.fg, 0.025) }
+            if hoverRow == r { p.fill(UIRect(x: plot.x, y: top, width: plot.width, height: laneH), TerminalPalette.accent, 0.08) }
+            if r % labelEvery == 0 || hoverRow == r {
+                let text = String(r), tw = p.width(text, pixels: 10.5)
+                p.label(text, UIRect(x: plot.x - tw - 8 * s, y: top + laneH / 2 - 8 * s, width: tw + 2, height: 16 * s), pixels: 10.5,
+                        color: hoverRow == r ? TerminalPalette.accent : nil, alpha: hoverRow == r ? 1 : 0.5)
+            }
+            let inset = min(2 * s, laneH * 0.1), usable = laneH - inset * 2
+            var xy: [Float] = []
+            xy.reserveCapacity(line.points.count)
+            var k = 0
+            while k + 1 < line.points.count {
+                xy.append(px(Double(line.points[k])))
+                xy.append(top + inset + usable - Float((Double(line.points[k + 1]) - lo) / (hi - lo)) * usable)
+                k += 2
+            }
+            if xy.count >= 4 { sol_canvas_stroke_polyline(p.canvas.raw, xy, Int32(xy.count / 2), 0, TerminalPalette.accent, 0.95, max(1, 1.1 * s)) }
+        }
+        // Under the pointer: the row, the index, the value.
+        guard let ptr = pointer, let r = hoverRow else { return nil }
+        let i = Int((from + Double((ptr.x - plot.x) / plot.width) * (to - from)).rounded())
+        guard i >= 0, i < n else { return nil }
+        let xx = px(Double(i)).rounded()
+        p.fill(UIRect(x: xx, y: plot.y, width: 1, height: plot.height), p.fg, 0.3)
+        let at = sl.index(r, i)
+        return "[\(r), \(i)]  =  " + (at < a.available ? a.text(at) : "?") + "   (one scale for all rows: " + NumpyRender.short(lo) + " to " + NumpyRender.short(hi) + ")"
+    }
+
     /// A grid of values as a heatmap (or an image's own colors), its color bar beside it, rows and columns numbered.
     private func drawHeatmap(_ a: NumpyArray, _ st: State, _ image: Bool, _ area: UIRect, _ p: PanelPaint, _ s: Float) -> String? {
         let rows = image ? a.shape[0] : a.shape[a.shape.count - 2], cols = image ? a.shape[1] : a.shape[a.shape.count - 1]
         let left = 44 * s, below = 22 * s, bar = image ? 0 : 76 * s
         let room = UIRect(x: area.x + left, y: area.y + 2 * s, width: max(area.width - left - bar - 8 * s, 10), height: max(area.height - below - 2 * s, 10))
         let v = st.view ?? (top: 0, left: 0, rows: Double(rows), cols: Double(cols))
-        let cell = min(room.width / Float(v.cols), room.height / Float(v.rows))
-        let w = max((cell * Float(v.cols)).rounded(), 1), h = max((cell * Float(v.rows)).rounded(), 1)
+        // Square cells, as an image's pixels are; but a grid far wider than tall (or the reverse) fills the space,
+        // as matplotlib's aspect="auto", rather than shrinking to a sliver.
+        var cellW = room.width / Float(v.cols), cellH = room.height / Float(v.rows)
+        if image || max(cellW, cellH) / max(min(cellW, cellH), 0.0001) <= 3 { cellW = min(cellW, cellH); cellH = cellW }
+        let w = max((cellW * Float(v.cols)).rounded(), 1), h = max((cellH * Float(v.rows)).rounded(), 1)
         let rect = UIRect(x: (room.x + (room.width - w) / 2).rounded(), y: (room.y + (room.height - h) / 2).rounded(), width: w, height: h)
         plotRect = rect
         hits.append((.plot, rect))
@@ -497,11 +610,11 @@ final class NumpyViewer {
         guard let ptr = pointer, rect.contains(ptr.x, ptr.y), drag == nil else { return nil }
         let r = Int(v.top + Double((ptr.y - rect.y) / h) * v.rows), c = Int(v.left + Double((ptr.x - rect.x) / w) * v.cols)
         guard r >= 0, r < rows, c >= 0, c < cols else { return nil }
-        if cell >= 6 * s {
-            let cx = rect.x + Float(Double(c) - v.left) * cell, cy = rect.y + Float(Double(r) - v.top) * cell
+        if min(cellW, cellH) >= 6 * s {
+            let cx = rect.x + Float(Double(c) - v.left) * cellW, cy = rect.y + Float(Double(r) - v.top) * cellH
             sol_canvas_push_clip(p.canvas.raw, rect.x, rect.y, rect.width, rect.height)
-            sol_canvas_stroke_rounded(p.canvas.raw, cx, cy, cell, cell, 0, TerminalPalette.background, 0.9, 2 * s)
-            sol_canvas_stroke_rounded(p.canvas.raw, cx, cy, cell, cell, 0, TerminalPalette.foreground, 0.9, 1 * s)
+            sol_canvas_stroke_rounded(p.canvas.raw, cx, cy, cellW, cellH, 0, TerminalPalette.background, 0.9, 2 * s)
+            sol_canvas_stroke_rounded(p.canvas.raw, cx, cy, cellW, cellH, 0, TerminalPalette.foreground, 0.9, 1 * s)
             sol_canvas_pop_clip(p.canvas.raw)
         }
         let lead = st.index.map(String.init)
@@ -733,6 +846,8 @@ final class NumpyViewer {
             st.map = all[((all.firstIndex(of: st.map) ?? 0) + 1) % all.count]
             state = st
         case .log: st.log.toggle(); state = st
+        case .lines:
+            if let a = array { st.lines = !showsLines(a, st); st.view = nil; st.span = nil; state = st }
         case .auto: autoContrast()
         case .reset: resetZoom()
         case .play(let d): activeAxis = d; playing = playing == d ? nil : d
@@ -748,9 +863,9 @@ final class NumpyViewer {
         case .plot:
             let r = plotRect
             guard r.width > 0, r.height > 0 else { return }
-            if plotShape(a) == .line, let span = d.span {
+            if usesSpan(a, st), let span = d.span {
                 let shift = Double((d.x - x) / r.width) * (span.to - span.from)
-                st.span = clampSpan(span.from + shift, span.to + shift, n: a.shape[0])
+                st.span = clampSpan(span.from + shift, span.to + shift, n: a.shape[a.shape.count - 1])
             } else if let v = d.view {
                 let dr = Double((d.y - y) / r.height) * v.rows, dc = Double((d.x - x) / r.width) * v.cols
                 st.view = clampView((v.top + dr, v.left + dc, v.rows, v.cols), a)
@@ -821,8 +936,8 @@ final class NumpyViewer {
         case .plot?:
             let f = pow(0.8, Double(lines))
             let r = plotRect
-            if plotShape(a) == .line {
-                let n = a.shape[0]
+            if usesSpan(a, st) {
+                let n = a.shape[a.shape.count - 1]
                 let from = st.span?.from ?? 0, to = st.span?.to ?? Double(max(n - 1, 1))
                 let at = from + Double((x - r.x) / max(r.width, 1)) * (to - from)
                 let width = max((to - from) * f, 4)
@@ -909,6 +1024,9 @@ final class NumpyViewer {
     var modeForTesting: Mode { state.mode }
     var indexForTesting: [Int] { state.index }
     func pressForTesting(mode: Mode) { press(.mode(mode)) }
+    /// Lines (stacked traces) on or off.
+    func toggleLinesForTesting() { press(.lines) }
+    var showsLinesForTesting: Bool { array.map { showsLines($0, state) } ?? false }
     var zoomedForTesting: Bool { state.view != nil || state.span != nil }
     /// The wheel turned up over the middle of the plot drawn last.
     func zoomForTesting() { scroll(lines: 3, x: plotRect.x + plotRect.width / 2, y: plotRect.y + plotRect.height / 2) }
