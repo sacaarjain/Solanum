@@ -504,6 +504,42 @@ enum CoreSelfTest {
             check("images: a resumed session's new image beats the old one with its number", newest?.hasSuffix("1.jpg") == true
                   && ImageTokens.newestFile(2, in: imageDir) == nil, "\(String(describing: newest))")
             try? FileManager.default.removeItem(atPath: imageDir)
+
+            // NumPy files: a .npy's header and values, Fortran order, a .npz (zip64, as np.savez writes it), deflate.
+            func npy(_ descr: String, _ shape: String, fortran: Bool = false, _ values: [UInt8]) -> [UInt8] {
+                var h = "{'descr': '\(descr)', 'fortran_order': \(fortran ? "True" : "False"), 'shape': \(shape), }"
+                h += String(repeating: " ", count: (64 - (11 + h.utf8.count) % 64) % 64) + "\n"
+                return [0x93] + Array("NUMPY".utf8) + [1, 0, UInt8(h.utf8.count & 0xFF), UInt8(h.utf8.count >> 8)] + Array(h.utf8) + values
+            }
+            func le32(_ v: Int32) -> [UInt8] { (0..<4).map { UInt8(truncatingIfNeeded: v >> ($0 * 8)) } }
+            // 2 × 3 int32, stored column by column: [[0, 1, 2], [10, 11, 12]].
+            let fortranBytes = npy("<i4", "(2, 3)", fortran: true, [0, 10, 1, 11, 2, 12].flatMap { le32($0) })
+            let fortranFile = NumpyFile(fortranBytes, name: "f.npy")
+            check("numpy: a Fortran-order array's rows as NumPy shows them",
+                  fortranFile.lines == ["int32  \u{00B7}  shape (2, 3)  \u{00B7}  6 values  \u{00B7}  Fortran order", "",
+                                        "     0    1    2", "0    0    1    2", "1   10   11   12"], "\(fortranFile.lines)")
+            check("numpy: a 2-D array makes a heatmap", fortranFile.picture?.caption == "2 × 3  \u{00B7}  0 (dark) to 12 (light)"
+                  && fortranFile.picture?.bitmap.prefix(2) == [0x42, 0x4D], "\(String(describing: fortranFile.picture?.caption))")
+            check("numpy: pickled objects are never read",
+                  NumpyFile(npy("|O", "(2,)", [0x80, 4, 0x4E, 0x2E]), name: "o.npy").lines.first?.hasPrefix("Holds Python objects") == true)
+            // A stored zip entry with its sizes in a zip64 field.
+            let inner = npy("<f8", "(2,)", [0.5, -2].flatMap { d -> [UInt8] in (0..<8).map { UInt8(truncatingIfNeeded: d.bitPattern >> ($0 * 8)) } })
+            func le(_ v: Int, _ n: Int) -> [UInt8] { (0..<n).map { UInt8(truncatingIfNeeded: v >> ($0 * 8)) } }
+            let zip64 = le(1, 2) + le(16, 2) + le(inner.count, 8) + le(inner.count, 8)
+            let entry = le(0x04034B50, 4) + le(45, 2) + le(0, 2) + le(0, 2) + le(0, 4) + le(0, 4) + le(0xFFFF_FFFF, 4) + le(0xFFFF_FFFF, 4)
+                + le(5, 2) + le(zip64.count, 2) + Array("x.npy".utf8) + zip64 + inner
+            let archive = NumpyFile(entry, name: "d.npz")
+            check("numpy: a .npz's arrays, by name", archive.lines.prefix(2) == ["1 array", "  x   float64   (2,)"]
+                  && archive.lines.suffix(2) == ["0    0.5", "1   -2.0"], "\(archive.lines)")
+            // zlib's raw deflate of 'numpy numpy numpy! ' × 40 then every byte.
+            let packed = "cb2bcd2da854c843908ac89c51a151a1e129c4c0c8c4ccc2cac6cec1c9c5cdc3cbc72f2028242c222a262e2129252d232b27afa0a8a4aca2aaa6aea1a9a5ada3aba76f6068646c626a666e6169656d636b67efe0e8e4ece2eae6eee1e9e5ede3ebe71f1018141c121a161e1119151d131b179f9098949c929a969e9199959d939b975f5058545c525a565e5159555d535b57dfd0d8d4dcd2dad6ded1d9d5ddd3dbd73f61e2a4c953a64e9b3e63e6acd973e6ce9bbf60e1a2c54b962e5bbe62e5aad56bd6ae5bbf61e3a6cd5bb66edbbe63e7aedd7bf6eedb7fe0e0a1c3478e1e3b7ee2e4a9d367ce9e3b7fe1e2a5cb57ae5ebb7ee3e6addb77eedebbffe0e1a3c74f9e3e7bfee2e5abd76fdebe7bffe1e3a7cf5fbe7efbfee3e7afdf7ffefefb0f00"
+            let packedBytes = stride(from: 0, to: packed.count, by: 2).map { i -> UInt8 in
+                let s = packed.index(packed.startIndex, offsetBy: i)
+                return UInt8(packed[s..<packed.index(s, offsetBy: 2)], radix: 16) ?? 0
+            }
+            let unpacked = Inflate.inflate(packedBytes[...])
+            check("numpy: deflate unpacks as zlib packed it",
+                  unpacked == Array(String(repeating: "numpy numpy numpy! ", count: 40).utf8) + (0...255).map { UInt8($0) }, "\(unpacked.count) bytes")
             let laid = ImageTokens.wrap([(1600, 900), (400, 400)], in: ImageTokens.Rect(x: 10, y: 0, width: 300, height: 40), bottom: false, minHeight: 12)
             check("images: thumbnails share a row, one height, in order", laid.count == 2 && laid[0].height == laid[1].height
                   && laid[0].x == 10 && laid[1].x > laid[0].maxX && laid[1].maxX <= 310, "\(laid)")

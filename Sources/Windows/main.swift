@@ -185,6 +185,20 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-find"), CommandLine.a
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }
 
+// A NumPy file as the editor shows it: its text on stdout, and its picture (when it has one) as a bitmap.
+// --numpy <file.npy|.npz> [picture.bmp]
+if let flag = CommandLine.arguments.firstIndex(of: "--numpy"), CommandLine.arguments.indices.contains(flag + 1) {
+    let args = CommandLine.arguments
+    guard let data = FileManager.default.contents(atPath: args[flag + 1]) else { exit(1) }
+    let file = NumpyFile([UInt8](data), name: WindowsPath.name(args[flag + 1]))
+    print(file.lines.joined(separator: "\n"))
+    if let picture = file.picture {
+        print("picture: " + picture.caption)
+        if args.indices.contains(flag + 2) { _ = FileManager.default.createFile(atPath: args[flag + 2], contents: Data(picture.bitmap)) }
+    }
+    exit(0)
+}
+
 // A Markdown file's preview, as its page shows it: --draw-markdown <file.md> <png> [width]
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-markdown"), CommandLine.arguments.indices.contains(flag + 2) {
     let args = CommandLine.arguments, width = args.indices.contains(flag + 3) ? Int(args[flag + 3]) ?? 900 : 900, height = 700

@@ -29,7 +29,7 @@ final class FileEditorPanel: ColumnPanel {
         static func < (a: Pos, b: Pos) -> Bool { a.line < b.line || (a.line == b.line && a.col < b.col) }
     }
 
-    enum Button: String, CaseIterable { case preview, logColors, tail, wrap, beautify, save, close }
+    enum Button: String, CaseIterable { case preview, picture, logColors, tail, wrap, beautify, save, close }
 
     let path: String
     let name: String
@@ -337,6 +337,12 @@ final class FileEditorPanel: ColumnPanel {
     static let imageLimit = 40 * 1024 * 1024
     static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "bmp", "ico", "tif", "tiff", "webp", "jfif"]
     var isImage: Bool { Self.imageExtensions.contains(name.split(separator: ".").last.map { $0.lowercased() } ?? "") }
+    /// A NumPy array (.npy) or a zip of them (.npz): shown as its values, read-only, or as a picture (see NumpyFile).
+    var isNumpy: Bool { ["npy", "npz"].contains(name.split(separator: ".").last.map { $0.lowercased() } ?? "") }
+    static let numpyLimit = 64 * 1024 * 1024
+    /// A NumPy file's picture (a heatmap, or the image it holds), and whether it's showing.
+    private var numpyPicture: (bitmap: Data, caption: String)?
+    private(set) var showingPicture = false
 
     init(path: String, name: String, folder: String, isLocal: Bool,
          read: @escaping (_ limit: Int, _ done: @escaping (Data?, Bool) -> Void) -> Void,
@@ -384,7 +390,7 @@ final class FileEditorPanel: ColumnPanel {
     }
 
     private func readNow() {
-        let image = isImage
+        let image = isImage || isNumpy
         if pager != nil { return pagerReload() }
         // Opened by its end where it can be, so a big file or log shows at once (see `pager`).
         if !image, readRange != nil, content == .loading { return readByEnd() }
@@ -411,7 +417,7 @@ final class FileEditorPanel: ColumnPanel {
     }
 
     private func readWhole(_ image: Bool) {
-        read(image ? Self.imageLimit : Self.textLimit) { [weak self] data, cut in
+        read(isNumpy ? Self.numpyLimit : image ? Self.imageLimit : Self.textLimit) { [weak self] data, cut in
             self?.post {
                 guard let self else { return }
                 self.reading = false
@@ -421,7 +427,10 @@ final class FileEditorPanel: ColumnPanel {
                     if case .loading = self.content { self.content = .failed("Couldn't read this file.") }
                     return self.invalidate()
                 }
-                if image {
+                if self.isNumpy {
+                    guard data != self.original || self.content == .loading else { return }
+                    self.loadNumpy(data, cut: cut)
+                } else if image {
                     if case .image(let old) = self.content, old == data { return }
                     for (raw, i) in self.images { sol_canvas_free_image(raw, i.id) }
                     self.images = [:]
@@ -433,6 +442,27 @@ final class FileEditorPanel: ColumnPanel {
                 self.invalidate()
             }
         }
+    }
+
+    /// A NumPy file: its arrays as text, read-only, and its picture when one of them makes one.
+    private func loadNumpy(_ data: Data, cut: Bool) {
+        let file = NumpyFile([UInt8](data), name: name, cut: cut)
+        original = data
+        lines = file.lines
+        if lines.isEmpty { lines = [""] }
+        numpyPicture = file.picture.map { (Data($0.bitmap), $0.caption) }
+        for (raw, i) in images { sol_canvas_free_image(raw, i.id) }
+        images = [:]
+        if numpyPicture == nil { showingPicture = false }
+        readOnly = true
+        language = nil
+        caret = clamp(caret)
+        anchor = anchor.map(clamp)
+        version += 1
+        savedVersion = version
+        undoStack = []
+        redoStack = []
+        content = showingPicture ? .image(numpyPicture!.bitmap) : .text
     }
 
     private func load(_ data: Data, cut: Bool) {
@@ -1068,7 +1098,10 @@ final class FileEditorPanel: ColumnPanel {
     /// The header's buttons that show for this file, right to left from the close button.
     private var buttonsShown: [Button] {
         var out: [Button] = []
-        if case .text = content {
+        if isNumpy {
+            if numpyPicture != nil { out.append(.picture) }
+            if case .text = content { out.append(.wrap) }
+        } else if case .text = content {
             if isMarkdown { out.append(.preview) }
             if language == .log { out.append(.logColors) }
             out.append(.tail)
@@ -1100,6 +1133,7 @@ final class FileEditorPanel: ColumnPanel {
         case .beautify: return 0xE8FD // indented lines
         case .save: return 0xE74E
         case .close: return 0xE8BB
+        case .picture: return showingPicture ? 0xE8A5 : 0xEB9F  // a page of text, or a photo
         }
     }
 
@@ -1112,6 +1146,7 @@ final class FileEditorPanel: ColumnPanel {
         case .beautify: return "Beautify / Format Document   Shift+Alt+F"
         case .save: return "Save   Ctrl+S"
         case .close: return "Close   Ctrl+W"
+        case .picture: return showingPicture ? "Show the Values" : "Show as a Picture"
         }
     }
 
@@ -1314,6 +1349,8 @@ final class FileEditorPanel: ColumnPanel {
             if let pager {
                 let mb = Double(pager.total) / 1024 / 1024
                 detail = "read-only: \(mb >= 10 ? String(Int(mb)) : String(format: "%.1f", mb)) MB, read as you scroll  ·  " + folder
+            } else if isNumpy {
+                detail = "NumPy, read-only" + (original.count >= Self.numpyLimit ? ": only its first \(Self.numpyLimit / 1024 / 1024) MB" : "") + "  ·  " + folder
             } else if readOnly { detail = "read-only: only its first \(Self.textLimit / 1024 / 1024) MB  ·  " + folder }
             if right - x > 40 * s { p.label(detail, UIRect(x: x, y: h.y, width: right - x, height: h.height), pixels: 11.5, alpha: 0.45) }
         }
@@ -1478,7 +1515,7 @@ final class FileEditorPanel: ColumnPanel {
         }
         sol_canvas_pop_clip(canvas.raw)
         sol_canvas_draw_image(canvas.raw, image.id, x, y, w, h, 1)
-        let caption = "\(image.width) × \(image.height)" + (fit < 1 ? "  ·  \(Int((fit * 100).rounded()))%" : "")
+        let caption = (isNumpy ? numpyPicture?.caption ?? "" : "\(image.width) × \(image.height)" + (fit < 1 ? "  ·  \(Int((fit * 100).rounded()))%" : ""))
         let cw = p.width(caption, pixels: 11.5)
         p.label(caption, UIRect(x: b.x + (b.width - cw) / 2, y: b.maxY - 28 * s, width: cw + 2, height: 20 * s), pixels: 11.5, alpha: 0.5)
     }
@@ -1573,7 +1610,18 @@ final class FileEditorPanel: ColumnPanel {
         case .beautify: beautify()
         case .save: save()
         case .close: close()
+        case .picture: togglePicture()
         }
+    }
+
+    /// A NumPy array's values, or its picture.
+    func togglePicture() {
+        guard let numpyPicture else { return }
+        for (raw, i) in images { sol_canvas_free_image(raw, i.id) }
+        images = [:]
+        showingPicture.toggle()
+        content = showingPicture ? .image(numpyPicture.bitmap) : .text
+        invalidate()
     }
 
     func mouseLeft() {
