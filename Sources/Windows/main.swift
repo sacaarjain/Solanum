@@ -185,6 +185,34 @@ if let flag = CommandLine.arguments.firstIndex(of: "--draw-find"), CommandLine.a
     exit(canvas.savePNG(to: CommandLine.arguments[flag + 1]) ? 0 : 1)
 }
 
+// A NumPy file as the editor shows it: its text on stdout, and, with a PNG, its viewer drawn there (in Values with
+// "values"; "lines" turns stacked lines on or off; "hover" points at the middle of the plot).
+// --numpy <file.npy|.npz> [png] [values] [lines] [hover]
+if let flag = CommandLine.arguments.firstIndex(of: "--numpy"), CommandLine.arguments.indices.contains(flag + 1) {
+    let args = CommandLine.arguments
+    guard let data = FileManager.default.contents(atPath: args[flag + 1]) else { exit(1) }
+    let name = WindowsPath.name(args[flag + 1])
+    print(NumpyFile([UInt8](data), name: name).lines.joined(separator: "\n"))
+    guard args.indices.contains(flag + 2) else { exit(0) }
+    let width = 1100, height = 760
+    guard let canvas = Canvas(width: width, height: height, fontPixels: 15) else { exit(1) }
+    let panel = FileEditorPanel(path: args[flag + 1], name: name, folder: "", isLocal: true, read: { _, done in done(data, false) }, write: { _, done in done(nil) })
+    panel.cellSize = (canvas.metrics.cellWidth, canvas.metrics.cellHeight)
+    panel.reload()
+    let area = UIRect(x: 0, y: 0, width: Float(width), height: Float(height))
+    func frame() -> Bool {
+        guard sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return false }
+        panel.draw(on: canvas, in: area, scale: 1)
+        return sol_canvas_end(canvas.raw) >= 0
+    }
+    guard frame() else { exit(1) }
+    if args.contains("values") { panel.numpyViewer?.pressForTesting(mode: .values); _ = frame() }
+    if args.contains("lines") { panel.numpyViewer?.toggleLinesForTesting(); _ = frame() }
+    if args.contains("hover") { panel.numpyViewer?.pointForTesting(); _ = frame() }
+    guard frame() else { exit(1) }
+    exit(canvas.savePNG(to: args[flag + 2]) ? 0 : 1)
+}
+
 // A Markdown file's preview, as its page shows it: --draw-markdown <file.md> <png> [width]
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-markdown"), CommandLine.arguments.indices.contains(flag + 2) {
     let args = CommandLine.arguments, width = args.indices.contains(flag + 3) ? Int(args[flag + 3]) ?? 900 : 900, height = 700

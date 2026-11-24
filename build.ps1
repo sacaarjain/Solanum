@@ -35,7 +35,9 @@ $canvasObject = "$objects\canvas.obj"
 $canvasSources = 'Sources\Windows\CCanvas\canvas.cpp', 'Sources\Windows\CCanvas\canvas.h'
 if ($canvasSources | Where-Object { Is-Newer $_ $canvasObject }) {
     Write-Host '> Compiling the canvas...'
-    $cArgs = @('/nologo', '/MD', '/std:c++17', '/EHs-c-', '/GR-', '/c')
+    # A Visual Studio newer than the Clang that comes with Swift refuses it ("expected Clang 22 or newer", as on CI's
+    # runners): the canvas uses little of its library, so it's let through.
+    $cArgs = @('/nologo', '/MD', '/std:c++17', '/EHs-c-', '/GR-', '/c', '/D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH')
     if ($Debug) { $cArgs += '/Od', '/Zi' } else { $cArgs += '/O2' }
     & clang-cl @cArgs "/Fo$canvasObject" 'Sources\Windows\CCanvas\canvas.cpp'
     if ($LASTEXITCODE -ne 0) { Write-Error 'The canvas failed to compile (the errors are above).' }

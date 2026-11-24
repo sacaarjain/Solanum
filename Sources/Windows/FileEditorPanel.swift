@@ -22,6 +22,8 @@ final class FileEditorPanel: ColumnPanel {
         case image(Data)
         case binary(Int)
         case failed(String)
+        /// A NumPy file, in its viewer (see NumpyViewer).
+        case numpy
     }
 
     struct Pos: Equatable, Comparable {
@@ -29,7 +31,7 @@ final class FileEditorPanel: ColumnPanel {
         static func < (a: Pos, b: Pos) -> Bool { a.line < b.line || (a.line == b.line && a.col < b.col) }
     }
 
-    enum Button: String, CaseIterable { case preview, logColors, tail, wrap, beautify, save, close }
+    enum Button: String, CaseIterable { case preview, numpyText, logColors, tail, wrap, beautify, save, close }
 
     let path: String
     let name: String
@@ -337,6 +339,12 @@ final class FileEditorPanel: ColumnPanel {
     static let imageLimit = 40 * 1024 * 1024
     static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "bmp", "ico", "tif", "tiff", "webp", "jfif"]
     var isImage: Bool { Self.imageExtensions.contains(name.split(separator: ".").last.map { $0.lowercased() } ?? "") }
+    /// A NumPy array (.npy) or a zip of them (.npz): shown as its values, read-only, or as a picture (see NumpyFile).
+    var isNumpy: Bool { ["npy", "npz"].contains(name.split(separator: ".").last.map { $0.lowercased() } ?? "") }
+    static let numpyLimit = 64 * 1024 * 1024
+    /// A NumPy file's viewer, and whether its text shows instead.
+    private(set) var numpyViewer: NumpyViewer?
+    private(set) var showingNumpyText = false
 
     init(path: String, name: String, folder: String, isLocal: Bool,
          read: @escaping (_ limit: Int, _ done: @escaping (Data?, Bool) -> Void) -> Void,
@@ -384,7 +392,7 @@ final class FileEditorPanel: ColumnPanel {
     }
 
     private func readNow() {
-        let image = isImage
+        let image = isImage || isNumpy
         if pager != nil { return pagerReload() }
         // Opened by its end where it can be, so a big file or log shows at once (see `pager`).
         if !image, readRange != nil, content == .loading { return readByEnd() }
@@ -411,7 +419,7 @@ final class FileEditorPanel: ColumnPanel {
     }
 
     private func readWhole(_ image: Bool) {
-        read(image ? Self.imageLimit : Self.textLimit) { [weak self] data, cut in
+        read(isNumpy ? Self.numpyLimit : image ? Self.imageLimit : Self.textLimit) { [weak self] data, cut in
             self?.post {
                 guard let self else { return }
                 self.reading = false
@@ -421,7 +429,10 @@ final class FileEditorPanel: ColumnPanel {
                     if case .loading = self.content { self.content = .failed("Couldn't read this file.") }
                     return self.invalidate()
                 }
-                if image {
+                if self.isNumpy {
+                    guard data != self.original || self.content == .loading else { return }
+                    self.loadNumpy(data, cut: cut)
+                } else if image {
                     if case .image(let old) = self.content, old == data { return }
                     for (raw, i) in self.images { sol_canvas_free_image(raw, i.id) }
                     self.images = [:]
@@ -433,6 +444,28 @@ final class FileEditorPanel: ColumnPanel {
                 self.invalidate()
             }
         }
+    }
+
+    /// A NumPy file: in its viewer, with its arrays also as text (read-only) a button away. Read again, it keeps its
+    /// place, zoom and contrast while its arrays keep their shapes.
+    private func loadNumpy(_ data: Data, cut: Bool) {
+        let file = NumpyFile([UInt8](data), name: name, cut: cut)
+        original = data
+        lines = file.lines
+        if lines.isEmpty { lines = [""] }
+        let viewer = NumpyViewer(file, keeping: numpyViewer)
+        viewer.invalidate = { [weak self] in self?.invalidate() }
+        viewer.cellSize = cellSize
+        numpyViewer = viewer
+        readOnly = true
+        language = nil
+        caret = clamp(caret)
+        anchor = anchor.map(clamp)
+        version += 1
+        savedVersion = version
+        undoStack = []
+        redoStack = []
+        content = showingNumpyText ? .text : .numpy
     }
 
     private func load(_ data: Data, cut: Bool) {
@@ -714,7 +747,10 @@ final class FileEditorPanel: ColumnPanel {
     }
 
     /// While it's showing (the window's timer); `syncTick` does the work.
-    func tick() { syncTick(showing: true) }
+    func tick() {
+        syncTick(showing: true)
+        if case .numpy = content { numpyViewer?.tick() }
+    }
 
     // MARK: Lines and positions
 
@@ -1068,7 +1104,10 @@ final class FileEditorPanel: ColumnPanel {
     /// The header's buttons that show for this file, right to left from the close button.
     private var buttonsShown: [Button] {
         var out: [Button] = []
-        if case .text = content {
+        if isNumpy {
+            if numpyViewer != nil { out.append(.numpyText) }
+            if case .text = content { out.append(.wrap) }
+        } else if case .text = content {
             if isMarkdown { out.append(.preview) }
             if language == .log { out.append(.logColors) }
             out.append(.tail)
@@ -1100,6 +1139,7 @@ final class FileEditorPanel: ColumnPanel {
         case .beautify: return 0xE8FD // indented lines
         case .save: return 0xE74E
         case .close: return 0xE8BB
+        case .numpyText: return showingNumpyText ? 0xE9D2 : 0xE8A5  // a chart (the viewer), or a page of text
         }
     }
 
@@ -1112,6 +1152,7 @@ final class FileEditorPanel: ColumnPanel {
         case .beautify: return "Beautify / Format Document   Shift+Alt+F"
         case .save: return "Save   Ctrl+S"
         case .close: return "Close   Ctrl+W"
+        case .numpyText: return showingNumpyText ? "Show in the Viewer" : "Show as Text"
         }
     }
 
@@ -1193,6 +1234,9 @@ final class FileEditorPanel: ColumnPanel {
         case .binary(let size):
             p.label("A binary file (\(Self.size(size))): there's no text to show.", UIRect(x: b.x + 16 * s, y: b.y + 12 * s, width: b.width - 32 * s, height: 22 * s), alpha: 0.55)
         case .image(let data): drawImage(data, on: canvas, in: b, p, s)
+        case .numpy:
+            numpyViewer?.cellSize = cellSize
+            numpyViewer?.draw(on: canvas, in: b, p, s)
         case .text:
             if let rows = compareRows { drawCompare(rows, on: canvas, in: a, p, s) } else { drawText(on: canvas, in: a, p, s) }
         }
@@ -1314,6 +1358,8 @@ final class FileEditorPanel: ColumnPanel {
             if let pager {
                 let mb = Double(pager.total) / 1024 / 1024
                 detail = "read-only: \(mb >= 10 ? String(Int(mb)) : String(format: "%.1f", mb)) MB, read as you scroll  ·  " + folder
+            } else if isNumpy {
+                detail = "NumPy, read-only" + (original.count >= Self.numpyLimit ? ": only its first \(Self.numpyLimit / 1024 / 1024) MB" : "") + "  ·  " + folder
             } else if readOnly { detail = "read-only: only its first \(Self.textLimit / 1024 / 1024) MB  ·  " + folder }
             if right - x > 40 * s { p.label(detail, UIRect(x: x, y: h.y, width: right - x, height: h.height), pixels: 11.5, alpha: 0.45) }
         }
@@ -1527,6 +1573,11 @@ final class FileEditorPanel: ColumnPanel {
         let onButton = buttonRects(a, s).first { $0.1.contains(x, y) }?.0
         hovered = onButton
         let inText = body(a, s).contains(x, y)
+        if case .numpy = content, let viewer = numpyViewer, onButton == nil, inText || message != Win.WM_MOUSEMOVE {
+            viewer.mouse(message, x: x, y: y)
+        } else if case .numpy = content, message == Win.WM_MOUSEMOVE {
+            numpyViewer?.mouseLeft()
+        }
         if case .text = content {
             switch message {
             case Win.WM_LBUTTONDOWN where onButton == nil && inText:
@@ -1573,16 +1624,27 @@ final class FileEditorPanel: ColumnPanel {
         case .beautify: beautify()
         case .save: save()
         case .close: close()
+        case .numpyText: toggleNumpyText()
         }
     }
 
+    /// A NumPy file in its viewer, or as text (to find in and copy from).
+    func toggleNumpyText() {
+        guard numpyViewer != nil else { return }
+        showingNumpyText.toggle()
+        content = showingNumpyText ? .text : .numpy
+        invalidate()
+    }
+
     func mouseLeft() {
+        numpyViewer?.mouseLeft()
         guard hovered != nil else { return }
         hovered = nil
         invalidate()
     }
 
     func scroll(lines: Int, x: Float, y: Float, in a: UIRect, scale s: Float) {
+        if case .numpy = content { numpyViewer?.scroll(lines: lines, x: x, y: y); return }
         if compareRows != nil {
             compareScroll = max(compareScroll - lines, 0)
             return invalidate()
@@ -1598,6 +1660,7 @@ final class FileEditorPanel: ColumnPanel {
 
     func key(_ key: Int32, shift: Bool, ctrl: Bool) -> Bool {
         guard case .text = content else {
+            if case .numpy = content, let viewer = numpyViewer, viewer.key(key, shift: shift, ctrl: ctrl) { return true }
             if key == Win.VK_ESCAPE { close(); return true }
             return ctrl
         }
