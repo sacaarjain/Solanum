@@ -279,6 +279,10 @@ final class TabColumn: NSObject, TabOwner {
         let tab = TabSession(cwd: ed.fs.isRemote ? nil : FilePaths.parent(ed.path))
         tab.fileOrigin = (ed.fs, FilePaths.parent(ed.path))
         tab.owner = self
+        // Opened from a tab (a link in it, its sidebar, one of its files moved out), it goes right after that tab and
+        // joins its group, as Edge does: put there outside the group, it split the group in two. (Given a place, the
+        // caller sees to the group.)
+        if index == nil { tab.group = activeTab?.group }
         tabs.insert(tab, at: min(index ?? activeIndex + 1, tabs.count))
         tab.showFileOnly(ed)
         select(index: tabs.firstIndex(of: tab) ?? tabs.count - 1)

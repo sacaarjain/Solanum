@@ -638,7 +638,7 @@ extension ThemedDropdown {
             if item.isSeparatorItem { separator(); continue }
             if let sub = item.submenu {
                 let nested = sub.items.contains { $0.submenu != nil }
-                if let open, nested || sub.items.filter({ !$0.isSeparatorItem && !$0.isHidden }).count > 10 {
+                if let open, item is SubmenuMenuItem || nested || sub.items.filter({ !$0.isSeparatorItem && !$0.isHidden }).count > 10 {
                     out.append(.item(item.title, detail: "›") { open(sub) })
                     continue
                 }

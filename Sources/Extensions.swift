@@ -620,9 +620,10 @@ class PageCanvas: NSView {
 
     /// A file's diff, line by line: old and new line numbers, then the text on its color (green added, red removed,
     /// the hunk's header tinted). `after` draws what goes under a line (a comment on it), given where the text starts,
-    /// and says where it ended. The height used.
+    /// and says where it ended. With `scrollX` (nil cuts long lines off with …), the lines' text is whole, moved that
+    /// far left and kept within its column (the numbers stay). The height used.
     @discardableResult
-    func diffLines(_ f: DiffFile, x: CGFloat, y y0: CGFloat, width: CGFloat,
+    func diffLines(_ f: DiffFile, x: CGFloat, y y0: CGFloat, width: CGFloat, scrollX: CGFloat? = nil,
                    after: ((DiffFile.Line, CGFloat, CGFloat) -> CGFloat)? = nil) -> CGFloat {
         let lineH = Self.diffLineH, mono = Self.diffFont
         // Room for the numbers the file goes up to.
@@ -646,14 +647,33 @@ class PageCanvas: NSView {
                     if let n = l.new { text("\(n)", mono, th.dimText.withAlphaComponent(0.6), x: x + numW, y: y + 1, width: numW - 6, align: .right) }
                     let mark = l.kind == .added ? "+" : l.kind == .removed ? "−" : " "
                     text(mark, mono, l.kind == .added ? th.green : l.kind == .removed ? th.red : th.dimText, x: x + numW * 2, y: y + 1, width: 10)
-                    text(l.text.replacingOccurrences(of: "\t", with: "    "), mono, l.kind == .note ? th.dimText : th.foreground,
-                         x: textX, y: y + 1, width: width - (textX - x) - 4)
+                    let s = l.text.replacingOccurrences(of: "\t", with: "    "), color = l.kind == .note ? th.dimText : th.foreground
+                    if let dx = scrollX, let ctx = NSGraphicsContext.current?.cgContext {
+                        ctx.saveGState()
+                        ctx.clip(to: NSRect(x: textX, y: y, width: max(0, width - (textX - x) - 4), height: lineH))
+                        text(s, mono, color, x: textX - dx, y: y + 1, width: Self.textWidth(s, mono) + 2)
+                        ctx.restoreGState()
+                    } else {
+                        text(s, mono, color, x: textX, y: y + 1, width: width - (textX - x) - 4)
+                    }
                 }
             }
             y += lineH
-            if let after { y = after(l, y, textX) }
+            if let after { y = after(l, y, textX - (scrollX ?? 0)) }
         }
         return y
+    }
+
+    /// How far a diff drawn by `diffLines` at `width` can scroll sideways: its widest line past its text column.
+    static func diffScrollWidth(_ f: DiffFile, width: CGFloat) -> CGFloat {
+        let biggest = f.lines.compactMap { max($0.old ?? 0, $0.new ?? 0) }.max() ?? 0
+        let numW = max(28, textWidth(String(biggest), diffFont) + 10)
+        let column = width - numW * 2 - 12 - 4
+        // The longest lines by characters, measured (a monospaced font, but wide characters are wider).
+        let long = f.lines.filter { $0.kind != .hunk }.map { $0.text.replacingOccurrences(of: "\t", with: "    ") }
+            .sorted { $0.count > $1.count }.prefix(8)
+        let widest = long.map { textWidth($0, diffFont) }.max() ?? 0
+        return max(0, widest + 12 - column)
     }
 
     var th: Theme { Config.shared.theme }

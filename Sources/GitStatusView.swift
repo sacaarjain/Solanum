@@ -703,6 +703,10 @@ final class GitStatusRowsView: NSView {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(path, forType: .string)
         })
+        // The file as it is now, in another app (on this Mac, and still there).
+        if runner.remote == nil, entry.code != "D", FileManager.default.fileExists(atPath: path), let with = OpenWith.item(for: [path]) {
+            menu.addItem(with)
+        }
         return menu
     }
 

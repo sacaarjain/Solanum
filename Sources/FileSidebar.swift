@@ -1154,6 +1154,7 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
         } else {
             add("Reveal in Finder", #selector(revealInFinder(_:)))
             if let n = single, !n.item.isDirectory { add("Open with Default App", #selector(openExternally(_:))) }
+            if !nodes.isEmpty, !nodes.contains(where: \.item.isDeleted), let with = OpenWith.item(for: nodes.map(\.item.path)) { menu.addItem(with) }
         }
         add("Refresh", #selector(refresh(_:)))
     }

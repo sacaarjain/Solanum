@@ -60,8 +60,8 @@ final class PromptChangesTracker {
     private var offset: UInt64 = 0
     private var partial = Data()
     private var scan = PromptChanges.Scan()
-    /// The working tree as each prompt was sent: a tree object, by prompt.
-    private var snapshots: [String: String] = [:]
+    /// The working tree as each prompt was sent, by prompt.
+    private var snapshots: [String: Snapshot] = [:]
     private var reading = false
     /// A prompt sent before the repository's folder was known: snapshotted once it is.
     private var pendingSnapshot: String?
@@ -211,8 +211,50 @@ final class PromptChangesTracker {
 
     // MARK: Git
 
-    /// The working tree now, as a tree object: all its files (untracked ones too, ignored ones not), through a scratch
-    /// index so the repository's own index, and everything else in it, stays as it was.
+    /// The working tree at one moment: a tree object of its files, the commit checked out then and when it was taken.
+    struct Snapshot: Equatable {
+        let tree: String
+        let head: String?
+        let time: Date
+    }
+
+    /// The working tree now: all its files (untracked ones too, ignored ones not), through a scratch index so the
+    /// repository's own index, and everything else in it, stays as it was.
+    static func snapshot(_ root: String) -> Snapshot? {
+        let time = Date()
+        let head = LocalGit.runNow(root, ["rev-parse", "--verify", "-q", "HEAD"])
+        guard let tree = tree(root) else { return nil }
+        let h = head.out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Snapshot(tree: tree, head: head.ok && !h.isEmpty ? h : nil, time: time)
+    }
+
+    /// Merged trees `base(_:_:_:)` worked out, by snapshot tree, its commit and the later commit (used on `queue` only).
+    private static var rebased: [String: String] = [:]
+
+    /// The tree to compare `to` with for what changed since `from`. Usually `from`'s own; but once another commit is
+    /// checked out (a branch switched, a pull, a rebase or reset), `from`'s changes moved onto that commit, so the
+    /// difference between the two commits isn't taken for changes made. Commits made on top of `from`'s since it was
+    /// taken (the agent committing its work) are changes made, and are kept.
+    static func base(_ root: String, _ from: Snapshot, _ to: Snapshot) -> String {
+        guard let old = from.head, let new = to.head, old != new else { return from.tree }
+        let key = "\(from.tree) \(old) \(new)"
+        if let t = rebased[key] { return t }
+        var t = from.tree
+        let ancestor = LocalGit.runNow(root, ["merge-base", "--is-ancestor", old, new]).ok
+        let times = ancestor ? LocalGit.runNow(root, ["log", "--format=%ct", "\(old)..\(new)"]) : nil
+        let since = from.time.timeIntervalSince1970 - 1
+        let committedOnTop = times.map { o in o.ok && o.out.split(separator: "\n").allSatisfy { (Double($0) ?? 0) >= since } } ?? false
+        if !committedOnTop {
+            // Exit 1 is a conflict: the tree (its first line) still has every file, the conflicted ones with markers.
+            let m = LocalGit.runNow(root, ["merge-tree", "--write-tree", "--merge-base=\(old)", new, from.tree])
+            let first = m.out.split(separator: "\n").first.map { String($0) } ?? ""
+            if m.status == 0 || m.status == 1, first.count >= 40, first.allSatisfy(\.isHexDigit) { t = first }
+        }
+        rebased[key] = t
+        return t
+    }
+
+    /// The working tree now, as a tree object (see `snapshot(_:)`).
     static func tree(_ root: String) -> String? {
         let fm = FileManager.default
         let scratch = NSTemporaryDirectory() + "solanum-prompt-index-" + UUID().uuidString
@@ -229,10 +271,10 @@ final class PromptChangesTracker {
 
     private func snapshot(_ id: String, root: String) {
         queue.async { [weak self] in
-            guard let tree = Self.tree(root) else { return }
+            guard let snap = Self.snapshot(root) else { return }
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.snapshots[id] = tree
+                self.snapshots[id] = snap
                 self.finishBefore(id, root: root)
                 self.refresh()
             }
@@ -256,17 +298,24 @@ final class PromptChangesTracker {
         }
     }
 
-    /// The files changed between two trees, with git's counts.
-    static func changes(_ root: String, _ from: String, _ to: String) -> [ChangedFile]? {
-        let raw = LocalGit.runNow(root, ["diff-tree", "-r", "--no-renames", "-z", "--raw", from, to])
+    /// The files changed between two snapshots, with git's counts.
+    static func changes(_ root: String, _ from: Snapshot, _ to: Snapshot) -> [ChangedFile]? {
+        let a = base(root, from, to)
+        let raw = LocalGit.runNow(root, ["diff-tree", "-r", "--no-renames", "-z", "--raw", a, to.tree])
         guard raw.ok else { return nil }
-        let num = LocalGit.runNow(root, ["diff-tree", "-r", "--no-renames", "-z", "--numstat", from, to]).out
+        let num = LocalGit.runNow(root, ["diff-tree", "-r", "--no-renames", "-z", "--numstat", a, to.tree]).out
         return PromptChanges.files(raw: raw.out, numstat: num)
     }
 
-    /// The trees a diff is between: for an entry, its snapshot and the next prompt's (or the working tree now, for the
-    /// latest); for the whole chat (`id` nil), the first snapshot and now. Nil when there's no snapshot to start from.
-    private func span(_ id: String?) -> (from: String, to: String?)? {
+    /// `git diff` between two snapshots (of `paths`, or every file), as files.
+    static func diff(_ root: String, _ from: Snapshot, _ to: Snapshot, paths: [String] = []) -> [DiffFile] {
+        let args = ["diff", "--no-renames", "--no-color", "--no-ext-diff", base(root, from, to), to.tree]
+        return DiffFile.parse(LocalGit.runNow(root, args + (paths.isEmpty ? [] : ["--"] + paths)).out)
+    }
+
+    /// The snapshots a diff is between: for an entry, its own and the next prompt's (or the working tree now, for the
+    /// latest); for the whole chat (`id` nil), the first and now. Nil when there's no snapshot to start from.
+    private func span(_ id: String?) -> (from: Snapshot, to: Snapshot?)? {
         let withTrees = entries.filter { snapshots[$0.prompt.id] != nil }
         guard let id else { return withTrees.first.flatMap { snapshots[$0.prompt.id] }.map { ($0, nil) } }
         guard let i = entries.firstIndex(where: { $0.prompt.id == id }), let from = snapshots[id] else { return nil }
@@ -291,7 +340,7 @@ final class PromptChangesTracker {
         }
         refreshing = true
         queue.async { [weak self] in
-            let now = Self.tree(root)
+            let now = Self.snapshot(root)
             let latestFiles = now.flatMap { n in base.flatMap { Self.changes(root, $0, n) } }
             let chat = now.flatMap { n in start.flatMap { Self.changes(root, $0, n) } }
             DispatchQueue.main.async {
@@ -334,8 +383,8 @@ final class PromptChangesTracker {
             var out: [String: DiffFile] = [:]
             for f in chatFiles where !gitPaths.contains(f.path) { if let d = editDiff(f.path, ids: beforeWatching.map(\.prompt.id)) { out[f.path] = d } }
             return queue.async {
-                if let to = span.to ?? Self.tree(root) {
-                    for f in DiffFile.parse(LocalGit.runNow(root, ["diff", "--no-renames", "--no-color", "--no-ext-diff", span.from, to]).out) { out[f.path] = f }
+                if let to = span.to ?? Self.snapshot(root) {
+                    for f in Self.diff(root, span.from, to) { out[f.path] = f }
                 }
                 DispatchQueue.main.async { done(out) }
             }
@@ -349,8 +398,8 @@ final class PromptChangesTracker {
         }
         queue.async {
             var out: [String: DiffFile] = [:]
-            if let to = span.to ?? Self.tree(root) {
-                for f in DiffFile.parse(LocalGit.runNow(root, ["diff", "--no-renames", "--no-color", "--no-ext-diff", span.from, to]).out) { out[f.path] = f }
+            if let to = span.to ?? Self.snapshot(root) {
+                for f in Self.diff(root, span.from, to) { out[f.path] = f }
             }
             DispatchQueue.main.async { done(out) }
         }
@@ -368,8 +417,8 @@ final class PromptChangesTracker {
         }
         queue.async {
             var f: DiffFile?
-            if let to = span.to ?? Self.tree(root) {
-                f = DiffFile.parse(LocalGit.runNow(root, ["diff", "--no-renames", "--no-color", "--no-ext-diff", span.from, to, "--", path]).out).first
+            if let to = span.to ?? Self.snapshot(root) {
+                f = Self.diff(root, span.from, to, paths: [path]).first
             }
             DispatchQueue.main.async { done(f) }
         }
@@ -856,14 +905,14 @@ final class PromptChangesCanvas: PageCanvas {
     }
     /// Unfolded files, and their diffs once loaded.
     private var open: Set<String> = []
-    private var diffs: [String: DiffFile] = [:]
+    private var diffs: [String: DiffFile] = [:] { didSet { scrollMax = [:] } }
     private var loading: Set<String> = []
     private var forPrompt: String?
 
     /// Drops what's unfolded for files no longer changed, and everything when a new prompt's been sent. Loaded diffs are
     /// fetched again (the files may have changed since).
     func forget(except paths: Set<String>, prompt: String?) {
-        if prompt != forPrompt { open = []; forPrompt = prompt; anchor = nil; focus = nil; moving = [:]; openOnLoad = [] }
+        if prompt != forPrompt { open = []; forPrompt = prompt; anchor = nil; focus = nil; moving = [:]; openOnLoad = []; scrollX = [:] }
         open = open.intersection(paths)
         // Diffs shown stay until their fresh copies come (cleared, an open file shut and reopened at each refresh).
         diffs = diffs.filter { paths.contains($0.key) }
@@ -968,7 +1017,7 @@ final class PromptChangesCanvas: PageCanvas {
 
     override func render() -> CGFloat {
         guard let c = controller else { return 0 }
-        if !measuring { rows = [] }
+        if !measuring { rows = []; diffAreas = [] }
         let t = c.shown
         let pad: CGFloat = 16
         let w = bounds.width - pad * 2
@@ -1070,15 +1119,18 @@ final class PromptChangesCanvas: PageCanvas {
                 let full = CGFloat(d.lines.count) * PageCanvas.diffLineH + 10
                 let part = (full * shown).rounded()
                 let clip = NSRect(x: pad, y: y, width: w, height: part)
+                if !measuring { diffAreas.append((f.path, clip)) }
                 if !measuring, visible(clip), let ctx = NSGraphicsContext.current?.cgContext {
                     ctx.saveGState()
                     ctx.clip(to: clip)
                     var n = 0
-                    _ = diffLines(d, x: pad, y: y, width: w) { [unowned self] l, bottom, textX in
+                    // Long lines scroll sideways (see `scrollWheel`), each file on its own.
+                    let dx = min(scrollX[f.path] ?? 0, maxScroll(f.path, d, width: w))
+                    _ = diffLines(d, x: pad, y: y, width: w, scrollX: dx) { [unowned self] l, bottom, textX in
                         // Its lines take a selection once it's all the way open.
                         if l.kind != .hunk, shown >= 1 {
                             self.rows.append(Row(key: "\(f.path)#\(n)", rect: NSRect(x: pad, y: bottom - PageCanvas.diffLineH, width: w, height: PageCanvas.diffLineH),
-                                                 textX: textX, text: l.text.replacingOccurrences(of: "\t", with: "    ")))
+                                                 textX: textX, column: textX + dx, text: l.text.replacingOccurrences(of: "\t", with: "    ")))
                         }
                         n += 1
                         return bottom
@@ -1095,13 +1147,69 @@ final class PromptChangesCanvas: PageCanvas {
         return y + 6
     }
 
+    // MARK: Scrolling long lines sideways
+
+    /// How far each file's diff is scrolled sideways.
+    private var scrollX: [String: CGFloat] = [:]
+    /// How far each can scroll, at a width (measured once).
+    private var scrollMax: [String: CGFloat] = [:]
+    /// Where each unfolded diff is, as last drawn.
+    private var diffAreas: [(path: String, rect: NSRect)] = []
+    /// Whether the scroll gesture going on moves sideways: decided by its first move, so a swipe that wobbles stays on
+    /// its course.
+    private var sideways: Bool?
+
+    private func maxScroll(_ path: String, _ d: DiffFile, width: CGFloat) -> CGFloat {
+        let key = "\(path)@\(Int(width))"
+        if let m = scrollMax[key] { return m }
+        let m = PageCanvas.diffScrollWidth(d, width: width)
+        scrollMax[key] = m
+        return m
+    }
+
+    /// A sideways swipe (or ⇧ and the wheel) over an unfolded diff scrolls its long lines; anything else scrolls the panel.
+    override func scrollWheel(with e: NSEvent) {
+        var dx = e.scrollingDeltaX, dy = e.scrollingDeltaY
+        // A mouse's wheel with ⇧ held, if the system hasn't already turned it sideways.
+        if e.modifierFlags.contains(.shift), dx == 0 { dx = dy; dy = 0 }
+        if e.phase == .began || e.phase == .mayBegin || (e.phase.isEmpty && e.momentumPhase.isEmpty) { sideways = nil }
+        if sideways == nil, dx != 0 || dy != 0 { sideways = abs(dx) > abs(dy) }
+        let step = e.hasPreciseScrollingDeltas ? dx : dx * Self.charW * 3
+        guard sideways == true, scrollSideways(at: convert(e.locationInWindow, from: nil), by: step) else { return super.scrollWheel(with: e) }
+    }
+
+    /// Scrolls the diff at `p` sideways by `step` (positive moves the text right, as a swipe right does). False when
+    /// there's no diff there with lines too long to show.
+    @discardableResult
+    func scrollSideways(at p: NSPoint, by step: CGFloat) -> Bool {
+        guard let area = diffAreas.first(where: { $0.rect.contains(p) }), let d = diffs[area.path] else { return false }
+        let most = maxScroll(area.path, d, width: area.rect.width)
+        guard most > 0 else { return false }
+        let now = min(scrollX[area.path] ?? 0, most)
+        let to = min(most, max(0, now - step))
+        if to != now { scrollX[area.path] = to; needsDisplay = true; window?.invalidateCursorRects(for: self) }
+        return true
+    }
+
+    /// Dev aid: scrolls the first unfolded diff sideways by `step`; how far each is scrolled after.
+    func devScrollSideways(_ step: CGFloat) -> String {
+        display()
+        guard let a = diffAreas.first else { return "no diffs" }
+        let took = scrollSideways(at: NSPoint(x: a.rect.midX, y: a.rect.minY + 4), by: step)
+        display()
+        return "took=\(took) scroll=\(scrollX.mapValues { Int($0) }) max=\(scrollMax.mapValues { Int($0) })"
+    }
+
     // MARK: Selecting text in the diffs
 
     /// A diff line as drawn: where it is, where its text starts, and its text (tabs as four spaces, as drawn).
     private struct Row {
         let key: String
         let rect: NSRect
+        /// Where its text starts, scrolled sideways (maybe left of `column`, under the line numbers).
         let textX: CGFloat
+        /// Where the text's column starts: what's left of it isn't shown.
+        let column: CGFloat
         let text: String
     }
     private var rows: [Row] = []
@@ -1119,7 +1227,7 @@ final class PromptChangesCanvas: PageCanvas {
             row = p.y < rows[0].rect.minY ? rows.first : rows.last { $0.rect.minY <= p.y } ?? rows.last
         }
         guard let r = row else { return nil }
-        let col = Int(((p.x - r.textX) / Self.charW).rounded())
+        let col = Int(((max(p.x, r.column) - r.textX) / Self.charW).rounded())
         return (r.key, max(0, min(r.text.count, col)))
     }
 
@@ -1145,7 +1253,8 @@ final class PromptChangesCanvas: PageCanvas {
         guard !measuring, ordered != nil else { return }
         for (i, r) in rows.enumerated() {
             guard let (lo, hi) = selectedCols(i), hi > lo else { continue }
-            let x0 = r.textX + CGFloat(lo) * Self.charW, x1 = min(r.rect.maxX, r.textX + CGFloat(hi) * Self.charW)
+            let x0 = max(r.column, r.textX + CGFloat(lo) * Self.charW), x1 = min(r.rect.maxX, r.textX + CGFloat(hi) * Self.charW)
+            guard x1 > r.column else { continue }
             fill(NSRect(x: x0, y: r.rect.minY, width: max(2, x1 - x0), height: r.rect.height), th.accent.withAlphaComponent(0.32))
         }
     }
@@ -1195,14 +1304,14 @@ final class PromptChangesCanvas: PageCanvas {
     }
 
     override func cursor(at p: NSPoint) -> NSCursor? {
-        rows.contains { $0.rect.minY <= p.y && p.y < $0.rect.maxY && p.x >= $0.textX - 4 } ? .iBeam : nil
+        rows.contains { $0.rect.minY <= p.y && p.y < $0.rect.maxY && p.x >= $0.column - 4 } ? .iBeam : nil
     }
 
     override func resetCursorRects() {
         super.resetCursorRects()
         let shown = visibleRect
         for r in rows {
-            let t = NSRect(x: r.textX - 4, y: r.rect.minY, width: r.rect.maxX - r.textX + 4, height: r.rect.height).intersection(shown)
+            let t = NSRect(x: r.column - 4, y: r.rect.minY, width: r.rect.maxX - r.column + 4, height: r.rect.height).intersection(shown)
             if !t.isEmpty { addCursorRect(t, cursor: .iBeam) }
         }
     }

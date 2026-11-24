@@ -530,6 +530,11 @@ final class FileTabStrip: NSView {
         if tab.showsTerminal || tab.editors.count > 1 {
             m.addItem(ActionMenuItem("Open in Its Own Tab") { [weak tab] in tab?.windowController?.moveEditorToOwnTab(ed, from: tab) })
         }
+        // The file itself, in another app (one on this Mac, not a diff's or graph's view of it).
+        if ed.mode == .file, !ed.fs.isRemote, FileManager.default.fileExists(atPath: ed.path), let with = OpenWith.item(for: [ed.path]) {
+            m.addItem(with)
+            m.addItem(.separator())
+        }
         m.addItem(ActionMenuItem("Close") { ed.requestClose() })
         if tab.editors.count > 1 {
             m.addItem(ActionMenuItem("Close Others") { [weak tab] in

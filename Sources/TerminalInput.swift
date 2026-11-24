@@ -1115,6 +1115,10 @@ extension TerminalView {
             copyLink.representedObject = u.url
             copyLink.target = self
             menu.addItem(copyLink)
+            // A file on this Mac: in another app.
+            if u.url.isFileURL, remote == nil, FileManager.default.fileExists(atPath: u.url.path), let with = OpenWith.item(for: [u.url.path]) {
+                menu.addItem(with)
+            }
             menu.addItem(.separator())
         }
         let pos = gridPos(at: p)

@@ -245,6 +245,36 @@ enum SelfTest {
                       && t.selection.hexString == "#8ED8FF4D", t.background.hexString)
             }
             do {
+                // Files changed this prompt: a branch switched since the snapshot isn't taken for the agent's changes; its
+                // commits are.
+                let fm = FileManager.default
+                let repo = NSTemporaryDirectory() + "solanum-selftest-repo-\(getpid())"
+                try? fm.removeItem(atPath: repo)
+                try? fm.createDirectory(atPath: repo, withIntermediateDirectories: true)
+                defer { try? fm.removeItem(atPath: repo) }
+                func git(_ a: String...) { _ = LocalGit.runNow(repo, ["-c", "user.name=t", "-c", "user.email=t@t"] + a) }
+                func write(_ f: String, _ s: String) { try? s.write(toFile: repo + "/" + f, atomically: true, encoding: .utf8) }
+                func paths(_ a: PromptChangesTracker.Snapshot?, _ b: PromptChangesTracker.Snapshot?) -> [String] {
+                    guard let a, let b else { return ["nil"] }
+                    return (PromptChangesTracker.changes(repo, a, b) ?? []).map(\.path).sorted()
+                }
+                git("init", "-q", "-b", "main")
+                write("a.txt", "1\n2\n"); write("b.txt", "x\n"); git("add", "-A"); git("commit", "-qm", "one")
+                git("checkout", "-qb", "other"); write("a.txt", "1\n2\n3\n"); write("c.txt", "c\n"); git("add", "-A"); git("commit", "-qm", "two")
+                git("checkout", "-q", "main")
+                write("b.txt", "x\ny\n"); write("u.txt", "u\n")
+                // Commits a second older than the prompt, as another branch's would be.
+                Thread.sleep(forTimeInterval: 1.1)
+                let snap = PromptChangesTracker.snapshot(repo)
+                git("checkout", "-q", "other")
+                check("prompt changes: a branch switch isn't a change", paths(snap, PromptChangesTracker.snapshot(repo)) == [], paths(snap, PromptChangesTracker.snapshot(repo)).joined(separator: ","))
+                write("a.txt", "1\n2\n3\n4\n")
+                check("prompt changes: an edit after it is", paths(snap, PromptChangesTracker.snapshot(repo)) == ["a.txt"], paths(snap, PromptChangesTracker.snapshot(repo)).joined(separator: ","))
+                let snap2 = PromptChangesTracker.snapshot(repo)
+                write("d.txt", "d\n"); git("add", "d.txt"); git("commit", "-qm", "three")
+                check("prompt changes: a commit made is a change", paths(snap2, PromptChangesTracker.snapshot(repo)) == ["d.txt"], paths(snap2, PromptChangesTracker.snapshot(repo)).joined(separator: ","))
+            }
+            do {
                 // The Git Graph's filters, as git log arguments, and the commits as laid out.
                 var f = GraphFilter()
                 check("graph filter: all branches", f.script().contains("git log --all --parents") && !f.script().contains("--grep"))
@@ -824,6 +854,18 @@ enum SnapshotHelper {
                         FileHandle.standardError.write("prompt-changes: \(canvas.devDrag(n[0], n[1], n[2], n[3]))\n".data(using: .utf8)!)
                         canvas.copy(nil)
                         FileHandle.standardError.write("prompt-changes: clipboard=\(String(reflecting: NSPasteboard.general.string(forType: .string) ?? "-"))\n".data(using: .utf8)!)
+                    }
+                case let a where a.hasPrefix("open-with:"):
+                    // open-with:<path>[|<app>] — a file's Open With submenu, printed, and the app called <app> picked.
+                    let parts = a.dropFirst(10).split(separator: "|").map(String.init)
+                    if let item = OpenWith.item(for: [parts[0]]), let sub = item.submenu {
+                        FileHandle.standardError.write("open-with: \(sub.items.map { $0.isSeparatorItem ? "---" : $0.title + ($0.image == nil ? "" : "🖼") })\n".data(using: .utf8)!)
+                        if parts.count > 1, let i = sub.items.firstIndex(where: { $0.title.hasPrefix(parts[1]) }) { sub.performActionForItem(at: i) }
+                    }
+                case let a where a.hasPrefix("prompt-changes-hscroll:"):
+                    // prompt-changes-hscroll:<points> — scrolls the first unfolded diff sideways (negative: to see further right).
+                    if let canvas = c.activeTab?.focusedPane.promptChanges?.devCanvas as? PromptChangesCanvas, let n = Double(a.dropFirst(23)) {
+                        FileHandle.standardError.write("prompt-changes: \(canvas.devScrollSideways(CGFloat(n)))\n".data(using: .utf8)!)
                     }
                 case "prompt-changes-shown":
                     if let pc = c.activeTab?.focusedPane.promptChanges { FileHandle.standardError.write("prompt-changes: \(pc.devShown)\n".data(using: .utf8)!) }
