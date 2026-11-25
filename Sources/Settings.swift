@@ -1758,9 +1758,15 @@ enum SettingsPages {
 
         v.add(sectionHeader("Claude Code"), height: 16, gap: 10)
         card(v, [
-            SettingRow(icon: "doc.text.magnifyingglass", title: "Show edits in the files-changed pill",
-                       detail: "Claude's diffs stay out of the terminal; the edit's line and summary still show. The pill over the pane opens them.",
+            SettingRow(icon: "doc.text.magnifyingglass", title: "Files-changed pill",
+                       detail: "Over a pane running Claude Code: the files your latest prompt changed, and each one's diff.",
+                       accessory: toggle(c.showFilesChangedPill) { [weak ctl] on in Config.shared.showFilesChangedPill = on; ctl?.commit() }),
+            SettingRow(icon: "text.badge.minus", title: "Show edits in the files-changed pill",
+                       detail: "Claude's diffs stay out of the terminal; the edit's line and summary still show. The pill over the pane opens them. (With the pill off, they stay in the terminal.)",
                        accessory: toggle(c.hideAgentEditDiffs) { [weak ctl] on in Config.shared.hideAgentEditDiffs = on; ctl?.commit() }),
+            SettingRow(icon: "sparkles", title: "Agents running pill",
+                       detail: "In each window: how many coding agents are running in Solanum, with their state. Click it to go to one's tab.",
+                       accessory: toggle(c.showAgentsPill) { [weak ctl] on in Config.shared.showAgentsPill = on; ctl?.commit() }),
         ])
 
         v.add(sectionHeader("Window Size"), height: 16, gap: 10)

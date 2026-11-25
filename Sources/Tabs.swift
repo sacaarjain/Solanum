@@ -357,6 +357,7 @@ final class TabSession: NSObject {
 
     func paneDidFocus(_ p: TerminalView) {
         focusedPane = p
+        AgentsRunning.shared.setNeedsRefresh()
         updateDimming()
         owner?.tabDidFocus(self)
         owner?.tabDidUpdate(self)
@@ -2125,6 +2126,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     var tabBar: TabBarView { focused.tabBar }
     var allTabs: [TabSession] { columns.flatMap(\.tabs) }
     let rootView = WindowRootView()
+    /// "3 agents running" (see AgentsRunning), made when it first shows.
+    private(set) var agentsPillIfMade: AgentsPillController?
+    var agentsPill: AgentsPillController {
+        if let p = agentsPillIfMade { return p }
+        let p = AgentsPillController(root: rootView)
+        agentsPillIfMade = p
+        return p
+    }
     var onClose: ((TerminalWindowController) -> Void)?
     var onWillClose: ((TerminalWindowController) -> Void)?
     private var configObserver: NSObjectProtocol?

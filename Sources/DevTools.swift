@@ -245,6 +245,26 @@ enum SelfTest {
                       && t.selection.hexString == "#8ED8FF4D", t.background.hexString)
             }
             do {
+                // Background tasks: the command in Claude Code's wrapper shell, quoting and all; other processes aren't.
+                let wrapper = #"source /Users/me/.claude/shell-snapshots/snapshot-bash-1-x.sh 2>/dev/null || true && \builtin shopt -u extglob 2>/dev/null || true && eval 'ps -o command= -p $$ | tr '"'"'&'"'"' '"'"'\n'"'"' | grep -n "eval"' < /dev/null && pwd -P >| /tmp/claude-22db-cwd"#
+                let cmd = AgentTasks.command(fromWrapper: ["/bin/bash", "-c", wrapper])
+                check("agent tasks: the command in the wrapper", cmd == #"ps -o command= -p $$ | tr '&' '\n' | grep -n "eval""#, cmd ?? "nil")
+                check("agent tasks: not an MCP server or other child", AgentTasks.command(fromWrapper: ["node", "/x/dist/index.js"]) == nil
+                      && AgentTasks.command(fromWrapper: ["/bin/bash", "-c", "eval 'ls'"]) == nil)
+                check("agent tasks: shown on one line", AgentTask(pid: 1, command: "cat <<EOF\n  a  b\nEOF", started: Date()).shown == "cat <<EOF")
+                check("agent tasks: a word's pieces joined", AgentTasks.shellWord(#"'a b'"c\"d"e\ f g"#) == #"a bc"de f"#)
+            }
+            do {
+                // Cursor rects that never overlap (where they did, the pointer flickered between a hand and an arrow).
+                let r = NSRect(x: 0, y: 0, width: 100, height: 30)
+                check("cursor rects: a spot over all of it leaves nothing", PageCanvas.subtract([r], from: r).isEmpty)
+                let cut = NSRect(x: 20, y: 5, width: 30, height: 10)
+                let pieces = PageCanvas.subtract([cut], from: r)
+                let area = pieces.reduce(0) { $0 + $1.width * $1.height }
+                let overlaps = pieces.enumerated().contains { i, a in pieces.dropFirst(i + 1).contains { !a.intersection($0).isEmpty } || !a.intersection(cut).isEmpty }
+                check("cursor rects: the rest, around a spot, in pieces that don't overlap", area == 3000 - 300 && !overlaps, "\(pieces)")
+            }
+            do {
                 // Files changed this prompt: a branch switched since the snapshot isn't taken for the agent's changes; its
                 // commits are.
                 let fm = FileManager.default
@@ -855,6 +875,43 @@ enum SnapshotHelper {
                         canvas.copy(nil)
                         FileHandle.standardError.write("prompt-changes: clipboard=\(String(reflecting: NSPasteboard.general.string(forType: .string) ?? "-"))\n".data(using: .utf8)!)
                     }
+                case "agents-print":
+                    FileHandle.standardError.write("agents: \(AgentsRunning.shared.devState) here=\(pane.agentsPill?.shown == true)\n".data(using: .utf8)!)
+                    for (i, t) in c.allTabs.enumerated() { for p in t.panes { FileHandle.standardError.write("agents: tab\(i) agent=\(p.agent?.summary ?? "-") pretend=\(p.devPretendingClaude) job=\(p.pty?.hasForegroundJob == true)\n".data(using: .utf8)!) } }
+                case "agents-list":
+                    // The pill grows into its list, as a click on it does.
+                    if let ap = pane.agentsPill, ap.shown, !ap.pill.devPress("agents") { FileHandle.standardError.write("agents: no pill to press\n".data(using: .utf8)!) }
+                case let a where a.hasPrefix("agents-announce:"):
+                    // agents-announce:<tab>:<done|waiting> — as if that tab's agent had just finished (or asked something).
+                    let f = a.dropFirst(16).split(separator: ":")
+                    if f.count == 2, let i = Int(f[0]), c.focused.tabs.indices.contains(i) {
+                        let p = c.focused.tabs[i].focusedPane
+                        let note = AgentsRunning.Note(status: f[1] == "waiting" ? .waiting : .done, prompt: "fix the flaky upload test and rerun it",
+                                                      reply: "Fixed: the retry now waits for the socket to close", worked: 263)
+                        FileHandle.standardError.write("agents: announced=\(AgentsRunning.shared.announce(note, from: p))\n".data(using: .utf8)!)
+                    }
+                case let a where a.hasPrefix("agents-fake-task:"):
+                    // agents-fake-task:<tab>:<seconds ago>:<command> — as if that tab's agent had left this running.
+                    let f = a.dropFirst(17).split(separator: ":", maxSplits: 2).map(String.init)
+                    if f.count == 3, let i = Int(f[0]), let ago = Double(f[1]), c.focused.tabs.indices.contains(i) {
+                        let p = c.focused.tabs[i].focusedPane
+                        AgentsRunning.shared.devSetTasks([AgentTask(pid: 999_000 + pid_t(i), command: f[2], started: Date().addingTimeInterval(-ago))], for: p)
+                    }
+                case let a where a.hasPrefix("agents-scan:"):
+                    // agents-scan:<pid> — the wrapper shells under that process (a real agent's), as the list would show them.
+                    if let pid = pid_t(a.dropFirst(12)) {
+                        let found = AgentTasks.scan([pid])[pid] ?? []
+                        FileHandle.standardError.write("agents: tasks=\(found.map { "\($0.pid) \($0.shown)" })\n".data(using: .utf8)!)
+                    }
+                case let a where a.hasPrefix("agents-drag:"):
+                    // agents-drag:<from>:<to> — drags a row of the open list to where another is.
+                    let n = a.dropFirst(12).split(separator: ":").compactMap { Int($0) }
+                    if n.count == 2, let ap = pane.agentsPill { FileHandle.standardError.write("agents: order=\(ap.list.devDrag(from: n[0], to: n[1]))\n".data(using: .utf8)!) }
+                case let a where a.hasPrefix("agents-press:"):
+                    // agents-press:<id> — a click on the list's spot (agent.<i>, close).
+                    if let ap = pane.agentsPill, !ap.list.devPress(String(a.dropFirst(13))) {
+                        FileHandle.standardError.write("agents: nothing called \(a.dropFirst(13)); there are \(ap.list.hits.map(\.id))\n".data(using: .utf8)!)
+                    }
                 case let a where a.hasPrefix("open-with:"):
                     // open-with:<path>[|<app>] — a file's Open With submenu, printed, and the app called <app> picked.
                     let parts = a.dropFirst(10).split(separator: "|").map(String.init)
@@ -966,6 +1023,10 @@ enum SnapshotHelper {
                 case "redo": pane.redo(nil)
                 case "pane-up": pane.send("\u{1b}[A")
                 case "pretend-claude": pane.devPretendClaude()
+                case let a where a.hasPrefix("pretend-claude:"):
+                    // pretend-claude:<working|waiting|done>
+                    let s = a.dropFirst(15)
+                    pane.devPretendClaude(s == "working" ? .working : s == "done" ? .done : .waiting)
                 case let a where a.hasPrefix("left-click:"):
                     // left-click:<fx>:<fy> — a click at that spot (fractions of the window).
                     let f = a.dropFirst(11).split(separator: ":").compactMap { Double($0) }

@@ -522,14 +522,43 @@ class PageCanvas: NSView {
     /// come up under a pointer that hasn't moved, among views that set the pointer their own way.
     var usesCursorRects = false
 
+    /// Spots with a pointer of their own besides the ones that take a click (an I-beam over text that can be selected),
+    /// for the cursor rects.
+    func extraCursorRects() -> [(NSRect, NSCursor)] { [] }
+
     override func resetCursorRects() {
         guard usesCursorRects else { return super.resetCursorRects() }
+        // None may overlap: where two cursor rects do, AppKit doesn't say which wins, and the pointer flickered between
+        // them as it moved (a hand and an arrow, all over the pill). So the hands, then the canvas's own (less the hands),
+        // then the arrow over what's left.
         let shown = visibleRect
-        addCursorRect(shown, cursor: .arrow)
-        for h in hits {
-            let r = h.rect.intersection(shown)
-            if !r.isEmpty { addCursorRect(r, cursor: .pointingHand) }
+        let hands = hits.map { $0.rect.intersection(shown) }.filter { !$0.isEmpty }
+        var claimed = hands.map { ($0, NSCursor.pointingHand) }
+        for (r, c) in extraCursorRects() {
+            claimed += Self.subtract(hands, from: r.intersection(shown)).map { ($0, c) }
         }
+        for piece in Self.subtract(claimed.map(\.0), from: shown) { addCursorRect(piece, cursor: .arrow) }
+        // Hands overlapping hands (a button on its row) show the same pointer either way.
+        for (r, c) in claimed { addCursorRect(r, cursor: c) }
+    }
+
+    /// `r` less `cuts`, as rectangles that don't overlap them (or each other).
+    static func subtract(_ cuts: [NSRect], from r: NSRect) -> [NSRect] {
+        guard !r.isEmpty else { return [] }
+        var pieces = [r]
+        for c in cuts where !c.isEmpty {
+            pieces = pieces.flatMap { p -> [NSRect] in
+                let i = p.intersection(c)
+                guard !i.isEmpty else { return [p] }
+                var out: [NSRect] = []
+                if i.minY > p.minY { out.append(NSRect(x: p.minX, y: p.minY, width: p.width, height: i.minY - p.minY)) }
+                if i.maxY < p.maxY { out.append(NSRect(x: p.minX, y: i.maxY, width: p.width, height: p.maxY - i.maxY)) }
+                if i.minX > p.minX { out.append(NSRect(x: p.minX, y: i.minY, width: i.minX - p.minX, height: i.height)) }
+                if i.maxX < p.maxX { out.append(NSRect(x: i.maxX, y: i.minY, width: p.maxX - i.maxX, height: i.height)) }
+                return out
+            }
+        }
+        return pieces
     }
 
     /// The pointer's move, from the window when this canvas's own tracking may not have caught up (see

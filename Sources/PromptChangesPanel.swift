@@ -582,27 +582,7 @@ final class PromptChangesController {
     private var ghost: PromptChangesGhost?
 
     /// The panel as it looks now, card and contents, at the screen's scale.
-    private func picture() -> NSImage? {
-        panel.layoutSubtreeIfNeeded()
-        let size = panel.bounds.size
-        let b = panel.body
-        guard size.width > 0, size.height > 0, let rep = b.bitmapImageRepForCachingDisplay(in: b.bounds) else { return nil }
-        b.cacheDisplay(in: b.bounds, to: rep)
-        let contents = NSImage(size: b.bounds.size)
-        contents.addRepresentation(rep)
-        let th = Config.shared.theme
-        return NSImage(size: size, flipped: false) { r in
-            // The card as the frosted one reads (its tint over the blur, near enough opaque here), its edge, then the list.
-            let card = NSBezierPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), xRadius: FrostedCard.radius, yRadius: FrostedCard.radius)
-            th.background.mix(th.surface, 0.5).withAlphaComponent(0.96).setFill()
-            card.fill()
-            th.foreground.withAlphaComponent(th.isDark ? 0.12 : 0.1).setStroke()
-            card.lineWidth = 1
-            card.stroke()
-            contents.draw(in: r)
-            return true
-        }
-    }
+    private func picture() -> NSImage? { panel.picture() }
 
     private func makeGhost(at frame: NSRect, picture: NSImage?) -> PromptChangesGhost {
         let g = PromptChangesGhost(frame: frame, picture: picture)
@@ -616,6 +596,7 @@ final class PromptChangesController {
     /// in over the pill as it starts); then the panel itself is there.
     func expand(keeping: Bool = false) {
         guard !expanded, let pane else { return }
+        pane.agentsPill?.collapse(animated: false)
         expanded = true
         if !keeping, showing != .following { showing = .following }
         changed()
@@ -784,6 +765,32 @@ final class PromptChangesController {
 
 /// The panel's stand-in while it grows from the pill or shrinks into it: its picture as the layer's contents, stretched
 /// to whatever size the layer is, so the animated frame scales it.
+extension FrostedCard {
+    /// The card as it looks now, frosting and contents, at the screen's scale: what a panel grows from or shrinks into
+    /// its pill as (see PromptChangesGhost).
+    func picture() -> NSImage? {
+        layoutSubtreeIfNeeded()
+        let size = bounds.size
+        let b = body
+        guard size.width > 0, size.height > 0, let rep = b.bitmapImageRepForCachingDisplay(in: b.bounds) else { return nil }
+        b.cacheDisplay(in: b.bounds, to: rep)
+        let contents = NSImage(size: b.bounds.size)
+        contents.addRepresentation(rep)
+        let th = Config.shared.theme
+        return NSImage(size: size, flipped: false) { r in
+            // The card as the frosted one reads (its tint over the blur, near enough opaque here), its edge, then the list.
+            let card = NSBezierPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), xRadius: FrostedCard.radius, yRadius: FrostedCard.radius)
+            th.background.mix(th.surface, 0.5).withAlphaComponent(0.96).setFill()
+            card.fill()
+            th.foreground.withAlphaComponent(th.isDark ? 0.12 : 0.1).setStroke()
+            card.lineWidth = 1
+            card.stroke()
+            contents.draw(in: r)
+            return true
+        }
+    }
+}
+
 final class PromptChangesGhost: NSView {
     private let picture: NSImage?
 
@@ -1307,13 +1314,9 @@ final class PromptChangesCanvas: PageCanvas {
         rows.contains { $0.rect.minY <= p.y && p.y < $0.rect.maxY && p.x >= $0.column - 4 } ? .iBeam : nil
     }
 
-    override func resetCursorRects() {
-        super.resetCursorRects()
-        let shown = visibleRect
-        for r in rows {
-            let t = NSRect(x: r.column - 4, y: r.rect.minY, width: r.rect.maxX - r.column + 4, height: r.rect.height).intersection(shown)
-            if !t.isEmpty { addCursorRect(t, cursor: .iBeam) }
-        }
+    /// An I-beam over the diffs' text (see PageCanvas.resetCursorRects, which keeps it clear of the arrow and hands).
+    override func extraCursorRects() -> [(NSRect, NSCursor)] {
+        rows.map { r in (NSRect(x: r.column - 4, y: r.rect.minY, width: r.rect.maxX - r.column + 4, height: r.rect.height), NSCursor.iBeam) }
     }
 
     override func mouseDown(with e: NSEvent) {

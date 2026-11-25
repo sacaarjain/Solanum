@@ -84,6 +84,8 @@ final class TabColumn: NSObject, TabOwner {
         updateTitle()
         tabBar.needsLayout = true
         tabBar.needsDisplay = true
+        // The agents pill goes on the terminal now showing.
+        AgentsRunning.shared.setNeedsRefresh()
     }
 
     func closeTab(at index: Int) {

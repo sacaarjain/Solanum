@@ -202,6 +202,11 @@ final class TerminalView: NSView, TerminalDelegate {
     var searchBar: SearchBar?
     /// "Files changed this prompt" (PromptChangesPanel), once Claude Code has run here.
     private(set) var promptChanges: PromptChangesController?
+    /// The window's "3 agents running" pill (see AgentsRunning): placed over this terminal while it's the focused one.
+    var agentsPill: AgentsPillController? { (window?.windowController as? TerminalWindowController)?.agentsPillIfMade }
+    /// The agent here finished, or stopped to ask something, while you weren't looking: what the agents pill says of it
+    /// until you come to this tab (or it starts working again).
+    var agentNote: AgentsRunning.Note? { didSet { AgentsRunning.shared.setNeedsRefresh() } }
     /// Claude Code's session here, looked up again every few seconds (/clear starts a new one), and the process it was
     /// looked up for.
     private var claudeSession: (pid: pid_t, id: String?, at: Date)?
@@ -266,7 +271,10 @@ final class TerminalView: NSView, TerminalDelegate {
     /// When the program last printed anything (see `whenOutputQuiet`).
     var lastOutputAt = Date.distantPast
     /// The coding agent running here and what it's doing (see AgentStatus.swift); nil when none.
-    private(set) var agent: AgentInfo?
+    private(set) var agent: AgentInfo? {
+        // The agents pill counts it (see AgentsRunning).
+        didSet { if agent != oldValue { AgentsRunning.shared.setNeedsRefresh() } }
+    }
     /// The agent last seen running, and one that exited with an error (shown as failed until another command runs).
     private var runningAgent: AgentKind?
     private var failedAgent: AgentKind?
@@ -375,6 +383,10 @@ final class TerminalView: NSView, TerminalDelegate {
         terminal.setScrollbackLimit(Config.shared.scrollback)
         updateBlinkTimer()
         promptChanges?.applyTheme()
+        agentsPill?.applyTheme()
+        // The pills turned on or off (Settings › Preferences › Claude Code), and Claude's diffs folded or not with them.
+        updatePromptChanges()
+        AgentsRunning.shared.setNeedsRefresh()
         needsLayout = true
         needsDisplay = true
     }
@@ -774,10 +786,12 @@ final class TerminalView: NSView, TerminalDelegate {
         }
         refreshCodeBoxes()
         updatePromptChanges()
+        AgentsRunning.shared.setNeedsRefresh()
     }
 
     /// Claude Code on this Mac: what its latest prompt has changed, followed (see PromptChangesPanel).
     private func updatePromptChanges() {
+        guard Config.shared.showFilesChangedPill else { promptChanges?.active = false; return }
         if devPromptChanges {
             promptChanges?.active = true
             promptChanges?.tracker.tick(session: "dev", cwd: currentDirectory, working: true)
@@ -811,6 +825,7 @@ final class TerminalView: NSView, TerminalDelegate {
             agentStopCheck?.cancel()
             agentStopCheck = nil
             if agentWorkingSince == nil { agentWorkingSince = Date() }
+            if agentNote != nil { agentNote = nil }
             return
         }
         guard old?.status == .working, let since = agentWorkingSince else { return }
@@ -835,6 +850,13 @@ final class TerminalView: NSView, TerminalDelegate {
                     let th = Config.shared.theme
                     let prompt = (exchange?.prompt ?? onScreen).map { ClaudeTranscript.summary($0, limit: 80) }
                     let reply = exchange?.reply.map { ClaudeTranscript.summary($0) }
+                    // Said by the agents pill (it announces it, and its list keeps it until you come here); the corner
+                    // card only when there's no pill to say it.
+                    let note = AgentsRunning.Note(status: a.status, prompt: prompt, reply: reply, worked: d)
+                    if AgentsRunning.shared.announce(note, from: self) {
+                        if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
+                        return
+                    }
                     var lines = [Self.place(of: tab)]
                     if let prompt, !prompt.isEmpty { lines.append("❯ " + prompt) }
                     if let reply, !reply.isEmpty { lines.append(reply) }
@@ -851,7 +873,7 @@ final class TerminalView: NSView, TerminalDelegate {
     }
 
     /// The pane is on screen in front of the user: Solanum active, its window key, its tab showing.
-    private var isWatched: Bool {
+    var isWatched: Bool {
         NSApp.isActive && (window?.isKeyWindow ?? false) && (tab?.isActive ?? true)
     }
 
@@ -923,7 +945,13 @@ final class TerminalView: NSView, TerminalDelegate {
         if let sb = searchBar {
             sb.frame = NSRect(x: bounds.width - sb.frame.width - 12, y: 8, width: sb.frame.width, height: sb.frame.height)
         }
-        promptChanges?.layout(in: bounds, top: searchBar.map { $0.frame.maxY } ?? 0)
+        // The agents pill (all of Solanum) on top, then this pane's files-changed pill (and its panel) under it.
+        var top = searchBar.map { $0.frame.maxY } ?? 0
+        if let ap = agentsPill, ap.pane === self {
+            ap.layout(in: bounds, top: top, of: self)
+            if let bottom = ap.bottom(in: self) { top = bottom - 4 }
+        }
+        promptChanges?.layout(in: bounds, top: top)
         if let bar = lostBar {
             let w = min(bar.preferredWidth, bounds.width - 16)
             bar.frame = NSRect(x: max(8, bounds.width - w - 12), y: bounds.height - ConnectionLostBar.height - 10, width: w, height: ConnectionLostBar.height)
@@ -1304,7 +1332,7 @@ final class TerminalView: NSView, TerminalDelegate {
         }
         ranges += collapsedTurnRanges()
         // Claude Code's edit diffs, shown in the files-changed pill's panel instead.
-        if Config.shared.hideAgentEditDiffs {
+        if Config.shared.hideAgentEditDiffs, Config.shared.showFilesChangedPill {
             for b in terminal.blocks where isClaudeBlock(b) { ranges += terminal.agentEditDiffRanges(in: b) }
         }
         ranges = ranges.filter { $0.upperBound >= first }.map { max($0.lowerBound, first)...$0.upperBound }.sorted { $0.lowerBound < $1.lowerBound }
@@ -1575,12 +1603,12 @@ final class TerminalView: NSView, TerminalDelegate {
     }
 
     /// Dev aid (DevTools pretend-claude): as if Claude Code were running here, for drawing what's drawn only then.
-    func devPretendClaude() {
+    func devPretendClaude(_ status: AgentStatus = .waiting) {
         devPretendingClaude = true
-        agent = AgentInfo(kind: .claude, status: .waiting)
+        agent = AgentInfo(kind: .claude, status: status)
         needsDisplay = true
     }
-    private var devPretendingClaude = false
+    private(set) var devPretendingClaude = false
 
     /// Lines (absolute) whose background of this color (packed) isn't painted: a prompt sent to Claude Code (see
     /// `drawPromptBands`).

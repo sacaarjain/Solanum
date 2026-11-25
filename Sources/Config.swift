@@ -68,6 +68,10 @@ final class Config {
     var continueAgents = true
     /// The diffs Claude Code prints under its edits are folded out of the terminal (the "files changed" pill shows them).
     var hideAgentEditDiffs = true
+    /// Over a pane running Claude Code, the pill saying what its latest prompt changed (and the chips on prompts' boxes).
+    var showFilesChangedPill = true
+    /// In each window's focused terminal, the pill saying how many agents run in Solanum, listing their tabs.
+    var showAgentsPill = true
     /// By an agent's command, what continues it where that's not the default; empty for not at all.
     var continueCommands: [String: String] = [:]
 
@@ -161,6 +165,8 @@ final class Config {
         case "restore-scrollback": restoreScrollback = bool()
         case "continue-agents": continueAgents = bool()
         case "hide-agent-edit-diffs": hideAgentEditDiffs = bool()
+        case "files-changed-pill": showFilesChangedPill = bool()
+        case "agents-pill": showAgentsPill = bool()
         case "new-tab-folder": newTabFolder = value.lowercased() == "home" ? "home" : "current"
         case "check-for-updates": checkForUpdates = bool()
         case "transfer-folder": transferFolder = value
@@ -240,6 +246,12 @@ final class Config {
         # The diffs Claude Code prints under its edits stay out of the terminal: the "files changed" pill over the pane
         # shows them. The edit's own line and summary still show.
         hide-agent-edit-diffs = \(hideAgentEditDiffs)
+
+        # Over a pane running Claude Code, a pill saying what your latest prompt changed, opening those files' diffs.
+        files-changed-pill = \(showFilesChangedPill)
+
+        # In each window, a pill saying how many coding agents are running in Solanum, listing their tabs to go to.
+        agents-pill = \(showAgentsPill)
         \(continueCommands.sorted { $0.key < $1.key }.map { "continue-command-\($0.key) = \($0.value)" }.joined(separator: "\n"))
 
         # Where ⌘T opens a new tab: current (the focused terminal's folder) | home
