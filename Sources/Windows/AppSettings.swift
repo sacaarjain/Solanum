@@ -6,7 +6,14 @@ final class AppSettings {
 
     private(set) var file = SettingsFile()
     private var fileDate: Date?
-    private(set) var customThemes: [ThemeSpec] = []
+    private(set) var customThemes: [ThemeSpec] = [] {
+        didSet { indexThemes() }
+    }
+
+    private func indexThemes() {
+        allThemes = [ThemeSpecs.solanumDefault] + ThemeSpecs.outerWilds + customThemes + ThemeSpecs.vsCode
+        themesByName = Dictionary(allThemes.map { ($0.name.lowercased(), $0.name) }, uniquingKeysWith: { a, _ in a })
+    }
     /// Each custom theme's file in the themes folder, by its name.
     private(set) var customThemeFiles: [String: URL] = [:]
     /// What the themes folder held when last read (see `ThemeFiles.signature`).
@@ -14,18 +21,20 @@ final class AppSettings {
     /// Called after any change, from the file or from Settings.
     var onChange: [() -> Void] = []
 
-    static var folder: URL? {
+    /// Worked out once: it's asked many times a frame (the theme's icon, the Quantum Moon), and reading the environment
+    /// each time kept the window's thread busy while a terminal redrew.
+    static let folder: URL? = {
         guard !CommandLine.arguments.contains("--window-test"), let appData = ProcessInfo.processInfo.environment["APPDATA"] else { return nil }
         return URL(fileURLWithPath: appData).appendingPathComponent("Solanum")
-    }
-    static var fileURL: URL? { folder?.appendingPathComponent("config") }
-    static var themesFolder: URL? { folder?.appendingPathComponent("themes") }
+    }()
+    static let fileURL: URL? = folder?.appendingPathComponent("config")
+    static let themesFolder: URL? = folder?.appendingPathComponent("themes")
 
     private init() { load() }
 
     // MARK: Values
 
-    var themeName: String { file["theme"].flatMap { name in allThemes.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.name } ?? ThemeSpecs.defaultName }
+    var themeName: String { file["theme"].flatMap { themesByName[$0.lowercased()] } ?? ThemeSpecs.defaultName }
     var fontFamily: String { file["font-family"].flatMap { $0.isEmpty || $0 == "System Mono" ? nil : $0 } ?? "" }
     /// Points at 100% display scaling.
     var fontSize: Double { file.number("font-size", 11, in: 6...40) }
@@ -34,6 +43,10 @@ final class AppSettings {
     var cursorStyle: String { ["bar", "block", "underline"].contains(file["cursor-style"]?.lowercased() ?? "") ? file["cursor-style"]!.lowercased() : "bar" }
     var cursorBlink: Bool { file.bool("cursor-blink", true) }
     var audibleBell: Bool { file.bool("audible-bell", false) }
+    /// Over a tab running Claude Code, the pill saying what its latest prompt changed (and the chips on prompts' boxes).
+    var filesChangedPill: Bool { file.bool("files-changed-pill", true) }
+    /// In each window's focused terminal, the pill saying how many agents run in Solanum, listing their tabs.
+    var agentsPill: Bool { file.bool("agents-pill", true) }
     var boldIsBright: Bool { file.bool("bold-is-bright", false) }
     var copyOnSelect: Bool { file.bool("copy-on-select", false) }
     /// The file editor's indent: columns per level and whether Tab inserts spaces (a file's own style wins; Indentation).
@@ -100,7 +113,11 @@ final class AppSettings {
         themeDraft = draft
         if broadcast && before != after { onChange.forEach { $0() } }
     }
-    var allThemes: [ThemeSpec] { [ThemeSpecs.solanumDefault] + ThemeSpecs.outerWilds + customThemes + ThemeSpecs.vsCode }
+    /// Solanum's themes, then yours, then VS Code's; kept rather than put together at each look (see `customThemes`).
+    private(set) var allThemes: [ThemeSpec] = [ThemeSpecs.solanumDefault] + ThemeSpecs.outerWilds + ThemeSpecs.vsCode
+    /// Each theme's name by its lowercased name, for finding the one the config names.
+    private var themesByName: [String: String] = Dictionary(([ThemeSpecs.solanumDefault] + ThemeSpecs.outerWilds + ThemeSpecs.vsCode).map { ($0.name.lowercased(), $0.name) },
+                                                             uniquingKeysWith: { a, _ in a })
 
     /// The command a new tab runs: the configured shell, else PowerShell with Solanum's hook.
     var shellCommandLine: String {
@@ -157,6 +174,7 @@ final class AppSettings {
     private func readThemes() {
         let loaded = ThemeFiles.load()
         customThemes = loaded.map(\.spec)
+        indexThemes()
         customThemeFiles = Dictionary(loaded.map { ($0.spec.name, $0.file) }, uniquingKeysWith: { a, _ in a })
         themesSignature = ThemeFiles.signature()
     }

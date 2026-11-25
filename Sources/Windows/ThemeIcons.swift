@@ -12,7 +12,19 @@ enum ThemeIcon: Equatable {
     /// A theme's icon, from its "icon" setting: "planet:<name>", "flower", "none", or a picture's file name in the
     /// themes folder (a full path works too). Without one: the planet it's named after, or the flower for Solanum
     /// Default. A picture that's gone shows nothing.
+    /// What `of` found for a theme, and when: it's asked many times a frame, and a picture's file is looked for on disk.
+    private static var known: [String: (icon: ThemeIcon?, at: Date)] = [:]
+
     static func of(_ spec: ThemeSpec) -> ThemeIcon? {
+        let key = spec.name + "|" + (spec.icon ?? "") + "|" + (AppSettings.shared.customThemeFiles[spec.name] != nil ? "c" : "")
+        if let k = known[key], Date().timeIntervalSince(k.at) < 2 { return k.icon }
+        let icon = look(spec)
+        if known.count > 500 { known = [:] }
+        known[key] = (icon, Date())
+        return icon
+    }
+
+    private static func look(_ spec: ThemeSpec) -> ThemeIcon? {
         let custom = AppSettings.shared.customThemeFiles[spec.name] != nil
         guard let v = spec.icon, !v.isEmpty else {
             if let p = PlanetArt.planet(themeName: spec.name, isVSCode: !custom && ThemeSpecs.vsCode.contains { $0.name == spec.name }) { return .planet(p) }
