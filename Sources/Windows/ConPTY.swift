@@ -92,7 +92,7 @@ final class ConPTY {
     }
 
     private func startThreads() {
-        Thread.detachNewThread { [self] in
+        startThread { [self] in
             var buffer = [UInt8](repeating: 0, count: 256 * 1024)
             while true {
                 var count: DWORD = 0
@@ -102,7 +102,7 @@ final class ConPTY {
             }
             readingDone.signal()
         }
-        Thread.detachNewThread { [self] in
+        startThread { [self] in
             _ = WaitForSingleObject(process, INFINITE)
             var code: DWORD = 0
             _ = GetExitCodeProcess(process, &code)

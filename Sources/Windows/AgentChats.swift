@@ -30,7 +30,7 @@ final class InstalledAgents {
     func refresh(post: @escaping (@escaping () -> Void) -> Void) {
         if let last = lastScan, Date().timeIntervalSince(last) < 60 { return }
         lastScan = Date()
-        Thread.detachNewThread { [weak self] in
+        startThread { [weak self] in
             let found = Self.scan()
             post {
                 self?.kinds = found

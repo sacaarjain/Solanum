@@ -88,7 +88,7 @@ enum Askpass {
             for i in random.indices { random[i] = UInt8.random(in: 0...255) }
             pipeName = #"\\.\pipe\solanum-askpass-"# + "\(GetCurrentProcessId())-" + random.map { String(format: "%02x", $0) }.joined()
             self.post = post
-            Thread.detachNewThread { [weak self] in self?.listen(first: true) }
+            startThread { [weak self] in self?.listen(first: true) }
         }
 
         private func listen(first: Bool) {
@@ -102,7 +102,7 @@ enum Askpass {
             guard let pipe, pipe != INVALID_HANDLE_VALUE else { return }
             let connected = ConnectNamedPipe(pipe, nil) || GetLastError() == DWORD(ERROR_PIPE_CONNECTED)
             // The next client gets the next instance, on a thread of its own.
-            Thread.detachNewThread { [weak self] in self?.listen(first: false) }
+            startThread { [weak self] in self?.listen(first: false) }
             guard connected else { CloseHandle(pipe); return }
             var buffer = [UInt8](repeating: 0, count: 8192)
             var read: DWORD = 0

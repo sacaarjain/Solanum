@@ -88,21 +88,7 @@ enum ProcessTree {
     /// Every process descended from `root`, nearest first: its ID and its name (without ".exe", in lowercase).
     static func descendants(of root: DWORD) -> [(pid: DWORD, name: String)] {
         guard root != 0 else { return [] }
-        let snapshot = CreateToolhelp32Snapshot(DWORD(TH32CS_SNAPPROCESS), 0)
-        guard let snapshot, snapshot != INVALID_HANDLE_VALUE else { return [] }
-        defer { CloseHandle(snapshot) }
-        var entry = PROCESSENTRY32W()
-        entry.dwSize = DWORD(MemoryLayout<PROCESSENTRY32W>.size)
-        var all: [(pid: DWORD, parent: DWORD, name: String)] = []
-        guard Process32FirstW(snapshot, &entry) else { return [] }
-        repeat {
-            let name = withUnsafeBytes(of: entry.szExeFile) { raw -> String in
-                let units = raw.bindMemory(to: WCHAR.self)
-                let length = units.firstIndex(of: 0) ?? units.count
-                return String(decoding: units[..<length], as: UTF16.self)
-            }
-            all.append((entry.th32ProcessID, entry.th32ParentProcessID, name))
-        } while Process32NextW(snapshot, &entry)
+        let all = processes()
         var family: Set<DWORD> = [root], found: [(pid: DWORD, name: String)] = [], grew = true
         while grew {
             grew = false
@@ -116,6 +102,35 @@ enum ProcessTree {
         }
         return found
     }
+
+    /// Every process running, taken at most twice a second: each tab looks once a second, and every window's tabs
+    /// share one look rather than each taking its own.
+    private static func processes() -> [(pid: DWORD, parent: DWORD, name: String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        if let last = cached, Date().timeIntervalSince(last.at) < 0.5 { return last.all }
+        var all: [(pid: DWORD, parent: DWORD, name: String)] = []
+        let snapshot = CreateToolhelp32Snapshot(DWORD(TH32CS_SNAPPROCESS), 0)
+        guard let snapshot, snapshot != INVALID_HANDLE_VALUE else { return [] }
+        defer { CloseHandle(snapshot) }
+        var entry = PROCESSENTRY32W()
+        entry.dwSize = DWORD(MemoryLayout<PROCESSENTRY32W>.size)
+        if Process32FirstW(snapshot, &entry) {
+            repeat {
+                let name = withUnsafeBytes(of: entry.szExeFile) { raw -> String in
+                    let units = raw.bindMemory(to: WCHAR.self)
+                    let length = units.firstIndex(of: 0) ?? units.count
+                    return String(decoding: units[..<length], as: UTF16.self)
+                }
+                all.append((entry.th32ProcessID, entry.th32ParentProcessID, name))
+            } while Process32NextW(snapshot, &entry)
+        }
+        cached = (Date(), all)
+        return all
+    }
+
+    private static let lock = NSLock()
+    private static var cached: (at: Date, all: [(pid: DWORD, parent: DWORD, name: String)])?
 }
 
 enum AppRestart {

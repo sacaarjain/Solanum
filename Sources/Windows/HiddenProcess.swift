@@ -87,7 +87,7 @@ final class HiddenProcess {
         let outputDone = DispatchSemaphore(value: 0)
         // Passed to the threads as a plain number: a HANDLE (a raw pointer) isn't Sendable.
         for (bits, isError) in [(UInt(bitPattern: outputRead), false), (UInt(bitPattern: errorRead), true)] {
-            Thread.detachNewThread { [self] in
+            startThread { [self] in
                 let handle = HANDLE(bitPattern: bits)
                 var buffer = [UInt8](repeating: 0, count: 64 * 1024)
                 while true {
@@ -100,7 +100,7 @@ final class HiddenProcess {
                 if !isError { outputDone.signal() }
             }
         }
-        Thread.detachNewThread { [self] in
+        startThread { [self] in
             _ = WaitForSingleObject(process, INFINITE)
             var code: DWORD = 0
             _ = GetExitCodeProcess(process, &code)

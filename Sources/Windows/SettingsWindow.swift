@@ -684,7 +684,7 @@ final class SettingsWindow {
     /// A .vsix from VS Code's marketplace or Open VSX, picked with Windows' Open dialog, installed and put to use.
     private func importIconPack() {
         guard let path = ThemeFiles.pickFile(owner: hwnd, title: "Import Icon Pack", filter: "VS Code extensions (*.vsix)\u{0}*.vsix\u{0}All files\u{0}*.*\u{0}\u{0}") else { return }
-        Thread.detachNewThread { [weak self] in
+        startThread { [weak self] in
             var problem: String?
             var first: IconPackEntry?
             do { first = try IconPacks.install(from: path).first } catch let e as IconPacks.InstallError { problem = e.message } catch { problem = error.localizedDescription }

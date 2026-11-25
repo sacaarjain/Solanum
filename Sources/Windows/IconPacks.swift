@@ -104,7 +104,7 @@ enum IconPacks {
         guard downloading == nil else { return }
         downloading = label
         changed()
-        Thread.detachNewThread {
+        startThread {
             var problem: String?
             var themes: [IconPackEntry] = []
             do {

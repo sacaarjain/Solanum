@@ -2206,7 +2206,7 @@ final class TerminalWindow {
             }
             return
         }
-        Thread.detachNewThread { [weak self, weak sidebar] in
+        startThread { [weak self, weak sidebar] in
             let entries = FileSidebar.list(folder)
             self?.runOnWindowThread {
                 guard let self, let sidebar else { return }
@@ -2422,7 +2422,7 @@ final class TerminalWindow {
 
     /// Up to `limit` bytes of a file on this PC, off the window's thread; and whether there was more.
     static func readLocal(_ path: String, limit: Int, _ done: @escaping (Data?, Bool) -> Void) {
-        Thread.detachNewThread {
+        startThread {
             guard let handle = FileHandle(forReadingAtPath: path) else { return done(nil, false) }
             defer { try? handle.close() }
             guard let data = try? handle.read(upToCount: limit + 1) else { return done(Data(), false) }
@@ -2433,7 +2433,7 @@ final class TerminalWindow {
     /// A file on this PC as Core's FileSync knows it: its modified time and size, off the window's thread (a network drive
     /// can be slow to answer). Nil when it isn't there.
     static func localSignature(_ path: String, _ done: @escaping (Bool, String?) -> Void) {
-        Thread.detachNewThread {
+        startThread {
             var data = WIN32_FILE_ATTRIBUTE_DATA()
             let found = wide(path).withUnsafeBufferPointer { GetFileAttributesExW($0.baseAddress, GetFileExInfoStandard, &data) }
             guard found, data.dwFileAttributes & DWORD(FILE_ATTRIBUTE_DIRECTORY) == 0 else { return done(true, nil) }
@@ -2455,7 +2455,7 @@ final class TerminalWindow {
 
     /// `length` bytes of a file on this PC from `offset` (-1: its last `length`), and its size, off the window's thread.
     static func readLocal(_ path: String, offset: Int, length: Int, _ done: @escaping (Data?, Int) -> Void) {
-        Thread.detachNewThread {
+        startThread {
             guard let handle = FileHandle(forReadingAtPath: path) else { return done(nil, 0) }
             defer { try? handle.close() }
             guard let size = try? handle.seekToEnd() else { return done(nil, 0) }
@@ -2467,7 +2467,7 @@ final class TerminalWindow {
 
     /// The lines of a file on this PC before byte `upTo`, counted off the window's thread.
     static func countLocalLines(_ path: String, upTo: Int, _ done: @escaping (Int?) -> Void) {
-        Thread.detachNewThread {
+        startThread {
             guard let handle = FileHandle(forReadingAtPath: path) else { return done(nil) }
             defer { try? handle.close() }
             var left = upTo, n = 0
@@ -2494,7 +2494,7 @@ final class TerminalWindow {
 
     /// The bytes of a file on this PC from `offset` to its end, and its size: for following one that grows.
     static func readLocal(_ path: String, from offset: Int, _ done: @escaping (Data?, Int) -> Void) {
-        Thread.detachNewThread {
+        startThread {
             guard let handle = FileHandle(forReadingAtPath: path) else { return done(nil, 0) }
             defer { try? handle.close() }
             guard let size = try? handle.seekToEnd(), Int(size) >= offset, (try? handle.seek(toOffset: UInt64(offset))) != nil,
@@ -2505,7 +2505,7 @@ final class TerminalWindow {
 
     /// Writes a file on this PC, in place (so it keeps its permissions and links), off the window's thread.
     static func writeLocal(_ path: String, _ data: Data, _ done: @escaping (String?) -> Void) {
-        Thread.detachNewThread {
+        startThread {
             do {
                 try data.write(to: URL(fileURLWithPath: path))
                 done(nil)
@@ -3783,7 +3783,7 @@ final class TerminalWindow {
 
     /// After a moment without typing, so each key doesn't start a search of its own. Stopped after 20 seconds, as on the Mac.
     private func startSearch(_ query: String, generation: Int) {
-        Thread.detachNewThread { [weak self] in
+        startThread { [weak self] in
             Thread.sleep(forTimeInterval: 0.18)
             self?.runOnWindowThread {
                 guard let self, let s = self.search, s.generation == generation else { return }
@@ -4281,7 +4281,7 @@ final class TerminalWindow {
         }
         sidebar.transfer = files.cut ? "Moving…" : "Copying…"
         invalidate()
-        Thread.detachNewThread { [weak self] in
+        startThread { [weak self] in
             let done = FileOps.transfer(files.paths, into: folder, move: files.cut)
             self?.runOnWindowThread {
                 guard let self else { return }
@@ -4352,7 +4352,7 @@ final class TerminalWindow {
         }
         sidebar.transfer = "Uploading \(paths.count == 1 ? WindowsPath.name(paths[0]) : "\(paths.count) items")…"
         invalidate()
-        Thread.detachNewThread { [weak self] in
+        startThread { [weak self] in
             var failed = false
             for job in jobs {
                 guard let data = FileOps.pack(job.path) else { failed = true; continue }
@@ -4376,7 +4376,7 @@ final class TerminalWindow {
         guard let remote = source ?? remote(for: sidebar) else { return fileProblem() }
         sidebar.transfer = "Downloading \(paths.count == 1 ? AnyPath.name(paths[0]) : "\(paths.count) items")…"
         invalidate()
-        Thread.detachNewThread { [weak self] in
+        startThread { [weak self] in
             var failed = false, landed: [String] = []
             for path in paths {
                 let got = DispatchSemaphore(value: 0)
@@ -4507,7 +4507,7 @@ final class TerminalWindow {
             let fromHost = paths.first.map(AnyPath.isUnix) ?? false, toHost = AnyPath.isUnix(folder)
             switch (fromHost, toHost) {
             case (false, false):
-                Thread.detachNewThread { [weak self] in
+                startThread { [weak self] in
                     let done = FileOps.transfer(paths, into: folder, move: !copy)
                     self?.runOnWindowThread {
                         if done.isEmpty { self?.fileProblem() }
@@ -4736,7 +4736,7 @@ final class TerminalWindow {
             guard let remote = activePane.remote else { return show(nil) }
             remote.list(crumb.path) { show($0) }
         } else {
-            Thread.detachNewThread { show(FileSidebar.list(crumb.path)) }
+            startThread { show(FileSidebar.list(crumb.path)) }
         }
     }
 

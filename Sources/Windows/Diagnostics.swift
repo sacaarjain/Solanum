@@ -207,11 +207,18 @@ enum Diagnostics {
         frozenSince = nil
         lock.unlock()
         if let since { log("the window answers again, after \(ms(since)) ms stuck") }
+        // Handles left open pile up quietly until everything slows (see `startThread`): said once an hour past 20,000.
+        if Date().timeIntervalSince(handlesCheckedAt) > 3600 {
+            handlesCheckedAt = Date()
+            let open = openHandleCount()
+            if open > 20_000 { log("LEAK? \(open) handles open") }
+        }
     }
+    private static var handlesCheckedAt = Date()
 
     /// A thread that notices the window's thread hasn't gone round its loop for 2 s, and says so.
     private static func startWatchdog() {
-        let t = Thread {
+        startThread {
             while true {
                 Thread.sleep(forTimeInterval: 1)
                 guard enabled else { continue }
@@ -222,7 +229,5 @@ enum Diagnostics {
                 if quiet > 2 && !already { log("FREEZE: the window hasn't answered for \(Int(quiet * 1000)) ms") }
             }
         }
-        t.name = "solanum.diagnostics.watchdog"
-        t.start()
     }
 }

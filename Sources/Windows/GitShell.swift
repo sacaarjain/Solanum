@@ -31,7 +31,7 @@ struct GitPlace {
             return
         }
         guard let sh = GitShell.sh else { return done(127, Data(), "Git for Windows isn't installed (its sh.exe wasn't found).") }
-        Thread.detachNewThread {
+        startThread {
             let lock = NSLock(), exited = DispatchSemaphore(value: 0)
             var out = Data(), err = Data(), status: Int32 = -1
             guard let child = HiddenProcess(executable: sh, arguments: ["-c", full], extraEnvironment: ["MSYS_NO_PATHCONV": "1", "LC_ALL": "C.UTF-8"]) else {

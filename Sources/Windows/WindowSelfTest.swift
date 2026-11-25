@@ -111,6 +111,24 @@ enum WindowSelfTest {
     }
 
     static func runChrome(_ results: CoreSelfTest.Results) {
+        print("Threads and handles")
+        do {
+            // Foundation's Thread leaves each thread's handle open, and with it the thread on the process's list.
+            let before = openHandleCount(), group = DispatchGroup()
+            for _ in 0..<100 { group.enter(); startThread { group.leave() } }
+            group.wait()
+            Thread.sleep(forTimeInterval: 0.2)
+            let grew = openHandleCount() - before
+            results.check("threads: a hundred started and ended leave no handles open", grew < 10, "\(grew) more")
+            let ran = DispatchSemaphore(value: 0), before2 = openHandleCount()
+            for _ in 0..<10 {
+                GitPlace(dir: NSTemporaryDirectory(), remote: nil).run("true") { _, _, _ in ran.signal() }
+                _ = ran.wait(timeout: .now() + 10)
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+            let grew2 = openHandleCount() - before2
+            results.check("threads: ten hidden programs run leave no handles open", GitShell.sh == nil || grew2 < 10, "\(grew2) more")
+        }
         print("Custom themes")
         let mac = ThemeFiles.parse(Data(##"{"background":"#101010","foreground":"#EEEEEE","ansi":["#000000","#FF0000","#00FF00","#FFFF00","#0000FF","#FF00FF","#00FFFF","#FFFFFF"]}"##.utf8),
                                    fallbackName: "my-theme")
