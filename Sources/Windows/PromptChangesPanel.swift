@@ -376,6 +376,7 @@ final class PromptChangesPanel {
             let full = render(p, width: panel.width, top: panel.y - scrollY, x0: panel.x, measuring: false, clip: panel)
             sol_canvas_pop_clip(canvas.raw)
             scrollMaxY = max(0, full - panel.height)
+            drawHoverTip(p, within: area)
             if scrollY > scrollMaxY { scrollY = scrollMaxY }
             if scrollMaxY > 0 {
                 ScrollBars.draw(id: "prompt-changes", on: canvas, track: UIRect(x: panel.x, y: panel.y + 4 * s, width: panel.width - 2 * s, height: panel.height - 8 * s),
@@ -389,7 +390,46 @@ final class PromptChangesPanel {
             card(p, pill)
             drawPill(p, pill: pill, alpha: 1)
             hits.append((pill, "pill", { [weak self] in self?.expand() }))
+            drawHoverTip(p, within: area)
         }
+    }
+
+    /// What a button does, shown under it while the pointer's on it, as the Mac's tooltips.
+    private func tip(_ id: String) -> String? {
+        let name = { (prefix: String) in String(id.dropFirst(prefix.count)).split(separator: "/").last.map(String.init) ?? "" }
+        switch id {
+        case "pill": return "Files your prompts changed: click to see them, and step back through earlier prompts"
+        case "close": return "Close (Esc)"
+        case "prev": return "An earlier prompt's changes (←)"
+        case "next": return "A later prompt's changes (→)"
+        case "chat": return showing == .chat ? "Back to the prompt's changes" : "Everything changed in this chat"
+        case "askall": return "Start a question to \(agentName) about these changes"
+        default:
+            if id.hasPrefix("askfile.") { return "Ask \(agentName) about the change to \(name("askfile."))" }
+            if id.hasPrefix("openfile.") { return "Open \(name("openfile.")) above the terminal" }
+            if id.hasPrefix("file.") { return open.contains(String(id.dropFirst(5))) ? "Hide the changes" : "Show the changes" }
+            return nil
+        }
+    }
+
+    /// A tip under `anchor` (above it when there's no room below), kept within `bounds`, as the file editor's.
+    static func drawTip(_ p: PanelPaint, _ text: String, under anchor: UIRect, within bounds: UIRect) {
+        let s = p.scale, fg = TerminalPalette.foreground
+        let w = min(p.width(text, pixels: 12) + 18 * s, bounds.width - 12 * s), h = 24 * s
+        let x = min(max(anchor.x + anchor.width / 2 - w / 2, bounds.x + 6 * s), bounds.maxX - w - 6 * s)
+        let below = anchor.maxY + 6 * s
+        let y = below + h <= bounds.maxY - 4 * s ? below : anchor.y - 6 * s - h
+        let box = UIRect(x: x.rounded(), y: y.rounded(), width: w.rounded(), height: h)
+        p.fill(UIRect(x: box.x, y: box.y + 2 * s, width: box.width, height: box.height), 0x000000, 0.25, radius: 6)
+        p.fill(box, TerminalPalette.mix(fg, TerminalPalette.chrome, 0.12), 1, radius: 6)
+        sol_canvas_stroke_rounded(p.canvas.raw, box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1, 6 * s, fg, 0.18, 1)
+        p.label(text, UIRect(x: box.x + 9 * s, y: box.y, width: box.width - 18 * s, height: box.height), pixels: 12)
+    }
+
+    /// The tip for what the pointer's on, if it has one.
+    private func drawHoverTip(_ p: PanelPaint, within bounds: UIRect) {
+        guard let hover, let text = tip(hover), let r = hits.last(where: { $0.id == hover })?.rect else { return }
+        Self.drawTip(p, text, under: r, within: bounds)
     }
 
     /// Solanum's cards' corners, as on the Mac (Cards.radius).
@@ -570,6 +610,8 @@ final class PromptChangesPanel {
             let r = UIRect(x: x0 + pad, y: y, width: w, height: 32 * s)
             let id = "file." + f.path
             let rowHot = hover == id || hover == "openfile." + f.path || hover == "askfile." + f.path
+            // Its own click first, so the buttons drawn on it (registered after) take theirs.
+            hit(r, id) { [weak self] in self?.setOpen(f.path, !unfolded) }
             if visible(r) {
                 if rowHot { p.fill(r, fg, 0.08, radius: Self.radius) } else { p.fill(r, TerminalPalette.surface, 0.6, radius: Self.radius) }
                 p.icon(shownPart > 0.5 ? 0xE70D : 0xE76C, UIRect(x: r.x + 8 * s, y: r.y, width: 12 * s, height: r.height), pixels: 8.5, alpha: 0.55)
@@ -616,7 +658,6 @@ final class PromptChangesPanel {
                     hit(a, "askfile." + f.path) { [weak self] in self?.ask(about: [f.path]) }
                 }
             }
-            hit(r, id) { [weak self] in self?.setOpen(f.path, !unfolded) }
             y += 36 * s
             guard shownPart > 0 else { continue }
             if let d = diffs[f.path], !d.isBinary {

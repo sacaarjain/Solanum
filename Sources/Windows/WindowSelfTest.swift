@@ -129,6 +129,13 @@ enum WindowSelfTest {
             let grew2 = openHandleCount() - before2
             results.check("threads: ten hidden programs run leave no handles open", GitShell.sh == nil || grew2 < 10, "\(grew2) more")
         }
+        print("Agents' background tasks")
+        let wrapper = [#"C:\Program Files\Git\bin\bash.exe"#, "-c",
+                       #"source /c/Users/x/.claude/shell-snapshots/snapshot-bash-1-a.sh 2>/dev/null || true && { eval 'sleep 120; echo "done sleeping"' < /dev/null; } && pwd -P >| /tmp/cwd"#]
+        results.check("tasks: Claude Code's wrapper shell, its command read", AgentTasks.command(fromWrapper: wrapper) == #"sleep 120; echo "done sleeping""#,
+                      AgentTasks.command(fromWrapper: wrapper) ?? "nil")
+        results.check("tasks: another shell isn't one", AgentTasks.command(fromWrapper: [#"C:\bash.exe"#, "-c", "eval 'ls'"]) == nil)
+        results.check("tasks: shown on one line", AgentTask(pid: 1, command: "npm  run dev\n  --port 3000", started: Date()).shown == "npm run dev")
         print("A shell as someone else on an ssh host")
         results.check("sudo shell: sudo -i -u, sudo -s, su - and sudo su start one",
                       ["sudo -i -u svc", "sudo -s", "su - svc", "sudo su", "cd /x && sudo -iu svc"].allSatisfy(TerminalPane.switchesUser))

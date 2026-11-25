@@ -22,6 +22,8 @@ final class AgentsRunning {
         let prompt: String?
         let reply: String?
         let worked: TimeInterval
+        /// A background task that finished (its command), rather than the agent itself.
+        var task: String? = nil
         var at = Date()
     }
 
@@ -33,6 +35,8 @@ final class AgentsRunning {
         let group: (name: String, color: UInt32)?
         /// Which window it's in (1-based), said only when there are several.
         let window: Int
+        /// What it left running (background tasks), oldest first.
+        var tasks: [AgentTask] = []
     }
 
     private(set) var entries: [Entry] = []
@@ -42,6 +46,66 @@ final class AgentsRunning {
     var unseen: Int { entries.filter { $0.note != nil }.count }
     /// What the pills show, to redraw only when it changes.
     private(set) var signature = ""
+
+    // MARK: Background tasks
+
+    /// Each tab's background tasks from the last scan, and the processes seen running while its agent had stopped
+    /// working (those are the background ones; one it runs while working is its own command, until it's still there
+    /// once the agent stops).
+    private var tasks: [ObjectIdentifier: [AgentTask]] = [:]
+    private var background: [ObjectIdentifier: Set<DWORD>] = [:]
+    private var lastScan = Date.distantPast
+    private var scanning = false
+
+    /// Looks again at what the agents on this PC have running, off the window's thread, every couple of seconds.
+    private func scanTasks(_ panes: [TerminalPane]) {
+        guard !scanning, Date().timeIntervalSince(lastScan) >= 2 else { return }
+        var shells: [ObjectIdentifier: DWORD] = [:]
+        var byID: [ObjectIdentifier: TerminalPane] = [:]
+        for p in panes where p.sshArguments == nil && p.shellProcessID != 0 {
+            shells[ObjectIdentifier(p)] = p.shellProcessID
+            byID[ObjectIdentifier(p)] = p
+        }
+        guard !shells.isEmpty || !tasks.isEmpty else { return }
+        scanning = true
+        lastScan = Date()
+        let post = TerminalWindow.onAnyWindowThread
+        startThread { [weak self] in
+            let found = AgentTasks.scan(shells)
+            post { self?.took(found, byID) }
+        }
+    }
+
+    private func took(_ found: [ObjectIdentifier: [AgentTask]], _ panes: [ObjectIdentifier: TerminalPane]) {
+        scanning = false
+        var changed = false
+        for (id, pane) in panes {
+            let now = found[id] ?? []
+            let running = Set(now.map(\.pid))
+            let idle = pane.agent.map { $0.status != .working } ?? false
+            var bg = background[id, default: []].intersection(running)
+            if idle { bg.formUnion(running) }
+            background[id] = bg
+            let shown = now.filter { bg.contains($0.pid) }
+            let before = tasks[id] ?? []
+            // One that's finished while the agent's stopped, in a tab you're not looking at: news.
+            if idle, pane.host?.isWatching(pane) == false, let done = before.first(where: { !running.contains($0.pid) }), let status = pane.agent?.status {
+                announce(Note(status: status, prompt: nil, reply: nil, worked: Date().timeIntervalSince(done.started), task: done.shown), from: pane)
+            }
+            if shown != before { tasks[id] = shown; changed = true }
+        }
+        for id in tasks.keys where panes[id] == nil { tasks[id] = nil; background[id] = nil; changed = true }
+        if changed {
+            refresh()
+            TerminalWindow.allWindows.forEach { $0.agentsChanged() }
+        }
+    }
+
+    /// For tests: a tab's background tasks, as if scanned.
+    func setTasksForTest(_ list: [AgentTask], for pane: TerminalPane) {
+        tasks[ObjectIdentifier(pane)] = list
+        refresh()
+    }
 
     /// The order you've dragged them into (by pane), for as long as Solanum runs; empty for theirs.
     private var ownOrder: [ObjectIdentifier] = []
@@ -77,7 +141,7 @@ final class AgentsRunning {
                 // Seen once you're looking at it; stale once it's working again.
                 if p.agentNote != nil, window.isWatching(p) || info.status == .working { p.agentNote = nil }
                 list.append(Entry(pane: p, info: info, note: p.agentNote, title: p.tabTitle,
-                                  group: p.group.map { ($0.name, $0.color.rgb) }, window: w + 1))
+                                  group: p.group.map { ($0.name, $0.color.rgb) }, window: w + 1, tasks: tasks[ObjectIdentifier(p)] ?? []))
             }
         }
         let ids = Set(list.compactMap { $0.pane.map(ObjectIdentifier.init) })
@@ -91,7 +155,10 @@ final class AgentsRunning {
             return ua != ub ? ua < ub : a.offset < b.offset
         }.map(\.element)
         if let a = announcing, Date() >= a.until || a.pane.agentNote == nil || !list.contains(where: { $0.pane === a.pane }) { announcing = nil }
-        let sig = list.map { e in "\(e.pane.map { ObjectIdentifier($0).hashValue } ?? 0) \(e.info.kind.command) \(e.info.status) \(e.title) \(e.group?.name ?? "-") \(e.note != nil) \(e.window)" }
+        scanTasks(list.compactMap(\.pane))
+        // (Each task by its minutes running too, so the list's "12m" moves on.)
+        let sig = list.map { e in "\(e.pane.map { ObjectIdentifier($0).hashValue } ?? 0) \(e.info.kind.command) \(e.info.status) \(e.title) \(e.group?.name ?? "-") \(e.note != nil) \(e.window) "
+            + e.tasks.map { "\($0.pid):\(Int(-$0.started.timeIntervalSinceNow / 60))" }.joined(separator: ",") }
             .joined(separator: "|") + (announcing.map { " announcing \($0.note.at.timeIntervalSince1970)" } ?? "") + " \(ownOrder.count)"
         entries = list
         let changed = sig != signature
@@ -143,6 +210,7 @@ final class AgentsRunning {
     /// "T1 finished · 4m 23s", "T2 needs you".
     static func announcement(_ n: Note, _ pane: TerminalPane) -> String {
         let name = pane.tabTitle
+        if let t = n.task { return "\(name) · \(t.count > 32 ? String(t.prefix(30)) + "…" : t) finished" }
         return n.status == .waiting ? "\(name) needs you" : "\(name) finished · \(NoticeRules.formatDuration(n.worked))"
     }
 }
@@ -320,6 +388,7 @@ final class AgentsPill {
             sol_canvas_pop_clip(canvas.raw)
             scrollMaxY = max(0, full + 12 * s - panel.height)
             if scrollY > scrollMaxY { scrollY = scrollMaxY }
+            drawHoverTip(p, within: area)
             return bottom
         }
         pillRect = pill
@@ -330,6 +399,7 @@ final class AgentsPill {
             // While it announces news, a click goes to that agent; otherwise it opens the list.
             if let a = AgentsRunning.shared.announcing { self.go(to: a.pane) } else { self.expand() }
         }))
+        drawHoverTip(p, within: area)
         return bottom
     }
 
@@ -361,6 +431,12 @@ final class AgentsPill {
             let slot = Self.slot(e) * s
             let cx = x + slot / 2, cy = r.y + r.height / 2
             sol_canvas_fill_ellipse(c, cx, cy, 3 * s, 3 * s, e.info.status.rgb, 1)
+            // Stopped, but with background tasks running: its right half in the working color.
+            if !e.tasks.isEmpty, e.info.status != .working {
+                sol_canvas_push_clip(c, cx, cy - 4 * s, 4 * s, 8 * s)
+                sol_canvas_fill_ellipse(c, cx, cy, 3 * s, 3 * s, AgentStatus.working.rgb, 1)
+                sol_canvas_pop_clip(c)
+            }
             // Unseen news: a ring around its dot.
             if e.note != nil {
                 let ring = 5.5 * s
@@ -389,10 +465,21 @@ final class AgentsPill {
 
     /// The lines under a row's name: its unseen news (your prompt, then how long it worked and the start of the reply).
     private func news(_ e: AgentsRunning.Entry) -> [(String, Float)] {
-        guard let n = e.note else { return [] }
         var out: [(String, Float)] = []
-        if let q = n.prompt, !q.isEmpty { out.append(("❯ " + q, 0.8)) }
-        out.append(("Worked \(NoticeRules.formatDuration(n.worked))" + (n.reply.map { " · " + $0 } ?? ""), 0.55))
+        if let n = e.note {
+            if let t = n.task {
+                out.append(("✓ \(t) finished · ran \(NoticeRules.formatDuration(n.worked))", 0.8))
+            } else {
+                if let q = n.prompt, !q.isEmpty { out.append(("❯ " + q, 0.8)) }
+                out.append(("Worked \(NoticeRules.formatDuration(n.worked))" + (n.reply.map { " · " + $0 } ?? ""), 0.55))
+            }
+        }
+        // How long each has run, in whole minutes.
+        for t in e.tasks {
+            let s = max(0, Int(-t.started.timeIntervalSinceNow))
+            let ran = s < 60 ? "under a minute" : s < 3600 ? "\(s / 60)m" : "\(s / 3600)h \(s % 3600 / 60)m"
+            out.append(("▸ \(t.shown) · \(ran)", 0.55))
+        }
         return out
     }
 
@@ -514,6 +601,7 @@ final class AgentsPill {
         sol_canvas_fill_ellipse(c, r.x + 10 * s + mark + 6 * s, r.y + r.height / 2, 3 * s, 3 * s, e.info.status.rgb, 1)
         let nameX = r.x + 10 * s + mark + 16 * s
         var status = e.info.status.label
+        if !e.tasks.isEmpty { status += " · \(e.tasks.count) task\(e.tasks.count == 1 ? "" : "s") running" }
         if pane === self.pane { status += " · here" } else if several { status += " · window \(e.window)" }
         let sw = p.width(status, pixels: 11.5, semibold: true)
         let nameEnd = r.maxX - 12 * s - sw - 10 * s
@@ -542,6 +630,22 @@ final class AgentsPill {
 
     private static func luminance(_ c: UInt32) -> Float {
         (0.2126 * Float((c >> 16) & 0xFF) + 0.7152 * Float((c >> 8) & 0xFF) + 0.0722 * Float(c & 0xFF)) / 255
+    }
+
+    /// What the pointer's on does, as the Mac's tooltips say it.
+    private func tip(_ id: String) -> String? {
+        if id == "agents" {
+            return AgentsRunning.shared.announcing != nil ? "Go to this agent's tab" : "Tabs running agents, in every window: click to see them and go to one"
+        }
+        if id == "close" { return "Close (Esc)" }
+        if id == "reset" { return "Back to the agents that need you first" }
+        if id.hasPrefix("agent.") { return "Go to this tab (drag to reorder)" }
+        return nil
+    }
+
+    private func drawHoverTip(_ p: PanelPaint, within bounds: UIRect) {
+        guard drag?.started != true, let hover, let text = tip(hover), let r = hits.last(where: { $0.id == hover })?.rect else { return }
+        PromptChangesPanel.drawTip(p, text, under: r, within: bounds)
     }
 
     // MARK: Mouse and keys

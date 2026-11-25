@@ -260,7 +260,33 @@ if let flag = CommandLine.arguments.firstIndex(of: "--prompt-changes"), CommandL
     var ok = draw(args[flag + 1], width: 420, height: 90, expand: false, open: [])
     ok = draw(args[flag + 2], width: 1100, height: 760, expand: true, open: ["qa/lib/behaviors/outside-changes.js"]) && ok
     if args.indices.contains(flag + 3) { ok = draw(args[flag + 3], width: 1100, height: 480, expand: true, open: [], step: -1) && ok }
+    // The pointer on a file's row, then on its Ask button: the button (not the row) is what's under it, with its tip.
+    if args.indices.contains(flag + 4), let canvas = Canvas(width: 1100, height: 480, fontPixels: 15 * scale) {
+        let panel = PromptChangesPanel()
+        panel.testTracker = tracker
+        let area = UIRect(x: 0, y: 0, width: 1100, height: 480)
+        func frame() {
+            guard sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
+            panel.drawForTest(area: area, canvas: canvas, scale: scale, expand: true)
+            _ = sol_canvas_end(canvas.raw)
+        }
+        frame()
+        let file = "qa/lib/behaviors/outside-changes.js"
+        if let row = panel.testRect("file." + file) { _ = panel.mouse(Win.WM_MOUSEMOVE, x: row.x + 40, y: row.y + row.height / 2) }
+        frame()
+        if let ask = panel.testRect("askfile." + file) { _ = panel.mouse(Win.WM_MOUSEMOVE, x: ask.x + ask.width / 2, y: ask.y + ask.height / 2) }
+        frame()
+        print("hover: \(panel.hover ?? "none")")
+        ok = panel.hover == "askfile." + file && canvas.savePNG(to: args[flag + 4]) && ok
+    }
     exit(ok ? 0 : 1)
+}
+
+// What the coding agent under a shell has running, as the agents pill finds it: --agent-tasks <shell pid>
+if let flag = CommandLine.arguments.firstIndex(of: "--agent-tasks"), CommandLine.arguments.indices.contains(flag + 1), let shell = DWORD(CommandLine.arguments[flag + 1]) {
+    let key = ObjectIdentifier(NSObject())
+    for t in AgentTasks.scan([key: shell])[key] ?? [] { print("\(t.pid) \(Int(-t.started.timeIntervalSinceNow))s \(t.shown)") }
+    exit(0)
 }
 
 // A Markdown file's preview, as its page shows it: --draw-markdown <file.md> <png> [width]

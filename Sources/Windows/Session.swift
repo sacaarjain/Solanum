@@ -88,7 +88,7 @@ enum ProcessTree {
     /// Every process descended from `root`, nearest first: its ID and its name (without ".exe", in lowercase).
     static func descendants(of root: DWORD) -> [(pid: DWORD, name: String)] {
         guard root != 0 else { return [] }
-        let all = processes()
+        let all = Self.all()
         var family: Set<DWORD> = [root], found: [(pid: DWORD, name: String)] = [], grew = true
         while grew {
             grew = false
@@ -105,7 +105,7 @@ enum ProcessTree {
 
     /// Every process running, taken at most twice a second: each tab looks once a second, and every window's tabs
     /// share one look rather than each taking its own.
-    private static func processes() -> [(pid: DWORD, parent: DWORD, name: String)] {
+    static func all() -> [(pid: DWORD, parent: DWORD, name: String)] {
         lock.lock()
         defer { lock.unlock() }
         if let last = cached, Date().timeIntervalSince(last.at) < 0.5 { return last.all }
