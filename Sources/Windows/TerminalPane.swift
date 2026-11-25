@@ -78,6 +78,9 @@ final class TerminalPane: TerminalDelegate, Groupable {
     }
 
     var group: TabGroup?
+    /// What each prompt sent to Claude Code here changed (see PromptChangesTracker), for the files-changed pill.
+    let promptChanges = PromptChangesTracker()
+    private var promptChangesTickedAt = Date.distantPast
     /// A name given to the tab, in place of the one it would have.
     var customTitle: String?
     /// The git repository its folder is in, for the status bar; what git's doing for it there ("Pulling…").
@@ -645,20 +648,30 @@ final class TerminalPane: TerminalDelegate, Groupable {
     private var dpiScale: Float { Float(GetDpiForWindow(hwnd)) / 96 }
 
     private func drawCodeBoxes(top: Int) {
-        CodeBoxView(canvas: canvas, terminal: terminal, boxes: codeBoxes, top: top, scale: dpiScale).drawPanels()
+        codeBoxView(boxes: codeBoxes, top: top).drawPanels()
+    }
+
+    /// Code boxes and prompt boxes over the terminal: with lines hidden on screen, placed by the row each line is on.
+    private func codeBoxView(boxes: [CodeBox], top: Int) -> CodeBoxView {
+        var v = CodeBoxView(canvas: canvas, terminal: terminal, boxes: boxes, top: top, scale: dpiScale)
+        if !hiddenRanges.isEmpty {
+            v.rowOf = { [unowned self] in self.row(ofLine: $0) }
+            v.bottom = line(atRow: terminal.rows - 1)
+        }
+        return v
     }
 
     /// Prompts sent to Claude Code: in place of the grey it paints behind them, a box in the theme's accent with a
     /// border, as the boxes around code have (see Core's PromptBands).
     private func drawPromptBands(top: Int, renderer: inout TerminalRenderer) {
         // From a little above the screen, so a prompt that starts above it is still known as one.
-        renderer.plainBackgrounds = CodeBoxView(canvas: canvas, terminal: terminal, boxes: [], top: top, scale: dpiScale).drawPromptBands()
+        renderer.plainBackgrounds = codeBoxView(boxes: [], top: top).drawPromptBands()
     }
 
     private func drawCopyButtons(top: Int) {
         if let copied = copiedBox, Date() >= copied.until { copiedBox = nil }
         let showing = hoverBox
-        copyButtons = CodeBoxView(canvas: canvas, terminal: terminal, boxes: codeBoxes, top: top, scale: dpiScale)
+        copyButtons = codeBoxView(boxes: codeBoxes, top: top)
             .drawButtons(hover: hoverCopyButton, copied: copiedBox?.box, shows: { $0 == showing })
     }
 
@@ -817,12 +830,28 @@ final class TerminalPane: TerminalDelegate, Groupable {
     func tick() -> Bool {
         let agentChanged = updateAgent()
         tickWork()
+        tickPromptChanges()
         checkAgentStopped()
         watchNoticeSecret()
         // An image Claude Code hasn't finished writing yet: look again.
         // "Copied" on a code box's button has had its moment.
         let copiedDone = copiedBox.map { Date() >= $0.until } ?? false
         return agentChanged || imageChips.wantsRetry || copiedDone
+    }
+
+    /// Once a second while Claude Code runs here on this PC: its session's prompts, and what each changed.
+    private func tickPromptChanges() {
+        guard agent?.kind == .claude, sshArguments == nil, AppSettings.shared.filesChangedPill,
+              Date().timeIntervalSince(promptChangesTickedAt) >= 1 else { return }
+        promptChangesTickedAt = Date()
+        if promptChanges.onChange == nil {
+            promptChanges.post = { [weak host] work in host?.runOnWindowThreadPublic(work) }
+            promptChanges.onChange = { [weak self] in
+                guard let self else { return }
+                self.host?.promptChangesChanged(self)
+            }
+        }
+        promptChanges.tick(session: ClaudeImages.session(under: shellProcessID), cwd: terminal.cwd, working: agent?.status == .working)
     }
 
     private func tickWork() {
@@ -870,11 +899,13 @@ final class TerminalPane: TerminalDelegate, Groupable {
         // Claude's code boxes count rows up from the bottom of the screen, which holds below any output collapsed in view;
         // with some in view they wait until it's expanded or scrolled away, rather than be drawn on the wrong rows.
         let screenTop = overlayTop
-        if !hiddenInView { drawCodeBoxes(top: screenTop) }
-        if agent != nil && !terminal.usingAlt && !hiddenInView { drawPromptBands(top: screenTop, renderer: &renderer) }
+        drawCodeBoxes(top: screenTop)
+        if agent != nil && !terminal.usingAlt { drawPromptBands(top: screenTop, renderer: &renderer) }
+        promptChips = []
         renderer.drawContents()
-        if !hiddenInView { drawCopyButtons(top: screenTop) } else { copyButtons = [] }
+        drawCopyButtons(top: screenTop)
         drawCollapsedChips()
+        drawPromptChangeChips(top: screenTop)
         drawBlockButtons()
         imageChips.draw(on: canvas, scale: dpiScale)
         // The link under the pointer, while Ctrl's held.
@@ -1511,6 +1542,13 @@ final class TerminalPane: TerminalDelegate, Groupable {
         let abs = line(atRow: row) ?? terminal.screenTopAbs - scrollOffset + row
         // A command's "Copy output" and "Send to chat", and the bar over several picked ones.
         if blockMouse(message, x: px, y: py, line: abs, col: col) { return }
+        // A prompt's "files changed" chip opens the files-changed panel at that prompt.
+        let chip = promptChips.first(where: { $0.rect.contains(px, py) })?.prompt
+        if chip != hoverPromptChip, message == Win.WM_MOUSEMOVE { hoverPromptChip = chip; invalidate() }
+        if message == Win.WM_LBUTTONDOWN, let chip {
+            host?.promptPanel.show(prompt: chip, in: self)
+            return
+        }
         // "⋯ N lines hidden" after a collapsed command shows its output again.
         if message == Win.WM_LBUTTONDOWN, let chip = collapsedChips.first(where: { $0.rect.contains(px, py) }),
            let b = terminal.blocks.first(where: { $0.id == chip.block }) {
@@ -2468,6 +2506,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
             guard let o = b.outputLine, let e = b.endLine, e >= o, e >= first else { continue }
             ranges.append(max(o, first)...e)
         }
+        // Claude Code's edit diffs, shown in the files-changed panel instead, as on the Mac.
+        ranges += agentEditDiffs().filter { $0.upperBound >= first }.map { max($0.lowerBound, first)...$0.upperBound }
         ranges.sort { $0.lowerBound < $1.lowerBound }
         var merged: [ClosedRange<Int>] = []
         for r in ranges {
@@ -2478,6 +2518,22 @@ final class TerminalPane: TerminalDelegate, Groupable {
             }
         }
         hiddenRanges = merged
+    }
+
+    /// The diffs Claude Code printed under its edits here, worked out again at most every 0.3 s while output comes (it
+    /// reads the session's whole output).
+    private var editDiffs: (ranges: [ClosedRange<Int>], key: String, at: Date) = ([], "", .distantPast)
+
+    private func agentEditDiffs() -> [ClosedRange<Int>] {
+        guard AppSettings.shared.filesChangedPill, AppSettings.shared.hideAgentEditDiffs, sshArguments == nil else { return [] }
+        let key = "\(terminal.firstAbs) \(terminal.lastAbs) \(terminal.blocks.count) \(lastOutputAt.timeIntervalSince1970)"
+        if key == editDiffs.key || Date().timeIntervalSince(editDiffs.at) < 0.3 { return editDiffs.ranges }
+        var out: [ClosedRange<Int>] = []
+        for b in terminal.blocks where b.isAgentSession || (b.state == .running && agent?.kind == .claude) {
+            out += terminal.agentEditDiffRanges(in: b)
+        }
+        editDiffs = (out, key, Date())
+        return out
     }
 
     private var hiddenCount: Int { hiddenRanges.reduce(0) { $0 + $1.count } }
@@ -2524,13 +2580,6 @@ final class TerminalPane: TerminalDelegate, Groupable {
         return (line(atRow: terminal.rows - 1) ?? terminal.lastAbs) - (terminal.rows - 1)
     }
 
-    /// Collapsed output between the top and bottom rows.
-    private var hiddenInView: Bool {
-        guard !hiddenRanges.isEmpty, let top = line(atRow: 0) else { return false }
-        let bottom = line(atRow: terminal.rows - 1) ?? terminal.lastAbs
-        return hiddenRanges.contains { $0.lowerBound > top && $0.lowerBound <= bottom + 1 }
-    }
-
     /// Ctrl+Shift+E, as the Mac's Shift-Command-E: the picked command's output (or the last's) hidden or shown again.
     @discardableResult
     func toggleCollapse() -> Bool {
@@ -2552,6 +2601,43 @@ final class TerminalPane: TerminalDelegate, Groupable {
     }
 
     /// "⋯ N lines hidden" after each collapsed command on screen, as the Mac shows it; a click opens it again.
+    /// Where each prompt's "✎ N files changed" was drawn this frame, and its prompt.
+    private var promptChips: [(rect: UIRect, prompt: String)] = []
+
+    /// On the box of a prompt you sent that changed files (see PromptChangesPanel): a chip at its right saying how many,
+    /// which opens the files-changed panel at that prompt, as on the Mac.
+    private func drawPromptChangeChips(top: Int) {
+        guard AppSettings.shared.filesChangedPill, agent?.kind == .claude, sshArguments == nil, !terminal.usingAlt,
+              !promptChanges.entries.isEmpty else { return }
+        let bottom = line(atRow: terminal.rows - 1) ?? top + terminal.rows - 1
+        let bands = PromptBands.find({ terminal.line(abs: $0) }, from: max(top - 40, terminal.firstAbs), through: bottom)
+        let m = canvas.metrics, s = dpiScale, c = canvas.raw, fg = TerminalPalette.foreground
+        let px = max(10, Float(AppSettings.shared.fontSize) - 2.5) * s * 1.33
+        let right = canvas.contentX + Float(terminal.cols) * m.cellWidth + 4 * s
+        for b in bands {
+            guard let r0 = (b.first...b.last).lazy.compactMap({ self.row(ofLine: $0) }).first(where: { $0 >= 0 && $0 < self.terminal.rows }) else { continue }
+            let typed = (b.first...b.last).compactMap { terminal.line(abs: $0)?.text() }.joined(separator: " ")
+            guard let entry = promptChanges.entry(matching: typed), !entry.files.isEmpty else { continue }
+            let n = entry.files.count
+            let text = "\(n) file\(n == 1 ? "" : "s") changed", units = Array(text.utf16)
+            let tw = sol_canvas_measure_label(c, units, Int32(units.count), px, 0).rounded(.up)
+            let h = (px * 1.25 + 4 * s).rounded(), w = (tw + px + 18 * s).rounded()
+            let rect = UIRect(x: (right - w - 8 * s).rounded(), y: (canvas.contentY + Float(r0) * m.cellHeight + (m.cellHeight - h) / 2).rounded(), width: w, height: h)
+            let hot = hoverPromptChip == entry.prompt.id
+            sol_canvas_fill_rounded(c, rect.x, rect.y, rect.width, rect.height, 5 * s, TerminalPalette.surface, 1)
+            if hot { sol_canvas_fill_rounded(c, rect.x, rect.y, rect.width, rect.height, 5 * s, fg, 0.08) }
+            sol_canvas_draw_icon(c, rect.x + 7 * s, rect.y, px, rect.height, 0xE70F, px * 0.75, fg, hot ? 0.85 : 0.55)
+            sol_canvas_draw_label(c, rect.x + 7 * s + px + 3 * s, rect.y, tw + 2, rect.height, units, Int32(units.count), px, 0, fg, hot ? 0.85 : 0.55)
+            promptChips.append((rect, entry.prompt.id))
+        }
+    }
+
+    /// The prompt chip under the pointer.
+    private var hoverPromptChip: String?
+
+    /// Whether a point is on a prompt's "files changed" chip: the pointer becomes a hand there.
+    func isOverPromptChip(x: Float, y: Float) -> Bool { promptChips.contains { $0.rect.contains(x, y) } }
+
     private func drawCollapsedChips() {
         collapsedChips = []
         guard !hiddenRanges.isEmpty else { return }

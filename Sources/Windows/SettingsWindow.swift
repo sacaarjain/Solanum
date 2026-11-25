@@ -442,6 +442,16 @@ final class SettingsWindow {
                            detail: "Agents running when Solanum closed pick up their last session in their tab, with the command below.",
                            control: toggle("continue-agents") { s.file.bool("continue-agents", true) }),
                        Row(glyph: 0xE711, title: "Ask before closing with something running", detail: later, control: toggle("confirm-quit") { s.file.bool("confirm-quit", true) })]),
+                .header("Claude Code"),
+                .card([Row(glyph: 0xE8A5, title: "Files-changed pill",
+                           detail: "Over a tab running Claude Code: the files your latest prompt changed, and each one's diff.",
+                           control: toggle("files-changed-pill") { s.filesChangedPill }),
+                       Row(glyph: 0xE8C4, title: "Show edits in the files-changed pill",
+                           detail: "Claude's diffs stay out of the terminal; the edit's line and summary still show. The pill over the tab opens them. (With the pill off, they stay in the terminal.)",
+                           control: toggle("hide-agent-edit-diffs") { s.hideAgentEditDiffs }),
+                       Row(glyph: 0xE99A, title: "Agents running pill",
+                           detail: "In each window: how many coding agents are running in Solanum, with their state. Click it to go to one's tab.",
+                           control: toggle("agents-pill") { s.agentsPill })]),
                 .header("Continue Agents"),
                 // The best-known agents, as on the Mac; the rest are continue-command-<agent> lines in the config file.
                 .card(AgentKind.known.prefix(4).map { kind in

@@ -555,6 +555,8 @@ final class TerminalWindow {
     }
     /// While the Quantum Moon's reading animates.
     private static let readingTimer: UINT_PTR = 6
+    /// The files-changed panel growing, shrinking or unfolding a file.
+    private static let promptPanelTimer: UINT_PTR = 13
     /// While Keep Awake is on: the cup's steam rising, about 12 times a second.
     private static let steamTimer: UINT_PTR = 7
     private var steaming = false
@@ -1086,6 +1088,7 @@ final class TerminalWindow {
         defer { updateScrollBarTimer() }
         chrome(on: canvas, layout: layout).draw()
         for pane in visiblePanes { drawColumn(pane, on: canvas, snapshot: false) }
+        drawPromptPanel(on: canvas)
         drawSidebars(on: canvas, layout: layout)
         drawCards(on: canvas)
         drawSplitDrop(on: canvas)
@@ -1356,6 +1359,9 @@ final class TerminalWindow {
                 // Every window shows the same colors on the way; whichever ticks first moves them along.
                 if !TerminalPalette.stepFade() { KillTimer(hwnd, Self.themeTimer) }
                 invalidate()
+            } else if wParam == WPARAM(Self.promptPanelTimer) {
+                if !promptPanel.tick() { KillTimer(hwnd, Self.promptPanelTimer) }
+                invalidate()
             } else if wParam == WPARAM(Self.readingTimer) {
                 readingTick()
             } else if wParam == WPARAM(Self.steamTimer) {
@@ -1453,6 +1459,8 @@ final class TerminalWindow {
             let point = screenPoint(lParam)
             guard !panes.isEmpty else { return 0 }
             let swiped = Float(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Float(Win.WHEEL_DELTA)
+            if menu == nil, palette == nil,
+               promptPanel.wheel(x: point.x, y: point.y, delta: -swiped * 40 * scale, sideways: true, cellWidth: canvas.metrics.cellWidth) { return 1 }
             // Over a tab's file sub-tabs, it moves those along, as it does the tabs; over the sidebar or a file, they
             // scroll sideways.
             if point.y >= layout.tabBarHeight {
@@ -1476,6 +1484,11 @@ final class TerminalWindow {
             let (_, y) = screenPoint(lParam)
             let (x, _) = screenPoint(lParam)
             let part = layout.part(atX: x, y: y)
+            let notch = Float(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Float(Win.WHEEL_DELTA)
+            if menu == nil, palette == nil,
+               promptPanel.wheel(x: x, y: y, delta: notch * 60 * scale, sideways: isDown(Win.VK_SHIFT), cellWidth: canvas.metrics.cellWidth) {
+                return 0
+            }
             if let menu {
                 menu.scrollBy(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF) > 0 ? -menu.rowHeight * 2 : menu.rowHeight * 2)
                 invalidate()
@@ -1596,6 +1609,10 @@ final class TerminalWindow {
             SetCursor(LoadCursorW(nil, hand ? Win.handCursor : Win.arrowCursor))
             return 1
         }
+        if menu == nil, palette == nil, let hand = promptPanel.wantsHand(x: px, y: py) {
+            SetCursor(LoadCursorW(nil, hand ? Win.handCursor : Win.arrowCursor))
+            return 1
+        }
         // What's on top decides, not what's under it: a menu shows the arrow; the palette, the I-beam over the field it's
         // typed in and the arrow over the rest; the Quantum Moon's reading, the arrow.
         if let menu, menu.frame.contains(px, py) {
@@ -1630,7 +1647,7 @@ final class TerminalWindow {
         }
         // A pointing hand over a pasted image's thumbnail, or its larger look, as on the Mac.
         let onImage = palette == nil && menu == nil && part == .terminal && !panes.isEmpty
-            && (pane(atX: px).imageChips.isOver(x: px, y: py) || pane(atX: px).isOverCopyButton(x: px, y: py))
+            && (pane(atX: px).imageChips.isOver(x: px, y: py) || pane(atX: px).isOverCopyButton(x: px, y: py) || pane(atX: px).isOverPromptChip(x: px, y: py))
         // The I-beam over an open file's text, as in any editor.
         if palette == nil, menu == nil, part == .terminal, !panes.isEmpty, draggingEdge == nil {
             let under = pane(atX: px)
@@ -2016,6 +2033,10 @@ final class TerminalWindow {
             return
         }
         if CornerNoticeStack.changed { invalidate() }
+        if menu == nil, palette == nil, dialog == nil, promptPanel.mouse(message, x: x, y: y) {
+            if message == Win.WM_LBUTTONDOWN { SetCapture(hwnd) } else if message == Win.WM_LBUTTONUP { ReleaseCapture() }
+            return
+        }
         if menu != nil {
             menuMouse(message, x: x, y: y)
             return
@@ -3712,6 +3733,33 @@ final class TerminalWindow {
             Self.drawBand(UIRect(x: editor.x, y: editor.maxY, width: editor.width, height: split.bandHeight), vertical: false, on: target, scale: scale,
                           active: draggingEditorLine === pane)
         }
+    }
+
+    // MARK: - Files changed this prompt
+
+    /// The pill and panel over the focused tab's terminal (see PromptChangesPanel).
+    private(set) lazy var promptPanel: PromptChangesPanel = {
+        let p = PromptChangesPanel()
+        p.invalidate = { [weak self] in self?.invalidate() }
+        p.animate = { [weak self] in
+            guard let self else { return }
+            _ = SetTimer(self.hwnd, Self.promptPanelTimer, 16, nil)
+        }
+        p.openFile = { [weak self] pane, path in self?.showFile(path, in: pane) }
+        return p
+    }()
+
+    /// A tab's tracker has news: the pill and panel show it.
+    func promptChangesChanged(_ pane: TerminalPane) {
+        promptPanel.trackerChanged(pane.promptChanges)
+        invalidate()
+    }
+
+    private func drawPromptPanel(on target: Canvas) {
+        guard !panes.isEmpty else { return }
+        let pane = activePane
+        promptPanel.follow(pane)
+        promptPanel.draw(over: pane, area: area(for: pane), canvas: target, scale: scale)
     }
 
     // MARK: - Search in Project Folder
@@ -6208,6 +6256,11 @@ final class TerminalWindow {
         if ![Win.VK_SHIFT, Win.VK_CONTROL, Win.VK_MENU].contains(key) { restartBlink() }
         if dialog != nil { return dialogKey(key) }
         if menu != nil { return menuKey(key) }
+        if promptPanel.expanded, palette == nil {
+            if promptPanel.key(key, ctrl: ctrl, copy: { [weak self] text in self?.activePane.setClipboard(text) }) { return true }
+            // Typing anything else goes to the terminal, and the panel folds.
+            if ![Win.VK_SHIFT, Win.VK_CONTROL, Win.VK_MENU].contains(key) { promptPanel.collapse() }
+        }
         if notices.hasFocusedField {
             let used = notices.key(key, ctrl: ctrl)
             invalidate()

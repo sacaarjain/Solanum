@@ -213,6 +213,56 @@ if let flag = CommandLine.arguments.firstIndex(of: "--numpy"), CommandLine.argum
     exit(canvas.savePNG(to: args[flag + 2]) ? 0 : 1)
 }
 
+// The files-changed pill and panel off screen, from a sample transcript: --prompt-changes <pill.png> <panel.png> [<earlier.png>]
+// (the panel with its file unfolded; then the prompt before, with new files).
+if let flag = CommandLine.arguments.firstIndex(of: "--prompt-changes"), CommandLine.arguments.indices.contains(flag + 2) {
+    let args = CommandLine.arguments
+    let folder = #"C:\work\site"#, file = folder + #"\qa\lib\behaviors\outside-changes.js"#
+    func line(_ j: [String: Any]) -> String { String(decoding: try! JSONSerialization.data(withJSONObject: j), as: UTF8.self) }
+    let patch: [[String: Any]] = [["oldStart": 7, "oldLines": 8, "newStart": 7, "newLines": 11, "lines": [
+        " async function expectPlaces(ctx, { cover, slide }) {", "   const { page, params, state, problem } = ctx;", "   for (const place of state.places) {",
+        "-    await expect.poll(() => params.covered(page, place), { message: `${place} never covered`, timeout: 4000 }).toBe(true);",
+        "-      problem(`${place}: ${cover ? \"no RESCANNING cover\" : \"a cover\"}`);",
+        "+    try {", "+      await expect.poll(() => params.covered(page, place), { message: `${place} never covered`, timeout: 4000 }).toBe(true);",
+        "+    } catch {", "+      problem(`${place}: ${cover ? \"no RESCANNING cover\" : \"a cover\"}`);", "+    }",
+        "     if (slide) {", "       const now = await params.slideIn(page, place);", "       if (now !== slide) problem(`${place} shows ${now}, wanted ${slide}`);"]]]
+    let transcript = [
+        line(["type": "user", "promptId": "p1", "message": ["content": "yes"]]),
+        line(["type": "user", "promptId": "p1", "toolUseResult": ["type": "create", "filePath": folder + #"\.claude\skills\bug-to-check\SKILL.md"#, "content": String(repeating: "a line\n", count: 23)]]),
+        line(["type": "user", "promptId": "p1", "toolUseResult": ["type": "create", "filePath": folder + #"\.claude\skills\verify-ui\SKILL.md"#, "content": String(repeating: "a line\n", count: 22)]]),
+        line(["type": "user", "promptId": "p2", "message": ["content": "let's answer as we reach them. continue w 1 and 2"]]),
+        line(["type": "user", "promptId": "p2", "toolUseResult": ["filePath": file, "structuredPatch": patch]]),
+    ].joined(separator: "\n") + "\n"
+    let path = WindowsPath.join(NSTemporaryDirectory(), "solanum-prompt-changes-\(ProcessInfo.processInfo.processIdentifier).jsonl")
+    try? transcript.write(toFile: path, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let tracker = PromptChangesTracker()
+    tracker.follow(transcript: path, cwd: folder)
+    for _ in 0..<100 where tracker.entries.count < 2 { Thread.sleep(forTimeInterval: 0.02) }
+    let scale: Float = 1.5
+    func draw(_ png: String, width: Int, height: Int, expand: Bool, open: [String], step: Int = 0) -> Bool {
+        guard let canvas = Canvas(width: width, height: height, fontPixels: 15 * scale) else { return false }
+        let panel = PromptChangesPanel()
+        panel.testTracker = tracker
+        if step != 0 {
+            guard sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return false }
+            panel.drawForTest(area: UIRect(x: 0, y: 0, width: Float(width), height: Float(height)), canvas: canvas, scale: scale, expand: true)
+            _ = sol_canvas_end(canvas.raw)
+            panel.step(step)
+        }
+        for _ in 0..<2 {
+            guard sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return false }
+            panel.drawForTest(area: UIRect(x: 0, y: 0, width: Float(width), height: Float(height)), canvas: canvas, scale: scale, expand: expand, open: open)
+            guard sol_canvas_end(canvas.raw) >= 0 else { return false }
+        }
+        return canvas.savePNG(to: png)
+    }
+    var ok = draw(args[flag + 1], width: 420, height: 90, expand: false, open: [])
+    ok = draw(args[flag + 2], width: 1100, height: 760, expand: true, open: ["qa/lib/behaviors/outside-changes.js"]) && ok
+    if args.indices.contains(flag + 3) { ok = draw(args[flag + 3], width: 1100, height: 480, expand: true, open: [], step: -1) && ok }
+    exit(ok ? 0 : 1)
+}
+
 // A Markdown file's preview, as its page shows it: --draw-markdown <file.md> <png> [width]
 if let flag = CommandLine.arguments.firstIndex(of: "--draw-markdown"), CommandLine.arguments.indices.contains(flag + 2) {
     let args = CommandLine.arguments, width = args.indices.contains(flag + 3) ? Int(args[flag + 3]) ?? 900 : 900, height = 700

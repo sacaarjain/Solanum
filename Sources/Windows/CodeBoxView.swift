@@ -10,6 +10,25 @@ struct CodeBoxView {
     /// The absolute line at the top of the screen.
     let top: Int
     let scale: Float
+    /// With lines hidden on screen (collapsed output, Claude's edit diffs): the row each line is on, nil for one that's
+    /// hidden; and the line on the bottom row. Without, rows count down from `top`.
+    var rowOf: ((Int) -> Int?)? = nil
+    var bottom: Int? = nil
+
+    /// The rows lines `first` through `last` take on screen, nil when none of them shows.
+    private func rows(_ first: Int, _ last: Int) -> (Int, Int)? {
+        guard let rowOf else {
+            let r0 = max(first - top, 0), r1 = min(last - top, terminal.rows - 1)
+            return r0 <= r1 ? (r0, r1) : nil
+        }
+        var lo = Int.max, hi = Int.min
+        for a in first...max(first, last) {
+            guard let r = rowOf(a), r >= 0, r < terminal.rows else { continue }
+            lo = min(lo, r)
+            hi = max(hi, r)
+        }
+        return lo <= hi ? (lo, hi) : nil
+    }
 
     /// A tinted, outlined panel behind each code block (tables already have their own border, quotes their bar).
     /// Where the panels end on the right: just past the last column of text, and well clear of the window's edge.
@@ -24,13 +43,12 @@ struct CodeBoxView {
     /// as the code boxes have. Returns the lines whose grey the renderer shouldn't paint (see TerminalRenderer).
     func drawPromptBands() -> [Int: UInt32] {
         // From a little above the screen, so a prompt that starts above it is still known as one.
-        let bands = PromptBands.find({ terminal.line(abs: $0) }, from: max(top - 40, 0), through: top + terminal.rows - 1)
+        let bands = PromptBands.find({ terminal.line(abs: $0) }, from: max(top - 40, 0), through: bottom ?? top + terminal.rows - 1)
         var plain: [Int: UInt32] = [:]
         let m = canvas.metrics, s = scale, c = canvas.raw, accent = TerminalPalette.accent
         for b in bands {
             for a in b.first...b.last { plain[a] = b.bg }
-            let r0 = max(b.first - top, 0), r1 = min(b.last - top, terminal.rows - 1)
-            guard r0 <= r1 else { continue }
+            guard let (r0, r1) = rows(b.first, b.last) else { continue }
             let x = max(2 * s, canvas.contentX - 6 * s), right = canvas.contentX + Float(terminal.cols) * m.cellWidth + 4 * s
             let y = canvas.contentY + Float(r0) * m.cellHeight - 2 * s, h = Float(r1 - r0 + 1) * m.cellHeight + 4 * s
             sol_canvas_fill_rounded(c, x, y, right - x, h, 8 * s, accent, TerminalPalette.isDark ? 0.10 : 0.08)
@@ -44,13 +62,12 @@ struct CodeBoxView {
         let m = canvas.metrics, s = scale, c = canvas.raw, fg = TerminalPalette.foreground
         let right = panelRight
         for b in boxes where b.kind == .code {
-            let r0 = max(b.first - top, 0), r1 = min(b.last - top, terminal.rows - 1)
-            guard r0 <= r1 else { continue }
+            guard let (r0, r1) = rows(b.first, b.last) else { continue }
             var x = max(2 * s, canvas.contentX + Float(b.indent) * m.cellWidth - 9 * s)
             // Keep the edge clear of anything left of the code, such as the "⏺" before a reply's first line.
             var left = -1
-            for r in r0...r1 {
-                guard let l = terminal.line(abs: top + r) else { continue }
+            for a in b.first...max(b.first, b.last) {
+                guard let l = terminal.line(abs: a) else { continue }
                 for col in stride(from: min(b.indent, l.cells.count) - 1, to: left, by: -1) where l.cells[col].ch != 0 && l.cells[col].ch != 0x20 {
                     left = col
                     break
@@ -77,8 +94,8 @@ struct CodeBoxView {
         guard !boxes.isEmpty, !terminal.usingAlt else { return [] }
         let m = canvas.metrics, s = scale
         for (i, b) in boxes.enumerated() {
-            let r = b.first - top, last = min(b.last - top, terminal.rows - 1)
-            guard r >= 0, r < terminal.rows else { continue }
+            guard let r = rowOf.map({ $0(b.first) }) ?? b.first - top, r >= 0, r < terminal.rows,
+                  let (_, last) = rows(b.first, b.last) else { continue }
             let copied = copiedIndex == i, hover = hovered == i
             let text = copied ? "Copied" : b.kind == .table ? "Copy table" : "Copy"
             let size = Self.pillSize(text, copied: copied, canvas: canvas, scale: s)

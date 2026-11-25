@@ -45,6 +45,8 @@ final class AppSettings {
     var audibleBell: Bool { file.bool("audible-bell", false) }
     /// Over a tab running Claude Code, the pill saying what its latest prompt changed (and the chips on prompts' boxes).
     var filesChangedPill: Bool { file.bool("files-changed-pill", true) }
+    /// The diffs Claude Code prints under its edits stay out of the terminal: the files-changed pill shows them.
+    var hideAgentEditDiffs: Bool { file.bool("hide-agent-edit-diffs", true) }
     /// In each window's focused terminal, the pill saying how many agents run in Solanum, listing their tabs.
     var agentsPill: Bool { file.bool("agents-pill", true) }
     var boldIsBright: Bool { file.bool("bold-is-bright", false) }
