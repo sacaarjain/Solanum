@@ -1875,8 +1875,25 @@ enum WindowSelfTest {
                           done: { window.leftPinned != nil && window.leftTree.root == pinnedRoot }))
         steps.append(Step(name: "per tab: and the other still isn't", action: { window.selectTab(window.activeIndex + 1) },
                           done: { window.leftPinned == nil }))
+        steps.append(Step(name: "per tab: the pin is saved with its tab, shown or not", action: {}, done: {
+            let tabs = window.sessionForTest.tabs
+            // The pinned tab is just before the one showing, which isn't pinned.
+            let i = window.activeIndex
+            return i > 0 && tabs.count > i && tabs[i - 1].pinned == pinnedRoot && pinnedRoot != nil && tabs[i].pinned == nil
+        }))
         steps.append(Step(name: "per tab: closing it returns to the pinned one", action: { press(0x57) },
                           done: { window.leftPinned != nil && window.leftTree.root == pinnedRoot && window.panes.count == 2 }))
+        steps.append(Step(name: "per tab: and the pin is saved while it shows", action: {},
+                          done: { window.sessionForTest.tabs.contains { $0.pinned == pinnedRoot } }))
+        // A saved tab pinned to a folder comes back pinned there.
+        steps.append(Step(name: "per tab: a restored tab comes back pinned", action: {
+            var session = window.sessionForTest
+            session.tabs = [SavedSession.Tab(folder: pane.terminal.cwd, title: "restored", column: 0, text: "", pinned: pinnedRoot)]
+            session.groups = []
+            session.active = window.panes.count
+            window.restoreForTest(session)
+        }, done: { window.panes.count == 3 && window.activePane.customTitle == "restored" && window.leftPinned == pinnedRoot && window.leftTree.root == pinnedRoot }))
+        steps.append(Step(name: "per tab: and it closes", action: { press(0x57) }, done: { window.panes.count == 2 }))
         steps.append(Step(name: "per tab: unpinned", action: { window.click(window.leftButton(.pin)) }, done: { window.leftPinned == nil }))
         // Dragging tabs.
         steps.append(Step(name: "drag: a third tab to move", action: { window.newTab() }, done: { window.panes.count == 3 && pane.atPrompt }))

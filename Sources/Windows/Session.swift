@@ -30,6 +30,8 @@ struct SavedSession: Codable {
         var shell: String?
         /// Its own command history's file (see TerminalPane.historyID), so ↑ there gives what ran there.
         var history: String?
+        /// The folder its sidebar was pinned to, on this PC: it comes back pinned there.
+        var pinned: String?
     }
     struct Page: Codable {
         var path: String

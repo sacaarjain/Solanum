@@ -3114,6 +3114,10 @@ final class TerminalWindow {
                                        resume: pane.resumeCommand ?? pane.resumeOnShow)
             if let shell = pane.shell, shell != Shells.defaultShell { tab.shell = shell.id }
             tab.history = pane.historyID
+            // Its sidebar's pin: the sidebar's own for the tab it's showing, else what the tab kept (a host's isn't kept: the
+            // tab comes back on this PC).
+            let pinned = pane === leftOwner ? left.pinned : pane.sidebarPlace?.pinned
+            if let pinned, !AnyPath.isUnix(pinned) { tab.pinned = pinned }
             // Its files on this PC, and their previews, and the Extensions page, as on the Mac (an ssh host's, and git's
             // pages, aren't kept).
             var pages: [SavedSession.Page] = [], active: Int?
@@ -3170,6 +3174,12 @@ final class TerminalWindow {
             guard addPane(cwd: folder, restoring: tab.text, column: tab.column, shell: Shells.option(tab.shell), history: tab.history) else { continue }
             panes.last?.customTitle = tab.title
             panes.last?.resumeOnShow = tab.resume
+            // Pinned to a folder that's still there: the sidebar comes back on it.
+            var isFolder: ObjCBool = false
+            if let pinned = tab.pinned, let restored = panes.last, FileManager.default.fileExists(atPath: pinned, isDirectory: &isFolder), isFolder.boolValue {
+                restored.sidebarPlace = SidebarPlace(tree: FileTree.Place(root: pinned), pinned: pinned, followed: nil)
+                if restored === leftOwner { restoreSidebarPlace(from: restored) }
+            }
             panes.last?.group = tab.group.flatMap { groups.indices.contains($0) ? groups[$0] : nil }
             // Its files come back above its terminal, those that are still there, the one that was showing showing; a
             // file tab comes back as one.
@@ -6617,6 +6627,9 @@ final class TerminalWindow {
     var rightIsVisible: Bool { rightIsShowing }
     var leftIsVisible: Bool { left.isVisible }
     var leftPinned: String? { left.pinned }
+    /// For tests: the session as it would be saved, and a saved one brought back in this window.
+    var sessionForTest: SavedSession { currentSession() }
+    func restoreForTest(_ session: SavedSession) { restore(session) }
     var leftHasFocus: Bool { left.isFocused }
     var leftWidthNow: Float { layout.leftWidth }
 
