@@ -80,6 +80,8 @@ final class TerminalPane: TerminalDelegate, Groupable {
     var group: TabGroup?
     /// What each prompt sent to Claude Code here changed (see PromptChangesTracker), for the files-changed pill.
     let promptChanges = PromptChangesTracker()
+    /// News from the agent here you haven't seen (see AgentsRunning): it finished, or is asking you something.
+    var agentNote: AgentsRunning.Note?
     private var promptChangesTickedAt = Date.distantPast
     /// A name given to the tab, in place of the one it would have.
     var customTitle: String?
@@ -719,6 +721,10 @@ final class TerminalPane: TerminalDelegate, Groupable {
                 guard let self else { return }
                 let prompt = (exchange?.prompt ?? onScreen).map { ClaudeTranscript.summary($0, limit: 80) }
                 let reply = exchange?.reply.map { ClaudeTranscript.summary($0) }
+                // The agents pill says it, in place of the corner card, when there's one to say it.
+                if AgentsRunning.shared.announce(AgentsRunning.Note(status: waiting ? .waiting : .done, prompt: prompt, reply: reply, worked: worked), from: self) {
+                    return
+                }
                 TerminalWindow.postNotice(NoticeRules.agentStopped(agent: name, waiting: waiting, worked: worked, prompt: prompt, place: place, reply: reply),
                                           about: self)
             }

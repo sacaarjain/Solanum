@@ -8,6 +8,9 @@ import WinSDK
 final class TerminalWindow {
     private static let className = wide("SolanumTerminalWindow")
     private static var windows: [HWND: TerminalWindow] = [:]
+    /// Every window, in a steady order (for the agents pill's "window 2").
+    static var allWindows: [TerminalWindow] { windows.sorted { UInt(bitPattern: $0.key) < UInt(bitPattern: $1.key) }.map(\.value) }
+    var allPanes: [TerminalPane] { panes }
     /// Runs work on a Solanum window's thread (the one all windows share), from another thread: for Settings, which has
     /// no queue of its own. With no window open it runs straight away.
     static func onAnyWindowThread(_ work: @escaping () -> Void) {
@@ -1229,6 +1232,7 @@ final class TerminalWindow {
         guard sol_canvas_begin(bitmap.raw, TerminalPalette.background) >= 0 else { return false }
         chrome(on: bitmap, layout: layout).draw()
         for pane in visiblePanes { drawColumn(pane, on: bitmap, snapshot: true) }
+        drawPromptPanel(on: bitmap)
         drawSidebars(on: bitmap, layout: layout)
         drawCards(on: bitmap)
         drawSplitDrop(on: bitmap)
@@ -1360,7 +1364,8 @@ final class TerminalWindow {
                 if !TerminalPalette.stepFade() { KillTimer(hwnd, Self.themeTimer) }
                 invalidate()
             } else if wParam == WPARAM(Self.promptPanelTimer) {
-                if !promptPanel.tick() { KillTimer(hwnd, Self.promptPanelTimer) }
+                let more = promptPanel.tick()
+                if !agentsPill.tick() && !more { KillTimer(hwnd, Self.promptPanelTimer) }
                 invalidate()
             } else if wParam == WPARAM(Self.readingTimer) {
                 readingTick()
@@ -1379,6 +1384,11 @@ final class TerminalWindow {
                 // An agent starting, stopping or changing what it's doing shows on its tab.
                 if panes.map({ $0.tick() }).contains(true) { invalidate() }
                 if notices.tick() { invalidate() }
+                AgentsRunning.shared.refresh()
+                if AgentsRunning.shared.signature != agentsShownSignature {
+                    agentsShownSignature = AgentsRunning.shared.signature
+                    invalidate()
+                }
                 for pane in visiblePanes { pane.panel?.tick() }
                 // Files open in tabs or sub-tabs not showing keep up with the disk too (on this PC; ssh ones catch up when shown).
                 for pane in panes {
@@ -1486,7 +1496,8 @@ final class TerminalWindow {
             let part = layout.part(atX: x, y: y)
             let notch = Float(Int16(truncatingIfNeeded: (wParam >> 16) & 0xFFFF)) / Float(Win.WHEEL_DELTA)
             if menu == nil, palette == nil,
-               promptPanel.wheel(x: x, y: y, delta: notch * 60 * scale, sideways: isDown(Win.VK_SHIFT), cellWidth: canvas.metrics.cellWidth) {
+               agentsPill.wheel(x: x, y: y, delta: notch * 60 * scale)
+                || promptPanel.wheel(x: x, y: y, delta: notch * 60 * scale, sideways: isDown(Win.VK_SHIFT), cellWidth: canvas.metrics.cellWidth) {
                 return 0
             }
             if let menu {
@@ -1609,7 +1620,7 @@ final class TerminalWindow {
             SetCursor(LoadCursorW(nil, hand ? Win.handCursor : Win.arrowCursor))
             return 1
         }
-        if menu == nil, palette == nil, let hand = promptPanel.wantsHand(x: px, y: py) {
+        if menu == nil, palette == nil, let hand = agentsPill.wantsHand(x: px, y: py) ?? promptPanel.wantsHand(x: px, y: py) {
             SetCursor(LoadCursorW(nil, hand ? Win.handCursor : Win.arrowCursor))
             return 1
         }
@@ -2033,6 +2044,10 @@ final class TerminalWindow {
             return
         }
         if CornerNoticeStack.changed { invalidate() }
+        if menu == nil, palette == nil, dialog == nil, agentsPill.mouse(message, x: x, y: y) {
+            if message == Win.WM_LBUTTONDOWN { SetCapture(hwnd) } else if message == Win.WM_LBUTTONUP { ReleaseCapture() }
+            return
+        }
         if menu == nil, palette == nil, dialog == nil, promptPanel.mouse(message, x: x, y: y) {
             if message == Win.WM_LBUTTONDOWN { SetCapture(hwnd) } else if message == Win.WM_LBUTTONUP { ReleaseCapture() }
             return
@@ -3746,6 +3761,7 @@ final class TerminalWindow {
             _ = SetTimer(self.hwnd, Self.promptPanelTimer, 16, nil)
         }
         p.openFile = { [weak self] pane, path in self?.showFile(path, in: pane) }
+        p.onExpand = { [weak self] in self?.agentsPill.collapse(animated: false) }
         return p
     }()
 
@@ -3757,9 +3773,41 @@ final class TerminalWindow {
 
     private func drawPromptPanel(on target: Canvas) {
         guard !panes.isEmpty else { return }
-        let pane = activePane
+        let pane = activePane, terminal = area(for: pane)
+        // The agents pill, top right of the focused terminal; its files-changed pill under it.
+        agentsPill.follow(showsAgentsPill ? pane : nil)
+        let agentsShown = showsAgentsPill && !AgentsRunning.shared.entries.isEmpty
+        promptPanel.below = agentsShown ? agentsPill.pillFrame(in: terminal, PanelPaint(canvas: target, scale: scale)).maxY - terminal.y - 2 * scale : 0
         promptPanel.follow(pane)
-        promptPanel.draw(over: pane, area: area(for: pane), canvas: target, scale: scale)
+        promptPanel.draw(over: pane, area: terminal, canvas: target, scale: scale)
+        if agentsShown || agentsPill.isAnimating { agentsPill.draw(over: pane, area: terminal, canvas: target, scale: scale) }
+    }
+
+    // MARK: - Agents running
+
+    /// Over the focused terminal: the pill on in Settings, and the tab showing its terminal.
+    var showsAgentsPill: Bool {
+        AppSettings.shared.agentsPill && !panes.isEmpty && (activePane.showsTerminal || activePane.editors.isEmpty)
+    }
+
+    private(set) lazy var agentsPill: AgentsPill = {
+        let p = AgentsPill()
+        p.invalidate = { [weak self] in self?.invalidate() }
+        p.animate = { [weak self] in
+            guard let self else { return }
+            _ = SetTimer(self.hwnd, Self.promptPanelTimer, 16, nil)
+        }
+        p.onExpand = { [weak self] in self?.promptPanel.collapse(animated: false) }
+        return p
+    }()
+
+    /// What the agents pills show, as this window last drew it.
+    private var agentsShownSignature = ""
+
+    /// The agents or their news changed: drawn again.
+    func agentsChanged() {
+        agentsShownSignature = ""
+        invalidate()
     }
 
     // MARK: - Search in Project Folder
@@ -6256,6 +6304,10 @@ final class TerminalWindow {
         if ![Win.VK_SHIFT, Win.VK_CONTROL, Win.VK_MENU].contains(key) { restartBlink() }
         if dialog != nil { return dialogKey(key) }
         if menu != nil { return menuKey(key) }
+        if agentsPill.expanded, palette == nil {
+            if agentsPill.key(key) { return true }
+            if ![Win.VK_SHIFT, Win.VK_CONTROL, Win.VK_MENU].contains(key) { agentsPill.collapse() }
+        }
         if promptPanel.expanded, palette == nil {
             if promptPanel.key(key, ctrl: ctrl, copy: { [weak self] text in self?.activePane.setClipboard(text) }) { return true }
             // Typing anything else goes to the terminal, and the panel folds.

@@ -2075,6 +2075,31 @@ enum WindowSelfTest {
                 window.click(r)
             }
         }, done: { !window.isMenuOpen && window.activePane === chatPane && window.sendTargetPane == nil }))
+        // The agents pill, over the focused terminal while an agent runs anywhere (the stand-in Claude Code here).
+        steps.append(Step(name: "agents: the pill shows while one runs", action: { window.agentsChanged() }, done: {
+            AgentsRunning.shared.entries.count == 1 && window.agentsPill.testRect("agents") != nil
+                && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\agents-pill.png") } ?? true)
+        }))
+        steps.append(Step(name: "agents: clicking it opens the list of tabs running one", action: {
+            if let r = window.agentsPill.testRect("agents") { window.click(r) }
+        }, done: {
+            window.agentsPill.expanded && window.agentsPill.testRect("agent.0") != nil
+                && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\agents-list.png") } ?? true)
+        }))
+        steps.append(Step(name: "agents: Esc closes it", action: { _ = window.keyDown(Win.VK_ESCAPE, shift: false, ctrl: false, alt: false) },
+                          done: { !window.agentsPill.expanded }))
+        steps.append(Step(name: "agents: news from a tab you're not watching, in the pill", action: {
+            window.selectTab(sendingIndex)
+            if let chatPane {
+                _ = AgentsRunning.shared.announce(AgentsRunning.Note(status: .done, prompt: "fix the failing tests", reply: "All 12 pass now.", worked: 263), from: chatPane)
+            }
+        }, done: {
+            AgentsRunning.shared.announcing != nil && AgentsRunning.shared.unseen == 1 && window.agentsPill.testRect("agents") != nil
+                && (snapshotDirectory.map { window.saveSnapshot(to: $0 + "\\agents-news.png") } ?? true)
+        }))
+        steps.append(Step(name: "agents: clicking the news goes to that tab, and it's seen", action: {
+            if let r = window.agentsPill.testRect("agents") { window.click(r) }
+        }, done: { window.activePane === chatPane && chatPane?.agentNote == nil && AgentsRunning.shared.unseen == 0 }))
         steps.append(Step(name: "chat: and closes", action: {
             chatPane?.type("\u{03}")
             if let i = window.panes.firstIndex(where: { $0 === chatPane }) { window.closeTab(i) }

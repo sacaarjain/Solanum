@@ -121,8 +121,11 @@ final class PromptChangesPanel {
 
     var isAnimating: Bool { morph != nil || !moving.isEmpty }
 
+    var onExpand: () -> Void = {}
+
     func expand(keeping: Bool = false) {
         guard !expanded, let pane, shows(over: pane) else { return }
+        onExpand()
         expanded = true
         if !keeping { showing = .following }
         changed()
@@ -281,7 +284,7 @@ final class PromptChangesPanel {
     private var diffAreas: [(path: String, rect: UIRect)] = []
 
     /// The strip down the terminal's right that its scrollbar takes: the pill and panel end where it starts.
-    private static let barStrip: Float = 14
+    static let barStrip: Float = 14
 
     private func pillWidth(_ p: PanelPaint) -> Float {
         let c = counts
@@ -297,17 +300,20 @@ final class PromptChangesPanel {
         return ("+\(f.map(\.added).reduce(0, +))", "−\(f.map(\.removed).reduce(0, +))")
     }
 
+    /// How far down the terminal the pill starts: under the window's agents pill when that's over the same terminal.
+    var below: Float = 0
+
     func pillFrame(in area: UIRect, _ p: PanelPaint) -> UIRect {
-        let s = p.scale, inset = 10 * s, right = Self.barStrip * s
+        let s = p.scale, inset = 10 * s + below, right = Self.barStrip * s
         let w = min(pillWidth(p), area.width - inset - right)
         return UIRect(x: (area.maxX - w - right).rounded(), y: (area.y + inset).rounded(), width: w.rounded(), height: (Self.pillHeight * s).rounded())
     }
 
     private func panelFrame(in area: UIRect, _ p: PanelPaint) -> UIRect {
-        let s = p.scale, inset = 10 * s, right = Self.barStrip * s
+        let s = p.scale, inset = 10 * s + below, right = Self.barStrip * s
         let w = min(560 * s, max(320 * s, area.width * 0.5), area.width - inset - right)
         let content = render(p, width: w, top: 0, measuring: true)
-        let h = max(120 * s, min(content, area.height - inset * 2))
+        let h = max(120 * s, min(content, area.height - inset - 10 * s))
         return UIRect(x: (area.maxX - w - right).rounded(), y: (area.y + inset).rounded(), width: w.rounded(), height: h.rounded())
     }
 
@@ -391,7 +397,9 @@ final class PromptChangesPanel {
 
     /// A frosted card as the Mac's FrostedCard: the window's glass under a tint between the theme's background and its
     /// raised surface, a hairline edge, and a soft shadow falling below it.
-    private func card(_ p: PanelPaint, _ r: UIRect) {
+    private func card(_ p: PanelPaint, _ r: UIRect) { Self.card(p, r) }
+
+    static func card(_ p: PanelPaint, _ r: UIRect) {
         let c = p.canvas.raw, s = p.scale, radius = Self.radius * s, dark = TerminalPalette.isDark
         let shadow: Float = dark ? 0.45 : 0.22
         for (grow, alpha) in [(Float(22), Float(0.05)), (16, 0.07), (10, 0.1), (5, 0.14), (2, 0.2)] {
