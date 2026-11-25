@@ -59,8 +59,10 @@ final class NumpyViewer {
     private var plotRect = UIRect(x: 0, y: 0, width: 0, height: 0)
     private var histRect = UIRect(x: 0, y: 0, width: 0, height: 0)
     private var gridLayout: (rect: UIRect, header: Float, column: Float, row: Float, rows: Int, cols: Int)?
-    /// The heatmap drawn, by canvas, and what it was drawn from.
-    private var images: [OpaquePointer: (id: Int32, key: String)] = [:]
+    /// The heatmap drawn, by canvas, and what it was drawn from. The canvas is held weakly: a window's snapshot draws on
+    /// one that's gone a moment later, and its image is gone with it (freeing it then, on the gone canvas, corrupted
+    /// memory and took the whole program down when the file closed).
+    private var images: [ObjectIdentifier: (canvas: WeakCanvas, id: Int32, key: String)] = [:]
     /// The line plot's points for its window and width.
     private var series: (key: String, points: [Float], low: Double, high: Double)?
     private var lastScale: Float = 1
@@ -75,7 +77,7 @@ final class NumpyViewer {
     }
 
     deinit {
-        for (raw, image) in images { sol_canvas_free_image(raw, image.id) }
+        for image in images.values { if let c = image.canvas.canvas { sol_canvas_free_image(c.raw, image.id) } }
     }
 
     // MARK: The array shown
@@ -551,7 +553,9 @@ final class NumpyViewer {
         // Drawn at the screen's own pixels (no blur when zoomed in), at most 2048 a side.
         let iw = min(Int(w), 2048), ih = min(Int(h), 2048)
         let key = "\(selected)|\(st.index)|\(v)|\(st.lo)|\(st.hi)|\(st.log)|\(st.map.name)|\(iw)x\(ih)|\(st.mode)"
-        var known = images[p.canvas.raw]
+        // Only this canvas's own (another, gone, may have had its address).
+        images = images.filter { $0.value.canvas.canvas != nil }
+        var known = images[ObjectIdentifier(p.canvas)].flatMap { $0.canvas.canvas === p.canvas ? $0 : nil }
         if known?.key != key {
             if let old = known { sol_canvas_free_image(p.canvas.raw, old.id) }
             let rgba: [UInt8]
@@ -569,8 +573,8 @@ final class NumpyViewer {
                                            lo: st.lo, hi: st.hi, log: st.log, map: st.map, value: sl.value)
             }
             let id = rgba.withUnsafeBufferPointer { sol_canvas_load_rgba(p.canvas.raw, $0.baseAddress, Int32(iw), Int32(ih), 0xFFFF_FFFF) }
-            known = (id, key)
-            images[p.canvas.raw] = known
+            known = (WeakCanvas(p.canvas), id, key)
+            images[ObjectIdentifier(p.canvas)] = known
         }
         if let known, known.id >= 0 { sol_canvas_draw_image(p.canvas.raw, known.id, rect.x, rect.y, rect.width, rect.height, 1) }
         sol_canvas_stroke_rounded(p.canvas.raw, rect.x - 0.5, rect.y - 0.5, rect.width + 1, rect.height + 1, 0, p.fg, 0.15, 1)
@@ -1035,4 +1039,10 @@ final class NumpyViewer {
         let r = gridLayout?.rect ?? plotRect
         pointer = (r.x + r.width * 0.4, r.y + r.height * 0.4)
     }
+}
+
+/// A canvas held without keeping it alive.
+final class WeakCanvas {
+    weak var canvas: Canvas?
+    init(_ canvas: Canvas) { self.canvas = canvas }
 }

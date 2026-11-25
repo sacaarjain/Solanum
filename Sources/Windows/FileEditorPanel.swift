@@ -111,7 +111,15 @@ final class FileEditorPanel: ColumnPanel {
     private var pendingLine: Int?
     /// Said for a moment in the header: "Saved", or what went wrong.
     private var note: (text: String, problem: Bool, at: Date)?
-    private var images: [OpaquePointer: (id: Int32, width: Int32, height: Int32)] = [:]
+    /// The picture shown, by canvas, the canvas held weakly (see NumpyViewer's `images`: a snapshot's is gone a moment
+    /// after it's drawn on, and freeing its image then corrupted memory).
+    private var images: [ObjectIdentifier: (canvas: WeakCanvas, id: Int32, width: Int32, height: Int32)] = [:]
+
+    /// Lets go of the pictures, on the canvases still there.
+    private func freeImages() {
+        for i in images.values { if let c = i.canvas.canvas { sol_canvas_free_image(c.raw, i.id) } }
+        images = [:]
+    }
     /// Syntax colors for JSON, YAML, XML and source files (SyntaxScanner, shared with the Mac): for each line, a color for each cell
     /// as drawn (a tab's four), or none for plain text; worked out again after each edit.
     private var lineColors: [[UInt32]] = []
@@ -371,7 +379,7 @@ final class FileEditorPanel: ColumnPanel {
     }
 
     deinit {
-        for (raw, image) in images { sol_canvas_free_image(raw, image.id) }
+        freeImages()
         if let formatsObserver { NotificationCenter.default.removeObserver(formatsObserver) }
     }
 
@@ -434,8 +442,7 @@ final class FileEditorPanel: ColumnPanel {
                     self.loadNumpy(data, cut: cut)
                 } else if image {
                     if case .image(let old) = self.content, old == data { return }
-                    for (raw, i) in self.images { sol_canvas_free_image(raw, i.id) }
-                    self.images = [:]
+                    self.freeImages()
                     self.content = .image(data)
                 } else {
                     guard data != self.original || self.content == .loading else { return }
@@ -1491,13 +1498,14 @@ final class FileEditorPanel: ColumnPanel {
     }
 
     private func drawImage(_ data: Data, on canvas: Canvas, in b: UIRect, _ p: PanelPaint, _ s: Float) {
-        var image = images[canvas.raw]
+        images = images.filter { $0.value.canvas.canvas != nil }
+        var image = images[ObjectIdentifier(canvas)].flatMap { $0.canvas.canvas === canvas ? (id: $0.id, width: $0.width, height: $0.height) : nil }
         if image == nil {
             let id = data.withUnsafeBytes { sol_canvas_load_image(canvas.raw, $0.bindMemory(to: UInt8.self).baseAddress, Int32($0.count)) }
             var w: Int32 = 0, h: Int32 = 0
             sol_canvas_image_size(canvas.raw, id, &w, &h)
             image = (id, w, h)
-            images[canvas.raw] = image
+            images[ObjectIdentifier(canvas)] = (WeakCanvas(canvas), id, w, h)
         }
         guard let image, image.id >= 0, image.width > 0, image.height > 0 else {
             p.label("Windows can't read this image.", UIRect(x: b.x + 16 * s, y: b.y + 12 * s, width: b.width - 32 * s, height: 22 * s), alpha: 0.55)
