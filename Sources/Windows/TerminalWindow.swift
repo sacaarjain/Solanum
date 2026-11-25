@@ -914,7 +914,10 @@ final class TerminalWindow {
     /// What a pane shows has changed. Only the one on screen needs drawing.
     func paneChanged(_ pane: TerminalPane) {
         guard panes.indices.contains(activeIndex), visiblePanes.contains(where: { $0 === pane }) else { return }
-        invalidate()
+        // Just its terminal: the rest of the window stays as it was drawn (see `paint`).
+        let a = area(for: pane)
+        var r = RECT(left: LONG(a.x.rounded(.down)), top: LONG(a.y.rounded(.down)), right: LONG(a.maxX.rounded(.up)), bottom: LONG(a.maxY.rounded(.up)))
+        InvalidateRect(hwnd, &r, false)
         // Posted messages outrank painting, so a program printing nonstop would otherwise never be seen.
         if Date().timeIntervalSince(lastDrawn) > 1.0 / 30 { UpdateWindow(hwnd) }
     }
@@ -1085,7 +1088,10 @@ final class TerminalWindow {
         var ps = PAINTSTRUCT()
         _ = BeginPaint(hwnd, &ps)
         defer { EndPaint(hwnd, &ps) }
-        guard !panes.isEmpty, sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
+        guard !panes.isEmpty else { return }
+        // Only a terminal's output has changed: just that terminal is drawn again, with what sits over it.
+        if paintTerminalOnly(ps.rcPaint) { return }
+        guard sol_canvas_begin(canvas.raw, TerminalPalette.background) >= 0 else { return }
         DrawnFields.clear(canvas)
         ScrollBars.clear(canvas)
         defer { updateScrollBarTimer() }
@@ -1110,6 +1116,40 @@ final class TerminalWindow {
         paints += 1
         lastDrawn = Date()
     }
+
+    /// A frame for one terminal (`dirty` within it) while nothing else floats over it: the terminal, its pills, the cards'
+    /// edges and the corner cards, inside it only; the rest of the window as the last frame left it. False when the whole
+    /// window needs drawing (something else changed too, or it's the first frame, or the graphics device was lost).
+    private func paintTerminalOnly(_ dirty: RECT) -> Bool {
+        let d = UIRect(x: Float(dirty.left), y: Float(dirty.top), width: Float(dirty.right - dirty.left), height: Float(dirty.bottom - dirty.top))
+        guard paints > 0, d.width > 0, d.height > 0, menu == nil, palette == nil, dialog == nil, dragGhost == nil, reading == nil,
+              tabSplitTarget == nil, editorDropColumn == nil,
+              let pane = visiblePanes.first(where: { p in
+                  let a = area(for: p)
+                  return d.x >= a.x.rounded(.down) && d.y >= a.y.rounded(.down) && d.maxX <= a.maxX.rounded(.up) && d.maxY <= a.maxY.rounded(.up)
+              }) else { return false }
+        let a = area(for: pane)
+        let region = UIRect(x: a.x.rounded(.down), y: a.y.rounded(.down), width: a.maxX.rounded(.up) - a.x.rounded(.down), height: a.maxY.rounded(.up) - a.y.rounded(.down))
+        guard sol_canvas_begin_region(canvas.raw, TerminalPalette.background, region.x, region.y, region.width, region.height) == 0 else { return false }
+        DrawnFields.clear(canvas, within: region)
+        ScrollBars.clear(canvas, within: region)
+        drawColumn(pane, on: canvas, snapshot: false)
+        if pane === activePane { drawPromptPanel(on: canvas) }
+        drawCards(on: canvas)
+        notices.draw(on: canvas, windowWidth: Float(clientWidth), top: layout.tabBarHeight, scale: scale)
+        let bar = chrome(on: canvas, layout: layout)
+        bar.drawKeepAwakeTip()
+        bar.drawThemeHoverCard()
+        _ = sol_canvas_end(canvas.raw)
+        paints += 1
+        partialPaints += 1
+        lastDrawn = Date()
+        updateScrollBarTimer()
+        return true
+    }
+
+    /// For tests: frames that drew only a terminal.
+    private(set) var partialPaints = 0
 
     /// Where the sidebars, a tab's files and each terminal are drawn as cards, as on the Mac: rounded, outlined, on the
     /// tab bar's color, with gaps between (the bands between columns and between files and terminal are those gaps).

@@ -160,6 +160,11 @@ enum DrawnFields {
     private static var fields: [ObjectIdentifier: [(id: String, rect: UIRect, painter: FieldPainter)]] = [:]
 
     static func clear(_ canvas: Canvas) { fields[ObjectIdentifier(canvas)] = [] }
+
+    /// Only the fields inside `region`, for a frame that redraws just that part.
+    static func clear(_ canvas: Canvas, within region: UIRect) {
+        fields[ObjectIdentifier(canvas)]?.removeAll { $0.rect.x >= region.x && $0.rect.maxX <= region.maxX && $0.rect.y >= region.y && $0.rect.maxY <= region.maxY }
+    }
     static func note(_ id: String, _ rect: UIRect, _ painter: FieldPainter) {
         fields[ObjectIdentifier(painter.canvas), default: []].append((id, rect, painter))
     }

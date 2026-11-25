@@ -69,6 +69,8 @@ struct SolCanvas {
     float opacity = 1;
     /// Whether the window target keeps alpha, which a see-through window needs.
     bool transparent = false;
+    /// A frame begun with `begin_region`: its clip comes off at `end`.
+    bool regionClipped = false;
 
     /// The desktop wallpaper as it lies on the window's monitor, blurred, drawn under the window's own backgrounds so
     /// it shows through them in place of the windows behind (see `sol_canvas_set_wallpaper`). Its size in pixels is
@@ -151,7 +153,8 @@ struct SolCanvas {
         if (hwnd) {
             auto format = transparent ? D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED) : D2D1::PixelFormat();
             auto props = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT, format, 96, 96);
-            auto window = D2D1::HwndRenderTargetProperties(hwnd, D2D1::SizeU(width, height));
+            // Kept through presenting, so a frame can redraw just a part of it (see `begin_region`).
+            auto window = D2D1::HwndRenderTargetProperties(hwnd, D2D1::SizeU(width, height), D2D1_PRESENT_OPTIONS_RETAIN_CONTENTS);
             hr = d2d->CreateHwndRenderTarget(props, window, &windowTarget);
             if (FAILED(hr)) return hr;
             target = windowTarget;
@@ -412,7 +415,26 @@ int32_t sol_canvas_begin(SolCanvas *canvas, uint32_t background) {
     return S_OK;
 }
 
+int32_t sol_canvas_begin_region(SolCanvas *canvas, uint32_t background, float x, float y, float width, float height) {
+    if (!canvas->target || !canvas->windowTarget) return 1;
+    canvas->target->BeginDraw();
+    canvas->target->PushAxisAlignedClip(D2D1::RectF(x, y, x + width, y + height), D2D1_ANTIALIAS_MODE_ALIASED);
+    canvas->regionClipped = true;
+    canvas->target->Clear(color(background, canvas->wallpaper ? 1 : canvas->opacity));
+    if (auto *wall = canvas->wallpaperPaint()) {
+        auto size = canvas->target->GetSize();
+        canvas->target->FillRectangle(D2D1::RectF(0, 0, size.width, size.height), wall);
+        canvas->brush->SetColor(color(background, canvas->opacity));
+        canvas->target->FillRectangle(D2D1::RectF(0, 0, size.width, size.height), canvas->brush.Get());
+    }
+    return 0;
+}
+
 int32_t sol_canvas_end(SolCanvas *canvas) {
+    if (canvas->regionClipped) {
+        canvas->target->PopAxisAlignedClip();
+        canvas->regionClipped = false;
+    }
     HRESULT hr = canvas->target->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
         for (auto &image : canvas->deviceImages) image.Reset();

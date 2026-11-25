@@ -35,6 +35,11 @@ enum ScrollBars {
 
     static func clear(_ canvas: Canvas) { bars[ObjectIdentifier(canvas)] = [] }
 
+    /// Only the bars inside `region`, for a frame that redraws just that part.
+    static func clear(_ canvas: Canvas, within region: UIRect) {
+        bars[ObjectIdentifier(canvas)]?.removeAll { $0.track.x >= region.x && $0.track.maxX <= region.maxX && $0.track.y >= region.y && $0.track.maxY <= region.maxY }
+    }
+
     /// The bar across `track` (the strip along the edge it runs on) for content `total` long, of which `visible` shows,
     /// scrolled `offset` from the start; all in the same units (rows, pixels). Nothing when it all fits. `setOffset`
     /// scrolls it, for dragging.

@@ -46,6 +46,10 @@ void sol_canvas_resize(SolCanvas *canvas, int32_t width, int32_t height);
 /// Returns a negative HRESULT when nothing can be drawn right now; don't draw or call `end` then.
 int32_t sol_canvas_begin(SolCanvas *canvas, uint32_t background);
 int32_t sol_canvas_end(SolCanvas *canvas);
+/// A frame drawn only inside the rectangle, the rest of the window kept as the last frame left it (a terminal's output
+/// redrawn without the window around it). 0 when it began; anything else (no target yet: a first frame, or one after a
+/// lost device) means the whole frame needs drawing, with `begin`.
+int32_t sol_canvas_begin_region(SolCanvas *canvas, uint32_t background, float x, float y, float width, float height);
 
 void sol_canvas_fill_rect(SolCanvas *canvas, float x, float y, float width, float height, uint32_t color, float alpha);
 void sol_canvas_stroke_rect(SolCanvas *canvas, float x, float y, float width, float height, uint32_t color, float thickness);

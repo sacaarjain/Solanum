@@ -858,6 +858,8 @@ enum WindowSelfTest {
                 pane.type("1..60 | % { 'line ' + $_ }")
                 pane.pressEnter()
             }, done: { hasLine("line 60") && pane.terminal.currentBlock?.state == .prompt }),
+            // A terminal's output redraws just that terminal, not the window around it.
+            Step(name: "window: output redraws only its terminal", action: {}, done: { window.partialPaints > 0 }),
             Step(name: "window: shrinks", action: { window.resizeWindow(toCols: 90, rows: 12) },
                  done: { pane.terminal.rows == 12 && !pane.isSettlingResize }),
             Step(name: "window: grows again", action: { window.resizeWindow(toCols: 90, rows: 30) },
