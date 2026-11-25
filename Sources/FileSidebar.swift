@@ -29,6 +29,9 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
     var onShowFile: ((FileSystem, String) -> Void)?
     /// Double-click on a file: open it in a tab of its own (no terminal).
     var onOpenFileInTab: ((FileSystem, String) -> Void)?
+    /// The focused terminal, when it's a shell from `sudo -i -u` on this sidebar's host: files from this Mac dropped
+    /// here go through it (see SudoHandoff), as its user's folders aren't the login's to write.
+    var sudoShell: (() -> TerminalView?)?
     /// "Open Working Tree": the file's uncommitted changes side by side.
     var onOpenDiff: ((FileSystem, String) -> Void)?
     /// "Open Preview": a Markdown file rendered as on the web.
@@ -1540,6 +1543,14 @@ final class FileSidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDeleg
 
     /// Files from Finder: copied (here) or uploaded (ssh).
     private func importFiles(_ localPaths: [String], into dir: String) {
+        if let pane = sudoShell?(), (fs as? RemoteSession) === pane.remote, SudoHandoff.canSend(through: pane) {
+            let activity = beginActivity(Self.describe(localPaths, move: false, into: dir, on: fs))
+            pane.sendToHost(localPaths, into: dir) { [weak self] in
+                self?.endActivity(activity)
+                self?.refreshFolder(dir)
+            }
+            return
+        }
         copyOrMove(localPaths, from: LocalFileSystem.shared, into: dir, move: false)
     }
 

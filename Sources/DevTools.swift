@@ -245,6 +245,13 @@ enum SelfTest {
                       && t.selection.hexString == "#8ED8FF4D", t.background.hexString)
             }
             do {
+                // The agents pill says what they're doing, not just how many.
+                let l = AgentsRunning.label
+                check("agents pill: what they're doing", l([.working] + Array(repeating: .done, count: 7)) == "1 working · 7 done"
+                      && l([.working]) == "1 agent working" && l([.done, .done]) == "2 agents done" && l([.waiting]) == "1 agent needs you"
+                      && l([.waiting, .waiting, .working]) == "2 need you · 1 working", l([.waiting, .waiting, .working]))
+            }
+            do {
                 // Background tasks: the command in Claude Code's wrapper shell, quoting and all; other processes aren't.
                 let wrapper = #"source /Users/me/.claude/shell-snapshots/snapshot-bash-1-x.sh 2>/dev/null || true && \builtin shopt -u extglob 2>/dev/null || true && eval 'ps -o command= -p $$ | tr '"'"'&'"'"' '"'"'\n'"'"' | grep -n "eval"' < /dev/null && pwd -P >| /tmp/claude-22db-cwd"#
                 let cmd = AgentTasks.command(fromWrapper: ["/bin/bash", "-c", wrapper])

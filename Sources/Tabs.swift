@@ -2297,6 +2297,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             sidebar.onOpenDiff = { fs, path in column()?.activeTab?.openFile(fs, path, mode: .diff) }
             sidebar.onOpenPreview = { fs, path in column()?.activeTab?.openFile(fs, path, mode: .preview) }
             sidebar.onSearchFolder = { [weak self] fs, path in self?.searchFolder(fs: fs, path, in: column()) }
+            sidebar.sudoShell = {
+                guard let p = column()?.activeTab?.focusedPane, p.borrowedUser != nil else { return nil }
+                return p
+            }
             sidebar.onOpenFileInTab = { fs, path in
                 guard let c = column() else { return }
                 c.activeTab?.closeEditorJustOpened(path)

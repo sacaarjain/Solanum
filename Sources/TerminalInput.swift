@@ -1069,9 +1069,34 @@ extension TerminalView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty else { return false }
-        send(urls.map { Self.shellEscaped($0.path) }.joined(separator: " ") + " ")
         window?.makeFirstResponder(self)
+        // Files from this Mac dropped on an ssh shell at its prompt go to the host, into the shell's folder, copied there
+        // by the shell itself, so also into a folder of a `sudo -i -u` shell's user (see SudoHandoff). Otherwise
+        // (a program has the terminal, or it's this Mac's shell) their paths are typed.
+        if urls.allSatisfy(\.isFileURL), SudoHandoff.canSend(through: self) {
+            sendToHost(urls.map(\.path), into: nil)
+            return true
+        }
+        send(urls.map { Self.shellEscaped($0.path) }.joined(separator: " ") + " ")
         return true
+    }
+
+    /// Sends files from this Mac to the host, into `dest` (or the shell's folder), through this shell; the status bar
+    /// says so meanwhile, and a corner card if it couldn't.
+    func sendToHost(_ paths: [String], into dest: String?, done: (() -> Void)? = nil) {
+        let what = paths.count == 1 ? "“\((paths[0] as NSString).lastPathComponent)”" : "\(paths.count) items"
+        let who = borrowedUser.map { " for \($0)" } ?? ""
+        let bar = (window?.windowController as? TerminalWindowController)?.rootView.statusBar
+        bar?.setTransfer("Sending \(what) to \(remote?.hostLabel ?? "the host")\(who)…", from: self)
+        let remote = self.remote
+        SudoHandoff.send(paths, through: self, into: dest) { [weak self] error in
+            bar?.setTransfer(nil, from: self ?? NSObject())
+            done?()
+            if let remote { NotificationCenter.default.post(name: .solanumFilesChanged, object: remote, userInfo: ["dirs": [dest ?? self?.browseDirectory ?? "/"]]) }
+            guard let self, let error, let tab = self.tab else { return }
+            _ = self.showCornerNotice(title: "Couldn't send \(what)", symbol: ("exclamationmark.triangle.fill", .systemRed),
+                                      lines: [error.localizedDescription], in: tab)
+        }
     }
 
     // MARK: - Focus

@@ -245,7 +245,16 @@ final class AgentsRunning {
         setNeedsRefresh()
     }
 
-    static func label(_ n: Int) -> String { n == 1 ? "1 agent running" : "\(n) agents running" }
+    /// What they're doing, as the pill and its list say it: "1 needs you · 2 working · 5 done" (what's none left out),
+    /// "1 agent working", "8 agents done". (All of them are running: a done one sits at its prompt, waiting for more.)
+    static func label(_ statuses: [AgentStatus]) -> String {
+        let waiting = statuses.filter { $0 == .waiting }.count
+        let working = statuses.filter { $0 == .working }.count
+        let done = statuses.count - waiting - working
+        let parts = [(waiting, waiting == 1 ? "needs you" : "need you"), (working, "working"), (done, "done")].filter { $0.0 > 0 }
+        if parts.count == 1, let only = parts.first { return "\(only.0) agent\(only.0 == 1 ? "" : "s") \(only.1 == "need you" ? "need you" : only.1)" }
+        return parts.map { "\($0.0) \($0.1)" }.joined(separator: " · ")
+    }
 
     /// Dev aid: what's counted, and where the pills show.
     var devState: String {
@@ -535,7 +544,7 @@ final class AgentsPill: PageCanvas {
     private var entries: [AgentsRunning.Entry] { AgentsRunning.shared.entries }
     private var label: String {
         if let a = AgentsRunning.shared.announcing { return Self.announcement(a.note, a.pane) }
-        return AgentsRunning.label(entries.count)
+        return AgentsRunning.label(entries.map(\.info.status))
     }
     private var badge: String? {
         let n = AgentsRunning.shared.unseen
@@ -699,7 +708,7 @@ final class AgentsListCanvas: PageCanvas {
                 AgentsRunning.shared.resetOrder()
             } + 4
         }
-        text(AgentsRunning.label(list.count), .systemFont(ofSize: 13.5, weight: .bold), th.foreground, x: pad, y: y + 3, width: right - pad - 4)
+        text(AgentsRunning.label(list.map(\.info.status)), .systemFont(ofSize: 13.5, weight: .bold), th.foreground, x: pad, y: y + 3, width: right - pad - 4)
         y += 32
         listTop = y
         let several = Set(list.map(\.window)).count > 1
