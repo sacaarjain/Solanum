@@ -12,6 +12,8 @@ final class RemoteConnection {
     let token = Askpass.makeToken()
     private(set) var state = State.connecting
     private(set) var home: String?
+    /// Who the connection signed in as (a shell on it may since be someone else's, from `sudo -i -u`).
+    private(set) var loginUser: String?
     var onChange: (() -> Void)?
 
     private var child: HiddenProcess?
@@ -79,12 +81,14 @@ final class RemoteConnection {
             self.finish(.failed(said ?? (status == 255 ? "Couldn't connect or sign in." : "The connection closed.")))
         }
         self.child = child
-        run("printf '%s\\n' \"$HOME\"", timeout: 60) { [weak self] text, code in
+        run("printf '%s\\n' \"$HOME\" \"${USER:-$(id -un)}\"", timeout: 60) { [weak self] text, code in
             guard let self else { return }
-            guard let text, code == 0, let home = text.split(separator: "\n").first.map(String.init), !home.isEmpty else {
+            let lines = (text ?? "").split(separator: "\n").map(String.init)
+            guard code == 0, let home = lines.first, !home.isEmpty else {
                 return self.finish(.failed("Couldn't connect or sign in."))
             }
             self.home = home
+            self.loginUser = lines.count > 1 ? lines[1] : nil
             self.set(.ready)
         }
     }

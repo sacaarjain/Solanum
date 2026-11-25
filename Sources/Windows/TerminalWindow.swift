@@ -3375,10 +3375,21 @@ final class TerminalWindow {
     func openFileTab(_ path: String, remote: RemoteConnection? = nil, column: Int, at index: Int? = nil) {
         if AnyPath.isUnix(path) && remote == nil { return fileProblem() }
         let folder = remote == nil ? AnyPath.parent(path) : nil
+        let from = panes.isEmpty ? nil : activePane
         guard addPane(at: index ?? fileTabIndex(column: column), cwd: folder, column: column) else { return }
         let pane = activePane
+        joinGroup(pane, of: from, placed: index)
         showFile(path, in: pane, remote: remote, focus: true)
         becomeFileTab(pane)
+    }
+
+    /// A file opened in a new tab from a tab (a link in it, its sidebar, one of its pages moved out) goes right after that
+    /// tab and joins its group, as on the Mac and in Edge: put there outside the group, it split the group in two.
+    /// (Given a place, the caller sees to the group.)
+    private func joinGroup(_ tab: TerminalPane, of from: TerminalPane?, placed index: Int?) {
+        guard index == nil, let from, let g = from.group, from.column == tab.column,
+              let i = panes.firstIndex(where: { $0 === tab }), i > 0, panes[i - 1] === from else { return }
+        tab.group = g
     }
 
     /// Hides a tab's terminal under its pages, the keyboard with them.
@@ -3415,6 +3426,7 @@ final class TerminalWindow {
         let folder = item.key.hasPrefix("file\nlocal\n") ? AnyPath.parent(String(item.key.dropFirst(11))) : pane.terminal.cwd
         guard addPane(at: index ?? fileTabIndex(column: column), cwd: folder, column: column) else { return }
         let tab = activePane
+        joinGroup(tab, of: pane, placed: index)
         _ = detachEditor(at: i, from: pane)
         openEditor(item, in: tab, focus: true, reload: false)
         becomeFileTab(tab)
@@ -4093,7 +4105,14 @@ final class TerminalWindow {
                         self.showPreview(entry.path, in: self.pane(for: sidebar), remote: self.remoteIfUnix(entry.path, sidebar))
                     }
                 }
-                if !onHost { item("Open in Default App") { [weak self] in self?.onOpenFile(entry.path) } }
+                if !onHost {
+                    item("Open in Default App") { [weak self] in self?.onOpenFile(entry.path) }
+                    item("Open With…") { [weak self] in
+                        guard let self else { return }
+                        // After this menu has closed: the apps' menu opens where it was.
+                        self.runOnWindowThread { self.openMenu(OpenWith.items(for: entry.path, hwnd: self.hwnd), x: x, y: y, above: false) }
+                    }
+                }
             }
             items.append(.separator)
         }
@@ -4502,6 +4521,13 @@ final class TerminalWindow {
         case .terminal(let pane):
             if pane !== activePane, let i = panes.firstIndex(where: { $0 === pane }) { activate(i) }
             focusTerminal()
+            // Files from this PC dropped on an ssh shell at its prompt go to the host, into the shell's folder, copied
+            // there by the shell itself, so also into a folder of a `sudo -i -u` shell's user (see SudoHandoff).
+            // Otherwise (a program has the terminal, or it's this PC's shell) their paths are typed.
+            if !paths.contains(where: AnyPath.isUnix), pane.canSendToHost {
+                sendToHost(paths, through: pane, into: nil)
+                return
+            }
             pane.pasteText(paths.map(shellWord).joined(separator: " ") + " ")
         case .folder(let sidebar, let folder):
             let fromHost = paths.first.map(AnyPath.isUnix) ?? false, toHost = AnyPath.isUnix(folder)
@@ -4515,7 +4541,13 @@ final class TerminalWindow {
                     }
                 }
             case (false, true):
-                upload(paths, into: folder, sidebar)
+                // While a shell from sudo -i -u on that host has the keyboard, through it: its user's folders aren't the
+                // login's to write (see SudoHandoff).
+                if !panes.isEmpty, activePane.borrowedUser != nil, activePane.canSendToHost, activePane.remote === remote(for: sidebar) {
+                    sendToHost(paths, through: activePane, into: folder)
+                } else {
+                    upload(paths, into: folder, sidebar)
+                }
             case (true, false):
                 download(paths, into: folder, sidebar, from: source.flatMap { remote(for: $0) })
             case (true, true):
@@ -4534,6 +4566,26 @@ final class TerminalWindow {
                     self?.afterPaste(cut: false, folders: [folder] + paths.compactMap(AnyPath.parent))
                 }
             }
+        }
+    }
+
+    /// Sends files from this PC to the host, into `dest` (or the shell's folder), through `pane`'s shell; the sidebars
+    /// showing that host say so meanwhile, and a corner card if it couldn't.
+    private func sendToHost(_ paths: [String], through pane: TerminalPane, into dest: String?) {
+        let what = paths.count == 1 ? "“\(WindowsPath.name(paths[0]))”" : "\(paths.count) items"
+        let who = pane.borrowedUser.map { " for \($0)" } ?? ""
+        let showing = [left, right].filter { $0.isVisible && !panes.isEmpty && remote(for: $0) === pane.remote }
+        for s in showing { s.transfer = "Sending \(what)\(who)…" }
+        invalidate()
+        SudoHandoff.send(paths, through: pane, into: dest, post: { [weak self] work in self?.runOnWindowThread(work) }) { [weak self, weak pane] problem in
+            guard let self else { return }
+            for s in showing {
+                s.transfer = nil
+                self.relist(dest ?? s.tree.root, in: s)
+            }
+            self.invalidate()
+            guard let problem, let pane else { return }
+            TerminalWindow.postNotice(NoticeRules.Card(title: "Couldn't send \(what)", mark: .failed, lines: [problem]), about: pane)
         }
     }
 
@@ -5871,6 +5923,9 @@ final class TerminalWindow {
                 self.showFile(SnippetStore.shared.fileURL.path, in: self.activePane)
             },
             PaletteItem(title: "Refresh Tab", category: "View") { [weak self] in self?.activePane.refreshDisplay() },
+            PaletteItem(title: "Follow This Shell's Folder (ssh, after sudo)", category: "Shell") { [weak self] in
+                if self?.activePane.followShellFolder() != true { _ = MessageBeep(UINT(0x30)) }
+            },
             PaletteItem(title: KeepAwake.secondsLeft.map { "Stop Keeping Awake (\(KeepAwake.shortDuration($0)) left)" }
                             ?? "Keep Awake (\(KeepAwake.shortDuration(AppSettings.shared.keepAwakeSeconds)))",
                         category: "Solanum", shortcut: "Ctrl+Shift+A") { KeepAwake.toggle() },

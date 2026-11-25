@@ -843,6 +843,7 @@ final class TerminalPane: TerminalDelegate, Groupable {
         if let deadline = selectionDeleteDeadline, Date() > deadline { endDeletingSelection() }
         checkChatPaste()
         reanchorIfSettled()
+        followIfSwitched()
     }
 
     func draw(cursorShown: Bool = true, style: Int = 6) {
@@ -1377,7 +1378,13 @@ final class TerminalPane: TerminalDelegate, Groupable {
         // In an ssh session, Enter at the host's prompt marks a command there (Terminal.remoteEnterPressed), so its
         // command line can be clicked into and selected. Not while an agent runs: its box isn't a shell's prompt.
         if terminal.sshControlPath != nil, agent == nil {
-            if bytes == [13] { terminal.remoteEnterPressed() } else { terminal.remoteKeyPressed() }
+            if bytes == [13] {
+                // A sudo -i (or su) entered: once that shell's prompt is up, Follow This Shell's Folder.
+                if Self.switchesUser(terminal.cursorLineText) { followAfterSwitch = Date() }
+                terminal.remoteEnterPressed()
+            } else {
+                terminal.remoteKeyPressed()
+            }
         }
         let encoded = terminal.win32InputMode ? Win32Input.encode(bytes) : bytes
         // A big paste goes in pieces, so Windows 10's console host takes it all.
@@ -1385,6 +1392,64 @@ final class TerminalPane: TerminalDelegate, Groupable {
     }
 
     private func send(_ text: String) { pty?.write(Array(text.utf8)) }
+
+    // MARK: - A shell as someone else on the host (sudo -i -u), as on the Mac
+
+    /// The line Follow This Shell's Folder types: from then on, each prompt of that shell (bash) reports its folder
+    /// (OSC 7) and its user and home, so Solanum knows whose shell it is. A leading space keeps it out of its history.
+    static let followLine = #" PROMPT_COMMAND='printf "\033]7;file://%s%s\007\033]1337;SolanumUser=%s:%s\007" "${HOSTNAME:-$(hostname)}" "$PWD" "${USER:-$(id -un)}" "$HOME"'"${PROMPT_COMMAND:+;$PROMPT_COMMAND}""#
+
+    /// `followLine`, then a printf that moves back up over the lines the prompt and the echoed command took and clears
+    /// from there, so the next prompt comes up where this one was.
+    static func followCommand(promptWidth: Int, columns: Int) -> String {
+        var lines = 1, text = ""
+        for _ in 0..<3 {
+            text = followLine + "; printf '\\033[\(lines)A\\033[J'"
+            lines = max(1, (promptWidth + text.count - 1) / max(columns, 1) + 1)
+        }
+        return text
+    }
+
+    /// Commands at the host's prompt that start a shell as someone else: sudo -i / -s / su, su.
+    private static let switchesUserPattern = try! NSRegularExpression(pattern:
+        #"(^|[\s;&|])(sudo\s+((-u\s+\S+|-\S+)\s+)*?(-[a-zA-Z]*[is][a-zA-Z]*\b|su\b|(bash|sh|zsh)\b)|su(\s+-|\s+-l|\s+--login)?(\s+[A-Za-z_][\w.-]*)?\s*$)"#)
+
+    static func switchesUser(_ command: String) -> Bool {
+        switchesUserPattern.firstMatch(in: command, range: NSRange(command.startIndex..., in: command)) != nil
+    }
+
+    /// Follow This Shell's Folder (in the palette): the shell on the host reports whose it is from its next prompt.
+    @discardableResult
+    func followShellFolder() -> Bool {
+        guard remote != nil || terminal.sshControlPath != nil, !terminal.usingAlt else { return false }
+        send("\u{15}" + Self.followCommand(promptWidth: terminal.cursorX, columns: terminal.cols) + "\r")
+        return true
+    }
+
+    /// When a sudo -i was entered, until its shell's prompt is up (two minutes at most).
+    private var followAfterSwitch: Date?
+
+    private func followIfSwitched() {
+        guard let at = followAfterSwitch else { return }
+        guard Date().timeIntervalSince(at) < 120 else { followAfterSwitch = nil; return }
+        // The new shell's prompt, settled (not sudo's password question, which isn't a prompt).
+        guard Date().timeIntervalSince(at) > 0.4, Date().timeIntervalSince(lastOutputAt) > 0.35, terminal.atEmptyHostPrompt() else { return }
+        followAfterSwitch = nil
+        followShellFolder()
+    }
+
+    /// The user the shell runs as, when it isn't the ssh login (a shell from `sudo -i -u`).
+    var borrowedUser: String? {
+        guard let user = terminal.remoteUser?.name, user != remote?.loginUser else { return nil }
+        return user
+    }
+
+    /// Whether files dropped here (or on a sidebar folder on its host, while it has the keyboard) go through this shell:
+    /// an ssh shell at its prompt.
+    var canSendToHost: Bool { remote?.state == .ready && terminal.atEmptyHostPrompt() }
+
+    /// Types into the shell, for SudoHandoff: the copy it's given to do.
+    func typeIntoShell(_ text: String) { send(text) }
 
     // MARK: - Mouse
 

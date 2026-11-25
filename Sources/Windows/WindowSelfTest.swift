@@ -129,6 +129,13 @@ enum WindowSelfTest {
             let grew2 = openHandleCount() - before2
             results.check("threads: ten hidden programs run leave no handles open", GitShell.sh == nil || grew2 < 10, "\(grew2) more")
         }
+        print("A shell as someone else on an ssh host")
+        results.check("sudo shell: sudo -i -u, sudo -s, su - and sudo su start one",
+                      ["sudo -i -u svc", "sudo -s", "su - svc", "sudo su", "cd /x && sudo -iu svc"].allSatisfy(TerminalPane.switchesUser))
+        results.check("sudo shell: other commands don't", !["sudo apt update", "ls -s", "echo sudo", "summary"].contains(where: TerminalPane.switchesUser))
+        results.check("sudo shell: the follow line", TerminalPane.followLine.hasPrefix(" PROMPT_COMMAND=") && TerminalPane.followLine.contains("SolanumUser=%s:%s"))
+        let follow = TerminalPane.followCommand(promptWidth: 20, columns: 80)
+        results.check("sudo shell: and the lines it takes are cleared after", follow.hasSuffix("\\033[\((20 + follow.count - 1) / 80 + 1)A\\033[J'"), follow)
         print("Custom themes")
         let mac = ThemeFiles.parse(Data(##"{"background":"#101010","foreground":"#EEEEEE","ansi":["#000000","#FF0000","#00FF00","#FFFF00","#0000FF","#FF00FF","#00FFFF","#FFFFFF"]}"##.utf8),
                                    fallbackName: "my-theme")
@@ -1416,6 +1423,26 @@ enum WindowSelfTest {
         steps.append(Step(name: "files: the sidebar shows the folder", action: {}, done: {
             window.leftTree.root?.hasSuffix("alpha") == true && window.leftRow(named: "inner.txt") != nil
         }))
+        var openedWith: (path: String, app: String)?
+        OpenWith.onOpen = { openedWith = ($0, $1) }
+        steps.append(Step(name: "files: Open With… on a file's menu", action: { if let row = window.leftRow(named: "inner.txt") { window.rightClick(row) } },
+                          done: { window.menuTitles.contains("Open With…") }))
+        steps.append(Step(name: "files: Open With… lists the apps, the default first, then Choose Another App…", action: {
+            window.click(window.menuRow("Open With…")!)
+        }, done: {
+            let titles = window.menuTitles.filter { !$0.isEmpty }
+            let apps = OpenWith.apps(for: WindowsPath.join(alphaFolder, "inner.txt"))
+            return titles.last == "Choose Another App…" && titles.count == apps.count + 1
+                && (apps.first.map { !$0.isDefault || titles.first == $0.name + " (default)" } ?? true)
+        }))
+        steps.append(Step(name: "files: picking an app opens the file in it", action: {
+            if let first = OpenWith.apps(for: WindowsPath.join(alphaFolder, "inner.txt")).first, let row = window.menuRow(first.isDefault ? first.name + " (default)" : first.name) {
+                window.click(row)
+            } else {
+                openedWith = ("", "none listed")
+                pane.pressEscape()
+            }
+        }, done: { !window.isMenuOpen && openedWith != nil && (openedWith!.app == "none listed" || openedWith!.path.hasSuffix("inner.txt")) }))
         steps.append(Step(name: "files: a file's menu", action: { if let row = window.leftRow(named: "inner.txt") { window.rightClick(row) } }, done: {
             ["New File…", "New Folder…", "Cut", "Copy", "Paste", "Duplicate", "Copy Path", "Rename…", "Delete", "Show in Explorer"].allSatisfy(window.menuTitles.contains)
                 && window.menuShortcuts["Rename…"] == "F2"
@@ -2320,6 +2347,26 @@ enum WindowSelfTest {
                 _ = FileManager.default.createFile(atPath: toUpload, contents: Data("from windows".utf8))
                 window.uploadForTest([toUpload], into: window.leftTree.root!)
             }, done: { window.leftRow(named: uploadName) != nil }))
+            // Dropped on the ssh shell at its prompt: the shell copies it in from /tmp, which is emptied after.
+            let toDrop = WindowsPath.join(hostTemp, "dropme-\(ProcessInfo.processInfo.processIdentifier).txt"), dropName = WindowsPath.name(toDrop)
+            var dropTmpLeft: String?
+            steps.append(Step(name: "ssh files: Follow This Shell's Folder says whose shell it is", action: {
+                pane.followShellFolder()
+            }, done: { pane.terminal.remoteUser?.name == env["SOLANUM_TEST_SSH_USER"] && pane.borrowedUser == nil && pane.canSendToHost }))
+            steps.append(Step(name: "ssh files: dropped on the ssh shell, it goes to the host through the shell", action: {
+                _ = FileManager.default.createFile(atPath: toDrop, contents: Data("dropped".utf8))
+                let t = window.currentLayout.terminal
+                window.dropFilesForTest([toDrop], atX: t.x + t.width / 2, y: t.y + t.height / 2)
+            }, done: { window.leftRow(named: dropName) != nil && !pane.logicalText.contains("'\(toDrop)'") }))
+            var asking = false
+            steps.append(Step(name: "ssh files: and the folder in /tmp is gone after", action: {}, done: {
+                if dropTmpLeft?.trimmingCharacters(in: .whitespacesAndNewlines) == "0" { return true }
+                if !asking {
+                    asking = true
+                    pane.remote?.run("ls -d /tmp/solanum-drop.* 2>/dev/null | wc -l") { text, _ in dropTmpLeft = text; asking = false }
+                }
+                return false
+            }))
             steps.append(Step(name: "ssh files: and downloads it back", action: {
                 try? FileManager.default.createDirectory(atPath: downloads, withIntermediateDirectories: true)
                 window.downloadForTest([window.leftTree.root! + "/" + uploadName], into: downloads)
