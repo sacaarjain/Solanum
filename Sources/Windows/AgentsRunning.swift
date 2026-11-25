@@ -247,7 +247,11 @@ final class AgentsPill {
         let now = Date()
         if let m = morph, now.timeIntervalSince(m.start) >= (m.opening ? Self.growTime : Self.shrinkTime) { morph = nil }
         if let p = pulseStart, now.timeIntervalSince(p) >= Self.pulseTime { pulseStart = nil }
-        if let w = widthFrom, now.timeIntervalSince(w.start) >= 0.25 { widthFrom = nil }
+        if let w = widthFrom, now.timeIntervalSince(w.start) >= 0.25 {
+            widthFrom = nil
+            // Whatever it's drawn at next is where it settles (not a new slide from where this one began).
+            lastWidth = 0
+        }
         return isAnimating
     }
 

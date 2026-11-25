@@ -42,9 +42,23 @@ struct PanelPaint {
     }
 
     func width(_ text: String, pixels: Float = 12.5, semibold: Bool = false) -> Float {
+        // Measured once for each text, size and weight: the pills and panels ask for the same widths every frame, and
+        // laying text out to measure it is what took their time.
+        let key = PanelPaint.WidthKey(text: text, pixels: pixels * scale, semibold: semibold)
+        if let known = PanelPaint.widths[key] { return known }
         let units = Array(text.utf16)
-        return sol_canvas_measure_label(canvas.raw, units, Int32(units.count), pixels * scale, semibold ? 1 : 0).rounded(.up)
+        let w = sol_canvas_measure_label(canvas.raw, units, Int32(units.count), pixels * scale, semibold ? 1 : 0).rounded(.up)
+        if PanelPaint.widths.count > 4000 { PanelPaint.widths = [:] }
+        PanelPaint.widths[key] = w
+        return w
     }
+
+    struct WidthKey: Hashable {
+        let text: String
+        let pixels: Float
+        let semibold: Bool
+    }
+    nonisolated(unsafe) static var widths: [WidthKey: Float] = [:]
 
     func icon(_ glyph: UInt16, _ r: UIRect, pixels: Float = 12, color: UInt32? = nil, alpha: Float = 1) {
         sol_canvas_draw_icon(canvas.raw, r.x, r.y, r.width, r.height, glyph, pixels * scale, color ?? fg, alpha)

@@ -352,8 +352,9 @@ final class PromptChangesPanel {
     private func drawContents(area: UIRect, _ p: PanelPaint) {
         let s = p.scale, canvas = p.canvas
         let pill = pillFrame(in: area, p)
-        let panel = panelFrame(in: area, p)
+        // The panel's size means laying out all it shows: only while it's open, or growing or shrinking.
         if let m = morph {
+            let panel = panelFrame(in: area, p)
             // The panel's picture, from the pill's size and place to its own (or back), on a frosted card that does the same.
             let span = m.opening ? Self.growTime : Self.shrinkTime
             let t = Float(min(1, Date().timeIntervalSince(m.start) / span))
@@ -370,6 +371,7 @@ final class PromptChangesPanel {
             return
         }
         if expanded {
+            let panel = panelFrame(in: area, p)
             panelRect = panel
             card(p, panel)
             sol_canvas_push_clip(canvas.raw, panel.x, panel.y, panel.width, panel.height)
